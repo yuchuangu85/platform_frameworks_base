@@ -21,9 +21,12 @@ import static android.os.Parcelable.Creator;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SdkConstant;
+import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
+import android.annotation.TestApi;
 import android.app.Service;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -48,7 +51,8 @@ import java.util.concurrent.TimeUnit;
  * <p>To extend this class, you must declare the service in your manifest file with the
  * {@link android.Manifest.permission#BIND_EXPLICIT_HEALTH_CHECK_SERVICE} permission,
  * and include an intent filter with the {@link #SERVICE_INTERFACE} action. In adddition,
- * your implementation must live in {@link PackageManger#SYSTEM_SHARED_LIBRARY_SERVICES}.
+ * your implementation must live in
+ * {@link PackageManager#getServicesSystemSharedLibraryPackageName()}.
  * For example:</p>
  * <pre>
  *     &lt;service android:name=".FooExplicitHealthCheckService"
@@ -157,6 +161,15 @@ public abstract class ExplicitHealthCheckService extends Service {
     }
 
     /**
+     * Sets {@link RemoteCallback}, for testing purpose.
+     *
+     * @hide
+     */
+    @TestApi
+    public void setCallback(@Nullable RemoteCallback callback) {
+        mCallback = callback;
+    }
+    /**
      * Implementors should call this to notify the system when explicit health check passes
      * for {@code packageName};
      */
@@ -261,7 +274,7 @@ public abstract class ExplicitHealthCheckService extends Service {
         }
 
         @Override
-        public void writeToParcel(Parcel parcel, int flags) {
+        public void writeToParcel(@SuppressLint({"MissingNullability"}) Parcel parcel, int flags) {
             parcel.writeString(mPackageName);
             parcel.writeLong(mHealthCheckTimeoutMillis);
         }

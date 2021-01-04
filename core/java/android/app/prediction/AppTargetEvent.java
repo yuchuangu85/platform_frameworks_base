@@ -19,7 +19,6 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.os.Parcel;
 import android.os.Parcelable;
 
@@ -32,13 +31,12 @@ import java.lang.annotation.RetentionPolicy;
  * @hide
  */
 @SystemApi
-@TestApi
 public final class AppTargetEvent implements Parcelable {
 
     /**
      * @hide
      */
-    @IntDef({ACTION_LAUNCH, ACTION_DISMISS, ACTION_PIN})
+    @IntDef({ACTION_LAUNCH, ACTION_DISMISS, ACTION_PIN, ACTION_UNPIN})
     @Retention(RetentionPolicy.SOURCE)
     public @interface ActionType {}
 
@@ -56,6 +54,11 @@ public final class AppTargetEvent implements Parcelable {
      * Event type constant indicating an app target has been pinned.
      */
     public static final int ACTION_PIN = 3;
+
+    /**
+     * Event type constant indicating an app target has been un-pinned.
+     */
+    public static final int ACTION_UNPIN = 4;
 
     private final AppTarget mTarget;
     private final String mLocation;
@@ -136,7 +139,6 @@ public final class AppTargetEvent implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final class Builder {
         private AppTarget mTarget;
         private String mLocation;

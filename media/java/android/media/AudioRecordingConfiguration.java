@@ -18,9 +18,12 @@ package android.media;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.RequiresPermission;
+import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.media.audiofx.AudioEffect;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.util.Log;
@@ -220,20 +223,27 @@ public final class AudioRecordingConfiguration implements Parcelable {
      * <br>When called without the permission, the result is an empty string.
      * @return the package name
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public String getClientPackageName() { return mClientPackageName; }
 
     /**
-     * @pending for SystemApi
      * Returns the user id of the application performing the recording.
      * <p>This information is only available if the caller has the
      * {@link android.Manifest.permission.MODIFY_AUDIO_ROUTING}
      * permission.
-     * <br>The result is -1 without the permission.
      * @return the user id
+     * @throws SecurityException Thrown if the caller is missing the MODIFY_AUDIO_ROUTING permission
+     *
+     * @hide
      */
-    @UnsupportedAppUsage
-    public int getClientUid() { return mClientUid; }
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public int getClientUid() {
+        if (mClientUid == -1) {
+            throw new SecurityException("MODIFY_AUDIO_ROUTING permission is missing");
+        }
+        return mClientUid;
+    }
 
     /**
      * Returns information about the audio input device used for this recording.

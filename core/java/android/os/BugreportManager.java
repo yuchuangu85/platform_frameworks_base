@@ -24,10 +24,13 @@ import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
-import android.annotation.TestApi;
+import android.app.ActivityManager;
 import android.content.Context;
+import android.os.Handler;
 import android.util.Log;
+import android.widget.Toast;
 
+import com.android.internal.R;
 import com.android.internal.util.Preconditions;
 
 import libcore.io.IoUtils;
@@ -44,7 +47,6 @@ import java.util.concurrent.Executor;
  * @hide
  */
 @SystemApi
-@TestApi
 @SystemService(Context.BUGREPORT_SERVICE)
 public final class BugreportManager {
 
@@ -121,6 +123,12 @@ public final class BugreportManager {
          * Called when taking bugreport finishes successfully.
          */
         public void onFinished() {}
+
+        /**
+         * Called when it is ready for calling app to show UI, showing any extra UI before this
+         * callback can interfere with bugreport generation.
+         */
+        public void onEarlyReportFinished() {}
     }
 
     /**
@@ -154,18 +162,20 @@ public final class BugreportManager {
             Preconditions.checkNotNull(executor);
             Preconditions.checkNotNull(callback);
 
+            boolean isScreenshotRequested = screenshotFd != null;
             if (screenshotFd == null) {
                 // Binder needs a valid File Descriptor to be passed
                 screenshotFd = ParcelFileDescriptor.open(new File("/dev/null"),
                         ParcelFileDescriptor.MODE_READ_ONLY);
             }
-            DumpstateListener dsListener = new DumpstateListener(executor, callback);
+            DumpstateListener dsListener = new DumpstateListener(executor, callback,
+                    isScreenshotRequested);
             // Note: mBinder can get callingUid from the binder transaction.
             mBinder.startBugreport(-1 /* callingUid */,
                     mContext.getOpPackageName(),
                     bugreportFd.getFileDescriptor(),
                     screenshotFd.getFileDescriptor(),
-                    params.getMode(), dsListener);
+                    params.getMode(), dsListener, isScreenshotRequested);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         } catch (FileNotFoundException e) {
@@ -191,13 +201,42 @@ public final class BugreportManager {
         }
     }
 
+    /**
+     * Requests a bugreport.
+     *
+     * <p>This requests the platform/system to take a bugreport and makes the final bugreport
+     * available to the user. The user may choose to share it with another app, but the bugreport
+     * is never given back directly to the app that requested it.
+     *
+     * @param params           {@link BugreportParams} that specify what kind of a bugreport should
+     *                         be taken, please note that not all kinds of bugreport allow for a
+     *                         progress notification
+     * @param shareTitle       title on the final share notification
+     * @param shareDescription description on the final share notification
+     */
+    @RequiresPermission(android.Manifest.permission.DUMP)
+    public void requestBugreport(@NonNull BugreportParams params, @Nullable CharSequence shareTitle,
+            @Nullable CharSequence shareDescription) {
+        try {
+            String title = shareTitle == null ? null : shareTitle.toString();
+            String description = shareDescription == null ? null : shareDescription.toString();
+            ActivityManager.getService().requestBugReportWithDescription(title, description,
+                    params.getMode());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
     private final class DumpstateListener extends IDumpstateListener.Stub {
         private final Executor mExecutor;
         private final BugreportCallback mCallback;
+        private final boolean mIsScreenshotRequested;
 
-        DumpstateListener(Executor executor, BugreportCallback callback) {
+        DumpstateListener(Executor executor, BugreportCallback callback,
+                boolean isScreenshotRequested) {
             mExecutor = executor;
             mCallback = callback;
+            mIsScreenshotRequested = isScreenshotRequested;
         }
 
         @Override
@@ -230,6 +269,34 @@ public final class BugreportManager {
             try {
                 mExecutor.execute(() -> {
                     mCallback.onFinished();
+                });
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
+        }
+
+        @Override
+        public void onScreenshotTaken(boolean success) throws RemoteException {
+            if (!mIsScreenshotRequested) {
+                return;
+            }
+
+            Handler mainThreadHandler = new Handler(Looper.getMainLooper());
+            mainThreadHandler.post(
+                    () -> {
+                        int message = success ? R.string.bugreport_screenshot_success_toast
+                                : R.string.bugreport_screenshot_failure_toast;
+                        Toast.makeText(mContext, message, Toast.LENGTH_LONG).show();
+                    });
+        }
+
+        @Override
+        public void onUiIntensiveBugreportDumpsFinished()
+                throws RemoteException {
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                mExecutor.execute(() -> {
+                    mCallback.onEarlyReportFinished();
                 });
             } finally {
                 Binder.restoreCallingIdentity(identity);

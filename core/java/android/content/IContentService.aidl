@@ -51,7 +51,7 @@ interface IContentService {
      *     hold the INTERACT_ACROSS_USERS_FULL permission.  Pseudousers USER_ALL
      *     USER_CURRENT are properly interpreted.
      */
-    void notifyChange(in Uri uri, IContentObserver observer,
+    void notifyChange(in Uri[] uris, IContentObserver observer,
             boolean observerWantsSelfNotifications, int flags,
             int userHandle, int targetSdkVersion, String callingPackage);
 
@@ -61,7 +61,7 @@ interface IContentService {
      */
     void sync(in SyncRequest request, String callingPackage);
     void syncAsUser(in SyncRequest request, int userId, String callingPackage);
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void cancelSync(in Account account, String authority, in ComponentName cname);
     void cancelSyncAsUser(in Account account, String authority, in ComponentName cname, int userId);
 
@@ -159,7 +159,7 @@ interface IContentService {
      * @param cname component to identify sync service, must be null if account/providerName are
      * non-null.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean isSyncActive(in Account account, String authority, in ComponentName cname);
 
     /**

@@ -23,6 +23,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Environment;
 import android.os.IVold;
 import android.os.Parcel;
@@ -179,24 +180,39 @@ public class VolumeInfo implements Parcelable {
         this.partGuid = partGuid;
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public VolumeInfo(Parcel parcel) {
-        id = parcel.readString();
+        id = parcel.readString8();
         type = parcel.readInt();
         if (parcel.readInt() != 0) {
             disk = DiskInfo.CREATOR.createFromParcel(parcel);
         } else {
             disk = null;
         }
-        partGuid = parcel.readString();
+        partGuid = parcel.readString8();
         mountFlags = parcel.readInt();
         mountUserId = parcel.readInt();
         state = parcel.readInt();
-        fsType = parcel.readString();
-        fsUuid = parcel.readString();
-        fsLabel = parcel.readString();
-        path = parcel.readString();
-        internalPath = parcel.readString();
+        fsType = parcel.readString8();
+        fsUuid = parcel.readString8();
+        fsLabel = parcel.readString8();
+        path = parcel.readString8();
+        internalPath = parcel.readString8();
+    }
+
+    public VolumeInfo(VolumeInfo volumeInfo) {
+        this.id = volumeInfo.id;
+        this.type = volumeInfo.type;
+        this.disk = volumeInfo.disk;
+        this.partGuid = volumeInfo.partGuid;
+        this.mountFlags = volumeInfo.mountFlags;
+        this.mountUserId = volumeInfo.mountUserId;
+        this.state = volumeInfo.state;
+        this.fsType = volumeInfo.fsType;
+        this.fsUuid = volumeInfo.fsUuid;
+        this.fsLabel = volumeInfo.fsLabel;
+        this.path = volumeInfo.path;
+        this.internalPath = volumeInfo.internalPath;
     }
 
     @UnsupportedAppUsage
@@ -266,7 +282,7 @@ public class VolumeInfo implements Parcelable {
 
     @UnsupportedAppUsage
     public @Nullable String getDescription() {
-        if (ID_PRIVATE_INTERNAL.equals(id) || ID_EMULATED_INTERNAL.equals(id)) {
+        if (ID_PRIVATE_INTERNAL.equals(id) || id.startsWith(ID_EMULATED_INTERNAL + ";")) {
             return Resources.getSystem().getString(com.android.internal.R.string.storage_internal);
         } else if (!TextUtils.isEmpty(fsLabel)) {
             return fsLabel;
@@ -301,20 +317,27 @@ public class VolumeInfo implements Parcelable {
     }
 
     public boolean isVisibleForUser(int userId) {
-        if ((type == TYPE_PUBLIC || type == TYPE_STUB) && mountUserId == userId) {
+        if ((type == TYPE_PUBLIC || type == TYPE_STUB || type == TYPE_EMULATED)
+                && mountUserId == userId) {
             return isVisible();
-        } else if (type == TYPE_EMULATED) {
-            return isVisible();
-        } else {
-            return false;
         }
+        return false;
+    }
+
+    /**
+     * Returns {@code true} if this volume is the primary emulated volume for {@code userId},
+     * {@code false} otherwise.
+     */
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+    public boolean isPrimaryEmulatedForUser(int userId) {
+        return id.equals(ID_EMULATED_INTERNAL + ";" + userId);
     }
 
     public boolean isVisibleForRead(int userId) {
         return isVisibleForUser(userId);
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public boolean isVisibleForWrite(int userId) {
         return isVisibleForUser(userId);
     }
@@ -324,7 +347,7 @@ public class VolumeInfo implements Parcelable {
         return (path != null) ? new File(path) : null;
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public File getInternalPath() {
         return (internalPath != null) ? new File(internalPath) : null;
     }
@@ -390,7 +413,7 @@ public class VolumeInfo implements Parcelable {
                 derivedFsUuid = privateVol.fsUuid;
             }
 
-            if (ID_EMULATED_INTERNAL.equals(id)) {
+            if (isPrimaryEmulatedForUser(userId)) {
                 removable = false;
             } else {
                 removable = true;
@@ -526,7 +549,7 @@ public class VolumeInfo implements Parcelable {
         return id.hashCode();
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final @android.annotation.NonNull Creator<VolumeInfo> CREATOR = new Creator<VolumeInfo>() {
         @Override
         public VolumeInfo createFromParcel(Parcel in) {
@@ -546,7 +569,7 @@ public class VolumeInfo implements Parcelable {
 
     @Override
     public void writeToParcel(Parcel parcel, int flags) {
-        parcel.writeString(id);
+        parcel.writeString8(id);
         parcel.writeInt(type);
         if (disk != null) {
             parcel.writeInt(1);
@@ -554,14 +577,14 @@ public class VolumeInfo implements Parcelable {
         } else {
             parcel.writeInt(0);
         }
-        parcel.writeString(partGuid);
+        parcel.writeString8(partGuid);
         parcel.writeInt(mountFlags);
         parcel.writeInt(mountUserId);
         parcel.writeInt(state);
-        parcel.writeString(fsType);
-        parcel.writeString(fsUuid);
-        parcel.writeString(fsLabel);
-        parcel.writeString(path);
-        parcel.writeString(internalPath);
+        parcel.writeString8(fsType);
+        parcel.writeString8(fsUuid);
+        parcel.writeString8(fsLabel);
+        parcel.writeString8(path);
+        parcel.writeString8(internalPath);
     }
 }

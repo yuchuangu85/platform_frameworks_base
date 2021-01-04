@@ -16,8 +16,12 @@
 
 package android.os;
 
+import static android.view.Display.DEFAULT_DISPLAY;
+
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
@@ -29,7 +33,9 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.IntentSender;
 import android.content.pm.PackageManager;
+import android.hardware.display.DisplayManager;
 import android.provider.Settings;
 import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
@@ -38,7 +44,6 @@ import android.text.TextUtils;
 import android.text.format.DateFormat;
 import android.util.Log;
 import android.view.Display;
-import android.view.WindowManager;
 
 import libcore.io.Streams;
 
@@ -417,7 +422,7 @@ public class RecoverySystem {
      * {@hide}
      */
     @SystemApi
-    @SuppressLint("Doclava125")
+    @SuppressLint("RequiresPermission")
     public static boolean verifyPackageCompatibility(File compatibilityFile) throws IOException {
         try (InputStream inputStream = new FileInputStream(compatibilityFile)) {
             return verifyPackageCompatibility(inputStream);
@@ -612,8 +617,8 @@ public class RecoverySystem {
 
             // On TV, reboot quiescently if the screen is off
             if (context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK)) {
-                WindowManager wm = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
-                if (wm.getDefaultDisplay().getState() != Display.STATE_ON) {
+                DisplayManager dm = context.getSystemService(DisplayManager.class);
+                if (dm.getDisplay(DEFAULT_DISPLAY).getState() != Display.STATE_ON) {
                     reason += ",quiescent";
                 }
             }
@@ -624,22 +629,144 @@ public class RecoverySystem {
     }
 
     /**
-     * Schedule to install the given package on next boot. The caller needs to
-     * ensure that the package must have been processed (uncrypt'd) if needed.
-     * It sets up the command in BCB (bootloader control block), which will
-     * be read by the bootloader and the recovery image.
+     * Prepare to apply an unattended update by asking the user for their Lock Screen Knowledge
+     * Factor (LSKF). If supplied, the {@code intentSender} will be called when the system is setup
+     * and ready to apply the OTA. This API is expected to handle requests from multiple clients
+     * simultaneously, e.g. from ota and mainline.
      *
-     * @param Context      the Context to use.
-     * @param packageFile  the package to be installed.
+     * <p> The behavior of multi-client Resume on Reboot works as follows
+     * <li> Each client should call this function to prepare for Resume on Reboot before calling
+     *      {@link #rebootAndApply(Context, String, boolean)} </li>
+     * <li> One client cannot clear the Resume on Reboot preparation of another client. </li>
+     * <li> If multiple clients have prepared for Resume on Reboot, the subsequent reboot will be
+     *      first come, first served. </li>
      *
+     * @param context the Context to use.
+     * @param updateToken this parameter is deprecated and won't be used. Callers can supply with
+     *                    an empty string. See details in
+     *                    <a href="http://go/multi-client-ror">http://go/multi-client-ror</a>
+     *                    TODO(xunchang) update the link of document with the public doc.
+     * @param intentSender the intent to call when the update is prepared; may be {@code null}
+     * @throws IOException if there were any errors setting up unattended update
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(anyOf = {android.Manifest.permission.RECOVERY,
+            android.Manifest.permission.REBOOT})
+    public static void prepareForUnattendedUpdate(@NonNull Context context,
+            @NonNull String updateToken, @Nullable IntentSender intentSender) throws IOException {
+        if (updateToken == null) {
+            throw new NullPointerException("updateToken == null");
+        }
+        RecoverySystem rs = (RecoverySystem) context.getSystemService(Context.RECOVERY_SERVICE);
+        if (!rs.requestLskf(context.getPackageName(), intentSender)) {
+            throw new IOException("preparation for update failed");
+        }
+    }
+
+    /**
+     * Request that any previously requested Lock Screen Knowledge Factor (LSKF) is cleared and
+     * the preparation for unattended update is reset.
+     *
+     * <p> Note that the API won't clear the underlying Resume on Reboot preparation state if
+     * another client has requested. So the reboot call from the other client can still succeed.
+     *
+     * @param context the Context to use.
+     * @throws IOException if there were any errors clearing the unattended update state
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(anyOf = {android.Manifest.permission.RECOVERY,
+            android.Manifest.permission.REBOOT})
+    public static void clearPrepareForUnattendedUpdate(@NonNull Context context)
+            throws IOException {
+        RecoverySystem rs = (RecoverySystem) context.getSystemService(Context.RECOVERY_SERVICE);
+        if (!rs.clearLskf(context.getPackageName())) {
+            throw new IOException("could not reset unattended update state");
+        }
+    }
+
+    /**
+     * Request that the device reboot and apply the update that has been prepared. This API is
+     * deprecated, and is expected to be used by OTA only on devices running Android 11.
+     *
+     * @param context the Context to use.
+     * @param updateToken this parameter is deprecated and won't be used. See details in
+     *                    <a href="http://go/multi-client-ror">http://go/multi-client-ror</a>
+     *                    TODO(xunchang) update the link of document with the public doc.
+     * @param reason the reboot reason to give to the {@link PowerManager}
+     * @throws IOException if the reboot couldn't proceed because the device wasn't ready for an
+     *               unattended reboot or if the {@code updateToken} did not match the previously
+     *               given token
+     * @hide
+     * @deprecated Use {@link #rebootAndApply(Context, String, boolean)} instead
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.RECOVERY)
+    public static void rebootAndApply(@NonNull Context context, @NonNull String updateToken,
+            @NonNull String reason) throws IOException {
+        if (updateToken == null) {
+            throw new NullPointerException("updateToken == null");
+        }
+        RecoverySystem rs = (RecoverySystem) context.getSystemService(Context.RECOVERY_SERVICE);
+        // OTA is the sole user, who expects a slot switch.
+        if (!rs.rebootWithLskfAssumeSlotSwitch(context.getPackageName(), reason)) {
+            throw new IOException("system not prepared to apply update");
+        }
+    }
+
+    /**
+     * Query if Resume on Reboot has been prepared for a given caller.
+     *
+     * @param context the Context to use.
+     * @throws IOException if there were any errors connecting to the service or querying the state.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(anyOf = {android.Manifest.permission.RECOVERY,
+            android.Manifest.permission.REBOOT})
+    public static boolean isPreparedForUnattendedUpdate(@NonNull Context context)
+            throws IOException {
+        RecoverySystem rs = context.getSystemService(RecoverySystem.class);
+        return rs.isLskfCaptured(context.getPackageName());
+    }
+
+    /**
+     * Request that the device reboot and apply the update that has been prepared.
+     * {@link #prepareForUnattendedUpdate} must be called before for the given client,
+     * otherwise the function call will fail.
+     *
+     * @param context the Context to use.
+     * @param reason the reboot reason to give to the {@link PowerManager}
+     * @param slotSwitch true if the caller expects the slot to be switched on A/B devices.
+     * @throws IOException if the reboot couldn't proceed because the device wasn't ready for an
+     *               unattended reboot.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(anyOf = {android.Manifest.permission.RECOVERY,
+            android.Manifest.permission.REBOOT})
+    public static void rebootAndApply(@NonNull Context context,
+            @NonNull String reason, boolean slotSwitch) throws IOException {
+        RecoverySystem rs = context.getSystemService(RecoverySystem.class);
+        if (!rs.rebootWithLskf(context.getPackageName(), reason, slotSwitch)) {
+            throw new IOException("system not prepared to apply update");
+        }
+    }
+
+    /**
+     * Schedule to install the given package on next boot. The caller needs to ensure that the
+     * package must have been processed (uncrypt'd) if needed. It sets up the command in BCB
+     * (bootloader control block), which will be read by the bootloader and the recovery image.
+     *
+     * @param context the Context to use.
+     * @param packageFile the package to be installed.
      * @throws IOException if there were any errors setting up the BCB.
-     *
      * @hide
      */
     @SystemApi
     @RequiresPermission(android.Manifest.permission.RECOVERY)
-    public static void scheduleUpdateOnBoot(Context context, File packageFile)
-            throws IOException {
+    public static void scheduleUpdateOnBoot(Context context, File packageFile) throws IOException {
         String filename = packageFile.getCanonicalPath();
         boolean securityUpdate = filename.endsWith("_s.zip");
 
@@ -1200,6 +1327,78 @@ public class RecoverySystem {
         try {
             mService.rebootRecoveryWithCommand(command);
         } catch (RemoteException ignored) {
+        }
+    }
+
+    /**
+     * Begins the process of asking the user for the Lock Screen Knowledge Factor.
+     *
+     * @param packageName the package name of the caller who requests Resume on Reboot
+     * @return true if the request was correct
+     * @throws IOException if the recovery system service could not be contacted
+     */
+    private boolean requestLskf(String packageName, IntentSender sender) throws IOException {
+        try {
+            return mService.requestLskf(packageName, sender);
+        } catch (RemoteException e) {
+            throw new IOException("could request LSKF capture");
+        }
+    }
+
+    /**
+     * Calls the recovery system service and clears the setup for the OTA.
+     *
+     * @return true if the setup for OTA was cleared
+     * @throws IOException if the recovery system service could not be contacted
+     */
+    private boolean clearLskf(String packageName) throws IOException {
+        try {
+            return mService.clearLskf(packageName);
+        } catch (RemoteException e) {
+            throw new IOException("could not clear LSKF");
+        }
+    }
+
+    /**
+     * Queries if the Resume on Reboot has been prepared for a given caller.
+     *
+     * @param packageName the identifier of the caller who requests Resume on Reboot
+     * @return true if Resume on Reboot is prepared.
+     * @throws IOException if the recovery system service could not be contacted
+     */
+    private boolean isLskfCaptured(String packageName) throws IOException {
+        try {
+            return mService.isLskfCaptured(packageName);
+        } catch (RemoteException e) {
+            throw new IOException("could not get LSKF capture state");
+        }
+    }
+
+    /**
+     * Calls the recovery system service to reboot and apply update.
+     *
+     */
+    private boolean rebootWithLskf(String packageName, String reason, boolean slotSwitch)
+            throws IOException {
+        try {
+            return mService.rebootWithLskf(packageName, reason, slotSwitch);
+        } catch (RemoteException e) {
+            throw new IOException("could not reboot for update");
+        }
+    }
+
+
+    /**
+     * Calls the recovery system service to reboot and apply update. This is the legacy API and
+     * expects a slot switch for A/B devices.
+     *
+     */
+    private boolean rebootWithLskfAssumeSlotSwitch(String packageName, String reason)
+            throws IOException {
+        try {
+            return mService.rebootWithLskfAssumeSlotSwitch(packageName, reason);
+        } catch (RemoteException e) {
+            throw new IOException("could not reboot for update");
         }
     }
 

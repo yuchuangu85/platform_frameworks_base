@@ -28,10 +28,10 @@ import java.util.Map;
  * {@hide}
  */
 interface IUsageStatsManager {
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     ParceledListSlice queryUsageStats(int bucketType, long beginTime, long endTime,
             String callingPackage);
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     ParceledListSlice queryConfigurationStats(int bucketType, long beginTime, long endTime,
             String callingPackage);
     ParceledListSlice queryEventStats(int bucketType, long beginTime, long endTime,
@@ -40,11 +40,10 @@ interface IUsageStatsManager {
     UsageEvents queryEventsForPackage(long beginTime, long endTime, String callingPackage);
     UsageEvents queryEventsForUser(long beginTime, long endTime, int userId, String callingPackage);
     UsageEvents queryEventsForPackageForUser(long beginTime, long endTime, int userId, String pkg, String callingPackage);
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void setAppInactive(String packageName, boolean inactive, int userId);
-    @UnsupportedAppUsage
-    boolean isAppInactive(String packageName, int userId);
-    void whitelistAppTemporarily(String packageName, long duration, int userId);
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
+    boolean isAppInactive(String packageName, int userId, String callingPackage);
     void onCarrierPrivilegedAppsChanged();
     void reportChooserSelection(String packageName, int userId, String contentType,
             in String[] annotations, String action);

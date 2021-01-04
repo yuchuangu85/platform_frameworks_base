@@ -37,24 +37,22 @@ import java.util.Objects;
 
 public class WifiSignalController extends
         SignalController<WifiSignalController.WifiState, SignalController.IconGroup> {
-    private final boolean mHasMobileData;
+    private final boolean mHasMobileDataFeature;
     private final WifiStatusTracker mWifiTracker;
 
-    public WifiSignalController(Context context, boolean hasMobileData,
+    public WifiSignalController(Context context, boolean hasMobileDataFeature,
             CallbackHandler callbackHandler, NetworkControllerImpl networkController,
-            WifiManager wifiManager) {
+            WifiManager wifiManager, ConnectivityManager connectivityManager,
+            NetworkScoreManager networkScoreManager) {
         super("WifiSignalController", context, NetworkCapabilities.TRANSPORT_WIFI,
                 callbackHandler, networkController);
-        NetworkScoreManager networkScoreManager =
-                context.getSystemService(NetworkScoreManager.class);
-        ConnectivityManager connectivityManager =
-                context.getSystemService(ConnectivityManager.class);
         mWifiTracker = new WifiStatusTracker(mContext, wifiManager, networkScoreManager,
                 connectivityManager, this::handleStatusUpdated);
         mWifiTracker.setListening(true);
-        mHasMobileData = hasMobileData;
+        mHasMobileDataFeature = hasMobileDataFeature;
         if (wifiManager != null) {
-            wifiManager.registerTrafficStateCallback(new WifiTrafficStateCallback(), null);
+            wifiManager.registerTrafficStateCallback(context.getMainExecutor(),
+                    new WifiTrafficStateCallback());
         }
         // WiFi only has one state.
         mCurrentState.iconGroup = mLastState.iconGroup = new IconGroup(
@@ -84,20 +82,38 @@ public class WifiSignalController extends
         // only show wifi in the cluster if connected or if wifi-only
         boolean visibleWhenEnabled = mContext.getResources().getBoolean(
                 R.bool.config_showWifiIndicatorWhenEnabled);
-        boolean wifiVisible = mCurrentState.enabled
-                && (mCurrentState.connected || !mHasMobileData || visibleWhenEnabled);
-        String wifiDesc = wifiVisible ? mCurrentState.ssid : null;
+        boolean wifiVisible = mCurrentState.enabled && (
+                (mCurrentState.connected && mCurrentState.inetCondition == 1)
+                        || !mHasMobileDataFeature || mCurrentState.isDefault
+                        || visibleWhenEnabled);
+        String wifiDesc = mCurrentState.connected ? mCurrentState.ssid : null;
         boolean ssidPresent = wifiVisible && mCurrentState.ssid != null;
-        String contentDescription = getStringIfExists(getContentDescription()).toString();
+        String contentDescription = getTextIfExists(getContentDescription()).toString();
         if (mCurrentState.inetCondition == 0) {
             contentDescription += ("," + mContext.getString(R.string.data_connection_no_internet));
         }
         IconState statusIcon = new IconState(wifiVisible, getCurrentIconId(), contentDescription);
-        IconState qsIcon = new IconState(mCurrentState.connected, getQsCurrentIconId(),
-                contentDescription);
+        IconState qsIcon = new IconState(mCurrentState.connected,
+                mWifiTracker.isCaptivePortal ? R.drawable.ic_qs_wifi_disconnected
+                        : getQsCurrentIconId(), contentDescription);
         callback.setWifiIndicators(mCurrentState.enabled, statusIcon, qsIcon,
                 ssidPresent && mCurrentState.activityIn, ssidPresent && mCurrentState.activityOut,
                 wifiDesc, mCurrentState.isTransient, mCurrentState.statusLabel);
+    }
+
+    /**
+     * Fetches wifi initial state replacing the initial sticky broadcast.
+     */
+    public void fetchInitialState() {
+        mWifiTracker.fetchInitialState();
+        mCurrentState.enabled = mWifiTracker.enabled;
+        mCurrentState.isDefault = mWifiTracker.isDefaultNetwork;
+        mCurrentState.connected = mWifiTracker.connected;
+        mCurrentState.ssid = mWifiTracker.ssid;
+        mCurrentState.rssi = mWifiTracker.rssi;
+        mCurrentState.level = mWifiTracker.level;
+        mCurrentState.statusLabel = mWifiTracker.statusLabel;
+        notifyListenersIfNecessary();
     }
 
     /**
@@ -106,6 +122,7 @@ public class WifiSignalController extends
     public void handleBroadcast(Intent intent) {
         mWifiTracker.handleBroadcast(intent);
         mCurrentState.enabled = mWifiTracker.enabled;
+        mCurrentState.isDefault = mWifiTracker.isDefaultNetwork;
         mCurrentState.connected = mWifiTracker.connected;
         mCurrentState.ssid = mWifiTracker.ssid;
         mCurrentState.rssi = mWifiTracker.rssi;
@@ -116,6 +133,7 @@ public class WifiSignalController extends
 
     private void handleStatusUpdated() {
         mCurrentState.statusLabel = mWifiTracker.statusLabel;
+        mCurrentState.isDefault = mWifiTracker.isDefaultNetwork;
         notifyListenersIfNecessary();
     }
 
@@ -141,6 +159,7 @@ public class WifiSignalController extends
     static class WifiState extends SignalController.State {
         String ssid;
         boolean isTransient;
+        boolean isDefault;
         String statusLabel;
 
         @Override
@@ -149,6 +168,7 @@ public class WifiSignalController extends
             WifiState state = (WifiState) s;
             ssid = state.ssid;
             isTransient = state.isTransient;
+            isDefault = state.isDefault;
             statusLabel = state.statusLabel;
         }
 
@@ -157,6 +177,7 @@ public class WifiSignalController extends
             super.toString(builder);
             builder.append(",ssid=").append(ssid)
                 .append(",isTransient=").append(isTransient)
+                .append(",isDefault=").append(isDefault)
                 .append(",statusLabel=").append(statusLabel);
         }
 
@@ -168,6 +189,7 @@ public class WifiSignalController extends
             WifiState other = (WifiState) o;
             return Objects.equals(other.ssid, ssid)
                     && other.isTransient == isTransient
+                    && other.isDefault == isDefault
                     && TextUtils.equals(other.statusLabel, statusLabel);
         }
     }

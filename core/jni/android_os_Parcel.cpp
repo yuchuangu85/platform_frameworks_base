@@ -90,6 +90,14 @@ void recycleJavaParcelObject(JNIEnv* env, jobject parcelObj)
     env->CallVoidMethod(parcelObj, gParcelOffsets.recycle);
 }
 
+static void android_os_Parcel_markSensitive(jlong nativePtr)
+{
+    Parcel* parcel = reinterpret_cast<Parcel*>(nativePtr);
+    if (parcel) {
+        parcel->markSensitive();
+    }
+}
+
 static jint android_os_Parcel_dataSize(jlong nativePtr)
 {
     Parcel* parcel = reinterpret_cast<Parcel*>(nativePtr);
@@ -273,7 +281,28 @@ static void android_os_Parcel_writeDouble(JNIEnv* env, jclass clazz, jlong nativ
     }
 }
 
-static void android_os_Parcel_writeString(JNIEnv* env, jclass clazz, jlong nativePtr, jstring val)
+static void android_os_Parcel_writeString8(JNIEnv* env, jclass clazz, jlong nativePtr, jstring val)
+{
+    Parcel* parcel = reinterpret_cast<Parcel*>(nativePtr);
+    if (parcel != NULL) {
+        status_t err = NO_MEMORY;
+        if (val) {
+            const size_t len = env->GetStringUTFLength(val);
+            const char* str = env->GetStringUTFChars(val, 0);
+            if (str) {
+                err = parcel->writeString8(str, len);
+                env->ReleaseStringUTFChars(val, str);
+            }
+        } else {
+            err = parcel->writeString8(NULL, 0);
+        }
+        if (err != NO_ERROR) {
+            signalExceptionForError(env, clazz, err);
+        }
+    }
+}
+
+static void android_os_Parcel_writeString16(JNIEnv* env, jclass clazz, jlong nativePtr, jstring val)
 {
     Parcel* parcel = reinterpret_cast<Parcel*>(nativePtr);
     if (parcel != NULL) {
@@ -444,7 +473,21 @@ static jdouble android_os_Parcel_readDouble(jlong nativePtr)
     return 0;
 }
 
-static jstring android_os_Parcel_readString(JNIEnv* env, jclass clazz, jlong nativePtr)
+static jstring android_os_Parcel_readString8(JNIEnv* env, jclass clazz, jlong nativePtr)
+{
+    Parcel* parcel = reinterpret_cast<Parcel*>(nativePtr);
+    if (parcel != NULL) {
+        size_t len;
+        const char* str = parcel->readString8Inplace(&len);
+        if (str) {
+            return env->NewStringUTF(str);
+        }
+        return NULL;
+    }
+    return NULL;
+}
+
+static jstring android_os_Parcel_readString16(JNIEnv* env, jclass clazz, jlong nativePtr)
 {
     Parcel* parcel = reinterpret_cast<Parcel*>(nativePtr);
     if (parcel != NULL) {
@@ -603,50 +646,77 @@ static jboolean android_os_Parcel_hasFileDescriptors(jlong nativePtr)
     return ret;
 }
 
+// String tries to allocate itself on the stack, within a known size, but will
+// make a heap allocation if not.
+template <size_t StackReserve>
+class StackString {
+public:
+    StackString(JNIEnv* env, jstring str) : mEnv(env), mJStr(str) {
+        LOG_ALWAYS_FATAL_IF(str == nullptr);
+        mSize = env->GetStringLength(str);
+        if (mSize > StackReserve) {
+            mStr = new jchar[mSize];
+        } else {
+            mStr = &mBuffer[0];
+        }
+        mEnv->GetStringRegion(str, 0, mSize, mStr);
+    }
+    ~StackString() {
+        if (mStr != &mBuffer[0]) {
+            delete[] mStr;
+        }
+    }
+    const jchar* str() { return mStr; }
+    jsize size() { return mSize; }
+
+private:
+    JNIEnv* mEnv;
+    jstring mJStr;
+
+    jchar mBuffer[StackReserve];
+    // pointer to &mBuffer[0] if string fits in mBuffer, otherwise owned
+    jchar* mStr;
+    jsize mSize;
+};
+
+// This size is chosen to be longer than most interface descriptors.
+// Ones longer than this will be allocated on the heap.
+typedef StackString<64> InterfaceDescriptorString;
+
 static void android_os_Parcel_writeInterfaceToken(JNIEnv* env, jclass clazz, jlong nativePtr,
                                                   jstring name)
 {
     Parcel* parcel = reinterpret_cast<Parcel*>(nativePtr);
-    if (parcel != NULL) {
-        // In the current implementation, the token is just the serialized interface name that
-        // the caller expects to be invoking
-        const jchar* str = env->GetStringCritical(name, 0);
-        if (str != NULL) {
-            parcel->writeInterfaceToken(String16(
-                  reinterpret_cast<const char16_t*>(str),
-                  env->GetStringLength(name)));
-            env->ReleaseStringCritical(name, str);
-        }
+    if (parcel != nullptr) {
+        InterfaceDescriptorString descriptor(env, name);
+        parcel->writeInterfaceToken(reinterpret_cast<const char16_t*>(descriptor.str()),
+                                    descriptor.size());
     }
 }
 
 static void android_os_Parcel_enforceInterface(JNIEnv* env, jclass clazz, jlong nativePtr, jstring name)
 {
     Parcel* parcel = reinterpret_cast<Parcel*>(nativePtr);
-    if (parcel != NULL) {
-        const jchar* str = env->GetStringCritical(name, 0);
-        if (str) {
-            IPCThreadState* threadState = IPCThreadState::self();
-            const int32_t oldPolicy = threadState->getStrictModePolicy();
-            const bool isValid = parcel->enforceInterface(
-                reinterpret_cast<const char16_t*>(str),
-                env->GetStringLength(name),
-                threadState);
-            env->ReleaseStringCritical(name, str);
-            if (isValid) {
-                const int32_t newPolicy = threadState->getStrictModePolicy();
-                if (oldPolicy != newPolicy) {
-                    // Need to keep the Java-level thread-local strict
-                    // mode policy in sync for the libcore
-                    // enforcements, which involves an upcall back
-                    // into Java.  (We can't modify the
-                    // Parcel.enforceInterface signature, as it's
-                    // pseudo-public, and used via AIDL
-                    // auto-generation...)
-                    set_dalvik_blockguard_policy(env, newPolicy);
-                }
-                return;     // everything was correct -> return silently
+    if (parcel != nullptr) {
+        InterfaceDescriptorString descriptor(env, name);
+        IPCThreadState* threadState = IPCThreadState::self();
+        const int32_t oldPolicy = threadState->getStrictModePolicy();
+        const bool isValid =
+                parcel->enforceInterface(reinterpret_cast<const char16_t*>(descriptor.str()),
+                                         descriptor.size(), threadState);
+        if (isValid) {
+            const int32_t newPolicy = threadState->getStrictModePolicy();
+            if (oldPolicy != newPolicy) {
+                // Need to keep the Java-level thread-local strict
+                // mode policy in sync for the libcore
+                // enforcements, which involves an upcall back
+                // into Java.  (We can't modify the
+                // Parcel.enforceInterface signature, as it's
+                // pseudo-public, and used via AIDL
+                // auto-generation...)
+                set_dalvik_blockguard_policy(env, newPolicy);
             }
+            return; // everything was correct -> return silently
         }
     }
 
@@ -696,6 +766,8 @@ static jboolean android_os_Parcel_replaceCallingWorkSourceUid(jlong nativePtr, j
 
 static const JNINativeMethod gParcelMethods[] = {
     // @CriticalNative
+    {"nativeMarkSensitive",             "(J)V", (void*)android_os_Parcel_markSensitive},
+    // @CriticalNative
     {"nativeDataSize",            "(J)I", (void*)android_os_Parcel_dataSize},
     // @CriticalNative
     {"nativeDataAvail",           "(J)I", (void*)android_os_Parcel_dataAvail},
@@ -725,8 +797,13 @@ static const JNINativeMethod gParcelMethods[] = {
     {"nativeWriteFloat",          "(JF)V", (void*)android_os_Parcel_writeFloat},
     // @FastNative
     {"nativeWriteDouble",         "(JD)V", (void*)android_os_Parcel_writeDouble},
-    {"nativeWriteString",         "(JLjava/lang/String;)V", (void*)android_os_Parcel_writeString},
+    // @FastNative
+    {"nativeWriteString8",        "(JLjava/lang/String;)V", (void*)android_os_Parcel_writeString8},
+    // @FastNative
+    {"nativeWriteString16",       "(JLjava/lang/String;)V", (void*)android_os_Parcel_writeString16},
+    // @FastNative
     {"nativeWriteStrongBinder",   "(JLandroid/os/IBinder;)V", (void*)android_os_Parcel_writeStrongBinder},
+    // @FastNative
     {"nativeWriteFileDescriptor", "(JLjava/io/FileDescriptor;)J", (void*)android_os_Parcel_writeFileDescriptor},
 
     {"nativeCreateByteArray",     "(J)[B", (void*)android_os_Parcel_createByteArray},
@@ -740,8 +817,13 @@ static const JNINativeMethod gParcelMethods[] = {
     {"nativeReadFloat",           "(J)F", (void*)android_os_Parcel_readFloat},
     // @CriticalNative
     {"nativeReadDouble",          "(J)D", (void*)android_os_Parcel_readDouble},
-    {"nativeReadString",          "(J)Ljava/lang/String;", (void*)android_os_Parcel_readString},
+    // @FastNative
+    {"nativeReadString8",         "(J)Ljava/lang/String;", (void*)android_os_Parcel_readString8},
+    // @FastNative
+    {"nativeReadString16",        "(J)Ljava/lang/String;", (void*)android_os_Parcel_readString16},
+    // @FastNative
     {"nativeReadStrongBinder",    "(J)Landroid/os/IBinder;", (void*)android_os_Parcel_readStrongBinder},
+    // @FastNative
     {"nativeReadFileDescriptor",  "(J)Ljava/io/FileDescriptor;", (void*)android_os_Parcel_readFileDescriptor},
 
     {"nativeCreate",              "()J", (void*)android_os_Parcel_create},

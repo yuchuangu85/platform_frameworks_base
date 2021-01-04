@@ -21,6 +21,7 @@ import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 
@@ -235,9 +236,9 @@ public final class AudioFormat implements Parcelable {
     public static final int ENCODING_PCM_8BIT = 3;
     /** Audio data format: single-precision floating-point per sample */
     public static final int ENCODING_PCM_FLOAT = 4;
-    /** Audio data format: AC-3 compressed */
+    /** Audio data format: AC-3 compressed, also known as Dolby Digital */
     public static final int ENCODING_AC3 = 5;
-    /** Audio data format: E-AC-3 compressed */
+    /** Audio data format: E-AC-3 compressed, also known as Dolby Digital Plus or DD+ */
     public static final int ENCODING_E_AC3 = 6;
     /** Audio data format: DTS compressed */
     public static final int ENCODING_DTS = 7;
@@ -685,7 +686,7 @@ public final class AudioFormat implements Parcelable {
      */
     // Update sound trigger JNI in core/jni/android_hardware_SoundTrigger.cpp when modifying this
     // constructor
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private AudioFormat(int encoding, int sampleRate, int channelMask, int channelIndexMask) {
         this(
              AUDIO_FORMAT_HAS_PROPERTY_ENCODING
@@ -744,11 +745,11 @@ public final class AudioFormat implements Parcelable {
     // This is an immutable class, all member variables are final.
 
     // Essential values.
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private final int mEncoding;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private final int mSampleRate;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private final int mChannelMask;
     private final int mChannelIndexMask;
     private final int mPropertySetMask;

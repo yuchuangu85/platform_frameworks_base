@@ -78,9 +78,12 @@ public class QSFooterImpl extends FrameLayout implements QSFooter,
     private SettingsButton mSettingsButton;
     protected View mSettingsContainer;
     private PageIndicator mPageIndicator;
+    private TextView mBuildText;
+    private boolean mShouldShowBuildText;
 
     private boolean mQsDisabled;
     private QSPanel mQsPanel;
+    private QuickQSPanel mQuickQsPanel;
 
     private boolean mExpanded;
 
@@ -97,7 +100,6 @@ public class QSFooterImpl extends FrameLayout implements QSFooter,
     private TouchAnimator mSettingsCogAnimator;
 
     private View mActionsContainer;
-    private View mDragHandle;
 
     private OnClickListener mExpandClickListener;
 
@@ -145,9 +147,9 @@ public class QSFooterImpl extends FrameLayout implements QSFooter,
         mMultiUserSwitch = findViewById(R.id.multi_user_switch);
         mMultiUserAvatar = mMultiUserSwitch.findViewById(R.id.multi_user_avatar);
 
-        mDragHandle = findViewById(R.id.qs_drag_handle_view);
         mActionsContainer = findViewById(R.id.qs_footer_actions_container);
         mEditContainer = findViewById(R.id.qs_footer_actions_edit_container);
+        mBuildText = findViewById(R.id.build);
 
         // RenderThread is doing more harm than good when touching the header (to expand quick
         // settings), so disable it for this view
@@ -163,21 +165,25 @@ public class QSFooterImpl extends FrameLayout implements QSFooter,
     }
 
     private void setBuildText() {
-        TextView v = findViewById(R.id.build);
-        if (v == null) return;
+        if (mBuildText == null) return;
         if (DevelopmentSettingsEnabler.isDevelopmentSettingsEnabled(mContext)) {
-            v.setText(mContext.getString(
+            mBuildText.setText(mContext.getString(
                     com.android.internal.R.string.bugreport_status,
-                    Build.VERSION.RELEASE,
+                    Build.VERSION.RELEASE_OR_CODENAME,
                     Build.ID));
-            v.setVisibility(View.VISIBLE);
+            // Set as selected for marquee before its made visible, then it won't be announced when
+            // it's made visible.
+            mBuildText.setSelected(true);
+            mShouldShowBuildText = true;
         } else {
-            v.setVisibility(View.GONE);
+            mShouldShowBuildText = false;
+            mBuildText.setSelected(false);
         }
     }
 
     private void updateAnimator(int width) {
-        int numTiles = QuickQSPanel.getNumQuickTiles(mContext);
+        int numTiles = mQuickQsPanel != null ? mQuickQsPanel.getNumQuickTiles()
+                : QuickQSPanel.getDefaultMaxTiles();
         int size = mContext.getResources().getDimensionPixelSize(R.dimen.qs_quick_tile_size)
                 - mContext.getResources().getDimensionPixelSize(dimen.qs_quick_tile_padding);
         int remaining = (width - numTiles * size) / (numTiles - 1);
@@ -217,9 +223,8 @@ public class QSFooterImpl extends FrameLayout implements QSFooter,
         return new TouchAnimator.Builder()
                 .addFloat(mActionsContainer, "alpha", 0, 1)
                 .addFloat(mEditContainer, "alpha", 0, 1)
-                .addFloat(mDragHandle, "alpha", 1, 0, 0)
                 .addFloat(mPageIndicator, "alpha", 0, 1)
-                .setStartDelay(0.15f)
+                .setStartDelay(0.9f)
                 .build();
     }
 
@@ -322,6 +327,8 @@ public class QSFooterImpl extends FrameLayout implements QSFooter,
         mMultiUserSwitch.setVisibility(showUserSwitcher() ? View.VISIBLE : View.INVISIBLE);
         mEditContainer.setVisibility(isDemo || !mExpanded ? View.INVISIBLE : View.VISIBLE);
         mSettingsButton.setVisibility(isDemo || !mExpanded ? View.INVISIBLE : View.VISIBLE);
+
+        mBuildText.setVisibility(mExpanded && mShouldShowBuildText ? View.VISIBLE : View.GONE);
     }
 
     private boolean showUserSwitcher() {
@@ -343,6 +350,11 @@ public class QSFooterImpl extends FrameLayout implements QSFooter,
             mMultiUserSwitch.setQsPanel(qsPanel);
             mQsPanel.setFooterPageIndicator(mPageIndicator);
         }
+    }
+
+    @Override
+    public void setQQSPanel(@Nullable QuickQSPanel panel) {
+        mQuickQsPanel = panel;
     }
 
     @Override

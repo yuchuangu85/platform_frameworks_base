@@ -19,7 +19,6 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.StringDef;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.app.Notification;
 import android.os.Bundle;
 import android.os.Parcel;
@@ -42,7 +41,6 @@ import java.lang.annotation.RetentionPolicy;
  * @hide
  */
 @SystemApi
-@TestApi
 public final class Adjustment implements Parcelable {
     private final String mPackage;
     private final String mKey;
@@ -124,6 +122,20 @@ public final class Adjustment implements Parcelable {
     public static final String KEY_IMPORTANCE = "key_importance";
 
     /**
+     * Data type: float, a ranking score from 0 (lowest) to 1 (highest).
+     * Used to rank notifications inside that fall under the same classification (i.e. alerting,
+     * silenced).
+     */
+    public static final String KEY_RANKING_SCORE = "key_ranking_score";
+
+    /**
+     * Data type: boolean, when true it suggests this is NOT a conversation notification.
+     * @hide
+     */
+    @SystemApi
+    public static final String KEY_NOT_CONVERSATION = "key_not_conversation";
+
+    /**
      * Create a notification adjustment.
      *
      * @param pkg The package of the notification.
@@ -134,7 +146,6 @@ public final class Adjustment implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public Adjustment(String pkg, String key, Bundle signals, CharSequence explanation, int user) {
         mPackage = pkg;
         mKey = key;
@@ -218,7 +229,6 @@ public final class Adjustment implements Parcelable {
 
     /** @hide */
     @SystemApi
-    @TestApi
     public int getUser() {
         return mUser;
     }

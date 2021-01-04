@@ -49,6 +49,13 @@ public interface WindowManagerPolicyConstants {
     int PRESENCE_INTERNAL = 1 << 0;
     int PRESENCE_EXTERNAL = 1 << 1;
 
+    // Alternate bars position values
+    int ALT_BAR_UNKNOWN = -1;
+    int ALT_BAR_LEFT = 1 << 0;
+    int ALT_BAR_RIGHT = 1 << 1;
+    int ALT_BAR_BOTTOM = 1 << 2;
+    int ALT_BAR_TOP = 1 << 3;
+
     // Navigation bar position values
     int NAV_BAR_INVALID = -1;
     int NAV_BAR_LEFT = 1 << 0;
@@ -64,12 +71,6 @@ public interface WindowManagerPolicyConstants {
     String NAV_BAR_MODE_3BUTTON_OVERLAY = "com.android.internal.systemui.navbar.threebutton";
     String NAV_BAR_MODE_2BUTTON_OVERLAY = "com.android.internal.systemui.navbar.twobutton";
     String NAV_BAR_MODE_GESTURAL_OVERLAY = "com.android.internal.systemui.navbar.gestural";
-
-    /**
-     * Broadcast sent when a user activity is detected.
-     */
-    String ACTION_USER_ACTIVITY_NOTIFICATION =
-            "android.intent.action.USER_ACTIVITY_NOTIFICATION";
 
     /**
      * Sticky broadcast of the current HDMI plugged state.

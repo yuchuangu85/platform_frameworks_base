@@ -24,10 +24,10 @@ import android.os.Bundle;
 /** @hide */
 interface IAppTask {
     void finishAndRemoveTask();
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     ActivityManager.RecentTaskInfo getTaskInfo();
     void moveToFront(in IApplicationThread appThread, in String callingPackage);
-    int startActivity(IBinder whoThread, String callingPackage,
+    int startActivity(IBinder whoThread, String callingPackage, String callingFeatureId,
             in Intent intent, String resolvedType, in Bundle options);
     void setExcludeFromRecents(boolean exclude);
 }

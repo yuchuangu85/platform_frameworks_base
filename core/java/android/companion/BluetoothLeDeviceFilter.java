@@ -30,6 +30,7 @@ import android.bluetooth.le.ScanFilter;
 import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanResult;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
 import android.os.Parcel;
 import android.provider.OneTimeUseBuilder;
 import android.text.TextUtils;
@@ -37,7 +38,6 @@ import android.util.Log;
 
 import com.android.internal.util.BitUtils;
 import com.android.internal.util.ObjectUtils;
-import com.android.internal.util.Preconditions;
 
 import libcore.util.HexEncoding;
 
@@ -95,7 +95,7 @@ public final class BluetoothLeDeviceFilter implements DeviceFilter<ScanResult> {
 
     /** @hide */
     @NonNull
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ScanFilter getScanFilter() {
         return mScanFilter;
     }
@@ -166,19 +166,16 @@ public final class BluetoothLeDeviceFilter implements DeviceFilter<ScanResult> {
 
     /** @hide */
     @Override
-    public boolean matches(ScanResult device) {
-        boolean result = matches(device.getDevice())
+    public boolean matches(ScanResult scanResult) {
+        BluetoothDevice device = scanResult.getDevice();
+        boolean result = getScanFilter().matches(scanResult)
+                && BluetoothDeviceFilterUtils.matchesName(getNamePattern(), device)
                 && (mRawDataFilter == null
-                    || BitUtils.maskedEquals(device.getScanRecord().getBytes(),
+                    || BitUtils.maskedEquals(scanResult.getScanRecord().getBytes(),
                             mRawDataFilter, mRawDataFilterMask));
         if (DEBUG) Log.i(LOG_TAG, "matches(this = " + this + ", device = " + device +
                 ") -> " + result);
         return result;
-    }
-
-    private boolean matches(BluetoothDevice device) {
-        return BluetoothDeviceFilterUtils.matches(getScanFilter(), device)
-                && BluetoothDeviceFilterUtils.matchesName(getNamePattern(), device);
     }
 
     /** @hide */
@@ -340,7 +337,7 @@ public final class BluetoothLeDeviceFilter implements DeviceFilter<ScanResult> {
         public Builder setRawDataFilter(@NonNull byte[] rawDataFilter,
                 @Nullable byte[] rawDataFilterMask) {
             checkNotUsed();
-            Preconditions.checkNotNull(rawDataFilter);
+            Objects.requireNonNull(rawDataFilter);
             checkArgument(rawDataFilterMask == null ||
                     rawDataFilter.length == rawDataFilterMask.length,
                     "Mask and filter should be the same length");

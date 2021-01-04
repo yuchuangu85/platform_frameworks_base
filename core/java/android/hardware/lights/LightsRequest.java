@@ -18,7 +18,6 @@ package android.hardware.lights;
 
 import android.annotation.NonNull;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.util.SparseArray;
 
 import com.android.internal.util.Preconditions;
@@ -29,7 +28,6 @@ import com.android.internal.util.Preconditions;
  * @hide
  */
 @SystemApi
-@TestApi
 public final class LightsRequest {
 
     /** Visible to {@link LightsManager.Session}. */
@@ -86,7 +84,7 @@ public final class LightsRequest {
          * Create a LightsRequest object used to override lights on the device.
          *
          * <p>The generated {@link LightsRequest} should be used in
-         * {@link LightsManager.Session#setLights(LightsLightsRequest).
+         * {@link LightsManager.Session#requestLights(LightsLightsRequest).
          */
         public @NonNull LightsRequest build() {
             return new LightsRequest(mChanges);

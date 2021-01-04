@@ -12,11 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-android_test {
+android_test_helper_app {
     name: "AppCompatibilityTest",
     static_libs: ["androidx.test.rules"],
     // Include all test java files.
     srcs: ["src/**/*.java"],
     platform_apis: true,
     certificate: "platform",
+    test_suites: [
+        "csuite"
+    ],
 }

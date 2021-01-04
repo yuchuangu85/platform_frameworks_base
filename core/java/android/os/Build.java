@@ -106,10 +106,22 @@ public class Build {
     public static final String HARDWARE = getString("ro.hardware");
 
     /**
-     * The hardware variant (SKU), if available.
+     * The SKU of the hardware (from the kernel command line). The SKU is reported by the bootloader
+     * to configure system software features.
      */
     @NonNull
     public static final String SKU = getString("ro.boot.hardware.sku");
+
+    /**
+     * The SKU of the device as set by the original design manufacturer (ODM). This is a
+     * runtime-initialized property set during startup to configure device services.
+     *
+     * <p>The ODM SKU may have multiple variants for the same system SKU in case a manufacturer
+     * produces variants of the same design. For example, the same build may be released with
+     * variations in physical keyboard and/or display hardware, each with a different ODM SKU.
+     */
+    @NonNull
+    public static final String ODM_SKU = getString("ro.boot.product.hardware.sku");
 
     /**
      * Whether this build was for an emulator device.
@@ -139,12 +151,23 @@ public class Build {
      * <a href="/training/articles/security-key-attestation.html">key attestation</a> to obtain
      * proof of the device's original identifiers.
      *
-     * <p>Requires Permission: READ_PRIVILEGED_PHONE_STATE, for the calling app to be the device or
-     * profile owner and have the READ_PHONE_STATE permission, or that the calling app has carrier
-     * privileges (see {@link android.telephony.TelephonyManager#hasCarrierPrivileges}). The profile
-     * owner is an app that owns a managed profile on the device; for more details see <a
-     * href="https://developer.android.com/work/managed-profiles">Work profiles</a>. Profile owner
-     * access is deprecated and will be removed in a future release.
+     * <p>Starting with API level 29, persistent device identifiers are guarded behind additional
+     * restrictions, and apps are recommended to use resettable identifiers (see <a
+     * href="/training/articles/user-data-ids">Best practices for unique identifiers</a>). This
+     * method can be invoked if one of the following requirements is met:
+     * <ul>
+     *     <li>If the calling app has been granted the READ_PRIVILEGED_PHONE_STATE permission; this
+     *     is a privileged permission that can only be granted to apps preloaded on the device.
+     *     <li>If the calling app is the device or profile owner and has been granted the
+     *     {@link Manifest.permission#READ_PHONE_STATE} permission. The profile owner is an app that
+     *     owns a managed profile on the device; for more details see <a
+     *     href="https://developer.android.com/work/managed-profiles">Work profiles</a>.
+     *     Profile owner access is deprecated and will be removed in a future release.
+     *     <li>If the calling app has carrier privileges (see {@link
+     *     android.telephony.TelephonyManager#hasCarrierPrivileges}) on any active subscription.
+     *     <li>If the calling app is the default SMS role holder (see {@link
+     *     android.app.role.RoleManager#isRoleHeld(String)}).
+     * </ul>
      *
      * <p>If the calling app does not meet one of these requirements then this method will behave
      * as follows:
@@ -156,7 +179,7 @@ public class Build {
      *     the READ_PHONE_STATE permission, or if the calling app is targeting API level 29 or
      *     higher, then a SecurityException is thrown.</li>
      * </ul>
-     * *
+     *
      * @return The serial number if specified.
      */
     @SuppressAutoDoc // No support for device / profile owner.
@@ -244,6 +267,13 @@ public class Build {
          * different releases can be somehow ordered.
          */
         public static final String RELEASE = getString("ro.build.version.release");
+
+        /**
+         * The version string we show to the user; may be {@link #RELEASE} or
+         * {@link #CODENAME} if not a final release build.
+         */
+        @NonNull public static final String RELEASE_OR_CODENAME = getString(
+                "ro.build.version.release_or_codename");
 
         /**
          * The base OS build the product is based on.
@@ -344,8 +374,8 @@ public class Build {
         /**
          * @hide
          */
-        @TestApi
         @UnsupportedAppUsage
+        @TestApi
         public static final String[] ACTIVE_CODENAMES = "REL".equals(ALL_CODENAMES[0])
                 ? new String[0] : ALL_CODENAMES;
 
@@ -994,17 +1024,40 @@ public class Build {
 
         /**
          * Q.
-         * <p>
-         * <em>Why? Why, to give you a taste of your future, a preview of things
-         * to come. Con permiso, Capitan. The hall is rented, the orchestra
-         * engaged. It's now time to see if you can dance.</em>
+         *
+         * <p>Applications targeting this or a later release will get these new changes in behavior.
+         * For more information about this release, see the
+         * <a href="/about/versions/10">Android 10 overview</a>.</p>
+         * <ul>
+         * <li><a href="/about/versions/10/behavior-changes-all">Behavior changes: all apps</a></li>
+         * <li><a href="/about/versions/10/behavior-changes-10">Behavior changes: apps targeting API
+         * 29+</a></li>
+         * </ul>
+         *
          */
         public static final int Q = 29;
 
         /**
          * R.
+         *
+         * <p>Applications targeting this or a later release will get these new changes in behavior.
+         * For more information about this release, see the
+         * <a href="/about/versions/11">Android 11 overview</a>.</p>
+         * <ul>
+         * <li><a href="/about/versions/11/behavior-changes-all">Behavior changes: all apps</a></li>
+         * <li><a href="/about/versions/11/behavior-changes-11">Behavior changes: Apps targeting
+         * Android 11</a></li>
+         * <li><a href="/about/versions/11/non-sdk-11">Updates to non-SDK interface restrictions
+         * in Android 11</a></li>
+         * </ul>
+         *
          */
-        public static final int R = CUR_DEVELOPMENT;
+        public static final int R = 30;
+
+        /**
+         * S.
+         */
+        public static final int S = CUR_DEVELOPMENT;
     }
 
     /** The type of build, like "user" or "eng". */

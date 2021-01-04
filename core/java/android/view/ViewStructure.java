@@ -97,6 +97,7 @@ public abstract class ViewStructure {
     public abstract void setVisibility(int visibility);
 
     /** @hide */
+    @SuppressWarnings("HiddenAbstractMethod")
     public abstract void setAssistBlocked(boolean state);
 
     /**
@@ -226,6 +227,18 @@ public abstract class ViewStructure {
      * shown by an EditText when it is empty to indicate to the user the kind of text to input.
      */
     public abstract void setHint(CharSequence hint);
+
+    /**
+     * Sets the identifier used to set the hint associated with this view.
+     *
+     * <p>Used as metadata for fingerprinting view nodes/structures.
+     *
+     * <p>Should only be set when the node is used for autofill purposes - it will be ignored
+     * when used for Assist.
+     */
+    public void setHintIdEntry(@NonNull String entryName) {
+        Preconditions.checkNotNull(entryName);
+    }
 
     /**
      * Retrieve the last {@link #setText(CharSequence)}.
@@ -419,6 +432,7 @@ public abstract class ViewStructure {
     public abstract void asyncCommit();
 
     /** @hide */
+    @SuppressWarnings("HiddenAbstractMethod")
     public abstract Rect getTempRect();
 
     /**

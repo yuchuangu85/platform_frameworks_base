@@ -17,11 +17,13 @@
 package android.security.keystore;
 
 import android.annotation.NonNull;
+import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.security.KeyStore;
 import android.security.keymaster.ExportResult;
 import android.security.keymaster.KeyCharacteristics;
 import android.security.keymaster.KeymasterDefs;
+import android.sysprop.Keystore2Properties;
 
 import java.io.IOException;
 import java.security.KeyFactory;
@@ -52,8 +54,9 @@ import javax.crypto.Mac;
  *
  * @hide
  */
+@SystemApi
 public class AndroidKeyStoreProvider extends Provider {
-    public static final String PROVIDER_NAME = "AndroidKeyStore";
+    private static final String PROVIDER_NAME = "AndroidKeyStore";
 
     // IMPLEMENTATION NOTE: Class names are hard-coded in this provider to avoid loading these
     // classes when this provider is instantiated and installed early on during each app's
@@ -68,13 +71,19 @@ public class AndroidKeyStoreProvider extends Provider {
     private static final String DESEDE_SYSTEM_PROPERTY =
             "ro.hardware.keystore_desede";
 
+    /** @hide */
     public AndroidKeyStoreProvider() {
-        super(PROVIDER_NAME, 1.0, "Android KeyStore security provider");
+        this(PROVIDER_NAME);
+    }
+
+    /** @hide **/
+    public AndroidKeyStoreProvider(String providerName) {
+        super(providerName, 1.0, "Android KeyStore security provider");
 
         boolean supports3DES = "true".equals(android.os.SystemProperties.get(DESEDE_SYSTEM_PROPERTY));
 
         // java.security.KeyStore
-        put("KeyStore.AndroidKeyStore", PACKAGE_NAME + ".AndroidKeyStoreSpi");
+        put("KeyStore." + providerName, PACKAGE_NAME + ".AndroidKeyStoreSpi");
 
         // java.security.KeyPairGenerator
         put("KeyPairGenerator.EC", PACKAGE_NAME + ".AndroidKeyStoreKeyPairGeneratorSpi$EC");
@@ -108,9 +117,30 @@ public class AndroidKeyStoreProvider extends Provider {
         putSecretKeyFactoryImpl("HmacSHA512");
     }
 
+    private static boolean sKeystore2Enabled;
+
+    /**
+     * This function indicates whether or not Keystore 2.0 is enabled. Some parts of the
+     * Keystore SPI must behave subtly differently when Keystore 2.0 is enabled. However,
+     * the platform property that indicates that Keystore 2.0 is enabled is not readable
+     * by applications. So we set this value when {@code install()} is called because it
+     * is called by zygote, which can access Keystore2Properties.
+     *
+     * This function can be removed once the transition to Keystore 2.0 is complete.
+     * b/171305684
+     *
+     * @return true if Keystore 2.0 is enabled.
+     * @hide
+     */
+    public static boolean isKeystore2Enabled() {
+        return sKeystore2Enabled;
+    }
+
+
     /**
      * Installs a new instance of this provider (and the
      * {@link AndroidKeyStoreBCWorkaroundProvider}).
+     * @hide
      */
     public static void install() {
         Provider[] providers = Security.getProviders();
@@ -134,6 +164,11 @@ public class AndroidKeyStoreProvider extends Provider {
             // priority.
             Security.addProvider(workaroundProvider);
         }
+
+        // {@code install()} is run by zygote when this property is still accessible. We store its
+        // value so that the Keystore SPI can act accordingly without having to access an internal
+        // property.
+        sKeystore2Enabled = Keystore2Properties.keystore2_enabled().orElse(false);
     }
 
     private void putSecretKeyFactoryImpl(String algorithm) {
@@ -156,6 +191,7 @@ public class AndroidKeyStoreProvider extends Provider {
      * @throws IllegalArgumentException if the provided primitive is not supported or is not backed
      *         by AndroidKeyStore provider.
      * @throws IllegalStateException if the provided primitive is not initialized.
+     * @hide
      */
     @UnsupportedAppUsage
     public static long getKeyStoreOperationHandle(Object cryptoPrimitive) {
@@ -183,6 +219,7 @@ public class AndroidKeyStoreProvider extends Provider {
         return ((KeyStoreCryptoOperation) spi).getOperationHandle();
     }
 
+    /** @hide **/
     @NonNull
     public static AndroidKeyStorePublicKey getAndroidKeyStorePublicKey(
             @NonNull String alias,
@@ -279,6 +316,7 @@ public class AndroidKeyStoreProvider extends Provider {
                 privateKeyAlias, uid, jcaKeyAlgorithm, x509EncodedPublicKey);
     }
 
+    /** @hide **/
     @NonNull
     public static AndroidKeyStorePublicKey loadAndroidKeyStorePublicKeyFromKeystore(
             @NonNull KeyStore keyStore, @NonNull String privateKeyAlias, int uid)
@@ -300,6 +338,7 @@ public class AndroidKeyStoreProvider extends Provider {
         return new KeyPair(publicKey, privateKey);
     }
 
+    /** @hide **/
     @NonNull
     public static KeyPair loadAndroidKeyStoreKeyPairFromKeystore(
             @NonNull KeyStore keyStore, @NonNull String privateKeyAlias, int uid)
@@ -318,6 +357,7 @@ public class AndroidKeyStoreProvider extends Provider {
         return (AndroidKeyStorePrivateKey) keyPair.getPrivate();
     }
 
+    /** @hide **/
     @NonNull
     public static AndroidKeyStorePrivateKey loadAndroidKeyStorePrivateKeyFromKeystore(
             @NonNull KeyStore keyStore, @NonNull String privateKeyAlias, int uid)
@@ -357,6 +397,7 @@ public class AndroidKeyStoreProvider extends Provider {
         return new AndroidKeyStoreSecretKey(secretKeyAlias, uid, keyAlgorithmString);
     }
 
+    /** @hide **/
     @NonNull
     public static AndroidKeyStoreKey loadAndroidKeyStoreKeyFromKeystore(
             @NonNull KeyStore keyStore, @NonNull String userKeyAlias, int uid)
@@ -390,12 +431,24 @@ public class AndroidKeyStoreProvider extends Provider {
      *
      * <p>Note: the returned {@code KeyStore} is already initialized/loaded. Thus, there is
      * no need to invoke {@code load} on it.
+     *
+     * @param uid Uid for which the keystore provider is requested.
+     * @throws KeyStoreException if a KeyStoreSpi implementation for the specified type is not
+     * available from the specified provider.
+     * @throws NoSuchProviderException If the specified provider is not registered in the security
+     * provider list.
+     * @hide
      */
+    @SystemApi
     @NonNull
     public static java.security.KeyStore getKeyStoreForUid(int uid)
             throws KeyStoreException, NoSuchProviderException {
+        String providerName = PROVIDER_NAME;
+        if (android.security.keystore2.AndroidKeyStoreProvider.isInstalled()) {
+            providerName = "AndroidKeyStoreLegacy";
+        }
         java.security.KeyStore result =
-                java.security.KeyStore.getInstance("AndroidKeyStore", PROVIDER_NAME);
+                java.security.KeyStore.getInstance(providerName);
         try {
             result.load(new AndroidKeyStoreLoadStoreParameter(uid));
         } catch (NoSuchAlgorithmException | CertificateException | IOException e) {

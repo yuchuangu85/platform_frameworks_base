@@ -61,23 +61,25 @@ cc_library {
     ],
     export_include_dirs: ["include"],
     export_shared_lib_headers: ["libz"],
+    static_libs: ["libincfs-utils"],
+    whole_static_libs: ["libincfs-utils"],
+    export_static_lib_headers: ["libincfs-utils"],
     target: {
         android: {
             srcs: [
                 "BackupData.cpp",
                 "BackupHelpers.cpp",
                 "CursorWindow.cpp",
-                "DisplayEventDispatcher.cpp",
             ],
             shared_libs: [
-                "libziparchive",
                 "libbase",
                 "libbinder",
                 "liblog",
                 "libcutils",
-                "libgui",
+                "libincfs",
                 "libutils",
                 "libz",
+                "libziparchive",
             ],
             static: {
                 enabled: false,
@@ -88,11 +90,11 @@ cc_library {
                 enabled: false,
             },
             static_libs: [
-                "libziparchive",
                 "libbase",
-                "liblog",
                 "libcutils",
+                "liblog",
                 "libutils",
+                "libziparchive",
             ],
             shared_libs: [
                 "libz",
@@ -166,7 +168,11 @@ cc_test {
             static_libs: common_test_libs + ["liblog", "libz"],
         },
     },
-    data: ["tests/data/**/*.apk"],
+    data: [
+        "tests/data/**/*.apk",
+        "tests/data/**/*.arsc",
+        "tests/data/**/*.idmap",
+    ],
     test_suites: ["device-tests"],
 }
 
@@ -188,4 +194,3 @@ cc_benchmark {
     shared_libs: common_test_libs,
     data: ["tests/data/**/*.apk"],
 }
-

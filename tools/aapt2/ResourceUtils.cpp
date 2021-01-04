@@ -378,7 +378,7 @@ std::unique_ptr<BinaryPrimitive> TryParseEnumSymbol(const Attribute* enum_attr,
     const ResourceName& enum_symbol_resource_name = symbol.symbol.name.value();
     if (trimmed_str == enum_symbol_resource_name.entry) {
       android::Res_value value = {};
-      value.dataType = android::Res_value::TYPE_INT_DEC;
+      value.dataType = symbol.type;
       value.data = symbol.value;
       return util::make_unique<BinaryPrimitive>(value);
     }
@@ -516,7 +516,7 @@ Maybe<ResourceId> ParseResourceId(const StringPiece& str) {
   if (android::ResTable::stringToInt(str16.data(), str16.size(), &value)) {
     if (value.dataType == android::Res_value::TYPE_INT_HEX) {
       ResourceId id(value.data);
-      if (id.is_valid_dynamic()) {
+      if (id.is_valid()) {
         return id;
       }
     }
@@ -738,17 +738,25 @@ std::unique_ptr<Item> ParseBinaryResValue(const ResourceType& type, const Config
                                           const android::Res_value& res_value,
                                           StringPool* dst_pool) {
   if (type == ResourceType::kId) {
-    return util::make_unique<Id>();
+    if (res_value.dataType != android::Res_value::TYPE_REFERENCE &&
+        res_value.dataType != android::Res_value::TYPE_DYNAMIC_REFERENCE) {
+      // plain "id" resources are actually encoded as dummy values (aapt1 uses an empty string,
+      // while aapt2 uses a false boolean).
+      return util::make_unique<Id>();
+    }
+    // fall through to regular reference deserialization logic
   }
 
   const uint32_t data = util::DeviceToHost32(res_value.data);
   switch (res_value.dataType) {
     case android::Res_value::TYPE_STRING: {
       const std::string str = util::GetString(src_pool, data);
-      const android::ResStringPool_span* spans = src_pool.styleAt(data);
+      auto spans_result = src_pool.styleAt(data);
 
       // Check if the string has a valid style associated with it.
-      if (spans != nullptr && spans->name.index != android::ResStringPool_span::END) {
+      if (spans_result.has_value() &&
+          (*spans_result)->name.index != android::ResStringPool_span::END) {
+        const android::ResStringPool_span* spans = spans_result->unsafe_ptr();
         StyleString style_str = {str};
         while (spans->name.index != android::ResStringPool_span::END) {
           style_str.spans.push_back(Span{util::GetString(src_pool, spans->name.index),
@@ -794,7 +802,12 @@ std::unique_ptr<Item> ParseBinaryResValue(const ResourceType& type, const Config
       }
 
       // This is a normal reference.
-      return util::make_unique<Reference>(data, ref_type);
+      auto reference = util::make_unique<Reference>(data, ref_type);
+      if (res_value.dataType == android::Res_value::TYPE_DYNAMIC_REFERENCE ||
+          res_value.dataType == android::Res_value::TYPE_DYNAMIC_ATTRIBUTE) {
+        reference->is_dynamic = true;
+      }
+      return reference;
     } break;
   }
 

@@ -28,9 +28,9 @@ import static android.net.NetworkStats.SET_DEFAULT;
 import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.TrafficStats.UID_REMOVED;
-import static android.net.NetworkUtils.multiplySafeByRational;
 import static android.text.format.DateUtils.WEEK_IN_MILLIS;
 
+import static com.android.internal.net.NetworkUtilsInternal.multiplySafeByRational;
 import static com.android.server.net.NetworkStatsService.TAG;
 
 import android.net.NetworkIdentity;
@@ -663,7 +663,7 @@ public class NetworkStatsCollection implements FileRotator.Reader {
         }
     }
 
-    public void writeToProto(ProtoOutputStream proto, long tag) {
+    public void dumpDebug(ProtoOutputStream proto, long tag) {
         final long start = proto.start(tag);
 
         for (Key key : getSortedKeys()) {
@@ -671,7 +671,7 @@ public class NetworkStatsCollection implements FileRotator.Reader {
 
             // Key
             final long startKey = proto.start(NetworkStatsCollectionStatsProto.KEY);
-            key.ident.writeToProto(proto, NetworkStatsCollectionKeyProto.IDENTITY);
+            key.ident.dumpDebug(proto, NetworkStatsCollectionKeyProto.IDENTITY);
             proto.write(NetworkStatsCollectionKeyProto.UID, key.uid);
             proto.write(NetworkStatsCollectionKeyProto.SET, key.set);
             proto.write(NetworkStatsCollectionKeyProto.TAG, key.tag);
@@ -679,7 +679,7 @@ public class NetworkStatsCollection implements FileRotator.Reader {
 
             // Value
             final NetworkStatsHistory history = mStats.get(key);
-            history.writeToProto(proto, NetworkStatsCollectionStatsProto.HISTORY);
+            history.dumpDebug(proto, NetworkStatsCollectionStatsProto.HISTORY);
             proto.end(startStats);
         }
 

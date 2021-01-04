@@ -30,7 +30,6 @@ import androidx.test.runner.AndroidJUnit4;
 
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.SysuiTestableContext;
-import com.android.systemui.TestableDependency;
 import com.android.systemui.statusbar.policy.KeyButtonDrawable;
 import com.android.systemui.statusbar.policy.RotationLockController;
 
@@ -50,7 +49,6 @@ public class NavigationBarRotationContextTest extends SysuiTestCase {
     @Rule
     public final SysuiTestableContext mContext = new SysuiTestableContext(
             InstrumentationRegistry.getContext(), getLeakCheck());
-    private final TestableDependency mDependency = new TestableDependency(mContext);
     private RotationButtonController mRotationButtonController;
     private RotationButton mRotationButton;
 
@@ -62,7 +60,8 @@ public class NavigationBarRotationContextTest extends SysuiTestCase {
         final View view = new View(mContext);
         mRotationButton = mock(RotationButton.class);
         mRotationButtonController = spy(
-                new RotationButtonController(mContext, RES_UNDEF, mRotationButton));
+                new RotationButtonController(mContext, RES_UNDEF, mRotationButton,
+                        (visibility) -> {}));
         final KeyButtonDrawable kbd = mock(KeyButtonDrawable.class);
         doReturn(view).when(mRotationButton).getCurrentView();
         doReturn(true).when(mRotationButton).acceptRotationProposal();

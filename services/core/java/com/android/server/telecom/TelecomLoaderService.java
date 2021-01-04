@@ -35,11 +35,13 @@ import android.util.IntArray;
 import android.util.Slog;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.telecom.ITelecomLoader;
+import com.android.internal.telecom.ITelecomService;
 import com.android.internal.telephony.SmsApplication;
+import com.android.server.DeviceIdleInternal;
 import com.android.server.LocalServices;
 import com.android.server.SystemService;
 import com.android.server.pm.UserManagerService;
-import com.android.server.pm.permission.DefaultPermissionGrantPolicy;
 import com.android.server.pm.permission.PermissionManagerServiceInternal;
 
 /**
@@ -54,21 +56,18 @@ public class TelecomLoaderService extends SystemService {
         @Override
         public void onServiceConnected(ComponentName name, IBinder service) {
             // Normally, we would listen for death here, but since telecom runs in the same process
-            // as this loader (process="system") thats redundant here.
+            // as this loader (process="system") that's redundant here.
             try {
-                service.linkToDeath(new IBinder.DeathRecipient() {
-                    @Override
-                    public void binderDied() {
-                        connectToTelecom();
-                    }
-                }, 0);
+                ITelecomLoader telecomLoader = ITelecomLoader.Stub.asInterface(service);
+                ITelecomService telecomService = telecomLoader.createTelecomService(mServiceRepo);
+
                 SmsApplication.getDefaultMmsApplication(mContext, false);
-                ServiceManager.addService(Context.TELECOM_SERVICE, service);
+                ServiceManager.addService(Context.TELECOM_SERVICE, telecomService.asBinder());
 
                 synchronized (mLock) {
+                    final PermissionManagerServiceInternal permissionManager =
+                            LocalServices.getService(PermissionManagerServiceInternal.class);
                     if (mDefaultSimCallManagerRequests != null) {
-                        final DefaultPermissionGrantPolicy permissionPolicy =
-                                getDefaultPermissionGrantPolicy();
                         if (mDefaultSimCallManagerRequests != null) {
                             TelecomManager telecomManager =
                                 (TelecomManager) mContext.getSystemService(Context.TELECOM_SERVICE);
@@ -80,7 +79,7 @@ public class TelecomLoaderService extends SystemService {
                                 for (int i = requestCount - 1; i >= 0; i--) {
                                     final int userId = mDefaultSimCallManagerRequests.get(i);
                                     mDefaultSimCallManagerRequests.remove(i);
-                                    permissionPolicy
+                                    permissionManager
                                             .grantDefaultPermissionsToDefaultSimCallManager(
                                                     packageName, userId);
                                 }
@@ -99,11 +98,6 @@ public class TelecomLoaderService extends SystemService {
         }
     }
 
-    private DefaultPermissionGrantPolicy getDefaultPermissionGrantPolicy() {
-        return LocalServices.getService(PermissionManagerServiceInternal.class)
-                .getDefaultPermissionGrantPolicy();
-    }
-
     private static final ComponentName SERVICE_COMPONENT = new ComponentName(
             "com.android.server.telecom",
             "com.android.server.telecom.components.TelecomService");
@@ -120,6 +114,8 @@ public class TelecomLoaderService extends SystemService {
     @GuardedBy("mLock")
     private TelecomServiceConnection mServiceConnection;
 
+    private InternalServiceRepository mServiceRepo;
+
     public TelecomLoaderService(Context context) {
         super(context);
         mContext = context;
@@ -135,6 +131,8 @@ public class TelecomLoaderService extends SystemService {
         if (phase == PHASE_ACTIVITY_MANAGER_READY) {
             registerDefaultAppNotifier();
             registerCarrierConfigChangedReceiver();
+            // core services will have already been loaded.
+            setupServiceRepository();
             connectToTelecom();
         }
     }
@@ -160,12 +158,18 @@ public class TelecomLoaderService extends SystemService {
         }
     }
 
+    private void setupServiceRepository() {
+        DeviceIdleInternal deviceIdleInternal = getLocalService(DeviceIdleInternal.class);
+        mServiceRepo = new InternalServiceRepository(deviceIdleInternal);
+    }
+
 
     private void registerDefaultAppProviders() {
-        final DefaultPermissionGrantPolicy permissionPolicy = getDefaultPermissionGrantPolicy();
+        final PermissionManagerServiceInternal permissionManager =
+                LocalServices.getService(PermissionManagerServiceInternal.class);
 
         // Set a callback for the permission grant policy to query the default sms app.
-        permissionPolicy.setSmsAppPackagesProvider(userId -> {
+        permissionManager.setSmsAppPackagesProvider(userId -> {
             synchronized (mLock) {
                 if (mServiceConnection == null) {
                     return null;
@@ -180,7 +184,7 @@ public class TelecomLoaderService extends SystemService {
         });
 
         // Set a callback for the permission grant policy to query the default dialer app.
-        permissionPolicy.setDialerAppPackagesProvider(userId -> {
+        permissionManager.setDialerAppPackagesProvider(userId -> {
             synchronized (mLock) {
                 if (mServiceConnection == null) {
                     return null;
@@ -194,7 +198,7 @@ public class TelecomLoaderService extends SystemService {
         });
 
         // Set a callback for the permission grant policy to query the default sim call manager.
-        permissionPolicy.setSimCallManagerPackagesProvider(userId -> {
+        permissionManager.setSimCallManagerPackagesProvider(userId -> {
             synchronized (mLock) {
                 if (mServiceConnection == null) {
                     if (mDefaultSimCallManagerRequests == null) {
@@ -215,12 +219,11 @@ public class TelecomLoaderService extends SystemService {
     }
 
     private void registerDefaultAppNotifier() {
-        final DefaultPermissionGrantPolicy permissionPolicy = getDefaultPermissionGrantPolicy();
         // Notify the package manager on default app changes
         final RoleManager roleManager = mContext.getSystemService(RoleManager.class);
         roleManager.addOnRoleHoldersChangedListenerAsUser(mContext.getMainExecutor(),
-                (roleName, user) -> updateSimCallManagerPermissions(permissionPolicy,
-                        user.getIdentifier()), UserHandle.ALL);
+                (roleName, user) -> updateSimCallManagerPermissions(user.getIdentifier()),
+                UserHandle.ALL);
     }
 
 
@@ -230,7 +233,7 @@ public class TelecomLoaderService extends SystemService {
             public void onReceive(Context context, Intent intent) {
                 if (intent.getAction().equals(CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED)) {
                     for (int userId : UserManagerService.getInstance().getUserIds()) {
-                        updateSimCallManagerPermissions(getDefaultPermissionGrantPolicy(), userId);
+                        updateSimCallManagerPermissions(userId);
                     }
                 }
             }
@@ -240,16 +243,16 @@ public class TelecomLoaderService extends SystemService {
             new IntentFilter(CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED), null, null);
     }
 
-    private void updateSimCallManagerPermissions(
-            DefaultPermissionGrantPolicy permissionGrantPolicy, int userId) {
+    private void updateSimCallManagerPermissions(int userId) {
+        final PermissionManagerServiceInternal permissionManager =
+                LocalServices.getService(PermissionManagerServiceInternal.class);
         TelecomManager telecomManager =
             (TelecomManager) mContext.getSystemService(Context.TELECOM_SERVICE);
         PhoneAccountHandle phoneAccount = telecomManager.getSimCallManager(userId);
         if (phoneAccount != null) {
             Slog.i(TAG, "updating sim call manager permissions for userId:" + userId);
             String packageName = phoneAccount.getComponentName().getPackageName();
-            permissionGrantPolicy.grantDefaultPermissionsToDefaultSimCallManager(
-                packageName, userId);
+            permissionManager.grantDefaultPermissionsToDefaultSimCallManager(packageName, userId);
         }
     }
 }

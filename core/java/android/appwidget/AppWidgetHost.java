@@ -25,6 +25,7 @@ import android.content.Context;
 import android.content.IntentSender;
 import android.content.pm.PackageManager;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -54,8 +55,9 @@ public class AppWidgetHost {
     static final int HANDLE_UPDATE = 1;
     static final int HANDLE_PROVIDER_CHANGED = 2;
     static final int HANDLE_PROVIDERS_CHANGED = 3;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     static final int HANDLE_VIEW_DATA_CHANGED = 4;
+    static final int HANDLE_APP_WIDGET_REMOVED = 5;
 
     final static Object sServiceLock = new Object();
     @UnsupportedAppUsage
@@ -103,6 +105,14 @@ public class AppWidgetHost {
             msg.sendToTarget();
         }
 
+        public void appWidgetRemoved(int appWidgetId) {
+            Handler handler = mWeakHandler.get();
+            if (handler == null) {
+                return;
+            }
+            handler.obtainMessage(HANDLE_APP_WIDGET_REMOVED, appWidgetId, 0).sendToTarget();
+        }
+
         public void providersChanged() {
             Handler handler = mWeakHandler.get();
             if (handler == null) {
@@ -137,6 +147,10 @@ public class AppWidgetHost {
                     updateAppWidgetView(msg.arg1, (RemoteViews)msg.obj);
                     break;
                 }
+                case HANDLE_APP_WIDGET_REMOVED: {
+                    dispatchOnAppWidgetRemoved(msg.arg1);
+                    break;
+                }
                 case HANDLE_PROVIDER_CHANGED: {
                     onProviderChanged(msg.arg1, (AppWidgetProviderInfo)msg.obj);
                     break;
@@ -160,7 +174,7 @@ public class AppWidgetHost {
     /**
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public AppWidgetHost(Context context, int hostId, OnClickHandler handler, Looper looper) {
         mContextOpPackageName = context.getOpPackageName();
         mHostId = hostId;
@@ -224,6 +238,10 @@ public class AppWidgetHost {
                     break;
                 case PendingHostUpdate.TYPE_VIEW_DATA_CHANGED:
                     viewDataChanged(update.appWidgetId, update.viewId);
+                    break;
+                case PendingHostUpdate.TYPE_APP_WIDGET_REMOVED:
+                    dispatchOnAppWidgetRemoved(update.appWidgetId);
+                    break;
             }
         }
     }
@@ -424,6 +442,21 @@ public class AppWidgetHost {
         if (v != null) {
             v.resetAppWidget(appWidget);
         }
+    }
+
+    void dispatchOnAppWidgetRemoved(int appWidgetId) {
+        synchronized (mViews) {
+            mViews.remove(appWidgetId);
+        }
+        onAppWidgetRemoved(appWidgetId);
+    }
+
+    /**
+     * Called when the app widget is removed for appWidgetId
+     * @param appWidgetId
+     */
+    public void onAppWidgetRemoved(int appWidgetId) {
+        // Does nothing
     }
 
     /**

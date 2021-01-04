@@ -34,6 +34,7 @@ import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.pm.ParceledListSlice;
 import android.content.pm.ShortcutInfo;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.RemoteException;
@@ -174,7 +175,7 @@ public class AppWidgetManager {
     public static final String ACTION_APPWIDGET_CONFIGURE = "android.appwidget.action.APPWIDGET_CONFIGURE";
 
     /**
-     * An intent extra that contains one appWidgetId.
+     * An intent extra (int) that contains one appWidgetId.
      * <p>
      * The value will be an int that can be retrieved like this:
      * {@sample frameworks/base/tests/appwidgets/AppWidgetHostTest/src/com/android/tests/appwidgethost/AppWidgetHostActivity.java getExtra_EXTRA_APPWIDGET_ID}
@@ -182,22 +183,36 @@ public class AppWidgetManager {
     public static final String EXTRA_APPWIDGET_ID = "appWidgetId";
 
     /**
-     * A bundle extra that contains the lower bound on the current width, in dips, of a widget instance.
+     * A bundle extra (boolean) that contains whether or not an app has finished restoring a widget.
+     * <p> After restore, the app should set OPTION_APPWIDGET_RESTORE_COMPLETED to true on its
+     * widgets followed by calling {@link #updateAppWidget} to update the views.
+     *
+     * @see #updateAppWidgetOptions(int, Bundle)
+     */
+    public static final String OPTION_APPWIDGET_RESTORE_COMPLETED = "appWidgetRestoreCompleted";
+
+
+    /**
+     * A bundle extra (int) that contains the lower bound on the current width, in dips, of a
+     * widget instance.
      */
     public static final String OPTION_APPWIDGET_MIN_WIDTH = "appWidgetMinWidth";
 
     /**
-     * A bundle extra that contains the lower bound on the current height, in dips, of a widget instance.
+     * A bundle extra (int) that contains the lower bound on the current height, in dips, of a
+     * widget instance.
      */
     public static final String OPTION_APPWIDGET_MIN_HEIGHT = "appWidgetMinHeight";
 
     /**
-     * A bundle extra that contains the upper bound on the current width, in dips, of a widget instance.
+     * A bundle extra (int) that contains the upper bound on the current width, in dips, of a
+     * widget instance.
      */
     public static final String OPTION_APPWIDGET_MAX_WIDTH = "appWidgetMaxWidth";
 
     /**
-     * A bundle extra that contains the upper bound on the current width, in dips, of a widget instance.
+     * A bundle extra (int) that contains the upper bound on the current width, in dips, of a
+     * widget instance.
      */
     public static final String OPTION_APPWIDGET_MAX_HEIGHT = "appWidgetMaxHeight";
 
@@ -929,7 +944,7 @@ public class AppWidgetManager {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void bindAppWidgetId(int appWidgetId, ComponentName provider, Bundle options) {
         if (mService == null) {
             return;
@@ -1100,7 +1115,7 @@ public class AppWidgetManager {
      * @see Context#getServiceDispatcher(ServiceConnection, Handler, int)
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public boolean bindRemoteViewsService(Context context, int appWidgetId, Intent intent,
             IServiceConnection connection, @Context.BindServiceFlags int flags) {
         if (mService == null) {
@@ -1222,6 +1237,20 @@ public class AppWidgetManager {
         try {
             return mService.requestPinAppWidget(mPackageName, provider, extras,
                     successCallback == null ? null : successCallback.getIntentSender());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Note an app widget is tapped on.
+     *
+     * @param appWidgetId App widget id.
+     * @hide
+     */
+    public void noteAppWidgetTapped(int appWidgetId) {
+        try {
+            mService.noteAppWidgetTapped(mPackageName, appWidgetId);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }

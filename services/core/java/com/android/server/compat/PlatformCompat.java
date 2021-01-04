@@ -27,7 +27,7 @@ import android.app.ActivityManager;
 import android.app.IActivityManager;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageManager;
+import android.content.pm.PackageManagerInternal;
 import android.os.Binder;
 import android.os.Build;
 import android.os.RemoteException;
@@ -42,6 +42,7 @@ import com.android.internal.compat.CompatibilityChangeInfo;
 import com.android.internal.compat.IOverrideValidator;
 import com.android.internal.compat.IPlatformCompat;
 import com.android.internal.util.DumpUtils;
+import com.android.server.LocalServices;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -58,8 +59,7 @@ public class PlatformCompat extends IPlatformCompat.Stub {
     private final ChangeReporter mChangeReporter;
     private final CompatConfig mCompatConfig;
 
-    private static int sMinTargetSdk = Build.VERSION_CODES.P;
-    private static int sMaxTargetSdk = Build.VERSION_CODES.Q;
+    private static int sMinTargetSdk = Build.VERSION_CODES.Q;
 
     public PlatformCompat(Context context) {
         mContext = context;
@@ -102,14 +102,29 @@ public class PlatformCompat extends IPlatformCompat.Stub {
     @Override
     public boolean isChangeEnabled(long changeId, ApplicationInfo appInfo) {
         checkCompatChangeReadAndLogPermission();
-        if (mCompatConfig.isChangeEnabled(changeId, appInfo)) {
+        return isChangeEnabledInternal(changeId, appInfo);
+    }
+
+    /**
+     * Internal version of the above method, without logging. Does not perform costly permission
+     * check.
+     * TODO(b/167551701): Remove this method and add 'loggability' as a changeid property.
+     */
+    public boolean isChangeEnabledInternalNoLogging(long changeId, ApplicationInfo appInfo) {
+        return mCompatConfig.isChangeEnabled(changeId, appInfo);
+    }
+
+    /**
+     * Internal version of {@link #isChangeEnabled(long, ApplicationInfo)}. Does not perform costly
+     * permission check.
+     */
+    public boolean isChangeEnabledInternal(long changeId, ApplicationInfo appInfo) {
+        boolean enabled = isChangeEnabledInternalNoLogging(changeId, appInfo);
+        if (appInfo != null) {
             reportChange(changeId, appInfo.uid,
-                    ChangeReporter.STATE_ENABLED);
-            return true;
+                    enabled ? ChangeReporter.STATE_ENABLED : ChangeReporter.STATE_DISABLED);
         }
-        reportChange(changeId, appInfo.uid,
-                ChangeReporter.STATE_DISABLED);
-        return false;
+        return enabled;
     }
 
     @Override
@@ -117,9 +132,6 @@ public class PlatformCompat extends IPlatformCompat.Stub {
             @UserIdInt int userId) {
         checkCompatChangeReadAndLogPermission();
         ApplicationInfo appInfo = getApplicationInfo(packageName, userId);
-        if (appInfo == null) {
-            return true;
-        }
         return isChangeEnabled(changeId, appInfo);
     }
 
@@ -128,7 +140,7 @@ public class PlatformCompat extends IPlatformCompat.Stub {
         checkCompatChangeReadAndLogPermission();
         String[] packages = mContext.getPackageManager().getPackagesForUid(uid);
         if (packages == null || packages.length == 0) {
-            return true;
+            return mCompatConfig.defaultChangeIdValue(changeId);
         }
         boolean enabled = true;
         for (String packageName : packages) {
@@ -287,12 +299,8 @@ public class PlatformCompat extends IPlatformCompat.Stub {
     }
 
     private ApplicationInfo getApplicationInfo(String packageName, int userId) {
-        try {
-            return mContext.getPackageManager().getApplicationInfoAsUser(packageName, 0, userId);
-        } catch (PackageManager.NameNotFoundException e) {
-            Slog.e(TAG, "No installed package " + packageName);
-        }
-        return null;
+        return LocalServices.getService(PackageManagerInternal.class).getApplicationInfo(
+                packageName, 0, userId, userId);
     }
 
     private void reportChange(long changeId, int uid, int state) {
@@ -300,11 +308,11 @@ public class PlatformCompat extends IPlatformCompat.Stub {
     }
 
     private void killPackage(String packageName) {
-        int uid = -1;
-        try {
-            uid = mContext.getPackageManager().getPackageUid(packageName, 0);
-        } catch (PackageManager.NameNotFoundException e) {
-            Slog.w(TAG, "Didn't find package " + packageName + " on device.", e);
+        int uid = LocalServices.getService(PackageManagerInternal.class).getPackageUid(packageName,
+                    0, UserHandle.myUserId());
+
+        if (uid < 0) {
+            Slog.w(TAG, "Didn't find package " + packageName + " on device.");
             return;
         }
 
@@ -371,9 +379,11 @@ public class PlatformCompat extends IPlatformCompat.Stub {
         if (change.getLoggingOnly()) {
             return false;
         }
-        if (change.getEnableAfterTargetSdk() > 0) {
-            if (change.getEnableAfterTargetSdk() < sMinTargetSdk
-                    || change.getEnableAfterTargetSdk() > sMaxTargetSdk) {
+        if (change.getId() == CompatChange.CTS_SYSTEM_API_CHANGEID) {
+            return false;
+        }
+        if (change.getEnableSinceTargetSdk() > 0) {
+            if (change.getEnableSinceTargetSdk() < sMinTargetSdk) {
                 return false;
             }
         }

@@ -178,14 +178,6 @@ public final class SystemClock {
     native public static long uptimeMillis();
 
     /**
-     * @removed
-     */
-    @Deprecated
-    public static @NonNull Clock uptimeMillisClock() {
-        return uptimeClock();
-    }
-
-    /**
      * Return {@link Clock} that starts at system boot, not counting time spent
      * in deep sleep.
      *
@@ -246,7 +238,7 @@ public final class SystemClock {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @CriticalNative
     public static native long currentThreadTimeMicro();
 

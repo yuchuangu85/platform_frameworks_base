@@ -25,6 +25,7 @@ import android.content.IIntentReceiver;
 import android.content.IIntentSender;
 import android.content.Intent;
 import android.content.IntentSender;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -94,6 +95,12 @@ import java.lang.annotation.RetentionPolicy;
  * {@link #FLAG_CANCEL_CURRENT} or {@link #FLAG_UPDATE_CURRENT} to either
  * cancel or modify whatever current PendingIntent is associated with the
  * Intent you are supplying.
+ *
+ * <p>Also note that flags like {@link #FLAG_ONE_SHOT} or {@link #FLAG_IMMUTABLE} describe the
+ * PendingIntent instance and thus, are used to identify it. Any calls to retrieve or modify a
+ * PendingIntent created with these flags will also require these flags to be supplied in
+ * conjunction with others. E.g. To retrieve an existing PendingIntent created with
+ * FLAG_ONE_SHOT, <b>both</b> FLAG_ONE_SHOT and FLAG_NO_CREATE need to be supplied.
  */
 public final class PendingIntent implements Parcelable {
     private final IIntentSender mTarget;
@@ -275,7 +282,7 @@ public final class PendingIntent implements Parcelable {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static void setOnMarshaledListener(OnMarshaledListener listener) {
         sOnMarshaledListener.set(listener);
     }
@@ -345,12 +352,12 @@ public final class PendingIntent implements Parcelable {
         String resolvedType = intent != null ? intent.resolveTypeIfNeeded(
                 context.getContentResolver()) : null;
         try {
-            intent.migrateExtraStreamToClipData();
+            intent.migrateExtraStreamToClipData(context);
             intent.prepareToLeaveProcess(context);
             IIntentSender target =
-                ActivityManager.getService().getIntentSender(
+                ActivityManager.getService().getIntentSenderWithFeature(
                     ActivityManager.INTENT_SENDER_ACTIVITY, packageName,
-                    null, null, requestCode, new Intent[] { intent },
+                    context.getAttributionTag(), null, null, requestCode, new Intent[] { intent },
                     resolvedType != null ? new String[] { resolvedType } : null,
                     flags, options, context.getUserId());
             return target != null ? new PendingIntent(target) : null;
@@ -371,12 +378,12 @@ public final class PendingIntent implements Parcelable {
         String resolvedType = intent != null ? intent.resolveTypeIfNeeded(
                 context.getContentResolver()) : null;
         try {
-            intent.migrateExtraStreamToClipData();
+            intent.migrateExtraStreamToClipData(context);
             intent.prepareToLeaveProcess(context);
             IIntentSender target =
-                ActivityManager.getService().getIntentSender(
+                ActivityManager.getService().getIntentSenderWithFeature(
                     ActivityManager.INTENT_SENDER_ACTIVITY, packageName,
-                    null, null, requestCode, new Intent[] { intent },
+                    context.getAttributionTag(), null, null, requestCode, new Intent[] { intent },
                     resolvedType != null ? new String[] { resolvedType } : null,
                     flags, options, user.getIdentifier());
             return target != null ? new PendingIntent(target) : null;
@@ -485,16 +492,16 @@ public final class PendingIntent implements Parcelable {
         String packageName = context.getPackageName();
         String[] resolvedTypes = new String[intents.length];
         for (int i=0; i<intents.length; i++) {
-            intents[i].migrateExtraStreamToClipData();
+            intents[i].migrateExtraStreamToClipData(context);
             intents[i].prepareToLeaveProcess(context);
             resolvedTypes[i] = intents[i].resolveTypeIfNeeded(context.getContentResolver());
         }
         try {
             IIntentSender target =
-                ActivityManager.getService().getIntentSender(
+                ActivityManager.getService().getIntentSenderWithFeature(
                     ActivityManager.INTENT_SENDER_ACTIVITY, packageName,
-                    null, null, requestCode, intents, resolvedTypes, flags, options,
-                    context.getUserId());
+                    context.getAttributionTag(), null, null, requestCode, intents, resolvedTypes,
+                    flags, options, context.getUserId());
             return target != null ? new PendingIntent(target) : null;
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
@@ -511,15 +518,15 @@ public final class PendingIntent implements Parcelable {
         String packageName = context.getPackageName();
         String[] resolvedTypes = new String[intents.length];
         for (int i=0; i<intents.length; i++) {
-            intents[i].migrateExtraStreamToClipData();
+            intents[i].migrateExtraStreamToClipData(context);
             intents[i].prepareToLeaveProcess(context);
             resolvedTypes[i] = intents[i].resolveTypeIfNeeded(context.getContentResolver());
         }
         try {
             IIntentSender target =
-                ActivityManager.getService().getIntentSender(
+                ActivityManager.getService().getIntentSenderWithFeature(
                     ActivityManager.INTENT_SENDER_ACTIVITY, packageName,
-                    null, null, requestCode, intents, resolvedTypes,
+                    context.getAttributionTag(), null, null, requestCode, intents, resolvedTypes,
                     flags, options, user.getIdentifier());
             return target != null ? new PendingIntent(target) : null;
         } catch (RemoteException e) {
@@ -569,9 +576,9 @@ public final class PendingIntent implements Parcelable {
         try {
             intent.prepareToLeaveProcess(context);
             IIntentSender target =
-                ActivityManager.getService().getIntentSender(
+                ActivityManager.getService().getIntentSenderWithFeature(
                     ActivityManager.INTENT_SENDER_BROADCAST, packageName,
-                    null, null, requestCode, new Intent[] { intent },
+                    context.getAttributionTag(), null, null, requestCode, new Intent[] { intent },
                     resolvedType != null ? new String[] { resolvedType } : null,
                     flags, null, userHandle.getIdentifier());
             return target != null ? new PendingIntent(target) : null;
@@ -648,8 +655,8 @@ public final class PendingIntent implements Parcelable {
         try {
             intent.prepareToLeaveProcess(context);
             IIntentSender target =
-                ActivityManager.getService().getIntentSender(
-                    serviceKind, packageName,
+                ActivityManager.getService().getIntentSenderWithFeature(
+                    serviceKind, packageName, context.getAttributionTag(),
                     null, null, requestCode, new Intent[] { intent },
                     resolvedType != null ? new String[] { resolvedType } : null,
                     flags, null, context.getUserId());
@@ -893,6 +900,17 @@ public final class PendingIntent implements Parcelable {
             String resolvedType = intent != null ?
                     intent.resolveTypeIfNeeded(context.getContentResolver())
                     : null;
+
+            if (context != null && isActivity()) {
+                // Set the context display id as preferred for this activity launches, so that it
+                // can land on caller's display. Or just brought the task to front at the display
+                // where it was on since it has higher preference.
+                ActivityOptions activityOptions = options != null ? new ActivityOptions(options)
+                        : ActivityOptions.makeBasic();
+                activityOptions.setCallerDisplayId(context.getDisplayId());
+                options = activityOptions.toBundle();
+            }
+
             return ActivityManager.getService().sendIntentSender(
                     mTarget, mWhitelistToken, code, intent, resolvedType,
                     onFinished != null
@@ -1187,7 +1205,7 @@ public final class PendingIntent implements Parcelable {
     }
 
     /** @hide */
-    public void writeToProto(ProtoOutputStream proto, long fieldId) {
+    public void dumpDebug(ProtoOutputStream proto, long fieldId) {
         final long token = proto.start(fieldId);
         if (mTarget != null) {
             proto.write(PendingIntentProto.TARGET, mTarget.asBinder().toString());

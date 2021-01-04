@@ -25,6 +25,7 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.net.Uri;
+import android.os.Build;
 import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.RemotableViewMethod;
@@ -32,6 +33,7 @@ import android.widget.ImageView;
 import android.widget.RemoteViews;
 
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * An ImageView for displaying an Icon. Avoids reloading the Icon when possible.
@@ -44,8 +46,12 @@ public class CachingIconView extends ImageView {
     private boolean mInternalSetDrawable;
     private boolean mForceHidden;
     private int mDesiredVisibility;
+    private Consumer<Integer> mOnVisibilityChangedListener;
+    private Consumer<Boolean> mOnForceHiddenChangedListener;
+    private int mIconColor;
+    private boolean mWillBeForceHidden;
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public CachingIconView(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
     }
@@ -182,10 +188,18 @@ public class CachingIconView extends ImageView {
 
     /**
      * Set the icon to be forcibly hidden, even when it's visibility is changed to visible.
+     * This is necessary since we still want to keep certain views hidden when their visibility
+     * is modified from other sources like the shelf.
      */
     public void setForceHidden(boolean forceHidden) {
-        mForceHidden = forceHidden;
-        updateVisibility();
+        if (forceHidden != mForceHidden) {
+            mForceHidden = forceHidden;
+            mWillBeForceHidden = false;
+            updateVisibility();
+            if (mOnForceHiddenChangedListener != null) {
+                mOnForceHiddenChangedListener.accept(forceHidden);
+            }
+        }
     }
 
     @Override
@@ -198,6 +212,47 @@ public class CachingIconView extends ImageView {
     private void updateVisibility() {
         int visibility = mDesiredVisibility == VISIBLE && mForceHidden ? INVISIBLE
                 : mDesiredVisibility;
+        if (mOnVisibilityChangedListener != null) {
+            mOnVisibilityChangedListener.accept(visibility);
+        }
         super.setVisibility(visibility);
+    }
+
+    public void setOnVisibilityChangedListener(Consumer<Integer> listener) {
+        mOnVisibilityChangedListener = listener;
+    }
+
+    public void setOnForceHiddenChangedListener(Consumer<Boolean> listener) {
+        mOnForceHiddenChangedListener = listener;
+    }
+
+
+    public boolean isForceHidden() {
+        return mForceHidden;
+    }
+
+    @RemotableViewMethod
+    public void setOriginalIconColor(int color) {
+        mIconColor = color;
+    }
+
+    public int getOriginalIconColor() {
+        return mIconColor;
+    }
+
+    /**
+     * @return if the view will be forceHidden after an animation
+     */
+    public boolean willBeForceHidden() {
+        return mWillBeForceHidden;
+    }
+
+    /**
+     * Set that this view will be force hidden after an animation
+     *
+     * @param forceHidden if it will be forcehidden
+     */
+    public void setWillBeForceHidden(boolean forceHidden) {
+        mWillBeForceHidden = forceHidden;
     }
 }

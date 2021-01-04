@@ -16,12 +16,6 @@ jji@google.com
 
 # Windows & Activities
 ogunwale@google.com
-jjaggi@google.com
-racarr@google.com
-chaviw@google.com
-vishnun@google.com
-akulian@google.com
-roosa@google.com
 
 # Permissions & Packages
 svetoslavganov@google.com
@@ -29,6 +23,8 @@ toddke@google.com
 
 # Battery Stats
 joeo@google.com
+per-file BatteryStats* = file:/BATTERY_STATS_OWNERS
+per-file BatteryExternalStats* = file:/BATTERY_STATS_OWNERS
 
 # Londoners
 michaelwr@google.com

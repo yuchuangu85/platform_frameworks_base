@@ -58,12 +58,20 @@ interface IWallpaperManager {
     @UnsupportedAppUsage
     void setWallpaperComponent(in ComponentName name);
 
+
     /**
-     * Get the wallpaper for a given user.
+     * @deprecated Use {@link #getWallpaperWithFeature(String, IWallpaperManagerCallback, int,
+     * Bundle, int)}
      */
     @UnsupportedAppUsage
     ParcelFileDescriptor getWallpaper(String callingPkg, IWallpaperManagerCallback cb, int which,
             out Bundle outParams, int userId);
+
+    /**
+     * Get the wallpaper for a given user.
+     */
+    ParcelFileDescriptor getWallpaperWithFeature(String callingPkg, String callingFeatureId,
+            IWallpaperManagerCallback cb, int which, out Bundle outParams, int userId);
 
     /**
      * Retrieve the given user's current wallpaper ID of the given kind.
@@ -75,7 +83,7 @@ interface IWallpaperManager {
      * information about that wallpaper.  Otherwise, if it is a static image,
      * simply return null.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     WallpaperInfo getWallpaperInfo(int userId);
 
     /**

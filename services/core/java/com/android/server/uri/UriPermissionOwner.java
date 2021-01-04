@@ -21,10 +21,12 @@ import static android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION;
 
 import android.os.Binder;
 import android.os.IBinder;
+import android.os.UserHandle;
 import android.util.ArraySet;
 import android.util.proto.ProtoOutputStream;
 
 import com.android.server.am.UriPermissionOwnerProto;
+
 import com.google.android.collect.Sets;
 
 import java.io.PrintWriter;
@@ -73,30 +75,47 @@ public class UriPermissionOwner {
     }
 
     void removeUriPermission(GrantUri grantUri, int mode) {
+        removeUriPermission(grantUri, mode, null, UserHandle.USER_ALL);
+    }
+
+    void removeUriPermission(GrantUri grantUri, int mode, String targetPgk, int targetUserId) {
         if ((mode & FLAG_GRANT_READ_URI_PERMISSION) != 0 && mReadPerms != null) {
             Iterator<UriPermission> it = mReadPerms.iterator();
             while (it.hasNext()) {
                 UriPermission perm = it.next();
-                if (grantUri == null || grantUri.equals(perm.uri)) {
-                    perm.removeReadOwner(this);
-                    mService.removeUriPermissionIfNeeded(perm);
-                    it.remove();
+                if (grantUri != null && !grantUri.equals(perm.uri)) {
+                    continue;
                 }
+                if (targetPgk != null && !targetPgk.equals(perm.targetPkg)) {
+                    continue;
+                }
+                if (targetUserId != UserHandle.USER_ALL && targetUserId != perm.targetUserId) {
+                    continue;
+                }
+                perm.removeReadOwner(this);
+                mService.removeUriPermissionIfNeeded(perm);
+                it.remove();
             }
             if (mReadPerms.isEmpty()) {
                 mReadPerms = null;
             }
         }
-        if ((mode & FLAG_GRANT_WRITE_URI_PERMISSION) != 0
-                && mWritePerms != null) {
+        if ((mode & FLAG_GRANT_WRITE_URI_PERMISSION) != 0 && mWritePerms != null) {
             Iterator<UriPermission> it = mWritePerms.iterator();
             while (it.hasNext()) {
                 UriPermission perm = it.next();
-                if (grantUri == null || grantUri.equals(perm.uri)) {
-                    perm.removeWriteOwner(this);
-                    mService.removeUriPermissionIfNeeded(perm);
-                    it.remove();
+                if (grantUri != null && !grantUri.equals(perm.uri)) {
+                    continue;
                 }
+                if (targetPgk != null && !targetPgk.equals(perm.targetPkg)) {
+                    continue;
+                }
+                if (targetUserId != UserHandle.USER_ALL && targetUserId != perm.targetUserId) {
+                    continue;
+                }
+                perm.removeWriteOwner(this);
+                mService.removeUriPermissionIfNeeded(perm);
+                it.remove();
             }
             if (mWritePerms.isEmpty()) {
                 mWritePerms = null;
@@ -141,20 +160,20 @@ public class UriPermissionOwner {
         }
     }
 
-    public void writeToProto(ProtoOutputStream proto, long fieldId) {
+    public void dumpDebug(ProtoOutputStream proto, long fieldId) {
         long token = proto.start(fieldId);
         proto.write(UriPermissionOwnerProto.OWNER, mOwner.toString());
         if (mReadPerms != null) {
             synchronized (mReadPerms) {
                 for (UriPermission p : mReadPerms) {
-                    p.uri.writeToProto(proto, UriPermissionOwnerProto.READ_PERMS);
+                    p.uri.dumpDebug(proto, UriPermissionOwnerProto.READ_PERMS);
                 }
             }
         }
         if (mWritePerms != null) {
             synchronized (mWritePerms) {
                 for (UriPermission p : mWritePerms) {
-                    p.uri.writeToProto(proto, UriPermissionOwnerProto.WRITE_PERMS);
+                    p.uri.dumpDebug(proto, UriPermissionOwnerProto.WRITE_PERMS);
                 }
             }
         }

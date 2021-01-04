@@ -16,21 +16,28 @@
 
 package com.android.server.wm;
 
+import static android.os.Process.INVALID_UID;
 import static android.view.WindowManager.LayoutParams.FIRST_SUB_WINDOW;
 import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
+import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
 import static android.view.WindowManager.LayoutParams.TYPE_TOAST;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.mock;
 
+import android.content.res.Configuration;
+import android.os.IBinder;
 import android.platform.test.annotations.Presubmit;
 
 import androidx.test.filters.SmallTest;
 
 import org.junit.Test;
+import org.junit.runner.RunWith;
 
 /**
  * Tests for the {@link WindowToken} class.
@@ -40,6 +47,7 @@ import org.junit.Test;
  */
 @SmallTest
 @Presubmit
+@RunWith(WindowTestRunner.class)
 public class WindowTokenTests extends WindowTestsBase {
 
     @Test
@@ -70,6 +78,10 @@ public class WindowTokenTests extends WindowTestsBase {
         assertFalse(token.hasWindow(window12));
         assertTrue(token.hasWindow(window2));
         assertTrue(token.hasWindow(window3));
+
+        // The child windows should have the same window token as their parents.
+        assertEquals(window1.mToken, window11.mToken);
+        assertEquals(window1.mToken, window12.mToken);
     }
 
     @Test
@@ -126,5 +138,87 @@ public class WindowTokenTests extends WindowTestsBase {
         assertNull(token.getParent());
         // Verify that the token windows are no longer attached to it.
         assertEquals(0, token.getWindowsCount());
+    }
+
+    @Test
+    public void testFinishFixedRotationTransform() {
+        final WindowToken appToken = mAppWindow.mToken;
+        final WindowToken wallpaperToken = mWallpaperWindow.mToken;
+        final WindowToken testToken =
+                WindowTestUtils.createTestWindowToken(TYPE_APPLICATION_OVERLAY, mDisplayContent);
+        final Configuration config = new Configuration(mDisplayContent.getConfiguration());
+        final int originalRotation = config.windowConfiguration.getRotation();
+        final int targetRotation = (originalRotation + 1) % 4;
+
+        config.windowConfiguration.setRotation(targetRotation);
+        appToken.applyFixedRotationTransform(mDisplayInfo, mDisplayContent.mDisplayFrames, config);
+        wallpaperToken.linkFixedRotationTransform(appToken);
+
+        // The window tokens should apply the rotation by the transformation.
+        assertEquals(targetRotation, appToken.getWindowConfiguration().getRotation());
+        assertEquals(targetRotation, wallpaperToken.getWindowConfiguration().getRotation());
+
+        testToken.applyFixedRotationTransform(mDisplayInfo, mDisplayContent.mDisplayFrames, config);
+        // The wallpaperToken was linked to appToken, this should make it link to testToken.
+        wallpaperToken.linkFixedRotationTransform(testToken);
+
+        // Assume the display doesn't rotate, the transformation will be canceled.
+        appToken.finishFixedRotationTransform();
+
+        // The appToken should restore to the original rotation.
+        assertEquals(originalRotation, appToken.getWindowConfiguration().getRotation());
+        // The wallpaperToken is linked to testToken, it should keep the target rotation.
+        assertNotEquals(originalRotation, wallpaperToken.getWindowConfiguration().getRotation());
+
+        testToken.finishFixedRotationTransform();
+        // The rotation of wallpaperToken should be restored because its linked state is finished.
+        assertEquals(originalRotation, wallpaperToken.getWindowConfiguration().getRotation());
+    }
+
+    /**
+     * Test that {@link WindowToken} constructor parameters is set with expectation.
+     */
+    @Test
+    public void testWindowTokenConstructorSanity() {
+        WindowToken token = new WindowToken(mDisplayContent.mWmService, mock(IBinder.class),
+                TYPE_TOAST, true /* persistOnEmpty */, mDisplayContent,
+                true /* ownerCanManageAppTokens */);
+        assertFalse(token.mRoundedCornerOverlay);
+        assertFalse(token.mFromClientToken);
+
+        token = new WindowToken(mDisplayContent.mWmService, mock(IBinder.class), TYPE_TOAST,
+                true /* persistOnEmpty */, mDisplayContent, true /* ownerCanManageAppTokens */,
+                true /* roundedCornerOverlay */);
+        assertTrue(token.mRoundedCornerOverlay);
+        assertFalse(token.mFromClientToken);
+
+        token = new WindowToken(mDisplayContent.mWmService, mock(IBinder.class), TYPE_TOAST,
+                true /* persistOnEmpty */, mDisplayContent, true /* ownerCanManageAppTokens */,
+                INVALID_UID, true /* roundedCornerOverlay */, true /* fromClientToken */);
+        assertTrue(token.mRoundedCornerOverlay);
+        assertTrue(token.mFromClientToken);
+    }
+
+    /**
+     * Test that {@link android.view.SurfaceControl} should not be created for the
+     * {@link WindowToken} which was created for {@link android.app.WindowContext} initially, the
+     * surface should be create after addWindow for this token.
+     */
+    @Test
+    public void testSurfaceCreatedForWindowToken() {
+        final WindowToken fromClientToken = new WindowToken(mDisplayContent.mWmService,
+                mock(IBinder.class), TYPE_APPLICATION_OVERLAY, true /* persistOnEmpty */,
+                mDisplayContent, true /* ownerCanManageAppTokens */, INVALID_UID,
+                true /* roundedCornerOverlay */, true /* fromClientToken */);
+        assertNull(fromClientToken.mSurfaceControl);
+
+        createWindow(null, TYPE_APPLICATION_OVERLAY, fromClientToken, "window");
+        assertNotNull(fromClientToken.mSurfaceControl);
+
+        final WindowToken nonClientToken = new WindowToken(mDisplayContent.mWmService,
+                mock(IBinder.class), TYPE_TOAST, true /* persistOnEmpty */, mDisplayContent,
+                true /* ownerCanManageAppTokens */, INVALID_UID, true /* roundedCornerOverlay */,
+                false /* fromClientToken */);
+        assertNotNull(nonClientToken.mSurfaceControl);
     }
 }

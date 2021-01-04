@@ -38,6 +38,11 @@ public interface BatteryController extends DemoMode, Dumpable,
     void setPowerSaveMode(boolean powerSave);
 
     /**
+     * Returns {@code true} if the device is currently plugged in.
+     */
+    boolean isPluggedIn();
+
+    /**
      * Returns {@code true} if the device is currently in power save mode.
      */
     boolean isPowerSave();
@@ -46,6 +51,39 @@ public interface BatteryController extends DemoMode, Dumpable,
      * Returns {@code true} if AOD was disabled by power saving policies.
      */
     boolean isAodPowerSave();
+
+    /**
+     * Initializes the class.
+     */
+    default void init() { }
+
+    /**
+     * Returns {@code true} if the device is currently in wireless charging mode.
+     */
+    default boolean isWirelessCharging() { return false; }
+
+    /**
+     * Returns {@code true} if reverse is supported.
+     */
+    default boolean isReverseSupported() { return false; }
+
+    /**
+     * Returns {@code true} if reverse is on.
+     */
+    default boolean isReverseOn() { return false; }
+
+    /**
+     * Set reverse state.
+     * @param isReverse true if turn on reverse, false otherwise
+     */
+    default void setReverseState(boolean isReverse) {}
+
+    /**
+     * Returns {@code true} if extreme battery saver is on.
+     */
+    default boolean isExtremeSaverOn() {
+        return false;
+    }
 
     /**
      * A listener that will be notified whenever a change in battery level or power save mode has
@@ -57,6 +95,12 @@ public interface BatteryController extends DemoMode, Dumpable,
         }
 
         default void onPowerSaveChanged(boolean isPowerSave) {
+        }
+
+        default void onReverseChanged(boolean isReverse, int level, String name) {
+        }
+
+        default void onExtremeBatterySaverChanged(boolean isExtreme) {
         }
     }
 

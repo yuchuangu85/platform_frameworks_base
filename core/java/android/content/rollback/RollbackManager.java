@@ -24,7 +24,6 @@ import android.annotation.SystemService;
 import android.annotation.TestApi;
 import android.content.Context;
 import android.content.IntentSender;
-import android.content.pm.PackageInstaller;
 import android.content.pm.ParceledListSlice;
 import android.content.pm.VersionedPackage;
 import android.os.RemoteException;
@@ -43,7 +42,7 @@ import java.util.List;
  * @see PackageInstaller.SessionParams#setEnableRollback(boolean)
  * @hide
  */
-@SystemApi @TestApi
+@SystemApi
 @SystemService(Context.ROLLBACK_SERVICE)
 public final class RollbackManager {
     private final String mCallerPackageName;
@@ -215,6 +214,10 @@ public final class RollbackManager {
      * This API is meant to test that rollback state is properly preserved
      * across device reboot, by simulating what happens on reboot without
      * actually rebooting the device.
+     *
+     * Note rollbacks in the process of enabling will be lost after calling
+     * this method since they are not persisted yet. Don't call this method
+     * in the middle of the install process.
      *
      * @throws SecurityException if the caller does not have appropriate permissions.
      *

@@ -21,9 +21,11 @@ import static android.media.Utils.sortDistinctRanges;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
+import android.os.Process;
 import android.os.SystemProperties;
 import android.util.Log;
 import android.util.Pair;
@@ -187,13 +189,14 @@ public final class MediaCodecInfo {
 
     // COMMON CONSTANTS
     private static final Range<Integer> POSITIVE_INTEGERS =
-        Range.create(1, Integer.MAX_VALUE);
+            Range.create(1, Integer.MAX_VALUE);
     private static final Range<Long> POSITIVE_LONGS =
-        Range.create(1l, Long.MAX_VALUE);
+            Range.create(1L, Long.MAX_VALUE);
     private static final Range<Rational> POSITIVE_RATIONALS =
-        Range.create(new Rational(1, Integer.MAX_VALUE),
-                     new Rational(Integer.MAX_VALUE, 1));
-    private static final Range<Integer> SIZE_RANGE = Range.create(1, 32768);
+            Range.create(new Rational(1, Integer.MAX_VALUE),
+                         new Rational(Integer.MAX_VALUE, 1));
+    private static final Range<Integer> SIZE_RANGE =
+            Process.is64Bit() ? Range.create(1, 32768) : Range.create(1, 4096);
     private static final Range<Integer> FRAME_RATE_RANGE = Range.create(0, 960);
     private static final Range<Integer> BITRATE_RANGE = Range.create(0, 500000000);
     private static final int DEFAULT_MAX_SUPPORTED_INSTANCES = 32;
@@ -559,6 +562,14 @@ public final class MediaCodecInfo {
         public static final String FEATURE_IntraRefresh = "intra-refresh";
 
         /**
+         * <b>decoder only</b>: codec supports low latency decoding.
+         * If supported, clients can enable the low latency mode for the decoder.
+         * When the mode is enabled, the decoder doesn't hold input and output data more than
+         * required by the codec standards.
+         */
+        public static final String FEATURE_LowLatency = "low-latency";
+
+        /**
          * Query codec feature capabilities.
          * <p>
          * These features are supported to be used by the codec.  These
@@ -587,6 +598,7 @@ public final class MediaCodecInfo {
             new Feature(FEATURE_FrameParsing,     (1 << 4), false),
             new Feature(FEATURE_MultipleFrames,   (1 << 5), false),
             new Feature(FEATURE_DynamicTimestamp, (1 << 6), false),
+            new Feature(FEATURE_LowLatency,       (1 << 7), true),
         };
 
         private static final Feature[] encoderFeatures = {
@@ -644,6 +656,9 @@ public final class MediaCodecInfo {
          * <p>
          *
          * The following table summarizes the format keys considered by this method.
+         * This is especially important to consider when targeting a higher SDK version than the
+         * minimum SDK version, as this method will disregard some keys on devices below the target
+         * SDK version.
          *
          * <table style="width: 0%">
          *  <thead>
@@ -658,7 +673,7 @@ public final class MediaCodecInfo {
          *  </thead>
          *  <tbody>
          *   <tr>
-         *    <td>{@link android.os.Build.VERSION_CODES#LOLLIPOP}</th>
+         *    <td>{@link android.os.Build.VERSION_CODES#LOLLIPOP}</td>
          *    <td rowspan=3>{@link MediaFormat#KEY_MIME}<sup>*</sup>,<br>
          *        {@link MediaFormat#KEY_SAMPLE_RATE},<br>
          *        {@link MediaFormat#KEY_CHANNEL_COUNT},</td>
@@ -669,30 +684,51 @@ public final class MediaCodecInfo {
          *        {@link MediaFormat#KEY_WIDTH},<br>
          *        {@link MediaFormat#KEY_HEIGHT},<br>
          *        <strong>no</strong> {@code KEY_FRAME_RATE}</td>
-         *    <td rowspan=4>{@link MediaFormat#KEY_BITRATE_MODE},<br>
+         *    <td rowspan=10>as to the left, plus<br>
+         *        {@link MediaFormat#KEY_BITRATE_MODE},<br>
          *        {@link MediaFormat#KEY_PROFILE}
          *        (and/or {@link MediaFormat#KEY_AAC_PROFILE}<sup>~</sup>),<br>
          *        <!-- {link MediaFormat#KEY_QUALITY},<br> -->
          *        {@link MediaFormat#KEY_COMPLEXITY}
          *        (and/or {@link MediaFormat#KEY_FLAC_COMPRESSION_LEVEL}<sup>~</sup>)</td>
          *   </tr><tr>
-         *    <td>{@link android.os.Build.VERSION_CODES#LOLLIPOP_MR1}</th>
+         *    <td>{@link android.os.Build.VERSION_CODES#LOLLIPOP_MR1}</td>
          *    <td rowspan=2>as above, plus<br>
          *        {@link MediaFormat#KEY_FRAME_RATE}</td>
          *   </tr><tr>
-         *    <td>{@link android.os.Build.VERSION_CODES#M}</th>
+         *    <td>{@link android.os.Build.VERSION_CODES#M}</td>
          *   </tr><tr>
-         *    <td>{@link android.os.Build.VERSION_CODES#N}</th>
-         *    <td>as above, plus<br>
+         *    <td>{@link android.os.Build.VERSION_CODES#N}</td>
+         *    <td rowspan=2>as above, plus<br>
          *        {@link MediaFormat#KEY_PROFILE},<br>
          *        <!-- {link MediaFormat#KEY_MAX_BIT_RATE},<br> -->
          *        {@link MediaFormat#KEY_BIT_RATE}</td>
-         *    <td>as above, plus<br>
+         *    <td rowspan=2>as above, plus<br>
          *        {@link MediaFormat#KEY_PROFILE},<br>
          *        {@link MediaFormat#KEY_LEVEL}<sup>+</sup>,<br>
          *        <!-- {link MediaFormat#KEY_MAX_BIT_RATE},<br> -->
          *        {@link MediaFormat#KEY_BIT_RATE},<br>
          *        {@link CodecCapabilities#FEATURE_IntraRefresh}<sup>E</sup></td>
+         *   </tr><tr>
+         *    <td>{@link android.os.Build.VERSION_CODES#N_MR1}</td>
+         *   </tr><tr>
+         *    <td>{@link android.os.Build.VERSION_CODES#O}</td>
+         *    <td rowspan=3 colspan=2>as above, plus<br>
+         *        {@link CodecCapabilities#FEATURE_PartialFrame}<sup>D</sup></td>
+         *   </tr><tr>
+         *    <td>{@link android.os.Build.VERSION_CODES#O_MR1}</td>
+         *   </tr><tr>
+         *    <td>{@link android.os.Build.VERSION_CODES#P}</td>
+         *   </tr><tr>
+         *    <td>{@link android.os.Build.VERSION_CODES#Q}</td>
+         *    <td colspan=2>as above, plus<br>
+         *        {@link CodecCapabilities#FEATURE_FrameParsing}<sup>D</sup>,<br>
+         *        {@link CodecCapabilities#FEATURE_MultipleFrames},<br>
+         *        {@link CodecCapabilities#FEATURE_DynamicTimestamp}</td>
+         *   </tr><tr>
+         *    <td>{@link android.os.Build.VERSION_CODES#R}</td>
+         *    <td colspan=2>as above, plus<br>
+         *        {@link CodecCapabilities#FEATURE_LowLatency}<sup>D</sup></td>
          *   </tr>
          *   <tr>
          *    <td colspan=4>
@@ -753,7 +789,13 @@ public final class MediaCodecInfo {
                 int maxLevel = 0;
                 for (CodecProfileLevel pl : profileLevels) {
                     if (pl.profile == profile && pl.level > maxLevel) {
-                        maxLevel = pl.level;
+                        // H.263 levels are not completely ordered:
+                        // Level45 support only implies Level10 support
+                        if (!mMime.equalsIgnoreCase(MediaFormat.MIMETYPE_VIDEO_H263)
+                                || pl.level != CodecProfileLevel.H263Level45
+                                || maxLevel == CodecProfileLevel.H263Level10) {
+                            maxLevel = pl.level;
+                        }
                     }
                 }
                 levelCaps = createFromProfileLevel(mMime, profile, maxLevel);
@@ -1359,6 +1401,9 @@ public final class MediaCodecInfo {
 
         /**
          * Returns the range of supported video widths.
+         * <p class=note>
+         * 32-bit processes will not support resolutions larger than 4096x4096 due to
+         * the limited address space.
          */
         public Range<Integer> getSupportedWidths() {
             return mWidthRange;
@@ -1366,6 +1411,9 @@ public final class MediaCodecInfo {
 
         /**
          * Returns the range of supported video heights.
+         * <p class=note>
+         * 32-bit processes will not support resolutions larger than 4096x4096 due to
+         * the limited address space.
          */
         public Range<Integer> getSupportedHeights() {
             return mHeightRange;
@@ -1957,6 +2005,12 @@ public final class MediaCodecInfo {
          * Performance points assume a single active codec. For use cases where multiple
          * codecs are active, should use that highest pixel count, and add the frame rates of
          * each individual codec.
+         * <p class=note>
+         * 32-bit processes will not support resolutions larger than 4096x4096 due to
+         * the limited address space, but performance points will be presented as is.
+         * In other words, even though a component publishes a performance point for
+         * a resolution higher than 4096x4096, it does not mean that the resolution is supported
+         * for 32-bit processes.
          */
         @Nullable
         public List<PerformancePoint> getSupportedPerformancePoints() {
@@ -2124,6 +2178,12 @@ public final class MediaCodecInfo {
                 if (size == null || size.getWidth() * size.getHeight() <= 0) {
                     continue;
                 }
+                if (size.getWidth() > SIZE_RANGE.getUpper()
+                        || size.getHeight() > SIZE_RANGE.getUpper()) {
+                    size = new Size(
+                            Math.min(size.getWidth(), SIZE_RANGE.getUpper()),
+                            Math.min(size.getHeight(), SIZE_RANGE.getUpper()));
+                }
                 Range<Long> range = Utils.parseLongRange(map.get(key), null);
                 if (range == null || range.getLower() < 0 || range.getUpper() < 0) {
                     continue;
@@ -2153,6 +2213,7 @@ public final class MediaCodecInfo {
                                (a.getMaxMacroBlockRate() < b.getMaxMacroBlockRate() ? -1 : 1) :
                        (a.getMaxFrameRate() != b.getMaxFrameRate()) ?
                                (a.getMaxFrameRate() < b.getMaxFrameRate() ? -1 : 1) : 0));
+
             return Collections.unmodifiableList(ret);
         }
 
@@ -3741,8 +3802,11 @@ public final class MediaCodecInfo {
         public static final int DolbyVisionProfileDvheStn = 0x20;
         public static final int DolbyVisionProfileDvheDth = 0x40;
         public static final int DolbyVisionProfileDvheDtb = 0x80;
-        public static final int DolbyVisionProfileDvheSt = 0x100;
-        public static final int DolbyVisionProfileDvavSe = 0x200;
+        public static final int DolbyVisionProfileDvheSt  = 0x100;
+        public static final int DolbyVisionProfileDvavSe  = 0x200;
+        /** Dolby Vision AV1 profile */
+        @SuppressLint("AllUpper")
+        public static final int DolbyVisionProfileDvav110 = 0x400;
 
         public static final int DolbyVisionLevelHd24    = 0x1;
         public static final int DolbyVisionLevelHd30    = 0x2;

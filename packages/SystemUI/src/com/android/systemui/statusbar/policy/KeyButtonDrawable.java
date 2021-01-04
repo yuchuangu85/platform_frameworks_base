@@ -80,6 +80,22 @@ public class KeyButtonDrawable extends Drawable {
     private final Paint mShadowPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final ShadowDrawableState mState;
     private AnimatedVectorDrawable mAnimatedDrawable;
+    private final Callback mAnimatedDrawableCallback = new Callback() {
+        @Override
+        public void invalidateDrawable(@NonNull Drawable who) {
+            invalidateSelf();
+        }
+
+        @Override
+        public void scheduleDrawable(@NonNull Drawable who, @NonNull Runnable what, long when) {
+            scheduleSelf(what, when);
+        }
+
+        @Override
+        public void unscheduleDrawable(@NonNull Drawable who, @NonNull Runnable what) {
+            unscheduleSelf(what);
+        }
+    };
 
     public KeyButtonDrawable(Drawable d, @ColorInt int lightColor, @ColorInt int darkColor,
             boolean horizontalFlip, Color ovalBackgroundColor) {
@@ -97,6 +113,7 @@ public class KeyButtonDrawable extends Drawable {
         }
         if (canAnimate()) {
             mAnimatedDrawable = (AnimatedVectorDrawable) mState.mChildState.newDrawable().mutate();
+            mAnimatedDrawable.setCallback(mAnimatedDrawableCallback);
             setDrawableBounds(mAnimatedDrawable);
         }
     }
@@ -151,6 +168,24 @@ public class KeyButtonDrawable extends Drawable {
                     new PorterDuffColorFilter(mState.mShadowColor, Mode.SRC_ATOP));
             updateShadowAlpha();
             invalidateSelf();
+        }
+    }
+
+    @Override
+    public boolean setVisible(boolean visible, boolean restart) {
+        boolean changed = super.setVisible(visible, restart);
+        if (changed) {
+            // End any existing animations when the visibility changes
+            jumpToCurrentState();
+        }
+        return changed;
+    }
+
+    @Override
+    public void jumpToCurrentState() {
+        super.jumpToCurrentState();
+        if (mAnimatedDrawable != null) {
+            mAnimatedDrawable.jumpToCurrentState();
         }
     }
 

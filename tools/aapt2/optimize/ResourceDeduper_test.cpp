@@ -52,9 +52,11 @@ TEST(ResourceDeduperTest, SameValuesAreDeduped) {
           .Build();
 
   ASSERT_TRUE(ResourceDeduper().Consume(context.get(), table.get()));
+  EXPECT_THAT(table, HasValue("android:string/dedupe", default_config));
   EXPECT_THAT(table, Not(HasValue("android:string/dedupe", ldrtl_config)));
   EXPECT_THAT(table, Not(HasValue("android:string/dedupe", land_config)));
 
+  EXPECT_THAT(table, HasValue("android:string/dedupe2", default_config));
   EXPECT_THAT(table, HasValue("android:string/dedupe2", ldrtl_v21_config));
   EXPECT_THAT(table, Not(HasValue("android:string/dedupe2", ldrtl_config)));
 
@@ -80,8 +82,55 @@ TEST(ResourceDeduperTest, DifferentValuesAreKept) {
           .Build();
 
   ASSERT_TRUE(ResourceDeduper().Consume(context.get(), table.get()));
+  EXPECT_THAT(table, HasValue("android:string/keep", default_config));
   EXPECT_THAT(table, HasValue("android:string/keep", ldrtl_config));
   EXPECT_THAT(table, HasValue("android:string/keep", ldrtl_v21_config));
+  EXPECT_THAT(table, HasValue("android:string/keep", land_config));
+}
+
+TEST(ResourceDeduperTest, SameValuesAreDedupedIncompatibleSiblings) {
+  std::unique_ptr<IAaptContext> context = test::ContextBuilder().Build();
+  const ConfigDescription default_config = {};
+  const ConfigDescription ldrtl_config = test::ParseConfigOrDie("ldrtl");
+  const ConfigDescription ldrtl_night_config = test::ParseConfigOrDie("ldrtl-night");
+  // Chosen because this configuration is not compatible with ldrtl-night.
+  const ConfigDescription ldrtl_notnight_config = test::ParseConfigOrDie("ldrtl-notnight");
+
+  std::unique_ptr<ResourceTable> table =
+      test::ResourceTableBuilder()
+          .AddString("android:string/keep", ResourceId{}, default_config, "keep")
+          .AddString("android:string/keep", ResourceId{}, ldrtl_config, "dedupe")
+          .AddString("android:string/keep", ResourceId{}, ldrtl_night_config, "dedupe")
+          .AddString("android:string/keep", ResourceId{}, ldrtl_notnight_config, "keep2")
+          .Build();
+
+  ASSERT_TRUE(ResourceDeduper().Consume(context.get(), table.get()));
+  EXPECT_THAT(table, HasValue("android:string/keep", default_config));
+  EXPECT_THAT(table, HasValue("android:string/keep", ldrtl_config));
+  EXPECT_THAT(table, Not(HasValue("android:string/keep", ldrtl_night_config)));
+  EXPECT_THAT(table, HasValue("android:string/keep", ldrtl_notnight_config));
+}
+
+TEST(ResourceDeduperTest, SameValuesAreDedupedCompatibleNonSiblings) {
+  std::unique_ptr<IAaptContext> context = test::ContextBuilder().Build();
+  const ConfigDescription default_config = {};
+  const ConfigDescription ldrtl_config = test::ParseConfigOrDie("ldrtl");
+  const ConfigDescription ldrtl_night_config = test::ParseConfigOrDie("ldrtl-night");
+  // Chosen because this configuration is compatible with ldrtl.
+  const ConfigDescription land_config = test::ParseConfigOrDie("land");
+
+  std::unique_ptr<ResourceTable> table =
+      test::ResourceTableBuilder()
+          .AddString("android:string/keep", ResourceId{}, default_config, "keep")
+          .AddString("android:string/keep", ResourceId{}, ldrtl_config, "dedupe")
+          .AddString("android:string/keep", ResourceId{}, ldrtl_night_config, "dedupe")
+          .AddString("android:string/keep", ResourceId{}, land_config, "keep2")
+          .Build();
+
+  ASSERT_TRUE(ResourceDeduper().Consume(context.get(), table.get()));
+  EXPECT_THAT(table, HasValue("android:string/keep", default_config));
+  EXPECT_THAT(table, HasValue("android:string/keep", ldrtl_config));
+  EXPECT_THAT(table, Not(HasValue("android:string/keep", ldrtl_night_config)));
   EXPECT_THAT(table, HasValue("android:string/keep", land_config));
 }
 
@@ -103,5 +152,25 @@ TEST(ResourceDeduperTest, LocalesValuesAreKept) {
   EXPECT_THAT(table, HasValue("android:string/keep", fr_config));
   EXPECT_THAT(table, HasValue("android:string/keep", fr_rCA_config));
 }
+
+TEST(ResourceDeduperTest, MccMncValuesAreKept) {
+  std::unique_ptr<IAaptContext> context = test::ContextBuilder().Build();
+  const ConfigDescription default_config = {};
+  const ConfigDescription mcc_config = test::ParseConfigOrDie("mcc262");
+  const ConfigDescription mnc_config = test::ParseConfigOrDie("mnc2");
+
+  std::unique_ptr<ResourceTable> table =
+      test::ResourceTableBuilder()
+          .AddString("android:string/keep", ResourceId{}, default_config, "keep")
+          .AddString("android:string/keep", ResourceId{}, mcc_config, "keep")
+          .AddString("android:string/keep", ResourceId{}, mnc_config, "keep")
+          .Build();
+
+  ASSERT_TRUE(ResourceDeduper().Consume(context.get(), table.get()));
+  EXPECT_THAT(table, HasValue("android:string/keep", default_config));
+  EXPECT_THAT(table, HasValue("android:string/keep", mcc_config));
+  EXPECT_THAT(table, HasValue("android:string/keep", mnc_config));
+}
+
 
 }  // namespace aapt

@@ -509,7 +509,7 @@ public final class Sensor {
      *
      * @hide Expected to be used internally for always on display.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int TYPE_PICK_UP_GESTURE = 25;
 
     /**
@@ -549,7 +549,7 @@ public final class Sensor {
      * @hide Expected to be used internally for auto-rotate and speaker rotation.
      *
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int TYPE_DEVICE_ORIENTATION = 27;
 
     /**
@@ -616,7 +616,7 @@ public final class Sensor {
     public static final String STRING_TYPE_MOTION_DETECT = "android.sensor.motion_detect";
 
     /**
-     * A constant describing a motion detect sensor.
+     * A constant describing a heart beat sensor.
      *
      * See {@link android.hardware.SensorEvent#values SensorEvent.values} for more details.
      *
@@ -691,6 +691,22 @@ public final class Sensor {
      */
     public static final String STRING_TYPE_ACCELEROMETER_UNCALIBRATED =
             "android.sensor.accelerometer_uncalibrated";
+
+    /**
+     * A constant describing a hinge angle sensor.
+     *
+     * See {@link android.hardware.SensorEvent#values SensorEvent.values} for more details.
+     *
+     */
+    public static final int TYPE_HINGE_ANGLE = 36;
+
+    /**
+     * A constant string describing a hinge angle sensor.
+     *
+     * @see #TYPE_HINGE_ANGLE
+     *
+     */
+    public static final String STRING_TYPE_HINGE_ANGLE = "android.sensor.hinge_angle";
 
     /**
      * A constant describing all sensor types.
@@ -811,6 +827,7 @@ public final class Sensor {
             16, // skip over additional sensor info type
             1, // SENSOR_TYPE_LOW_LATENCY_OFFBODY_DETECT
             6, // SENSOR_TYPE_ACCELEROMETER_UNCALIBRATED
+            1, // SENSOR_TYPE_HINGE_ANGLE
     };
 
     /**
@@ -1225,6 +1242,9 @@ public final class Sensor {
                 return true;
             case TYPE_ACCELEROMETER_UNCALIBRATED:
                 mStringType = STRING_TYPE_ACCELEROMETER_UNCALIBRATED;
+                return true;
+            case TYPE_HINGE_ANGLE:
+                mStringType = STRING_TYPE_HINGE_ANGLE;
                 return true;
             default:
                 return false;

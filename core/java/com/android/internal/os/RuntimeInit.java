@@ -19,11 +19,11 @@ package com.android.internal.os;
 import android.app.ActivityManager;
 import android.app.ActivityThread;
 import android.app.ApplicationErrorReport;
+import android.app.IActivityManager;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.type.DefaultMimeMapFactory;
 import android.os.Build;
 import android.os.DeadObjectException;
-import android.os.Debug;
 import android.os.IBinder;
 import android.os.Process;
 import android.os.SystemProperties;
@@ -35,7 +35,6 @@ import com.android.internal.logging.AndroidConfig;
 import com.android.server.NetworkManagementSocketTagger;
 
 import dalvik.system.RuntimeHooks;
-import dalvik.system.ThreadPrioritySetter;
 import dalvik.system.VMRuntime;
 
 import libcore.content.type.MimeMap;
@@ -63,6 +62,8 @@ public class RuntimeInit {
     private static IBinder mApplicationObject;
 
     private static volatile boolean mCrashing = false;
+
+    private static volatile ApplicationWtfHandler sDefaultApplicationWtfHandler;
 
     private static final native void nativeFinishInit();
     private static final native void nativeSetExitWithoutCleanup(boolean exitWithoutCleanup);
@@ -205,7 +206,6 @@ public class RuntimeInit {
      */
     public static void preForkInit() {
         if (DEBUG) Slog.d(TAG, "Entered preForkInit.");
-        RuntimeHooks.setThreadPrioritySetter(new RuntimeThreadPrioritySetter());
         RuntimeInit.enableDdms();
         // TODO(b/142019040#comment13): Decide whether to load the default instance eagerly, i.e.
         // MimeMap.setDefault(DefaultMimeMapFactory.create());
@@ -216,35 +216,6 @@ public class RuntimeInit {
          * with several customizations (extensions, overrides).
          */
         MimeMap.setDefaultSupplier(DefaultMimeMapFactory::create);
-    }
-
-    private static class RuntimeThreadPrioritySetter implements ThreadPrioritySetter {
-        // Should remain consistent with kNiceValues[] in system/libartpalette/palette_android.cc
-        private static final int[] NICE_VALUES = {
-            Process.THREAD_PRIORITY_LOWEST,  // 1 (MIN_PRIORITY)
-            Process.THREAD_PRIORITY_BACKGROUND + 6,
-            Process.THREAD_PRIORITY_BACKGROUND + 3,
-            Process.THREAD_PRIORITY_BACKGROUND,
-            Process.THREAD_PRIORITY_DEFAULT,  // 5 (NORM_PRIORITY)
-            Process.THREAD_PRIORITY_DEFAULT - 2,
-            Process.THREAD_PRIORITY_DEFAULT - 4,
-            Process.THREAD_PRIORITY_URGENT_DISPLAY + 3,
-            Process.THREAD_PRIORITY_URGENT_DISPLAY + 2,
-            Process.THREAD_PRIORITY_URGENT_DISPLAY  // 10 (MAX_PRIORITY)
-        };
-
-        @Override
-        public void setPriority(int nativeTid, int priority) {
-            // Check NICE_VALUES[] length first.
-            if (NICE_VALUES.length != (1 + Thread.MAX_PRIORITY - Thread.MIN_PRIORITY)) {
-                throw new AssertionError("Unexpected NICE_VALUES.length=" + NICE_VALUES.length);
-            }
-            // Priority should be in the range of MIN_PRIORITY (1) to MAX_PRIORITY (10).
-            if (priority < Thread.MIN_PRIORITY || priority > Thread.MAX_PRIORITY) {
-                throw new IllegalArgumentException("Priority out of range: " + priority);
-            }
-            Process.setThreadPriority(nativeTid, NICE_VALUES[priority - Thread.MIN_PRIORITY]);
-        }
     }
 
     @UnsupportedAppUsage
@@ -285,24 +256,12 @@ public class RuntimeInit {
          */
         NetworkManagementSocketTagger.install();
 
-        /*
-         * If we're running in an emulator launched with "-trace", put the
-         * VM into emulator trace profiling mode so that the user can hit
-         * F9/F10 at any time to capture traces.  This has performance
-         * consequences, so it's not something you want to do always.
-         */
-        String trace = SystemProperties.get("ro.kernel.android.tracing");
-        if (trace.equals("1")) {
-            Slog.i(TAG, "NOTE: emulator trace profiling enabled");
-            Debug.enableEmulatorTraceOutput();
-        }
-
         initialized = true;
     }
 
     /**
      * Returns an HTTP user agent of the form
-     * "Dalvik/1.1.0 (Linux; U; Android Eclair Build/MASTER)".
+     * "Dalvik/1.1.0 (Linux; U; Android Eclair Build/MAIN)".
      */
     private static String getDefaultUserAgent() {
         StringBuilder result = new StringBuilder(64);
@@ -310,7 +269,7 @@ public class RuntimeInit {
         result.append(System.getProperty("java.vm.version")); // such as 1.1.0
         result.append(" (Linux; U; Android ");
 
-        String version = Build.VERSION.RELEASE; // "1.0" or "3.4b5"
+        String version = Build.VERSION.RELEASE_OR_CODENAME; // "1.0" or "3.4b5"
         result.append(version.length() > 0 ? version : "1.0");
 
         // add the model for the release build
@@ -321,7 +280,7 @@ public class RuntimeInit {
                 result.append(model);
             }
         }
-        String id = Build.ID; // "MASTER" or "M4-rc20"
+        String id = Build.ID; // "MAIN" or "M4-rc20"
         if (id.length() > 0) {
             result.append(" Build/");
             result.append(id);
@@ -438,9 +397,27 @@ public class RuntimeInit {
      */
     public static void wtf(String tag, Throwable t, boolean system) {
         try {
-            if (ActivityManager.getService().handleApplicationWtf(
-                    mApplicationObject, tag, system,
-                    new ApplicationErrorReport.ParcelableCrashInfo(t))) {
+            boolean exit = false;
+            final IActivityManager am = ActivityManager.getService();
+            if (am != null) {
+                exit = am.handleApplicationWtf(
+                        mApplicationObject, tag, system,
+                        new ApplicationErrorReport.ParcelableCrashInfo(t),
+                        Process.myPid());
+            } else {
+                // Unlikely but possible in early system boot
+                final ApplicationWtfHandler handler = sDefaultApplicationWtfHandler;
+                if (handler != null) {
+                    exit = handler.handleApplicationWtf(
+                            mApplicationObject, tag, system,
+                            new ApplicationErrorReport.ParcelableCrashInfo(t),
+                            Process.myPid());
+                } else {
+                    // Simply log the error
+                    Slog.e(TAG, "Original WTF:", t);
+                }
+            }
+            if (exit) {
                 // The Activity Manager has already written us off -- now exit.
                 Process.killProcess(Process.myPid());
                 System.exit(10);
@@ -453,6 +430,29 @@ public class RuntimeInit {
                 Slog.e(TAG, "Original WTF:", t);
             }
         }
+    }
+
+    /**
+     * Set the default {@link ApplicationWtfHandler}, in case the ActivityManager is not ready yet.
+     */
+    public static void setDefaultApplicationWtfHandler(final ApplicationWtfHandler handler) {
+        sDefaultApplicationWtfHandler = handler;
+    }
+
+    /**
+     * The handler to deal with the serious application errors.
+     */
+    public interface ApplicationWtfHandler {
+        /**
+         * @param app object of the crashing app, null for the system server
+         * @param tag reported by the caller
+         * @param system whether this wtf is coming from the system
+         * @param crashInfo describing the context of the error
+         * @param immediateCallerPid the caller Pid
+         * @return true if the process should exit immediately (WTF is fatal)
+         */
+        boolean handleApplicationWtf(IBinder app, String tag, boolean system,
+                ApplicationErrorReport.ParcelableCrashInfo crashInfo, int immediateCallerPid);
     }
 
     /**

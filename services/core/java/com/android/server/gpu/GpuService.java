@@ -29,8 +29,6 @@ import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.database.ContentObserver;
-import android.gamedriver.GameDriverProto.Blacklist;
-import android.gamedriver.GameDriverProto.Blacklists;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Handler;
@@ -39,6 +37,9 @@ import android.os.UserHandle;
 import android.provider.DeviceConfig;
 import android.provider.DeviceConfig.Properties;
 import android.provider.Settings;
+import android.text.TextUtils;
+import android.updatabledriver.UpdatableDriverProto.Denylist;
+import android.updatabledriver.UpdatableDriverProto.Denylists;
 import android.util.Base64;
 import android.util.Slog;
 
@@ -62,30 +63,37 @@ public class GpuService extends SystemService {
     public static final String TAG = "GpuService";
     public static final boolean DEBUG = false;
 
-    private static final String PROPERTY_GFX_DRIVER = "ro.gfx.driver.0";
-    private static final String GAME_DRIVER_WHITELIST_FILENAME = "whitelist.txt";
+    private static final String PROD_DRIVER_PROPERTY = "ro.gfx.driver.0";
+    private static final String DEV_DRIVER_PROPERTY = "ro.gfx.driver.1";
+    private static final String UPDATABLE_DRIVER_PRODUCTION_ALLOWLIST_FILENAME = "allowlist.txt";
     private static final int BASE64_FLAGS = Base64.NO_PADDING | Base64.NO_WRAP;
 
     private final Context mContext;
-    private final String mDriverPackageName;
+    private final String mProdDriverPackageName;
+    private final String mDevDriverPackageName;
     private final PackageManager mPackageManager;
     private final Object mLock = new Object();
     private final Object mDeviceConfigLock = new Object();
+    private final boolean mHasProdDriver;
+    private final boolean mHasDevDriver;
     private ContentResolver mContentResolver;
-    private long mGameDriverVersionCode;
+    private long mProdDriverVersionCode;
     private SettingsObserver mSettingsObserver;
     private DeviceConfigListener mDeviceConfigListener;
     @GuardedBy("mLock")
-    private Blacklists mBlacklists;
+    private Denylists mDenylists;
 
     public GpuService(Context context) {
         super(context);
 
         mContext = context;
-        mDriverPackageName = SystemProperties.get(PROPERTY_GFX_DRIVER);
-        mGameDriverVersionCode = -1;
+        mProdDriverPackageName = SystemProperties.get(PROD_DRIVER_PROPERTY);
+        mProdDriverVersionCode = -1;
+        mDevDriverPackageName = SystemProperties.get(DEV_DRIVER_PROPERTY);
         mPackageManager = context.getPackageManager();
-        if (mDriverPackageName != null && !mDriverPackageName.isEmpty()) {
+        mHasProdDriver = !TextUtils.isEmpty(mProdDriverPackageName);
+        mHasDevDriver = !TextUtils.isEmpty(mDevDriverPackageName);
+        if (mHasDevDriver || mHasProdDriver) {
             final IntentFilter packageFilter = new IntentFilter();
             packageFilter.addAction(ACTION_PACKAGE_ADDED);
             packageFilter.addAction(ACTION_PACKAGE_CHANGED);
@@ -104,24 +112,25 @@ public class GpuService extends SystemService {
     public void onBootPhase(int phase) {
         if (phase == PHASE_BOOT_COMPLETED) {
             mContentResolver = mContext.getContentResolver();
-            if (mDriverPackageName == null || mDriverPackageName.isEmpty()) {
+            if (!mHasProdDriver && !mHasDevDriver) {
                 return;
             }
             mSettingsObserver = new SettingsObserver();
             mDeviceConfigListener = new DeviceConfigListener();
-            fetchGameDriverPackageProperties();
-            processBlacklists();
-            setBlacklist();
+            fetchProductionDriverPackageProperties();
+            processDenylists();
+            setDenylist();
+            fetchPrereleaseDriverPackageProperties();
         }
     }
 
     private final class SettingsObserver extends ContentObserver {
-        private final Uri mGameDriverBlackUri =
-                Settings.Global.getUriFor(Settings.Global.GAME_DRIVER_BLACKLISTS);
+        private final Uri mProdDriverDenylistsUri =
+                Settings.Global.getUriFor(Settings.Global.UPDATABLE_DRIVER_PRODUCTION_DENYLISTS);
 
         SettingsObserver() {
             super(new Handler());
-            mContentResolver.registerContentObserver(mGameDriverBlackUri, false, this,
+            mContentResolver.registerContentObserver(mProdDriverDenylistsUri, false, this,
                     UserHandle.USER_ALL);
         }
 
@@ -131,9 +140,9 @@ public class GpuService extends SystemService {
                 return;
             }
 
-            if (mGameDriverBlackUri.equals(uri)) {
-                processBlacklists();
-                setBlacklist();
+            if (mProdDriverDenylistsUri.equals(uri)) {
+                processDenylists();
+                setDenylist();
             }
         }
     }
@@ -148,10 +157,12 @@ public class GpuService extends SystemService {
         @Override
         public void onPropertiesChanged(Properties properties) {
             synchronized (mDeviceConfigLock) {
-                if (properties.getKeyset().contains(Settings.Global.GAME_DRIVER_BLACKLISTS)) {
-                    parseBlacklists(
-                            properties.getString(Settings.Global.GAME_DRIVER_BLACKLISTS, ""));
-                    setBlacklist();
+                if (properties.getKeyset().contains(
+                            Settings.Global.UPDATABLE_DRIVER_PRODUCTION_DENYLISTS)) {
+                    parseDenylists(
+                            properties.getString(
+                                    Settings.Global.UPDATABLE_DRIVER_PRODUCTION_DENYLISTS, ""));
+                    setDenylist();
                 }
             }
         }
@@ -166,18 +177,22 @@ public class GpuService extends SystemService {
                 return;
             }
             final String packageName = data.getSchemeSpecificPart();
-            if (!packageName.equals(mDriverPackageName)) {
+            final boolean isProdDriver = packageName.equals(mProdDriverPackageName);
+            final boolean isDevDriver = packageName.equals(mDevDriverPackageName);
+            if (!isProdDriver && !isDevDriver) {
                 return;
             }
-
-            final boolean replacing = intent.getBooleanExtra(Intent.EXTRA_REPLACING, false);
 
             switch (intent.getAction()) {
                 case ACTION_PACKAGE_ADDED:
                 case ACTION_PACKAGE_CHANGED:
                 case ACTION_PACKAGE_REMOVED:
-                    fetchGameDriverPackageProperties();
-                    setBlacklist();
+                    if (isProdDriver) {
+                        fetchProductionDriverPackageProperties();
+                        setDenylist();
+                    } else if (isDevDriver) {
+                        fetchPrereleaseDriverPackageProperties();
+                    }
                     break;
                 default:
                     // do nothing
@@ -205,14 +220,14 @@ public class GpuService extends SystemService {
         }
     }
 
-    private void fetchGameDriverPackageProperties() {
+    private void fetchProductionDriverPackageProperties() {
         final ApplicationInfo driverInfo;
         try {
-            driverInfo = mPackageManager.getApplicationInfo(mDriverPackageName,
+            driverInfo = mPackageManager.getApplicationInfo(mProdDriverPackageName,
                                                             PackageManager.MATCH_SYSTEM_ONLY);
         } catch (PackageManager.NameNotFoundException e) {
             if (DEBUG) {
-                Slog.e(TAG, "driver package '" + mDriverPackageName + "' not installed");
+                Slog.e(TAG, "driver package '" + mProdDriverPackageName + "' not installed");
             }
             return;
         }
@@ -226,69 +241,106 @@ public class GpuService extends SystemService {
             return;
         }
 
-        // Reset the whitelist.
+        // Reset the allowlist.
         Settings.Global.putString(mContentResolver,
-                                  Settings.Global.GAME_DRIVER_WHITELIST, "");
-        mGameDriverVersionCode = driverInfo.longVersionCode;
+                                  Settings.Global.UPDATABLE_DRIVER_PRODUCTION_ALLOWLIST, "");
+        mProdDriverVersionCode = driverInfo.longVersionCode;
 
         try {
-            final Context driverContext = mContext.createPackageContext(mDriverPackageName,
+            final Context driverContext = mContext.createPackageContext(mProdDriverPackageName,
                                                                         Context.CONTEXT_RESTRICTED);
 
-            assetToSettingsGlobal(mContext, driverContext, GAME_DRIVER_WHITELIST_FILENAME,
-                    Settings.Global.GAME_DRIVER_WHITELIST, ",");
+            assetToSettingsGlobal(mContext, driverContext,
+                    UPDATABLE_DRIVER_PRODUCTION_ALLOWLIST_FILENAME,
+                    Settings.Global.UPDATABLE_DRIVER_PRODUCTION_ALLOWLIST, ",");
         } catch (PackageManager.NameNotFoundException e) {
             if (DEBUG) {
-                Slog.w(TAG, "driver package '" + mDriverPackageName + "' not installed");
+                Slog.w(TAG, "driver package '" + mProdDriverPackageName + "' not installed");
             }
         }
     }
 
-    private void processBlacklists() {
+    private void processDenylists() {
         String base64String = DeviceConfig.getProperty(DeviceConfig.NAMESPACE_GAME_DRIVER,
-                Settings.Global.GAME_DRIVER_BLACKLISTS);
+                Settings.Global.UPDATABLE_DRIVER_PRODUCTION_DENYLISTS);
         if (base64String == null) {
             base64String =
                     Settings.Global.getString(mContentResolver,
-                                              Settings.Global.GAME_DRIVER_BLACKLISTS);
+                            Settings.Global.UPDATABLE_DRIVER_PRODUCTION_DENYLISTS);
         }
-        parseBlacklists(base64String != null ? base64String : "");
+        parseDenylists(base64String != null ? base64String : "");
     }
 
-    private void parseBlacklists(String base64String) {
+    private void parseDenylists(String base64String) {
         synchronized (mLock) {
-            // Reset all blacklists
-            mBlacklists = null;
+            // Reset all denylists
+            mDenylists = null;
             try {
-                mBlacklists = Blacklists.parseFrom(Base64.decode(base64String, BASE64_FLAGS));
+                mDenylists = Denylists.parseFrom(Base64.decode(base64String, BASE64_FLAGS));
             } catch (IllegalArgumentException e) {
                 if (DEBUG) {
-                    Slog.w(TAG, "Can't parse blacklist, skip and continue...");
+                    Slog.w(TAG, "Can't parse denylist, skip and continue...");
                 }
             } catch (InvalidProtocolBufferException e) {
                 if (DEBUG) {
-                    Slog.w(TAG, "Can't parse blacklist, skip and continue...");
+                    Slog.w(TAG, "Can't parse denylist, skip and continue...");
                 }
             }
         }
     }
 
-    private void setBlacklist() {
+    private void setDenylist() {
         Settings.Global.putString(mContentResolver,
-                                  Settings.Global.GAME_DRIVER_BLACKLIST, "");
+                                  Settings.Global.UPDATABLE_DRIVER_PRODUCTION_DENYLIST, "");
         synchronized (mLock) {
-            if (mBlacklists == null) {
+            if (mDenylists == null) {
                 return;
             }
-            List<Blacklist> blacklists = mBlacklists.getBlacklistsList();
-            for (Blacklist blacklist : blacklists) {
-                if (blacklist.getVersionCode() == mGameDriverVersionCode) {
+            List<Denylist> denylists = mDenylists.getDenylistsList();
+            for (Denylist denylist : denylists) {
+                if (denylist.getVersionCode() == mProdDriverVersionCode) {
                     Settings.Global.putString(mContentResolver,
-                            Settings.Global.GAME_DRIVER_BLACKLIST,
-                            String.join(",", blacklist.getPackageNamesList()));
+                            Settings.Global.UPDATABLE_DRIVER_PRODUCTION_DENYLIST,
+                            String.join(",", denylist.getPackageNamesList()));
                     return;
                 }
             }
         }
     }
+
+    private void fetchPrereleaseDriverPackageProperties() {
+        final ApplicationInfo driverInfo;
+        try {
+            driverInfo = mPackageManager.getApplicationInfo(mDevDriverPackageName,
+                                                            PackageManager.MATCH_SYSTEM_ONLY);
+        } catch (PackageManager.NameNotFoundException e) {
+            if (DEBUG) {
+                Slog.e(TAG, "driver package '" + mDevDriverPackageName + "' not installed");
+            }
+            return;
+        }
+
+        // O drivers are restricted to the sphal linker namespace, so don't try to use
+        // packages unless they declare they're compatible with that restriction.
+        if (driverInfo.targetSdkVersion < Build.VERSION_CODES.O) {
+            if (DEBUG) {
+                Slog.w(TAG, "Driver package is not known to be compatible with O");
+            }
+            return;
+        }
+
+        setUpdatableDriverPath(driverInfo);
+    }
+
+    private void setUpdatableDriverPath(ApplicationInfo ai) {
+        if (ai.primaryCpuAbi == null) {
+            nSetUpdatableDriverPath("");
+            return;
+        }
+        final StringBuilder sb = new StringBuilder();
+        sb.append(ai.sourceDir).append("!/lib/");
+        nSetUpdatableDriverPath(sb.toString());
+    }
+
+    private static native void nSetUpdatableDriverPath(String driverPath);
 }

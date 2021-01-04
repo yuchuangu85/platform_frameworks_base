@@ -26,6 +26,7 @@ import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.os.Binder;
+import android.os.Build;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.os.ServiceManager;
@@ -54,7 +55,7 @@ public class StatusBarManager {
 
     /** @hide */
     @Deprecated
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int DISABLE_NOTIFICATION_TICKER
             = View.STATUS_BAR_DISABLE_NOTIFICATION_TICKER;
     /** @hide */
@@ -267,6 +268,7 @@ public class StatusBarManager {
      * @hide
      */
     @UnsupportedAppUsage
+    @TestApi
     public void expandNotificationsPanel() {
         try {
             final IStatusBarService svc = getService();
@@ -284,6 +286,7 @@ public class StatusBarManager {
      * @hide
      */
     @UnsupportedAppUsage
+    @TestApi
     public void collapsePanels() {
         try {
             final IStatusBarService svc = getService();
@@ -311,7 +314,7 @@ public class StatusBarManager {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void expandSettingsPanel(@Nullable String subPanel) {
         try {
             final IStatusBarService svc = getService();
@@ -324,7 +327,7 @@ public class StatusBarManager {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setIcon(String slot, int iconId, int iconLevel, String contentDescription) {
         try {
             final IStatusBarService svc = getService();
@@ -338,7 +341,7 @@ public class StatusBarManager {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void removeIcon(String slot) {
         try {
             final IStatusBarService svc = getService();
@@ -351,7 +354,7 @@ public class StatusBarManager {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setIconVisibility(String slot, boolean visible) {
         try {
             final IStatusBarService svc = getService();
@@ -372,7 +375,6 @@ public class StatusBarManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(android.Manifest.permission.STATUS_BAR)
     public void setDisabledForSetup(boolean disabled) {
         try {
@@ -397,7 +399,6 @@ public class StatusBarManager {
      *                 {@code false}, re-enables expansion of the status bar.
      * @hide
      */
-    @SystemApi
     @TestApi
     @RequiresPermission(android.Manifest.permission.STATUS_BAR)
     public void setDisabledForSimNetworkLock(boolean disabled) {
@@ -421,7 +422,6 @@ public class StatusBarManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(android.Manifest.permission.STATUS_BAR)
     @NonNull
     public DisableInfo getDisableInfo() {
@@ -454,7 +454,6 @@ public class StatusBarManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final class DisableInfo {
 
         private boolean mStatusBarExpansion;
@@ -487,7 +486,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean isStatusBarExpansionDisabled() {
             return mStatusBarExpansion;
         }
@@ -503,7 +501,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean isNavigateToHomeDisabled() {
             return mNavigateHome;
         }
@@ -519,7 +516,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean isNotificationPeekingDisabled() {
             return mNotificationPeeking;
         }
@@ -535,7 +531,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean isRecentsDisabled() {
             return mRecents;
         }
@@ -551,7 +546,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean isSearchDisabled() {
             return mSearch;
         }
@@ -609,7 +603,6 @@ public class StatusBarManager {
          * @hide
          */
         @SystemApi
-        @TestApi
         public boolean areAllComponentsEnabled() {
             return !mStatusBarExpansion && !mNavigateHome && !mNotificationPeeking && !mRecents
                     && !mSearch && !mSystemIcons && !mClock && !mNotificationIcons;

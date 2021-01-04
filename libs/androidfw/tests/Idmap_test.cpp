@@ -14,114 +14,218 @@
  * limitations under the License.
  */
 
+#include "android-base/file.h"
+#include "androidfw/ApkAssets.h"
+#include "androidfw/AssetManager2.h"
 #include "androidfw/ResourceTypes.h"
 
 #include "utils/String16.h"
 #include "utils/String8.h"
 
 #include "TestHelpers.h"
-#include "data/basic/R.h"
+#include "data/overlay/R.h"
+#include "data/overlayable/R.h"
+#include "data/system/R.h"
 
-using ::com::android::basic::R;
+namespace overlay = com::android::overlay;
+namespace overlayable = com::android::overlayable;
 
 namespace android {
+
+namespace {
 
 class IdmapTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    std::string contents;
-    ASSERT_TRUE(ReadFileFromZipToString(GetTestDataPath() + "/basic/basic.apk", "resources.arsc",
-                                        &contents));
-    ASSERT_EQ(NO_ERROR, target_table_.add(contents.data(), contents.size(), 0, true));
+    // Move to the test data directory so the idmap can locate the overlay APK.
+    original_path = base::GetExecutableDirectory();
+    chdir(GetTestDataPath().c_str());
 
-    ASSERT_TRUE(ReadFileFromZipToString(GetTestDataPath() + "/overlay/overlay.apk",
-                                        "resources.arsc", &overlay_data_));
-    ResTable overlay_table;
-    ASSERT_EQ(NO_ERROR, overlay_table.add(overlay_data_.data(), overlay_data_.size()));
+    system_assets_ = ApkAssets::Load("system/system.apk");
+    ASSERT_NE(nullptr, system_assets_);
 
-    char target_name[256] = "com.android.basic";
-    ASSERT_EQ(NO_ERROR, overlay_table.createIdmap(target_table_, 0, 0, target_name, target_name,
-                                                  &data_, &data_size_));
+    overlay_assets_ = ApkAssets::LoadOverlay("overlay/overlay.idmap");
+    ASSERT_NE(nullptr, overlay_assets_);
+
+    overlayable_assets_ = ApkAssets::Load("overlayable/overlayable.apk");
+    ASSERT_NE(nullptr, overlayable_assets_);
   }
 
   void TearDown() override {
-    ::free(data_);
+    chdir(original_path.c_str());
   }
 
-  ResTable target_table_;
-  std::string overlay_data_;
-  void* data_ = nullptr;
-  size_t data_size_ = 0;
+ protected:
+  std::string original_path;
+  std::unique_ptr<const ApkAssets> system_assets_;
+  std::unique_ptr<const ApkAssets> overlay_assets_;
+  std::unique_ptr<const ApkAssets> overlayable_assets_;
 };
 
-TEST_F(IdmapTest, CanLoadIdmap) {
-  ASSERT_EQ(NO_ERROR,
-            target_table_.add(overlay_data_.data(), overlay_data_.size(), data_, data_size_));
+std::string GetStringFromApkAssets(const AssetManager2& asset_manager,
+                                   const AssetManager2::SelectedValue& value) {
+  auto assets = asset_manager.GetApkAssets();
+  const ResStringPool* string_pool = assets[value.cookie]->GetLoadedArsc()->GetStringPool();
+  return GetStringFromPool(string_pool, value.data);
+}
+
 }
 
 TEST_F(IdmapTest, OverlayOverridesResourceValue) {
-  Res_value val;
-  ssize_t block = target_table_.getResource(R::string::test2, &val, false);
-  ASSERT_GE(block, 0);
-  ASSERT_EQ(Res_value::TYPE_STRING, val.dataType);
-  const ResStringPool* pool = target_table_.getTableStringBlock(block);
-  ASSERT_TRUE(pool != NULL);
-  ASSERT_LT(val.data, pool->size());
+  AssetManager2 asset_manager;
+  asset_manager.SetApkAssets({system_assets_.get(), overlayable_assets_.get(),
+                              overlay_assets_.get()});
 
-  size_t str_len;
-  const char16_t* target_str16 = pool->stringAt(val.data, &str_len);
-  ASSERT_TRUE(target_str16 != NULL);
-  ASSERT_EQ(String16("test2"), String16(target_str16, str_len));
+  auto value = asset_manager.GetResource(overlayable::R::string::overlayable5);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value->cookie, 2U);
+  ASSERT_EQ(value->type, Res_value::TYPE_STRING);
+  ASSERT_EQ("Overlay One", GetStringFromApkAssets(asset_manager, *value));
+}
 
-  ASSERT_EQ(NO_ERROR,
-            target_table_.add(overlay_data_.data(), overlay_data_.size(), data_, data_size_));
+TEST_F(IdmapTest, OverlayOverridesResourceValueUsingDifferentPackage) {
+  AssetManager2 asset_manager;
+  asset_manager.SetApkAssets({system_assets_.get(), overlayable_assets_.get(),
+                              overlay_assets_.get()});
 
-  ssize_t new_block = target_table_.getResource(R::string::test2, &val, false);
-  ASSERT_GE(new_block, 0);
-  ASSERT_NE(block, new_block);
-  ASSERT_EQ(Res_value::TYPE_STRING, val.dataType);
-  pool = target_table_.getTableStringBlock(new_block);
-  ASSERT_TRUE(pool != NULL);
-  ASSERT_LT(val.data, pool->size());
+  auto value = asset_manager.GetResource(overlayable::R::string::overlayable10);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value->cookie, 0U);
+  ASSERT_EQ(value->type, Res_value::TYPE_STRING);
+  ASSERT_EQ("yes", GetStringFromApkAssets(asset_manager, *value));
+}
 
-  target_str16 = pool->stringAt(val.data, &str_len);
-  ASSERT_TRUE(target_str16 != NULL);
-  ASSERT_EQ(String16("test2-overlay"), String16(target_str16, str_len));
+TEST_F(IdmapTest, OverlayOverridesResourceValueUsingInternalResource) {
+  AssetManager2 asset_manager;
+  asset_manager.SetApkAssets({system_assets_.get(), overlayable_assets_.get(),
+                              overlay_assets_.get()});
+
+  auto value = asset_manager.GetResource(overlayable::R::string::overlayable8);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value->cookie, 2U);
+  ASSERT_EQ(value->type, Res_value::TYPE_REFERENCE);
+  ASSERT_EQ(value->data, (overlay::R::string::internal & 0x00ffffffU) | (0x02U << 24));
+}
+
+TEST_F(IdmapTest, OverlayOverridesResourceValueUsingInlineInteger) {
+  AssetManager2 asset_manager;
+  asset_manager.SetApkAssets({system_assets_.get(), overlayable_assets_.get(),
+                              overlay_assets_.get()});
+
+  auto value = asset_manager.GetResource(overlayable::R::integer::config_integer);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value->cookie, 2U);
+  ASSERT_EQ(value->type, Res_value::TYPE_INT_DEC);
+  ASSERT_EQ(value->data, 42);
+}
+
+TEST_F(IdmapTest, OverlayOverridesResourceValueUsingInlineString) {
+  AssetManager2 asset_manager;
+  asset_manager.SetApkAssets({system_assets_.get(), overlayable_assets_.get(),
+                              overlay_assets_.get()});
+
+  auto value = asset_manager.GetResource(overlayable::R::string::overlayable11);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value->cookie, 2U);
+  ASSERT_EQ(value->type, Res_value::TYPE_STRING);
+  ASSERT_EQ("Hardcoded string", GetStringFromApkAssets(asset_manager, *value));
+}
+
+TEST_F(IdmapTest, OverlayOverridesResourceValueUsingOverlayingResource) {
+  AssetManager2 asset_manager;
+  asset_manager.SetApkAssets({system_assets_.get(), overlayable_assets_.get(),
+                              overlay_assets_.get()});
+
+  auto value = asset_manager.GetResource(overlayable::R::string::overlayable9);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value->cookie, 2U);
+  ASSERT_EQ(value->type, Res_value::TYPE_REFERENCE);
+  ASSERT_EQ(value->data, overlayable::R::string::overlayable7);
+}
+
+TEST_F(IdmapTest, OverlayOverridesXmlParser) {
+  AssetManager2 asset_manager;
+  asset_manager.SetApkAssets({system_assets_.get(), overlayable_assets_.get(),
+                              overlay_assets_.get()});
+
+  auto value = asset_manager.GetResource(overlayable::R::layout::hello_view);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(value->cookie, 2U);
+  ASSERT_EQ(value->type, Res_value::TYPE_STRING);
+  ASSERT_EQ("res/layout/hello_view.xml", GetStringFromApkAssets(asset_manager, *value));
+
+  auto asset = asset_manager.OpenNonAsset("res/layout/hello_view.xml", value->cookie,
+                                          Asset::ACCESS_RANDOM);
+  auto dynamic_ref_table = asset_manager.GetDynamicRefTableForCookie(value->cookie);
+  auto xml_tree = util::make_unique<ResXMLTree>(std::move(dynamic_ref_table));
+  status_t err = xml_tree->setTo(asset->getBuffer(true), asset->getLength(), false);
+  ASSERT_EQ(err, NO_ERROR);
+
+  while (xml_tree->next() != ResXMLParser::START_TAG) { }
+
+  // The resource id of @id/hello_view should be rewritten to the resource id/hello_view within the
+  // target.
+  ASSERT_EQ(xml_tree->getAttributeNameResID(0), 0x010100d0 /* android:attr/id */);
+  ASSERT_EQ(xml_tree->getAttributeDataType(0), Res_value::TYPE_REFERENCE);
+  ASSERT_EQ(xml_tree->getAttributeData(0), overlayable::R::id::hello_view);
+
+  // The resource id of @android:string/yes should not be rewritten even though it overlays
+  // string/overlayable10 in the target.
+  ASSERT_EQ(xml_tree->getAttributeNameResID(1), 0x0101014f /* android:attr/text */);
+  ASSERT_EQ(xml_tree->getAttributeDataType(1), Res_value::TYPE_REFERENCE);
+  ASSERT_EQ(xml_tree->getAttributeData(1), 0x01040013 /* android:string/yes */);
+
+  // The resource id of the attribute within the overlay should be rewritten to the resource id of
+  // the attribute in the target.
+  ASSERT_EQ(xml_tree->getAttributeNameResID(2), overlayable::R::attr::max_lines);
+  ASSERT_EQ(xml_tree->getAttributeDataType(2), Res_value::TYPE_INT_DEC);
+  ASSERT_EQ(xml_tree->getAttributeData(2), 4);
 }
 
 TEST_F(IdmapTest, OverlaidResourceHasSameName) {
-  ASSERT_EQ(NO_ERROR,
-            target_table_.add(overlay_data_.data(), overlay_data_.size(), data_, data_size_));
+  AssetManager2 asset_manager;
+  asset_manager.SetApkAssets({system_assets_.get(), overlayable_assets_.get(),
+                              overlay_assets_.get()});
 
-  ResTable::resource_name res_name;
-  ASSERT_TRUE(target_table_.getResourceName(R::array::integerArray1, true, &res_name));
-
-  ASSERT_TRUE(res_name.package != NULL);
-  ASSERT_TRUE(res_name.type != NULL);
-  ASSERT_TRUE(res_name.name8 != NULL);
-
-  EXPECT_EQ(String16("com.android.basic"), String16(res_name.package, res_name.packageLen));
-  EXPECT_EQ(String16("array"), String16(res_name.type, res_name.typeLen));
-  EXPECT_EQ(String8("integerArray1"), String8(res_name.name8, res_name.nameLen));
+  auto name = asset_manager.GetResourceName(overlayable::R::string::overlayable9);
+  ASSERT_TRUE(name.has_value());
+  ASSERT_EQ("com.android.overlayable", std::string(name->package));
+  ASSERT_EQ(std::u16string(u"string"), std::u16string(name->type16));
+  ASSERT_EQ("overlayable9", std::string(name->entry));
 }
 
-constexpr const uint32_t kNonOverlaidResourceId = 0x7fff0000u;
+TEST_F(IdmapTest, OverlayLoaderInterop) {
+  auto loader_assets = ApkAssets::LoadTable("loader/resources.arsc", PROPERTY_LOADER);
+  AssetManager2 asset_manager;
+  asset_manager.SetApkAssets({overlayable_assets_.get(), loader_assets.get(),
+                              overlay_assets_.get()});
 
-TEST_F(IdmapTest, OverlayDoesNotIncludeNonOverlaidResources) {
-  // First check that the resource we're trying to not include when overlaid is present when
-  // the overlay is loaded as a standalone APK.
-  ResTable table;
-  ASSERT_EQ(NO_ERROR, table.add(overlay_data_.data(), overlay_data_.size(), 0, true));
+  auto value = asset_manager.GetResource(overlayable::R::string::overlayable11);
+  ASSERT_TRUE(value.has_value());
+  ASSERT_EQ(1U, value->cookie);
+  ASSERT_EQ(Res_value::TYPE_STRING, value->type);
+  ASSERT_EQ("loader", GetStringFromApkAssets(asset_manager, *value));
+}
 
-  Res_value val;
-  ssize_t block = table.getResource(kNonOverlaidResourceId, &val, false /*mayBeBag*/);
-  ASSERT_GE(block, 0);
+TEST_F(IdmapTest, OverlayAssetsIsUpToDate) {
+  std::string idmap_contents;
+  ASSERT_TRUE(base::ReadFileToString("overlay/overlay.idmap", &idmap_contents));
 
-  // Now add the overlay and verify that the unoverlaid resource is gone.
-  ASSERT_EQ(NO_ERROR,
-            target_table_.add(overlay_data_.data(), overlay_data_.size(), data_, data_size_));
-  block = target_table_.getResource(kNonOverlaidResourceId, &val, false /*mayBeBag*/);
-  ASSERT_LT(block, 0);
+  TemporaryFile temp_file;
+  ASSERT_TRUE(base::WriteStringToFile(idmap_contents, temp_file.path));
+
+  auto apk_assets = ApkAssets::LoadOverlay(temp_file.path);
+  ASSERT_NE(nullptr, apk_assets);
+  ASSERT_TRUE(apk_assets->IsUpToDate());
+
+  unlink(temp_file.path);
+  ASSERT_FALSE(apk_assets->IsUpToDate());
+  sleep(2);
+
+  base::WriteStringToFile("hello", temp_file.path);
+  sleep(2);
+
+  ASSERT_FALSE(apk_assets->IsUpToDate());
 }
 
 }  // namespace

@@ -33,9 +33,10 @@
 #include "androidfw/Util.h"
 #include "idmap2/CommandLineOptions.h"
 #include "idmap2/Idmap.h"
+#include "idmap2/ResourceUtils.h"
 #include "idmap2/Result.h"
 #include "idmap2/SysTrace.h"
-#include "idmap2/Xml.h"
+#include "idmap2/XmlParser.h"
 #include "idmap2/ZipFile.h"
 #include "utils/String16.h"
 #include "utils/String8.h"
@@ -44,11 +45,8 @@ using android::ApkAssets;
 using android::ApkAssetsCookie;
 using android::AssetManager2;
 using android::ConfigDescription;
-using android::is_valid_resid;
-using android::kInvalidCookie;
 using android::Res_value;
 using android::ResStringPool;
-using android::ResTable_config;
 using android::StringPiece16;
 using android::base::StringPrintf;
 using android::idmap2::CommandLineOptions;
@@ -57,9 +55,7 @@ using android::idmap2::IdmapHeader;
 using android::idmap2::ResourceId;
 using android::idmap2::Result;
 using android::idmap2::Unit;
-using android::idmap2::Xml;
-using android::idmap2::ZipFile;
-using android::util::Utf16ToUtf8;
+using android::idmap2::utils::ExtractOverlayManifestInfo;
 
 namespace {
 
@@ -69,28 +65,48 @@ Result<ResourceId> WARN_UNUSED ParseResReference(const AssetManager2& am, const 
 
   // first, try to parse as a hex number
   char* endptr = nullptr;
-  ResourceId resid;
-  resid = strtol(res.c_str(), &endptr, kBaseHex);
+  const ResourceId parsed_resid = strtol(res.c_str(), &endptr, kBaseHex);
   if (*endptr == '\0') {
-    return resid;
+    return parsed_resid;
   }
 
   // next, try to parse as a package:type/name string
-  resid = am.GetResourceId(res, "", fallback_package);
-  if (is_valid_resid(resid)) {
-    return resid;
+  if (auto resid = am.GetResourceId(res, "", fallback_package); resid.ok()) {
+    return *resid;
   }
 
   // end of the road: res could not be parsed
   return Error("failed to obtain resource id for %s", res.c_str());
 }
 
-Result<std::string> WARN_UNUSED GetValue(const AssetManager2& am, ResourceId resid) {
-  Res_value value;
-  ResTable_config config;
-  uint32_t flags;
-  ApkAssetsCookie cookie = am.GetResource(resid, false, 0, &value, &config, &flags);
-  if (cookie == kInvalidCookie) {
+void PrintValue(AssetManager2* const am, const AssetManager2::SelectedValue& value,
+                std::string* const out) {
+  switch (value.type) {
+    case Res_value::TYPE_INT_DEC:
+      out->append(StringPrintf("%d", value.data));
+      break;
+    case Res_value::TYPE_INT_HEX:
+      out->append(StringPrintf("0x%08x", value.data));
+      break;
+    case Res_value::TYPE_INT_BOOLEAN:
+      out->append(value.data != 0 ? "true" : "false");
+      break;
+    case Res_value::TYPE_STRING: {
+      const ResStringPool* pool = am->GetStringPoolForCookie(value.cookie);
+      out->append("\"");
+      if (auto str = pool->string8ObjectAt(value.data); str.ok()) {
+        out->append(*str);
+      }
+    } break;
+    default:
+      out->append(StringPrintf("dataType=0x%02x data=0x%08x", value.type, value.data));
+      break;
+  }
+}
+
+Result<std::string> WARN_UNUSED GetValue(AssetManager2* const am, ResourceId resid) {
+  auto value = am->GetResource(resid);
+  if (!value.has_value()) {
     return Error("no resource 0x%08x in asset manager", resid);
   }
 
@@ -98,63 +114,40 @@ Result<std::string> WARN_UNUSED GetValue(const AssetManager2& am, ResourceId res
 
   // TODO(martenkongstad): use optional parameter GetResource(..., std::string*
   // stacktrace = NULL) instead
-  out.append(StringPrintf("cookie=%d ", cookie));
+  out.append(StringPrintf("cookie=%d ", value->cookie));
 
   out.append("config='");
-  out.append(config.toString().c_str());
+  out.append(value->config.toString().c_str());
   out.append("' value=");
 
-  switch (value.dataType) {
-    case Res_value::TYPE_INT_DEC:
-      out.append(StringPrintf("%d", value.data));
-      break;
-    case Res_value::TYPE_INT_HEX:
-      out.append(StringPrintf("0x%08x", value.data));
-      break;
-    case Res_value::TYPE_INT_BOOLEAN:
-      out.append(value.data != 0 ? "true" : "false");
-      break;
-    case Res_value::TYPE_STRING: {
-      const ResStringPool* pool = am.GetStringPoolForCookie(cookie);
-      size_t len;
-      if (pool->isUTF8()) {
-        const char* str = pool->string8At(value.data, &len);
-        out.append(str, len);
-      } else {
-        const char16_t* str16 = pool->stringAt(value.data, &len);
-        out += Utf16ToUtf8(StringPiece16(str16, len));
+  if (value->type == Res_value::TYPE_REFERENCE) {
+    auto bag_result = am->GetBag(static_cast<uint32_t>(value->data));
+    if (!bag_result.has_value()) {
+      out.append(StringPrintf("dataType=0x%02x data=0x%08x", value->type, value->data));
+      return out;
+    }
+
+    out.append("[");
+    const android::ResolvedBag* bag = bag_result.value();
+    for (size_t i = 0; i < bag->entry_count; ++i) {
+      AssetManager2::SelectedValue entry(bag, bag->entries[i]);
+      if (am->ResolveReference(entry).has_value()) {
+        out.append(StringPrintf("Error: dataType=0x%02x data=0x%08x", entry.type, entry.data));
+        continue;
       }
-    } break;
-    default:
-      out.append(StringPrintf("dataType=0x%02x data=0x%08x", value.dataType, value.data));
-      break;
+      PrintValue(am, entry, &out);
+      if (i != bag->entry_count - 1) {
+        out.append(", ");
+      }
+    }
+    out.append("]");
+  } else {
+    PrintValue(am, *value, &out);
   }
+
   return out;
 }
 
-Result<std::string> GetTargetPackageNameFromManifest(const std::string& apk_path) {
-  const auto zip = ZipFile::Open(apk_path);
-  if (!zip) {
-    return Error("failed to open %s as zip", apk_path.c_str());
-  }
-  const auto entry = zip->Uncompress("AndroidManifest.xml");
-  if (!entry) {
-    return Error("failed to uncompress AndroidManifest.xml in %s", apk_path.c_str());
-  }
-  const auto xml = Xml::Create(entry->buf, entry->size);
-  if (!xml) {
-    return Error("failed to create XML buffer");
-  }
-  const auto tag = xml->FindTag("overlay");
-  if (!tag) {
-    return Error("failed to find <overlay> tag");
-  }
-  const auto iter = tag->find("targetPackage");
-  if (iter == tag->end()) {
-    return Error("failed to find targetPackage attribute");
-  }
-  return iter->second;
-}
 }  // namespace
 
 Result<Unit> Lookup(const std::vector<std::string>& args) {
@@ -202,12 +195,12 @@ Result<Unit> Lookup(const std::vector<std::string>& args) {
       }
       apk_assets.push_back(std::move(target_apk));
 
-      const Result<std::string> package_name =
-          GetTargetPackageNameFromManifest(idmap_header->GetOverlayPath().to_string());
-      if (!package_name) {
-        return Error("failed to parse android:targetPackage from overlay manifest");
+      auto manifest_info = ExtractOverlayManifestInfo(idmap_header->GetOverlayPath().to_string(),
+                                                      true /* assert_overlay */);
+      if (!manifest_info) {
+        return manifest_info.GetError();
       }
-      target_package_name = *package_name;
+      target_package_name = (*manifest_info).target_package;
     } else if (target_path != idmap_header->GetTargetPath()) {
       return Error("different target APKs (expected target APK %s but %s has target APK %s)",
                    target_path.c_str(), idmap_path.c_str(),
@@ -235,7 +228,7 @@ Result<Unit> Lookup(const std::vector<std::string>& args) {
     return Error(resid.GetError(), "failed to parse resource ID");
   }
 
-  const Result<std::string> value = GetValue(am, *resid);
+  const Result<std::string> value = GetValue(&am, *resid);
   if (!value) {
     return Error(value.GetError(), "resource 0x%08x not found", *resid);
   }

@@ -83,9 +83,9 @@ public class ResourcesImpl {
 
     static final String TAG_PRELOAD = TAG + ".preload";
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final boolean TRACE_FOR_PRELOAD = false; // Do we still need it?
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static final boolean TRACE_FOR_MISS_PRELOAD = false; // Do we still need it?
 
     public static final boolean TRACE_FOR_DETAILED_PRELOAD =
@@ -102,7 +102,7 @@ public class ResourcesImpl {
     private static final Object sSync = new Object();
 
     private static boolean sPreloaded;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private boolean mPreloading;
 
     // Information about preloaded resources.  Note that they are not
@@ -160,7 +160,7 @@ public class ResourcesImpl {
 
     private PluralRules mPluralRule;
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private final Configuration mConfiguration = new Configuration();
 
     static {
@@ -180,7 +180,7 @@ public class ResourcesImpl {
      * @param displayAdjustments this resource's Display override and compatibility info.
      *                           Must not be null.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ResourcesImpl(@NonNull AssetManager assets, @Nullable DisplayMetrics metrics,
             @Nullable Configuration config, @NonNull DisplayAdjustments displayAdjustments) {
         mAssets = assets;
@@ -199,7 +199,7 @@ public class ResourcesImpl {
         return mAssets;
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     DisplayMetrics getDisplayMetrics() {
         if (DEBUG_CONFIG) Slog.v(TAG, "Returning DisplayMetrics: " + mMetrics.widthPixels
                 + "x" + mMetrics.heightPixels + " " + mMetrics.density);
@@ -227,7 +227,7 @@ public class ResourcesImpl {
         }
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     void getValue(@AnyRes int id, TypedValue outValue, boolean resolveRefs)
             throws NotFoundException {
         boolean found = mAssets.getResourceValue(id, 0, outValue, resolveRefs);
@@ -342,7 +342,7 @@ public class ResourcesImpl {
         try {
             return mAssets.openNonAssetFd(tempValue.assetCookie, tempValue.string.toString());
         } catch (Exception e) {
-            throw new NotFoundException("File " + tempValue.string.toString() + " from drawable "
+            throw new NotFoundException("File " + tempValue.string.toString() + " from "
                     + "resource ID #0x" + Integer.toHexString(id), e);
         }
     }
@@ -357,7 +357,7 @@ public class ResourcesImpl {
             // Note: value.string might be null
             NotFoundException rnf = new NotFoundException("File "
                     + (value.string == null ? "(null)" : value.string.toString())
-                    + " from drawable resource ID #0x" + Integer.toHexString(id));
+                    + " from resource ID #0x" + Integer.toHexString(id));
             rnf.initCause(e);
             throw rnf;
         }
@@ -376,7 +376,7 @@ public class ResourcesImpl {
         Trace.traceBegin(Trace.TRACE_TAG_RESOURCES, "ResourcesImpl#updateConfiguration");
         try {
             synchronized (mAccessLock) {
-                if (false) {
+                if (DEBUG_CONFIG) {
                     Slog.i(TAG, "**** Updating config of " + this + ": old config is "
                             + mConfiguration + " old compat is "
                             + mDisplayAdjustments.getCompatibilityInfo());
@@ -548,7 +548,24 @@ public class ResourcesImpl {
             remainder = languageTag.substring(separator);
         }
 
-        return Locale.adjustLanguageCode(language) + remainder;
+        // No need to convert to lower cases because the language in the return value of
+        // Locale.toLanguageTag has been lower-cased.
+        final String adjustedLanguage;
+        switch(language) {
+            case "id":
+                adjustedLanguage = "in";
+                break;
+            case "yi":
+                adjustedLanguage = "ji";
+                break;
+            case "he":
+                adjustedLanguage = "iw";
+                break;
+            default:
+                adjustedLanguage = language;
+                break;
+        }
+        return adjustedLanguage + remainder;
     }
 
     /**
@@ -569,6 +586,20 @@ public class ResourcesImpl {
                 }
             }
             Arrays.fill(cachedXmlBlocks, null);
+        }
+    }
+
+    /**
+     * Wipe all caches that might be read and return an outdated object when resolving a resource.
+     */
+    public void clearAllCaches() {
+        synchronized (mAccessLock) {
+            mDrawableCache.clear();
+            mColorDrawableCache.clear();
+            mComplexColorCache.clear();
+            mAnimatorCache.clear();
+            mStateListAnimatorCache.clear();
+            flushLayoutCache();
         }
     }
 
@@ -856,7 +887,8 @@ public class ResourcesImpl {
             stack.push(id);
             try {
                 if (file.endsWith(".xml")) {
-                    if (file.startsWith("res/color/")) {
+                    final String typeName = getResourceTypeName(id);
+                    if (typeName != null && typeName.equals("color")) {
                         dr = loadColorOrXmlDrawable(wrapper, value, id, density, file);
                     } else {
                         dr = loadXmlDrawable(wrapper, value, id, density, file);
@@ -864,7 +896,7 @@ public class ResourcesImpl {
                 } else {
                     final InputStream is = mAssets.openNonAsset(
                             value.assetCookie, file, AssetManager.ACCESS_STREAMING);
-                    AssetInputStream ais = (AssetInputStream) is;
+                    final AssetInputStream ais = (AssetInputStream) is;
                     dr = decodeImageDrawable(ais, wrapper, value);
                 }
             } finally {

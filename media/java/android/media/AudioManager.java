@@ -1,4 +1,5 @@
 /*
+/*
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,6 +17,7 @@
 
 package android.media;
 
+import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
@@ -36,6 +38,7 @@ import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.media.AudioAttributes.AttributeSystemUsage;
 import android.media.audiopolicy.AudioPolicy;
 import android.media.audiopolicy.AudioPolicy.AudioPolicyFocusListener;
 import android.media.audiopolicy.AudioProductStrategy;
@@ -72,11 +75,13 @@ import java.io.IOException;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
@@ -372,6 +377,10 @@ public class AudioManager {
     public static final int STREAM_TTS = AudioSystem.STREAM_TTS;
     /** Used to identify the volume of audio streams for accessibility prompts */
     public static final int STREAM_ACCESSIBILITY = AudioSystem.STREAM_ACCESSIBILITY;
+    /** @hide Used to identify the volume of audio streams for virtual assistant */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public static final int STREAM_ASSISTANT = AudioSystem.STREAM_ASSISTANT;
 
     /** Number of audio streams */
     /**
@@ -699,7 +708,7 @@ public class AudioManager {
      * @hide
      * For test purposes only, will throw NPE with some methods that require a Context.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public AudioManager() {
         mUseVolumeKeySounds = true;
         mUseFixedVolume = false;
@@ -943,7 +952,7 @@ public class AudioManager {
      * @see #setRingerMode(int)
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static boolean isValidRingerMode(int ringerMode) {
         if (ringerMode < 0 || ringerMode > RINGER_MODE_MAX) {
             return false;
@@ -1262,6 +1271,39 @@ public class AudioManager {
     }
 
     /**
+     * Set the system usages to be supported on this device.
+     * @param systemUsages array of system usages to support {@link AttributeSystemUsage}
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public void setSupportedSystemUsages(@NonNull @AttributeSystemUsage int[] systemUsages) {
+        Objects.requireNonNull(systemUsages, "systemUsages must not be null");
+        final IAudioService service = getService();
+        try {
+            service.setSupportedSystemUsages(systemUsages);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Get the system usages supported on this device.
+     * @return array of supported system usages {@link AttributeSystemUsage}
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public @NonNull @AttributeSystemUsage int[] getSupportedSystemUsages() {
+        final IAudioService service = getService();
+        try {
+            return service.getSupportedSystemUsages();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Solo or unsolo a particular stream.
      * <p>
      * Do not use. This method has been deprecated and is now a no-op.
@@ -1464,7 +1506,7 @@ public class AudioManager {
     public void setSpeakerphoneOn(boolean on){
         final IAudioService service = getService();
         try {
-            service.setSpeakerphoneOn(on);
+            service.setSpeakerphoneOn(mICallBack, on);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1537,6 +1579,715 @@ public class AudioManager {
             Log.e(TAG, "Failed to query allowed capture policy: " + e);
         }
         return result;
+    }
+
+    //====================================================================
+    // Audio Product Strategy routing
+
+    /**
+     * @hide
+     * Set the preferred device for a given strategy, i.e. the audio routing to be used by
+     * this audio strategy. Note that the device may not be available at the time the preferred
+     * device is set, but it will be used once made available.
+     * <p>Use {@link #removePreferredDeviceForStrategy(AudioProductStrategy)} to cancel setting
+     * this preference for this strategy.</p>
+     * @param strategy the audio strategy whose routing will be affected
+     * @param device the audio device to route to when available
+     * @return true if the operation was successful, false otherwise
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public boolean setPreferredDeviceForStrategy(@NonNull AudioProductStrategy strategy,
+            @NonNull AudioDeviceAttributes device) {
+        return setPreferredDevicesForStrategy(strategy, Arrays.asList(device));
+    }
+
+    /**
+     * @hide
+     * Removes the preferred audio device(s) previously set with
+     * {@link #setPreferredDeviceForStrategy(AudioProductStrategy, AudioDeviceAttributes)} or
+     * {@link #setPreferredDevicesForStrategy(AudioProductStrategy, List<AudioDeviceAttributes>)}.
+     * @param strategy the audio strategy whose routing will be affected
+     * @return true if the operation was successful, false otherwise (invalid strategy, or no
+     *     device set for example)
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public boolean removePreferredDeviceForStrategy(@NonNull AudioProductStrategy strategy) {
+        Objects.requireNonNull(strategy);
+        try {
+            final int status =
+                    getService().removePreferredDevicesForStrategy(strategy.getId());
+            return status == AudioSystem.SUCCESS;
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     * Return the preferred device for an audio strategy, previously set with
+     * {@link #setPreferredDeviceForStrategy(AudioProductStrategy, AudioDeviceAttributes)} or
+     * {@link #setPreferredDevicesForStrategy(AudioProductStrategy, List<AudioDeviceAttributes>)}
+     * @param strategy the strategy to query
+     * @return the preferred device for that strategy, if multiple devices are set as preferred
+     *    devices, the first one in the list will be returned. Null will be returned if none was
+     *    ever set or if the strategy is invalid
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    @Nullable
+    public AudioDeviceAttributes getPreferredDeviceForStrategy(
+            @NonNull AudioProductStrategy strategy) {
+        List<AudioDeviceAttributes> devices = getPreferredDevicesForStrategy(strategy);
+        return devices.isEmpty() ? null : devices.get(0);
+    }
+
+    /**
+     * @hide
+     * Set the preferred devices for a given strategy, i.e. the audio routing to be used by
+     * this audio strategy. Note that the devices may not be available at the time the preferred
+     * devices is set, but it will be used once made available.
+     * <p>Use {@link #removePreferredDeviceForStrategy(AudioProductStrategy)} to cancel setting
+     * this preference for this strategy.</p>
+     * Note that the list of devices is not a list ranked by preference, but a list of one or more
+     * devices used simultaneously to output the same audio signal.
+     * @param strategy the audio strategy whose routing will be affected
+     * @param devices a non-empty list of the audio devices to route to when available
+     * @return true if the operation was successful, false otherwise
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public boolean setPreferredDevicesForStrategy(@NonNull AudioProductStrategy strategy,
+                                                  @NonNull List<AudioDeviceAttributes> devices) {
+        Objects.requireNonNull(strategy);
+        Objects.requireNonNull(devices);
+        if (devices.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Tried to set preferred devices for strategy with a empty list");
+        }
+        for (AudioDeviceAttributes device : devices) {
+            Objects.requireNonNull(device);
+        }
+        try {
+            final int status =
+                    getService().setPreferredDevicesForStrategy(strategy.getId(), devices);
+            return status == AudioSystem.SUCCESS;
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     * Return the preferred devices for an audio strategy, previously set with
+     * {@link #setPreferredDeviceForStrategy(AudioProductStrategy, AudioDeviceAttributes)}
+     * {@link #setPreferredDevicesForStrategy(AudioProductStrategy, List<AudioDeviceAttributes>)}
+     * @param strategy the strategy to query
+     * @return the preferred device for that strategy, or null if none was ever set or if the
+     *    strategy is invalid
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    @NonNull
+    public List<AudioDeviceAttributes> getPreferredDevicesForStrategy(
+            @NonNull AudioProductStrategy strategy) {
+        Objects.requireNonNull(strategy);
+        try {
+            return getService().getPreferredDevicesForStrategy(strategy.getId());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     * Interface to be notified of changes in the preferred audio device set for a given audio
+     * strategy.
+     * <p>Note that this listener will only be invoked whenever
+     * {@link #setPreferredDeviceForStrategy(AudioProductStrategy, AudioDeviceAttributes)} or
+     * {@link #setPreferredDevicesForStrategy(AudioProductStrategy, List<AudioDeviceAttributes>)}
+     * {@link #removePreferredDeviceForStrategy(AudioProductStrategy)} causes a change in
+     * preferred device. It will not be invoked directly after registration with
+     * {@link #addOnPreferredDeviceForStrategyChangedListener(Executor, OnPreferredDeviceForStrategyChangedListener)}
+     * to indicate which strategies had preferred devices at the time of registration.</p>
+     * @see #setPreferredDeviceForStrategy(AudioProductStrategy, AudioDeviceAttributes)
+     * @see #removePreferredDeviceForStrategy(AudioProductStrategy)
+     * @see #getPreferredDeviceForStrategy(AudioProductStrategy)
+     * @deprecated use #OnPreferredDevicesForStrategyChangedListener
+     */
+    @SystemApi
+    @Deprecated
+    public interface OnPreferredDeviceForStrategyChangedListener {
+        /**
+         * Called on the listener to indicate that the preferred audio device for the given
+         * strategy has changed.
+         * @param strategy the {@link AudioProductStrategy} whose preferred device changed
+         * @param device <code>null</code> if the preferred device was removed, or the newly set
+         *              preferred audio device
+         */
+        void onPreferredDeviceForStrategyChanged(@NonNull AudioProductStrategy strategy,
+                @Nullable AudioDeviceAttributes device);
+    }
+
+    /**
+     * @hide
+     * Interface to be notified of changes in the preferred audio devices set for a given audio
+     * strategy.
+     * <p>Note that this listener will only be invoked whenever
+     * {@link #setPreferredDeviceForStrategy(AudioProductStrategy, AudioDeviceAttributes)} or
+     * {@link #setPreferredDevicesForStrategy(AudioProductStrategy, List<AudioDeviceAttributes>)}
+     * {@link #removePreferredDeviceForStrategy(AudioProductStrategy)} causes a change in
+     * preferred device(s). It will not be invoked directly after registration with
+     * {@link #addOnPreferredDevicesForStrategyChangedListener(
+     * Executor, OnPreferredDevicesForStrategyChangedListener)}
+     * to indicate which strategies had preferred devices at the time of registration.</p>
+     * @see #setPreferredDeviceForStrategy(AudioProductStrategy, AudioDeviceAttributes)
+     * @see #setPreferredDevicesForStrategy(AudioProductStrategy, List)
+     * @see #removePreferredDeviceForStrategy(AudioProductStrategy)
+     * @see #getPreferredDeviceForStrategy(AudioProductStrategy)
+     * @see #getPreferredDevicesForStrategy(AudioProductStrategy)
+     */
+    @SystemApi
+    public interface OnPreferredDevicesForStrategyChangedListener {
+        /**
+         * Called on the listener to indicate that the preferred audio devices for the given
+         * strategy has changed.
+         * @param strategy the {@link AudioProductStrategy} whose preferred device changed
+         * @param devices a list of newly set preferred audio devices
+         */
+        void onPreferredDevicesForStrategyChanged(@NonNull AudioProductStrategy strategy,
+                                                  @NonNull List<AudioDeviceAttributes> devices);
+    }
+
+    /**
+     * @hide
+     * Adds a listener for being notified of changes to the strategy-preferred audio device.
+     * @param executor
+     * @param listener
+     * @throws SecurityException if the caller doesn't hold the required permission
+     * @deprecated use {@link #addOnPreferredDevicesForStrategyChangedListener(
+     *             Executor, AudioManager.OnPreferredDevicesForStrategyChangedListener)} instead
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    @Deprecated
+    public void addOnPreferredDeviceForStrategyChangedListener(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull OnPreferredDeviceForStrategyChangedListener listener)
+            throws SecurityException {
+        // No-op, the method is deprecated.
+    }
+
+    /**
+     * @hide
+     * Removes a previously added listener of changes to the strategy-preferred audio device.
+     * @param listener
+     * @deprecated use {@link #removeOnPreferredDevicesForStrategyChangedListener(
+     *             AudioManager.OnPreferredDevicesForStrategyChangedListener)} instead
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    @Deprecated
+    public void removeOnPreferredDeviceForStrategyChangedListener(
+            @NonNull OnPreferredDeviceForStrategyChangedListener listener) {
+        // No-op, the method is deprecated.
+    }
+
+    /**
+     * @hide
+     * Adds a listener for being notified of changes to the strategy-preferred audio device.
+     * @param executor
+     * @param listener
+     * @throws SecurityException if the caller doesn't hold the required permission
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public void addOnPreferredDevicesForStrategyChangedListener(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull OnPreferredDevicesForStrategyChangedListener listener)
+            throws SecurityException {
+        Objects.requireNonNull(executor);
+        Objects.requireNonNull(listener);
+        synchronized (mPrefDevListenerLock) {
+            if (hasPrefDevListener(listener)) {
+                throw new IllegalArgumentException(
+                        "attempt to call addOnPreferredDevicesForStrategyChangedListener() "
+                                + "on a previously registered listener");
+            }
+            // lazy initialization of the list of strategy-preferred device listener
+            if (mPrefDevListeners == null) {
+                mPrefDevListeners = new ArrayList<>();
+            }
+            final int oldCbCount = mPrefDevListeners.size();
+            mPrefDevListeners.add(new PrefDevListenerInfo(listener, executor));
+            if (oldCbCount == 0 && mPrefDevListeners.size() > 0) {
+                // register binder for callbacks
+                if (mPrefDevDispatcherStub == null) {
+                    mPrefDevDispatcherStub = new StrategyPreferredDevicesDispatcherStub();
+                }
+                try {
+                    getService().registerStrategyPreferredDevicesDispatcher(mPrefDevDispatcherStub);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                }
+            }
+        }
+    }
+
+    /**
+     * @hide
+     * Removes a previously added listener of changes to the strategy-preferred audio device.
+     * @param listener
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public void removeOnPreferredDevicesForStrategyChangedListener(
+            @NonNull OnPreferredDevicesForStrategyChangedListener listener) {
+        Objects.requireNonNull(listener);
+        synchronized (mPrefDevListenerLock) {
+            if (!removePrefDevListener(listener)) {
+                throw new IllegalArgumentException(
+                        "attempt to call removeOnPreferredDeviceForStrategyChangedListener() "
+                                + "on an unregistered listener");
+            }
+            if (mPrefDevListeners.size() == 0) {
+                // unregister binder for callbacks
+                try {
+                    getService().unregisterStrategyPreferredDevicesDispatcher(
+                            mPrefDevDispatcherStub);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                } finally {
+                    mPrefDevDispatcherStub = null;
+                    mPrefDevListeners = null;
+                }
+            }
+        }
+    }
+
+
+    private final Object mPrefDevListenerLock = new Object();
+    /**
+     * List of listeners for preferred device for strategy and their associated Executor.
+     * List is lazy-initialized on first registration
+     */
+    @GuardedBy("mPrefDevListenerLock")
+    private @Nullable ArrayList<PrefDevListenerInfo> mPrefDevListeners;
+
+    private static class PrefDevListenerInfo {
+        final @NonNull OnPreferredDevicesForStrategyChangedListener mListener;
+        final @NonNull Executor mExecutor;
+        PrefDevListenerInfo(OnPreferredDevicesForStrategyChangedListener listener, Executor exe) {
+            mListener = listener;
+            mExecutor = exe;
+        }
+    }
+
+    @GuardedBy("mPrefDevListenerLock")
+    private StrategyPreferredDevicesDispatcherStub mPrefDevDispatcherStub;
+
+    private final class StrategyPreferredDevicesDispatcherStub
+            extends IStrategyPreferredDevicesDispatcher.Stub {
+
+        @Override
+        public void dispatchPrefDevicesChanged(int strategyId,
+                                               @NonNull List<AudioDeviceAttributes> devices) {
+            // make a shallow copy of listeners so callback is not executed under lock
+            final ArrayList<PrefDevListenerInfo> prefDevListeners;
+            synchronized (mPrefDevListenerLock) {
+                if (mPrefDevListeners == null || mPrefDevListeners.size() == 0) {
+                    return;
+                }
+                prefDevListeners = (ArrayList<PrefDevListenerInfo>) mPrefDevListeners.clone();
+            }
+            final AudioProductStrategy strategy =
+                    AudioProductStrategy.getAudioProductStrategyWithId(strategyId);
+            final long ident = Binder.clearCallingIdentity();
+            try {
+                for (PrefDevListenerInfo info : prefDevListeners) {
+                    info.mExecutor.execute(() ->
+                            info.mListener.onPreferredDevicesForStrategyChanged(strategy, devices));
+                }
+            } finally {
+                Binder.restoreCallingIdentity(ident);
+            }
+        }
+    }
+
+    @GuardedBy("mPrefDevListenerLock")
+    private @Nullable PrefDevListenerInfo getPrefDevListenerInfo(
+            OnPreferredDevicesForStrategyChangedListener listener) {
+        if (mPrefDevListeners == null) {
+            return null;
+        }
+        for (PrefDevListenerInfo info : mPrefDevListeners) {
+            if (info.mListener == listener) {
+                return info;
+            }
+        }
+        return null;
+    }
+
+    @GuardedBy("mPrefDevListenerLock")
+    private boolean hasPrefDevListener(OnPreferredDevicesForStrategyChangedListener listener) {
+        return getPrefDevListenerInfo(listener) != null;
+    }
+
+    @GuardedBy("mPrefDevListenerLock")
+    /**
+     * @return true if the listener was removed from the list
+     */
+    private boolean removePrefDevListener(OnPreferredDevicesForStrategyChangedListener listener) {
+        final PrefDevListenerInfo infoToRemove = getPrefDevListenerInfo(listener);
+        if (infoToRemove != null) {
+            mPrefDevListeners.remove(infoToRemove);
+            return true;
+        }
+        return false;
+    }
+
+    //====================================================================
+    // Audio Capture Preset routing
+
+    /**
+     * @hide
+     * Set the preferred device for a given capture preset, i.e. the audio routing to be used by
+     * this capture preset. Note that the device may not be available at the time the preferred
+     * device is set, but it will be used once made available.
+     * <p>Use {@link #clearPreferredDevicesForCapturePreset(int)} to cancel setting this preference
+     * for this capture preset.</p>
+     * @param capturePreset the audio capture preset whose routing will be affected
+     * @param device the audio device to route to when available
+     * @return true if the operation was successful, false otherwise
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public boolean setPreferredDeviceForCapturePreset(int capturePreset,
+                                                      @NonNull AudioDeviceAttributes device) {
+        return setPreferredDevicesForCapturePreset(capturePreset, Arrays.asList(device));
+    }
+
+    /**
+     * @hide
+     * Remove all the preferred audio devices previously set
+     * @param capturePreset the audio capture preset whose routing will be affected
+     * @return true if the operation was successful, false otherwise (invalid capture preset, or no
+     *     device set for example)
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public boolean clearPreferredDevicesForCapturePreset(int capturePreset) {
+        if (!MediaRecorder.isValidAudioSource(capturePreset)) {
+            return false;
+        }
+        try {
+            final int status = getService().clearPreferredDevicesForCapturePreset(capturePreset);
+            return status == AudioSystem.SUCCESS;
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     * Return the preferred devices for an audio capture preset, previously set with
+     * {@link #setPreferredDeviceForCapturePreset(int, AudioDeviceAttributes)}
+     * @param capturePreset the capture preset to query
+     * @return a list that contains preferred devices for that capture preset.
+     */
+    @NonNull
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public List<AudioDeviceAttributes> getPreferredDevicesForCapturePreset(int capturePreset) {
+        if (!MediaRecorder.isValidAudioSource(capturePreset)) {
+            return new ArrayList<AudioDeviceAttributes>();
+        }
+        try {
+            return getService().getPreferredDevicesForCapturePreset(capturePreset);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    private boolean setPreferredDevicesForCapturePreset(
+            int capturePreset, @NonNull List<AudioDeviceAttributes> devices) {
+        Objects.requireNonNull(devices);
+        if (!MediaRecorder.isValidAudioSource(capturePreset)) {
+            return false;
+        }
+        if (devices.size() != 1) {
+            throw new IllegalArgumentException(
+                    "Only support setting one preferred devices for capture preset");
+        }
+        for (AudioDeviceAttributes device : devices) {
+            Objects.requireNonNull(device);
+        }
+        try {
+            final int status =
+                    getService().setPreferredDevicesForCapturePreset(capturePreset, devices);
+            return status == AudioSystem.SUCCESS;
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     * Interface to be notified of changes in the preferred audio devices set for a given capture
+     * preset.
+     * <p>Note that this listener will only be invoked whenever
+     * {@link #setPreferredDeviceForCapturePreset(int, AudioDeviceAttributes)} or
+     * {@link #clearPreferredDevicesForCapturePreset(int)} causes a change in
+     * preferred device. It will not be invoked directly after registration with
+     * {@link #addOnPreferredDevicesForCapturePresetChangedListener(
+     * Executor, OnPreferredDevicesForCapturePresetChangedListener)}
+     * to indicate which strategies had preferred devices at the time of registration.</p>
+     * @see #setPreferredDeviceForCapturePreset(int, AudioDeviceAttributes)
+     * @see #clearPreferredDevicesForCapturePreset(int)
+     * @see #getPreferredDevicesForCapturePreset(int)
+     */
+    @SystemApi
+    public interface OnPreferredDevicesForCapturePresetChangedListener {
+        /**
+         * Called on the listener to indicate that the preferred audio devices for the given
+         * capture preset has changed.
+         * @param capturePreset the capture preset whose preferred device changed
+         * @param devices a list of newly set preferred audio devices
+         */
+        void onPreferredDevicesForCapturePresetChanged(
+                int capturePreset, @NonNull List<AudioDeviceAttributes> devices);
+    }
+
+    /**
+     * @hide
+     * Adds a listener for being notified of changes to the capture-preset-preferred audio device.
+     * @param executor
+     * @param listener
+     * @throws SecurityException if the caller doesn't hold the required permission
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public void addOnPreferredDevicesForCapturePresetChangedListener(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull OnPreferredDevicesForCapturePresetChangedListener listener)
+            throws SecurityException {
+        Objects.requireNonNull(executor);
+        Objects.requireNonNull(listener);
+        int status = addOnDevRoleForCapturePresetChangedListener(
+                executor, listener, AudioSystem.DEVICE_ROLE_PREFERRED);
+        if (status == AudioSystem.ERROR) {
+            // This must not happen
+            throw new RuntimeException("Unknown error happened");
+        }
+        if (status == AudioSystem.BAD_VALUE) {
+            throw new IllegalArgumentException(
+                    "attempt to call addOnPreferredDevicesForCapturePresetChangedListener() "
+                            + "on a previously registered listener");
+        }
+    }
+
+    /**
+     * @hide
+     * Removes a previously added listener of changes to the capture-preset-preferred audio device.
+     * @param listener
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public void removeOnPreferredDevicesForCapturePresetChangedListener(
+            @NonNull OnPreferredDevicesForCapturePresetChangedListener listener) {
+        Objects.requireNonNull(listener);
+        int status = removeOnDevRoleForCapturePresetChangedListener(
+                listener, AudioSystem.DEVICE_ROLE_PREFERRED);
+        if (status == AudioSystem.ERROR) {
+            // This must not happen
+            throw new RuntimeException("Unknown error happened");
+        }
+        if (status == AudioSystem.BAD_VALUE) {
+            throw new IllegalArgumentException(
+                    "attempt to call removeOnPreferredDevicesForCapturePresetChangedListener() "
+                            + "on an unregistered listener");
+        }
+    }
+
+    private <T> int addOnDevRoleForCapturePresetChangedListener(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull T listener, int deviceRole) {
+        Objects.requireNonNull(executor);
+        Objects.requireNonNull(listener);
+        DevRoleListeners<T> devRoleListeners =
+                (DevRoleListeners<T>) mDevRoleForCapturePresetListeners.get(deviceRole);
+        if (devRoleListeners == null) {
+            return AudioSystem.ERROR;
+        }
+        synchronized (devRoleListeners.mDevRoleListenersLock) {
+            if (devRoleListeners.hasDevRoleListener(listener)) {
+                return AudioSystem.BAD_VALUE;
+            }
+            // lazy initialization of the list of device role listener
+            if (devRoleListeners.mListenerInfos == null) {
+                devRoleListeners.mListenerInfos = new ArrayList<>();
+            }
+            final int oldCbCount = devRoleListeners.mListenerInfos.size();
+            devRoleListeners.mListenerInfos.add(new DevRoleListenerInfo<T>(executor, listener));
+            if (oldCbCount == 0 && devRoleListeners.mListenerInfos.size() > 0) {
+                // register binder for callbacks
+                synchronized (mDevRoleForCapturePresetListenersLock) {
+                    int deviceRoleListenerStatus = mDeviceRoleListenersStatus;
+                    mDeviceRoleListenersStatus |= (1 << deviceRole);
+                    if (deviceRoleListenerStatus != 0) {
+                        // There are already device role changed listeners active.
+                        return AudioSystem.SUCCESS;
+                    }
+                    if (mDevicesRoleForCapturePresetDispatcherStub == null) {
+                        mDevicesRoleForCapturePresetDispatcherStub =
+                                new CapturePresetDevicesRoleDispatcherStub();
+                    }
+                    try {
+                        getService().registerCapturePresetDevicesRoleDispatcher(
+                                mDevicesRoleForCapturePresetDispatcherStub);
+                    } catch (RemoteException e) {
+                        throw e.rethrowFromSystemServer();
+                    }
+                }
+            }
+        }
+        return AudioSystem.SUCCESS;
+    }
+
+    private <T> int removeOnDevRoleForCapturePresetChangedListener(
+            @NonNull T listener, int deviceRole) {
+        Objects.requireNonNull(listener);
+        DevRoleListeners<T> devRoleListeners =
+                (DevRoleListeners<T>) mDevRoleForCapturePresetListeners.get(deviceRole);
+        if (devRoleListeners == null) {
+            return AudioSystem.ERROR;
+        }
+        synchronized (devRoleListeners.mDevRoleListenersLock) {
+            if (!devRoleListeners.removeDevRoleListener(listener)) {
+                return AudioSystem.BAD_VALUE;
+            }
+            if (devRoleListeners.mListenerInfos.size() == 0) {
+                // unregister binder for callbacks
+                synchronized (mDevRoleForCapturePresetListenersLock) {
+                    mDeviceRoleListenersStatus ^= (1 << deviceRole);
+                    if (mDeviceRoleListenersStatus != 0) {
+                        // There are some other device role changed listeners active.
+                        return AudioSystem.SUCCESS;
+                    }
+                    try {
+                        getService().unregisterCapturePresetDevicesRoleDispatcher(
+                                mDevicesRoleForCapturePresetDispatcherStub);
+                    } catch (RemoteException e) {
+                        throw e.rethrowFromSystemServer();
+                    }
+                }
+            }
+        }
+        return AudioSystem.SUCCESS;
+    }
+
+    private final Map<Integer, Object> mDevRoleForCapturePresetListeners = new HashMap<>(){{
+            put(AudioSystem.DEVICE_ROLE_PREFERRED,
+                    new DevRoleListeners<OnPreferredDevicesForCapturePresetChangedListener>());
+        }};
+
+    private class DevRoleListenerInfo<T> {
+        final @NonNull Executor mExecutor;
+        final @NonNull T mListener;
+        DevRoleListenerInfo(Executor executor, T listener) {
+            mExecutor = executor;
+            mListener = listener;
+        }
+    }
+
+    private class DevRoleListeners<T> {
+        private final Object mDevRoleListenersLock = new Object();
+        @GuardedBy("mDevRoleListenersLock")
+        private @Nullable ArrayList<DevRoleListenerInfo<T>> mListenerInfos;
+
+        @GuardedBy("mDevRoleListenersLock")
+        private @Nullable DevRoleListenerInfo<T> getDevRoleListenerInfo(T listener) {
+            if (mListenerInfos == null) {
+                return null;
+            }
+            for (DevRoleListenerInfo<T> listenerInfo : mListenerInfos) {
+                if (listenerInfo.mListener == listener) {
+                    return listenerInfo;
+                }
+            }
+            return null;
+        }
+
+        @GuardedBy("mDevRoleListenersLock")
+        private boolean hasDevRoleListener(T listener) {
+            return getDevRoleListenerInfo(listener) != null;
+        }
+
+        @GuardedBy("mDevRoleListenersLock")
+        private boolean removeDevRoleListener(T listener) {
+            final DevRoleListenerInfo<T> infoToRemove = getDevRoleListenerInfo(listener);
+            if (infoToRemove != null) {
+                mListenerInfos.remove(infoToRemove);
+                return true;
+            }
+            return false;
+        }
+    }
+
+    private final Object mDevRoleForCapturePresetListenersLock = new Object();
+    /**
+     * Record if there is a listener added for device role change. If there is a listener added for
+     * a specified device role change, the bit at position `1 << device_role` is set.
+     */
+    @GuardedBy("mDevRoleForCapturePresetListenersLock")
+    private int mDeviceRoleListenersStatus = 0;
+    @GuardedBy("mDevRoleForCapturePresetListenersLock")
+    private CapturePresetDevicesRoleDispatcherStub mDevicesRoleForCapturePresetDispatcherStub;
+
+    private final class CapturePresetDevicesRoleDispatcherStub
+            extends ICapturePresetDevicesRoleDispatcher.Stub {
+
+        @Override
+        public void dispatchDevicesRoleChanged(
+                int capturePreset, int role, List<AudioDeviceAttributes> devices) {
+            final Object listenersObj = mDevRoleForCapturePresetListeners.get(role);
+            if (listenersObj == null) {
+                return;
+            }
+            switch (role) {
+                case AudioSystem.DEVICE_ROLE_PREFERRED: {
+                    final DevRoleListeners<OnPreferredDevicesForCapturePresetChangedListener>
+                            listeners =
+                            (DevRoleListeners<OnPreferredDevicesForCapturePresetChangedListener>)
+                            listenersObj;
+                    final ArrayList<DevRoleListenerInfo<
+                            OnPreferredDevicesForCapturePresetChangedListener>> prefDevListeners;
+                    synchronized (listeners.mDevRoleListenersLock) {
+                        if (listeners.mListenerInfos.isEmpty()) {
+                            return;
+                        }
+                        prefDevListeners = (ArrayList<DevRoleListenerInfo<
+                                OnPreferredDevicesForCapturePresetChangedListener>>)
+                                listeners.mListenerInfos.clone();
+                    }
+                    final long ident = Binder.clearCallingIdentity();
+                    try {
+                        for (DevRoleListenerInfo<
+                                OnPreferredDevicesForCapturePresetChangedListener> info :
+                                prefDevListeners) {
+                            info.mExecutor.execute(() ->
+                                    info.mListener.onPreferredDevicesForCapturePresetChanged(
+                                            capturePreset, devices));
+                        }
+                    } finally {
+                        Binder.restoreCallingIdentity(ident);
+                    }
+                } break;
+                default:
+                    break;
+            }
+        }
     }
 
     //====================================================================
@@ -1720,7 +2471,7 @@ public class AudioManager {
      * @see #stopBluetoothSco()
      * @see #ACTION_SCO_AUDIO_STATE_UPDATED
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void startBluetoothScoVirtualCall() {
         final IAudioService service = getService();
         try {
@@ -1872,7 +2623,7 @@ public class AudioManager {
      * @param on set <var>true</var> to mute the microphone;
      *           <var>false</var> to turn mute off
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void setMicrophoneMuteFromSwitch(boolean on) {
         final IAudioService service = getService();
         try {
@@ -1936,12 +2687,11 @@ public class AudioManager {
      * application when it places a phone call, as it will cause signals from the radio layer
      * to feed the platform mixer.
      *
-     * @param mode  the requested audio mode ({@link #MODE_NORMAL}, {@link #MODE_RINGTONE},
-     *              {@link #MODE_IN_CALL} or {@link #MODE_IN_COMMUNICATION}).
+     * @param mode  the requested audio mode.
      *              Informs the HAL about the current audio state so that
      *              it can route the audio appropriately.
      */
-    public void setMode(int mode) {
+    public void setMode(@AudioMode int mode) {
         final IAudioService service = getService();
         try {
             service.setMode(mode, mICallBack, mApplicationContext.getOpPackageName());
@@ -1953,14 +2703,47 @@ public class AudioManager {
     /**
      * Returns the current audio mode.
      *
-     * @return      the current audio mode ({@link #MODE_NORMAL}, {@link #MODE_RINGTONE},
-     *              {@link #MODE_IN_CALL} or {@link #MODE_IN_COMMUNICATION}).
-     *              Returns the current current audio state from the HAL.
+     * @return      the current audio mode.
      */
+    @AudioMode
     public int getMode() {
         final IAudioService service = getService();
         try {
-            return service.getMode();
+            int mode = service.getMode();
+            int sdk;
+            try {
+                sdk = getContext().getApplicationInfo().targetSdkVersion;
+            } catch (NullPointerException e) {
+                // some tests don't have a Context
+                sdk = Build.VERSION.SDK_INT;
+            }
+            if (mode == MODE_CALL_SCREENING && sdk <= Build.VERSION_CODES.Q) {
+                mode = MODE_IN_CALL;
+            }
+            return mode;
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+    * Indicates if the platform supports a special call screening and call monitoring mode.
+    * <p>
+    * When this mode is supported, it is possible to perform call screening and monitoring
+    * functions while other use cases like music or movie playback are active.
+    * <p>
+    * Use {@link #setMode(int)} with mode {@link #MODE_CALL_SCREENING} to place the platform in
+    * call screening mode.
+    * <p>
+    * If call screening mode is not supported, setting mode to
+    * MODE_CALL_SCREENING will be ignored and will not change current mode reported by
+    *  {@link #getMode()}.
+    * @return true if call screening mode is supported, false otherwise.
+    */
+    public boolean isCallScreeningModeSupported() {
+        final IAudioService service = getService();
+        try {
+            return service.isCallScreeningModeSupported();
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1994,6 +2777,22 @@ public class AudioManager {
      * In communication audio mode. An audio/video chat or VoIP call is established.
      */
     public static final int MODE_IN_COMMUNICATION   = AudioSystem.MODE_IN_COMMUNICATION;
+    /**
+     * Call screening in progress. Call is connected and audio is accessible to call
+     * screening applications but other audio use cases are still possible.
+     */
+    public static final int MODE_CALL_SCREENING     = AudioSystem.MODE_CALL_SCREENING;
+
+    /** @hide */
+    @IntDef(flag = false, prefix = "MODE_", value = {
+            MODE_NORMAL,
+            MODE_RINGTONE,
+            MODE_IN_CALL,
+            MODE_IN_COMMUNICATION,
+            MODE_CALL_SCREENING }
+    )
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface AudioMode {}
 
     /* Routing bits for setRouting/getRouting API */
     /**
@@ -2084,7 +2883,7 @@ public class AudioManager {
      *   display). Note that BT audio sinks are not considered remote devices.
      * @return true if {@link AudioManager#STREAM_MUSIC} is active on a remote device
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public boolean isMusicActiveRemotely() {
         return AudioSystem.isStreamActiveRemotely(STREAM_MUSIC, 0);
     }
@@ -2235,7 +3034,7 @@ public class AudioManager {
     /**
      * @hide Number of sound effects
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int NUM_SOUND_EFFECTS = 10;
 
     /**
@@ -2370,6 +3169,32 @@ public class AudioManager {
             service.unloadSoundEffects();
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     */
+    public static String audioFocusToString(int focus) {
+        switch (focus) {
+            case AUDIOFOCUS_NONE:
+                return "AUDIOFOCUS_NONE";
+            case AUDIOFOCUS_GAIN:
+                return "AUDIOFOCUS_GAIN";
+            case AUDIOFOCUS_GAIN_TRANSIENT:
+                return "AUDIOFOCUS_GAIN_TRANSIENT";
+            case AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK:
+                return "AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK";
+            case AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE:
+                return "AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE";
+            case AUDIOFOCUS_LOSS:
+                return "AUDIOFOCUS_LOSS";
+            case AUDIOFOCUS_LOSS_TRANSIENT:
+                return "AUDIOFOCUS_LOSS_TRANSIENT";
+            case AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK: // Note CAN_DUCK not MAY_DUCK.
+                return "AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK";
+            default:
+                return "AUDIO_FOCUS_UNKNOWN(" + focus + ")";
         }
     }
 
@@ -3043,7 +3868,7 @@ public class AudioManager {
      * @param durationHint the type of focus request. AUDIOFOCUS_GAIN_TRANSIENT is recommended so
      *    media applications resume after a call
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void requestAudioFocusForCall(int streamType, int durationHint) {
         final IAudioService service = getService();
         try {
@@ -3084,7 +3909,6 @@ public class AudioManager {
      * @param requestResult the result to the focus request to be passed to the requester
      * @param ap a valid registered {@link AudioPolicy} configured as a focus policy.
      */
-    @TestApi
     @SystemApi
     @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
     public void setFocusRequestResult(@NonNull AudioFocusInfo afi,
@@ -3124,7 +3948,6 @@ public class AudioManager {
      *     if there was an error sending the request.
      * @throws NullPointerException if the {@link AudioFocusInfo} or {@link AudioPolicy} are null.
      */
-    @TestApi
     @SystemApi
     @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
     public int dispatchAudioFocusChange(@NonNull AudioFocusInfo afi, int focusChange,
@@ -3149,7 +3972,7 @@ public class AudioManager {
      * when ringing ends and the call is rejected or not answered.
      * Should match one or more calls to {@link #requestAudioFocusForCall(int, int)}.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void abandonAudioFocusForCall() {
         final IAudioService service = getService();
         try {
@@ -3179,8 +4002,8 @@ public class AudioManager {
      * @deprecated use {@link #abandonAudioFocusRequest(AudioFocusRequest)}
      */
     @SystemApi
-    @SuppressLint("Doclava125") // no permission enforcement, but only "undoes" what would have been
-                                // done by a matching requestAudioFocus
+    @SuppressLint("RequiresPermission") // no permission enforcement, but only "undoes" what would
+    // have been done by a matching requestAudioFocus
     public int abandonAudioFocus(OnAudioFocusChangeListener l, AudioAttributes aa) {
         int status = AUDIOFOCUS_REQUEST_FAILED;
         unregisterAudioFocusRequest(l);
@@ -3387,7 +4210,6 @@ public class AudioManager {
      *    {@link android.Manifest.permission#MODIFY_AUDIO_ROUTING} permission,
      *    {@link #SUCCESS} otherwise.
      */
-    @TestApi
     @SystemApi
     @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
     public int registerAudioPolicy(@NonNull AudioPolicy policy) {
@@ -3422,7 +4244,6 @@ public class AudioManager {
      * Unregisters an {@link AudioPolicy} asynchronously.
      * @param policy the non-null {@link AudioPolicy} to unregister.
      */
-    @TestApi
     @SystemApi
     @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
     public void unregisterAudioPolicyAsync(@NonNull AudioPolicy policy) {
@@ -3449,7 +4270,6 @@ public class AudioManager {
      * associated with mixes of this policy.
      * @param policy the non-null {@link AudioPolicy} to unregister.
      */
-    @TestApi
     @SystemApi
     @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
     public void unregisterAudioPolicy(@NonNull AudioPolicy policy) {
@@ -3526,7 +4346,8 @@ public class AudioManager {
      * the callback. If <code>null</code>, the {@link Handler} associated with the main
      * {@link Looper} will be used.
      */
-    public void registerAudioPlaybackCallback(@NonNull AudioPlaybackCallback cb, Handler handler)
+    public void registerAudioPlaybackCallback(@NonNull AudioPlaybackCallback cb,
+                                              @Nullable Handler handler)
     {
         if (cb == null) {
             throw new IllegalArgumentException("Illegal null AudioPlaybackCallback argument");
@@ -3715,7 +4536,8 @@ public class AudioManager {
      * the callback. If <code>null</code>, the {@link Handler} associated with the main
      * {@link Looper} will be used.
      */
-    public void registerAudioRecordingCallback(@NonNull AudioRecordingCallback cb, Handler handler)
+    public void registerAudioRecordingCallback(@NonNull AudioRecordingCallback cb,
+                                               @Nullable Handler handler)
     {
         if (cb == null) {
             throw new IllegalArgumentException("Illegal null AudioRecordingCallback argument");
@@ -3884,7 +4706,7 @@ public class AudioManager {
      *  agent when audio settings are restored and causes the AudioService
      *  to read and apply restored settings.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void reloadAudioSettings() {
         final IAudioService service = getService();
         try {
@@ -4222,6 +5044,188 @@ public class AudioManager {
         }
     }
 
+    /**
+     * @hide
+     * Get the audio devices that would be used for the routing of the given audio attributes.
+     * @param attributes the {@link AudioAttributes} for which the routing is being queried
+     * @return an empty list if there was an issue with the request, a list of audio devices
+     *   otherwise (typically one device, except for duplicated paths).
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public @NonNull List<AudioDeviceAttributes> getDevicesForAttributes(
+            @NonNull AudioAttributes attributes) {
+        Objects.requireNonNull(attributes);
+        final IAudioService service = getService();
+        try {
+            return service.getDevicesForAttributes(attributes);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     * Volume behavior for an audio device that has no particular volume behavior set. Invalid as
+     * an argument to {@link #setDeviceVolumeBehavior(int, String, int)}.
+     */
+    public static final int DEVICE_VOLUME_BEHAVIOR_UNSET = -1;
+    /**
+     * @hide
+     * Volume behavior for an audio device where a software attenuation is applied
+     * @see #setDeviceVolumeBehavior(int, String, int)
+     */
+    public static final int DEVICE_VOLUME_BEHAVIOR_VARIABLE = 0;
+    /**
+     * @hide
+     * Volume behavior for an audio device where the volume is always set to provide no attenuation
+     *     nor gain (e.g. unit gain).
+     * @see #setDeviceVolumeBehavior(int, String, int)
+     */
+    public static final int DEVICE_VOLUME_BEHAVIOR_FULL = 1;
+    /**
+     * @hide
+     * Volume behavior for an audio device where the volume is either set to muted, or to provide
+     *     no attenuation nor gain (e.g. unit gain).
+     * @see #setDeviceVolumeBehavior(int, String, int)
+     */
+    public static final int DEVICE_VOLUME_BEHAVIOR_FIXED = 2;
+    /**
+     * @hide
+     * Volume behavior for an audio device where no software attenuation is applied, and
+     *     the volume is kept synchronized between the host and the device itself through a
+     *     device-specific protocol such as BT AVRCP.
+     * @see #setDeviceVolumeBehavior(int, String, int)
+     */
+    public static final int DEVICE_VOLUME_BEHAVIOR_ABSOLUTE = 3;
+    /**
+     * @hide
+     * Volume behavior for an audio device where no software attenuation is applied, and
+     *     the volume is kept synchronized between the host and the device itself through a
+     *     device-specific protocol (such as for hearing aids), based on the audio mode (e.g.
+     *     normal vs in phone call).
+     * @see #setMode(int)
+     * @see #setDeviceVolumeBehavior(int, String, int)
+     */
+    public static final int DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_MULTI_MODE = 4;
+
+    /** @hide */
+    @IntDef({
+            DEVICE_VOLUME_BEHAVIOR_VARIABLE,
+            DEVICE_VOLUME_BEHAVIOR_FULL,
+            DEVICE_VOLUME_BEHAVIOR_FIXED,
+            DEVICE_VOLUME_BEHAVIOR_ABSOLUTE,
+            DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_MULTI_MODE,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface DeviceVolumeBehavior {}
+
+    /** @hide */
+    @IntDef({
+            DEVICE_VOLUME_BEHAVIOR_UNSET,
+            DEVICE_VOLUME_BEHAVIOR_VARIABLE,
+            DEVICE_VOLUME_BEHAVIOR_FULL,
+            DEVICE_VOLUME_BEHAVIOR_FIXED,
+            DEVICE_VOLUME_BEHAVIOR_ABSOLUTE,
+            DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_MULTI_MODE,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface DeviceVolumeBehaviorState {}
+
+    /**
+     * @hide
+     * Throws IAE on an invalid volume behavior value
+     * @param volumeBehavior behavior value to check
+     */
+    public static void enforceValidVolumeBehavior(int volumeBehavior) {
+        switch (volumeBehavior) {
+            case DEVICE_VOLUME_BEHAVIOR_VARIABLE:
+            case DEVICE_VOLUME_BEHAVIOR_FULL:
+            case DEVICE_VOLUME_BEHAVIOR_FIXED:
+            case DEVICE_VOLUME_BEHAVIOR_ABSOLUTE:
+            case DEVICE_VOLUME_BEHAVIOR_ABSOLUTE_MULTI_MODE:
+                return;
+            default:
+                throw new IllegalArgumentException("Illegal volume behavior " + volumeBehavior);
+        }
+    }
+
+    /**
+     * @hide
+     * Sets the volume behavior for an audio output device.
+     * @param deviceType the type of audio device to be affected. Currently only supports
+     *     {@link AudioDeviceInfo#TYPE_HDMI}, {@link AudioDeviceInfo#TYPE_HDMI_ARC},
+     *     {@link AudioDeviceInfo#TYPE_LINE_DIGITAL} and {@link AudioDeviceInfo#TYPE_AUX_LINE}
+     * @param deviceAddress the address of the device, if any
+     * @param deviceVolumeBehavior one of the device behaviors
+     */
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public void setDeviceVolumeBehavior(int deviceType, @Nullable String deviceAddress,
+            @DeviceVolumeBehavior int deviceVolumeBehavior) {
+        setDeviceVolumeBehavior(new AudioDeviceAttributes(AudioDeviceAttributes.ROLE_OUTPUT,
+                deviceType, deviceAddress), deviceVolumeBehavior);
+    }
+
+    /**
+     * @hide
+     * Sets the volume behavior for an audio output device.
+     * @param device the device to be affected. Currently only supports devices of type
+     *     {@link AudioDeviceInfo#TYPE_HDMI}, {@link AudioDeviceInfo#TYPE_HDMI_ARC},
+     *     {@link AudioDeviceInfo#TYPE_LINE_DIGITAL} and {@link AudioDeviceInfo#TYPE_AUX_LINE}
+     * @param deviceVolumeBehavior one of the device behaviors
+     */
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public void setDeviceVolumeBehavior(@NonNull AudioDeviceAttributes device,
+            @DeviceVolumeBehavior int deviceVolumeBehavior) {
+        // verify arguments (validity of device type is enforced in server)
+        Objects.requireNonNull(device);
+        enforceValidVolumeBehavior(deviceVolumeBehavior);
+        // communicate with service
+        final IAudioService service = getService();
+        try {
+            service.setDeviceVolumeBehavior(device, deviceVolumeBehavior,
+                    mApplicationContext.getOpPackageName());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     * Returns the volume device behavior for the given device type and address
+     * @param deviceType an audio output device type, as defined in {@link AudioDeviceInfo}
+     * @param deviceAddress the address of the audio device, if any.
+     * @return the volume behavior for the device
+     */
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public @DeviceVolumeBehaviorState int getDeviceVolumeBehavior(int deviceType,
+            @Nullable String deviceAddress) {
+        // verify arguments
+        AudioDeviceInfo.enforceValidAudioDeviceTypeOut(deviceType);
+        return getDeviceVolumeBehavior(new AudioDeviceAttributes(AudioDeviceAttributes.ROLE_OUTPUT,
+                deviceType, deviceAddress));
+    }
+
+    /**
+     * @hide
+     * Returns the volume device behavior for the given audio device
+     * @param device the audio device
+     * @return the volume behavior for the device
+     */
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public @DeviceVolumeBehaviorState int getDeviceVolumeBehavior(
+            @NonNull AudioDeviceAttributes device) {
+        // verify arguments (validity of device type is enforced in server)
+        Objects.requireNonNull(device);
+        // communicate with service
+        final IAudioService service = getService();
+        try {
+            return service.getDeviceVolumeBehavior(device);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
      /**
      * Indicate wired accessory connection state change.
      * @param device type of device connected/disconnected (AudioManager.DEVICE_OUT_xxx)
@@ -4405,6 +5409,70 @@ public class AudioManager {
     }
 
     /**
+     * @hide
+     * Sets an additional audio output device delay in milliseconds.
+     *
+     * The additional output delay is a request to the output device to
+     * delay audio presentation (generally with respect to video presentation for better
+     * synchronization).
+     * It may not be supported by all output devices,
+     * and typically increases the audio latency by the amount of additional
+     * audio delay requested.
+     *
+     * If additional audio delay is supported by an audio output device,
+     * it is expected to be supported for all output streams (and configurations)
+     * opened on that device.
+     *
+     * @param device an instance of {@link AudioDeviceInfo} returned from {@link getDevices()}.
+     * @param delayMillis delay in milliseconds desired.  This should be in range of {@code 0}
+     *     to the value returned by {@link #getMaxAdditionalOutputDeviceDelay()}.
+     * @return true if successful, false if the device does not support output device delay
+     *     or the delay is not in range of {@link #getMaxAdditionalOutputDeviceDelay()}.
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public boolean setAdditionalOutputDeviceDelay(
+            @NonNull AudioDeviceInfo device, @IntRange(from = 0) long delayMillis) {
+        Objects.requireNonNull(device);
+        // Implement the setter in r-dev or r-tv-dev as needed.
+        return false;
+    }
+
+    /**
+     * @hide
+     * Returns the current additional audio output device delay in milliseconds.
+     *
+     * @param device an instance of {@link AudioDeviceInfo} returned from {@link getDevices()}.
+     * @return the additional output device delay. This is a non-negative number.
+     *     {@code 0} is returned if unsupported.
+     */
+    @SystemApi
+    @IntRange(from = 0)
+    public long getAdditionalOutputDeviceDelay(@NonNull AudioDeviceInfo device) {
+        Objects.requireNonNull(device);
+        // Implement the getter in r-dev or r-tv-dev as needed.
+        return 0;
+    }
+
+    /**
+     * @hide
+     * Returns the maximum additional audio output device delay in milliseconds.
+     *
+     * @param device an instance of {@link AudioDeviceInfo} returned from {@link getDevices()}.
+     * @return the maximum output device delay in milliseconds that can be set.
+     *     This is a non-negative number
+     *     representing the additional audio delay supported for the device.
+     *     {@code 0} is returned if unsupported.
+     */
+    @SystemApi
+    @IntRange(from = 0)
+    public long getMaxAdditionalOutputDeviceDelay(@NonNull AudioDeviceInfo device) {
+        Objects.requireNonNull(device);
+        // Implement the getter in r-dev or r-tv-dev as needed.
+        return 0;
+    }
+
+    /**
      * Returns the estimated latency for the given stream type in milliseconds.
      *
      * DO NOT UNHIDE. The existing approach for doing A/V sync has too many problems. We need
@@ -4538,7 +5606,7 @@ public class AudioManager {
      * @hide
      */
     @SystemApi
-    @SuppressLint("Doclava125") // FIXME is this still used?
+    @SuppressLint("RequiresPermission") // FIXME is this still used?
     public boolean isHdmiSystemAudioSupported() {
         try {
             return getService().isHdmiSystemAudioSupported();
@@ -4552,7 +5620,6 @@ public class AudioManager {
      */
 
     /** @hide */
-    @TestApi
     @SystemApi
     public static final int SUCCESS = AudioSystem.SUCCESS;
     /**
@@ -4931,6 +5998,14 @@ public class AudioManager {
      */
     public static final int GET_DEVICES_OUTPUTS   = 0x0002;
 
+    /** @hide */
+    @IntDef(flag = true, prefix = "GET_DEVICES", value = {
+            GET_DEVICES_INPUTS,
+            GET_DEVICES_OUTPUTS }
+    )
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface AudioDeviceRole {}
+
     /**
      * Specifies to the {@link AudioManager#getDevices(int)} method to include both
      * source and sink devices.
@@ -4963,7 +6038,7 @@ public class AudioManager {
      * @see #GET_DEVICES_ALL
      * @return A (possibly zero-length) array of AudioDeviceInfo objects.
      */
-    public AudioDeviceInfo[] getDevices(int flags) {
+    public AudioDeviceInfo[] getDevices(@AudioDeviceRole int flags) {
         return getDevicesStatic(flags);
     }
 
@@ -5049,6 +6124,29 @@ public class AudioManager {
     }
 
     /**
+     * Returns an {@link AudioDeviceInfo} corresponding to the specified {@link AudioPort} ID.
+     * @param portId The audio port ID to look up for.
+     * @param flags A set of bitflags specifying the criteria to test.
+     * @see #GET_DEVICES_OUTPUTS
+     * @see #GET_DEVICES_INPUTS
+     * @see #GET_DEVICES_ALL
+     * @return An AudioDeviceInfo or null if no device with matching port ID is found.
+     * @hide
+     */
+    public static AudioDeviceInfo getDeviceForPortId(int portId, int flags) {
+        if (portId == 0) {
+            return null;
+        }
+        AudioDeviceInfo[] devices = getDevicesStatic(flags);
+        for (AudioDeviceInfo device : devices) {
+            if (device.getId() == portId) {
+                return device;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Registers an {@link AudioDeviceCallback} object to receive notifications of changes
      * to the set of connected audio devices.
      * @param callback The {@link AudioDeviceCallback} object to receive connect/disconnect
@@ -5058,7 +6156,7 @@ public class AudioManager {
      * {@link Looper} will be used.
      */
     public void registerAudioDeviceCallback(AudioDeviceCallback callback,
-            android.os.Handler handler) {
+            @Nullable Handler handler) {
         synchronized (mDeviceCallbacks) {
             if (callback != null && !mDeviceCallbacks.containsKey(callback)) {
                 if (mDeviceCallbacks.size() == 0) {
@@ -5564,6 +6662,322 @@ public class AudioManager {
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
+    }
+
+    /**
+     * Set whether or not there is an active RTT call.
+     * This method should be called by Telecom service.
+     * @hide
+     * TODO: make this a @SystemApi
+     */
+    public static void setRttEnabled(boolean rttEnabled) {
+        try {
+            getService().setRttEnabled(rttEnabled);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /** @hide
+     * TODO: make this a @SystemApi */
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public void setMultiAudioFocusEnabled(boolean enabled) {
+        try {
+            getService().setMultiAudioFocusEnabled(enabled);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Selects the audio device that should be used for communication use cases, for instance voice
+     * or video calls. This method can be used by voice or video chat applications to select a
+     * different audio device than the one selected by default by the platform.
+     * <p>The device selection is expressed as an {@link AudioDeviceInfo}, of role sink
+     * ({@link AudioDeviceInfo#isSink()} is <code>true</code>) and of one of the following types:
+     * <ul>
+     *   <li> {@link AudioDeviceInfo#TYPE_BUILTIN_EARPIECE}
+     *   <li> {@link AudioDeviceInfo#TYPE_BUILTIN_SPEAKER}
+     *   <li> {@link AudioDeviceInfo#TYPE_WIRED_HEADSET}
+     *   <li> {@link AudioDeviceInfo#TYPE_BLUETOOTH_SCO}
+     *   <li> {@link AudioDeviceInfo#TYPE_USB_HEADSET}
+     *   <li> {@link AudioDeviceInfo#TYPE_BLE_HEADSET}
+     * </ul>
+     * The selection is active as long as the requesting application lives, until
+     * {@link #clearDeviceForCommunication} is called or until the device is disconnected.
+     * It is therefore important for applications to clear the request when a call ends or the
+     * application is paused.
+     * <p>In case of simultaneous requests by multiple applications the priority is given to the
+     * application currently controlling the audio mode (see {@link #setMode(int)}). This is the
+     * latest application having selected mode {@link #MODE_IN_COMMUNICATION} or mode
+     * {@link #MODE_IN_CALL}. Note that <code>MODE_IN_CALL</code> can only be selected by the main
+     * telephony application with permission
+     * {@link android.Manifest.permission#MODIFY_PHONE_STATE}.
+     * <p> If the requested devices is not currently available, the request will be rejected and
+     * the method will return false.
+     * <p>This API replaces the following deprecated APIs:
+     * <ul>
+     *   <li> {@link #startBluetoothSco()}
+     *   <li> {@link #stopBluetoothSco()}
+     *   <li> {@link #setSpeakerphoneOn(boolean)}
+     * </ul>
+     * <h4>Example</h4>
+     * <p>The example below shows how to enable and disable speakerphone mode.
+     * <pre class="prettyprint">
+     * // Get an AudioManager instance
+     * AudioManager audioManager = Context.getSystemService(AudioManager.class);
+     * try {
+     *     AudioDeviceInfo speakerDevice = null;
+     *     AudioDeviceInfo[] devices = audioManager.getDevices(GET_DEVICES_OUTPUTS);
+     *     for (AudioDeviceInfo device : devices) {
+     *         if (device.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+     *             speakerDevice = device;
+     *             break;
+     *         }
+     *     }
+     *     if (speakerDevice != null) {
+     *         // Turn speakerphone ON.
+     *         boolean result = audioManager.setDeviceForCommunication(speakerDevice);
+     *         if (!result) {
+     *             // Handle error.
+     *         }
+     *         // Turn speakerphone OFF.
+     *         audioManager.clearDeviceForCommunication();
+     *     }
+     * } catch (IllegalArgumentException e) {
+     *     // Handle exception.
+     * }
+     * </pre>
+     * @param device the requested audio device.
+     * @return <code>true</code> if the request was accepted, <code>false</code> otherwise.
+     * @throws IllegalArgumentException If an invalid device is specified.
+     */
+    public boolean setDeviceForCommunication(@NonNull AudioDeviceInfo device) {
+        Objects.requireNonNull(device);
+        try {
+            if (device.getId() == 0) {
+                throw new IllegalArgumentException("In valid device: " + device);
+            }
+            return getService().setDeviceForCommunication(mICallBack, device.getId());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Cancels previous communication device selection made with
+     * {@link #setDeviceForCommunication(AudioDeviceInfo)}.
+     */
+    public void clearDeviceForCommunication() {
+        try {
+            getService().setDeviceForCommunication(mICallBack, 0);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns currently selected audio device for communication.
+     * <p>This API replaces the following deprecated APIs:
+     * <ul>
+     *   <li> {@link #isBluetoothScoOn()}
+     *   <li> {@link #isSpeakerphoneOn()}
+     * </ul>
+     * @return an {@link AudioDeviceInfo} indicating which audio device is
+     * currently selected or communication use cases or null if default selection
+     * is used.
+     */
+    @Nullable
+    public AudioDeviceInfo getDeviceForCommunication() {
+        try {
+            return getDeviceForPortId(
+                    getService().getDeviceForCommunication(), GET_DEVICES_OUTPUTS);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @hide
+     * Returns an {@link AudioDeviceInfo} corresponding to a connected device of the type provided.
+     * The type must be a valid output type defined in <code>AudioDeviceInfo</code> class,
+     * for instance {@link AudioDeviceInfo#TYPE_BUILTIN_SPEAKER}.
+     * The method will return null if no device of the provided type is connected.
+     * If more than one device of the provided type is connected, an object corresponding to the
+     * first device encountered in the enumeration list will be returned.
+     * @param deviceType The device device for which an <code>AudioDeviceInfo</code>
+     * object is queried.
+     * @return An AudioDeviceInfo object or null if no device with the requested type is connected.
+     * @throws IllegalArgumentException If an invalid device type is specified.
+     */
+    @TestApi
+    @Nullable
+    public static AudioDeviceInfo getDeviceInfoFromType(
+            @AudioDeviceInfo.AudioDeviceTypeOut int deviceType) {
+        AudioDeviceInfo[] devices = getDevicesStatic(GET_DEVICES_OUTPUTS);
+        for (AudioDeviceInfo device : devices) {
+            if (device.getType() == deviceType) {
+                return device;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Listener registered by client to be notified upon communication audio device change.
+     * See {@link #setDeviceForCommunication(AudioDeviceInfo)}.
+     */
+    public interface OnCommunicationDeviceChangedListener {
+        /**
+         * Callback method called upon communication audio device change.
+         * @param device the audio device selected for communication use cases
+         */
+        void onCommunicationDeviceChanged(@Nullable AudioDeviceInfo device);
+    }
+
+    /**
+     * Adds a listener for being notified of changes to the communication audio device.
+     * See {@link #setDeviceForCommunication(AudioDeviceInfo)}.
+     * @param executor
+     * @param listener
+     */
+    public void addOnCommunicationDeviceChangedListener(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull OnCommunicationDeviceChangedListener listener) {
+        Objects.requireNonNull(executor);
+        Objects.requireNonNull(listener);
+        synchronized (mCommDevListenerLock) {
+            if (hasCommDevListener(listener)) {
+                throw new IllegalArgumentException(
+                        "attempt to call addOnCommunicationDeviceChangedListener() "
+                                + "on a previously registered listener");
+            }
+            // lazy initialization of the list of strategy-preferred device listener
+            if (mCommDevListeners == null) {
+                mCommDevListeners = new ArrayList<>();
+            }
+            final int oldCbCount = mCommDevListeners.size();
+            mCommDevListeners.add(new CommDevListenerInfo(listener, executor));
+            if (oldCbCount == 0 && mCommDevListeners.size() > 0) {
+                // register binder for callbacks
+                if (mCommDevDispatcherStub == null) {
+                    mCommDevDispatcherStub = new CommunicationDeviceDispatcherStub();
+                }
+                try {
+                    getService().registerCommunicationDeviceDispatcher(mCommDevDispatcherStub);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                }
+            }
+        }
+    }
+
+    /**
+     * Removes a previously added listener of changes to the communication audio device.
+     * See {@link #setDeviceForCommunication(AudioDeviceInfo)}.
+     * @param listener
+     */
+    public void removeOnCommunicationDeviceChangedListener(
+            @NonNull OnCommunicationDeviceChangedListener listener) {
+        Objects.requireNonNull(listener);
+        synchronized (mCommDevListenerLock) {
+            if (!removeCommDevListener(listener)) {
+                throw new IllegalArgumentException(
+                        "attempt to call removeOnCommunicationDeviceChangedListener() "
+                                + "on an unregistered listener");
+            }
+            if (mCommDevListeners.size() == 0) {
+                // unregister binder for callbacks
+                try {
+                    getService().unregisterCommunicationDeviceDispatcher(
+                            mCommDevDispatcherStub);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                } finally {
+                    mCommDevDispatcherStub = null;
+                    mCommDevListeners = null;
+                }
+            }
+        }
+    }
+
+    private final Object mCommDevListenerLock = new Object();
+    /**
+     * List of listeners for preferred device for strategy and their associated Executor.
+     * List is lazy-initialized on first registration
+     */
+    @GuardedBy("mCommDevListenerLock")
+    private @Nullable ArrayList<CommDevListenerInfo> mCommDevListeners;
+
+    private static class CommDevListenerInfo {
+        final @NonNull OnCommunicationDeviceChangedListener mListener;
+        final @NonNull Executor mExecutor;
+
+        CommDevListenerInfo(OnCommunicationDeviceChangedListener listener, Executor exe) {
+            mListener = listener;
+            mExecutor = exe;
+        }
+    }
+
+    @GuardedBy("mCommDevListenerLock")
+    private CommunicationDeviceDispatcherStub mCommDevDispatcherStub;
+
+    private final class CommunicationDeviceDispatcherStub
+            extends ICommunicationDeviceDispatcher.Stub {
+
+        @Override
+        public void dispatchCommunicationDeviceChanged(int portId) {
+            // make a shallow copy of listeners so callback is not executed under lock
+            final ArrayList<CommDevListenerInfo> commDevListeners;
+            synchronized (mCommDevListenerLock) {
+                if (mCommDevListeners == null || mCommDevListeners.size() == 0) {
+                    return;
+                }
+                commDevListeners = (ArrayList<CommDevListenerInfo>) mCommDevListeners.clone();
+            }
+            AudioDeviceInfo device = getDeviceForPortId(portId, GET_DEVICES_OUTPUTS);
+            final long ident = Binder.clearCallingIdentity();
+            try {
+                for (CommDevListenerInfo info : commDevListeners) {
+                    info.mExecutor.execute(() ->
+                            info.mListener.onCommunicationDeviceChanged(device));
+                }
+            } finally {
+                Binder.restoreCallingIdentity(ident);
+            }
+        }
+    }
+
+    @GuardedBy("mCommDevListenerLock")
+    private @Nullable CommDevListenerInfo getCommDevListenerInfo(
+            OnCommunicationDeviceChangedListener listener) {
+        if (mCommDevListeners == null) {
+            return null;
+        }
+        for (CommDevListenerInfo info : mCommDevListeners) {
+            if (info.mListener == listener) {
+                return info;
+            }
+        }
+        return null;
+    }
+
+    @GuardedBy("mCommDevListenerLock")
+    private boolean hasCommDevListener(OnCommunicationDeviceChangedListener listener) {
+        return getCommDevListenerInfo(listener) != null;
+    }
+
+    @GuardedBy("mCommDevListenerLock")
+    /**
+     * @return true if the listener was removed from the list
+     */
+    private boolean removeCommDevListener(OnCommunicationDeviceChangedListener listener) {
+        final CommDevListenerInfo infoToRemove = getCommDevListenerInfo(listener);
+        if (infoToRemove != null) {
+            mCommDevListeners.remove(infoToRemove);
+            return true;
+        }
+        return false;
     }
 
     //---------------------------------------------------------

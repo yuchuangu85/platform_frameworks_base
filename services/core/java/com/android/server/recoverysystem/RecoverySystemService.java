@@ -16,24 +16,38 @@
 
 package com.android.server.recoverysystem;
 
+import android.annotation.IntDef;
 import android.content.Context;
+import android.content.IntentSender;
+import android.content.pm.PackageManager;
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
+import android.os.Binder;
 import android.os.IRecoverySystem;
 import android.os.IRecoverySystemProgressListener;
 import android.os.PowerManager;
+import android.os.Process;
 import android.os.RecoverySystem;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
+import android.os.ShellCallback;
 import android.os.SystemProperties;
+import android.util.ArrayMap;
+import android.util.ArraySet;
 import android.util.Slog;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.widget.LockSettingsInternal;
+import com.android.internal.widget.RebootEscrowListener;
+import com.android.server.LocalServices;
 import com.android.server.SystemService;
 
 import libcore.io.IoUtils;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.FileDescriptor;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -45,7 +59,7 @@ import java.nio.charset.StandardCharsets;
  * triggers /system/bin/uncrypt via init to de-encrypt an OTA package on the
  * /data partition so that it can be accessed under the recovery image.
  */
-public class RecoverySystemService extends IRecoverySystem.Stub {
+public class RecoverySystemService extends IRecoverySystem.Stub implements RebootEscrowListener {
     private static final String TAG = "RecoverySystemService";
     private static final boolean DEBUG = false;
 
@@ -67,6 +81,54 @@ public class RecoverySystemService extends IRecoverySystem.Stub {
     private final Injector mInjector;
     private final Context mContext;
 
+    @GuardedBy("this")
+    private final ArrayMap<String, IntentSender> mCallerPendingRequest = new ArrayMap<>();
+    @GuardedBy("this")
+    private final ArraySet<String> mCallerPreparedForReboot = new ArraySet<>();
+
+    /**
+     * Need to prepare for resume on reboot.
+     */
+    private static final int ROR_NEED_PREPARATION = 0;
+    /**
+     * Resume on reboot has been prepared, notify the caller.
+     */
+    private static final int ROR_SKIP_PREPARATION_AND_NOTIFY = 1;
+    /**
+     * Resume on reboot has been requested. Caller won't be notified until the preparation is done.
+     */
+    private static final int ROR_SKIP_PREPARATION_NOT_NOTIFY = 2;
+
+    /**
+     * The caller never requests for resume on reboot, no need for clear.
+     */
+    private static final int ROR_NOT_REQUESTED = 0;
+    /**
+     * Clear the resume on reboot preparation state.
+     */
+    private static final int ROR_REQUESTED_NEED_CLEAR = 1;
+    /**
+     * The caller has requested for resume on reboot. No need for clear since other callers may
+     * exist.
+     */
+    private static final int ROR_REQUESTED_SKIP_CLEAR = 2;
+
+    /**
+     * The action to perform upon new resume on reboot prepare request for a given client.
+     */
+    @IntDef({ ROR_NEED_PREPARATION,
+            ROR_SKIP_PREPARATION_AND_NOTIFY,
+            ROR_SKIP_PREPARATION_NOT_NOTIFY })
+    private @interface ResumeOnRebootActionsOnRequest {}
+
+    /**
+     * The action to perform upon resume on reboot clear request for a given client.
+     */
+    @IntDef({ROR_NOT_REQUESTED,
+            ROR_REQUESTED_NEED_CLEAR,
+            ROR_REQUESTED_SKIP_CLEAR})
+    private @interface ResumeOnRebootActionsOnClear{}
+
     static class Injector {
         protected final Context mContext;
 
@@ -76,6 +138,10 @@ public class RecoverySystemService extends IRecoverySystem.Stub {
 
         public Context getContext() {
             return mContext;
+        }
+
+        public LockSettingsInternal getLockSettingsService() {
+            return LocalServices.getService(LockSettingsInternal.class);
         }
 
         public PowerManager getPowerManager() {
@@ -120,14 +186,23 @@ public class RecoverySystemService extends IRecoverySystem.Stub {
      * Handles the lifecycle events for the RecoverySystemService.
      */
     public static final class Lifecycle extends SystemService {
+        private RecoverySystemService mRecoverySystemService;
+
         public Lifecycle(Context context) {
             super(context);
         }
 
         @Override
+        public void onBootPhase(int phase) {
+            if (phase == SystemService.PHASE_SYSTEM_SERVICES_READY) {
+                mRecoverySystemService.onSystemServicesReady();
+            }
+        }
+
+        @Override
         public void onStart() {
-            RecoverySystemService recoverySystemService = new RecoverySystemService(getContext());
-            publishBinderService(Context.RECOVERY_SERVICE, recoverySystemService);
+            mRecoverySystemService = new RecoverySystemService(getContext());
+            publishBinderService(Context.RECOVERY_SERVICE, mRecoverySystemService);
         }
     }
 
@@ -139,6 +214,11 @@ public class RecoverySystemService extends IRecoverySystem.Stub {
     RecoverySystemService(Injector injector) {
         mInjector = injector;
         mContext = injector.getContext();
+    }
+
+    @VisibleForTesting
+    void onSystemServicesReady() {
+        mInjector.getLockSettingsService().setRebootEscrowListener(this);
     }
 
     @Override // Binder call
@@ -253,6 +333,196 @@ public class RecoverySystemService extends IRecoverySystem.Stub {
             PowerManager pm = mInjector.getPowerManager();
             pm.reboot(PowerManager.REBOOT_RECOVERY);
         }
+    }
+
+    private void enforcePermissionForResumeOnReboot() {
+        if (mContext.checkCallingOrSelfPermission(android.Manifest.permission.RECOVERY)
+                != PackageManager.PERMISSION_GRANTED
+                && mContext.checkCallingOrSelfPermission(android.Manifest.permission.REBOOT)
+                        != PackageManager.PERMISSION_GRANTED) {
+            throw new SecurityException("Caller must have " + android.Manifest.permission.RECOVERY
+                    + " or " + android.Manifest.permission.REBOOT + " for resume on reboot.");
+        }
+    }
+
+    @Override // Binder call
+    public boolean requestLskf(String packageName, IntentSender intentSender) {
+        enforcePermissionForResumeOnReboot();
+
+        if (packageName == null) {
+            Slog.w(TAG, "Missing packageName when requesting lskf.");
+            return false;
+        }
+
+        @ResumeOnRebootActionsOnRequest int action = updateRoRPreparationStateOnNewRequest(
+                packageName, intentSender);
+        switch (action) {
+            case ROR_SKIP_PREPARATION_AND_NOTIFY:
+                // We consider the preparation done if someone else has prepared.
+                sendPreparedForRebootIntentIfNeeded(intentSender);
+                return true;
+            case ROR_SKIP_PREPARATION_NOT_NOTIFY:
+                return true;
+            case ROR_NEED_PREPARATION:
+                final long origId = Binder.clearCallingIdentity();
+                try {
+                    mInjector.getLockSettingsService().prepareRebootEscrow();
+                } finally {
+                    Binder.restoreCallingIdentity(origId);
+                }
+                return true;
+            default:
+                throw new IllegalStateException("Unsupported action type on new request " + action);
+        }
+    }
+
+    // Checks and updates the resume on reboot preparation state.
+    private synchronized @ResumeOnRebootActionsOnRequest int updateRoRPreparationStateOnNewRequest(
+            String packageName, IntentSender intentSender) {
+        if (!mCallerPreparedForReboot.isEmpty()) {
+            if (mCallerPreparedForReboot.contains(packageName)) {
+                Slog.i(TAG, "RoR already has prepared for " + packageName);
+            }
+
+            // Someone else has prepared. Consider the preparation done, and send back the intent.
+            mCallerPreparedForReboot.add(packageName);
+            return ROR_SKIP_PREPARATION_AND_NOTIFY;
+        }
+
+        boolean needPreparation = mCallerPendingRequest.isEmpty();
+        if (mCallerPendingRequest.containsKey(packageName)) {
+            Slog.i(TAG, "Duplicate RoR preparation request for " + packageName);
+        }
+        // Update the request with the new intentSender.
+        mCallerPendingRequest.put(packageName, intentSender);
+        return needPreparation ? ROR_NEED_PREPARATION : ROR_SKIP_PREPARATION_NOT_NOTIFY;
+    }
+
+    @Override
+    public void onPreparedForReboot(boolean ready) {
+        if (!ready) {
+            return;
+        }
+        updateRoRPreparationStateOnPreparedForReboot();
+    }
+
+    private synchronized void updateRoRPreparationStateOnPreparedForReboot() {
+        if (!mCallerPreparedForReboot.isEmpty()) {
+            Slog.w(TAG, "onPreparedForReboot called when some clients have prepared.");
+        }
+
+        if (mCallerPendingRequest.isEmpty()) {
+            Slog.w(TAG, "onPreparedForReboot called but no client has requested.");
+        }
+
+        // Send intents to notify callers
+        for (int i = 0; i < mCallerPendingRequest.size(); i++) {
+            sendPreparedForRebootIntentIfNeeded(mCallerPendingRequest.valueAt(i));
+            mCallerPreparedForReboot.add(mCallerPendingRequest.keyAt(i));
+        }
+        mCallerPendingRequest.clear();
+    }
+
+    private void sendPreparedForRebootIntentIfNeeded(IntentSender intentSender) {
+        if (intentSender != null) {
+            try {
+                intentSender.sendIntent(null, 0, null, null, null);
+            } catch (IntentSender.SendIntentException e) {
+                Slog.w(TAG, "Could not send intent for prepared reboot: " + e.getMessage());
+            }
+        }
+    }
+
+    @Override // Binder call
+    public boolean clearLskf(String packageName) {
+        enforcePermissionForResumeOnReboot();
+        if (packageName == null) {
+            Slog.w(TAG, "Missing packageName when clearing lskf.");
+            return false;
+        }
+
+        @ResumeOnRebootActionsOnClear int action = updateRoRPreparationStateOnClear(packageName);
+        switch (action) {
+            case ROR_NOT_REQUESTED:
+                Slog.w(TAG, "RoR clear called before preparation for caller " + packageName);
+                return true;
+            case ROR_REQUESTED_SKIP_CLEAR:
+                return true;
+            case ROR_REQUESTED_NEED_CLEAR:
+                final long origId = Binder.clearCallingIdentity();
+                try {
+                    mInjector.getLockSettingsService().clearRebootEscrow();
+                } finally {
+                    Binder.restoreCallingIdentity(origId);
+                }
+                return true;
+            default:
+                throw new IllegalStateException("Unsupported action type on clear " + action);
+        }
+    }
+
+    private synchronized @ResumeOnRebootActionsOnClear int updateRoRPreparationStateOnClear(
+            String packageName) {
+        if (!mCallerPreparedForReboot.contains(packageName) && !mCallerPendingRequest.containsKey(
+                packageName)) {
+            Slog.w(TAG, packageName + " hasn't prepared for resume on reboot");
+            return ROR_NOT_REQUESTED;
+        }
+        mCallerPendingRequest.remove(packageName);
+        mCallerPreparedForReboot.remove(packageName);
+
+        // Check if others have prepared ROR.
+        boolean needClear = mCallerPendingRequest.isEmpty() && mCallerPreparedForReboot.isEmpty();
+        return needClear ? ROR_REQUESTED_NEED_CLEAR : ROR_REQUESTED_SKIP_CLEAR;
+    }
+
+    private boolean rebootWithLskfImpl(String packageName, String reason, boolean slotSwitch) {
+        if (packageName == null) {
+            Slog.w(TAG, "Missing packageName when rebooting with lskf.");
+            return false;
+        }
+        if (!isLskfCaptured(packageName)) {
+            return false;
+        }
+
+        // TODO(xunchang) check the slot to boot into, and fail the reboot upon slot mismatch.
+        // TODO(xunchang) write the vbmeta digest along with the escrowKey before reboot.
+        if (!mInjector.getLockSettingsService().armRebootEscrow()) {
+            Slog.w(TAG, "Failure to escrow key for reboot");
+            return false;
+        }
+
+        PowerManager pm = mInjector.getPowerManager();
+        pm.reboot(reason);
+        return true;
+    }
+
+    @Override // Binder call for the legacy rebootWithLskf
+    public boolean rebootWithLskfAssumeSlotSwitch(String packageName, String reason) {
+        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.RECOVERY, null);
+        return rebootWithLskfImpl(packageName, reason, true);
+    }
+
+    @Override // Binder call
+    public boolean rebootWithLskf(String packageName, String reason, boolean slotSwitch) {
+        enforcePermissionForResumeOnReboot();
+        return rebootWithLskfImpl(packageName, reason, slotSwitch);
+    }
+
+    @Override // Binder call
+    public boolean isLskfCaptured(String packageName) {
+        enforcePermissionForResumeOnReboot();
+        boolean captured;
+        synchronized (this) {
+            captured = mCallerPreparedForReboot.contains(packageName);
+        }
+
+        if (!captured) {
+            Slog.i(TAG, "Reboot requested before prepare completed for caller "
+                    + packageName);
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -432,6 +702,30 @@ public class RecoverySystemService extends IRecoverySystem.Stub {
             IoUtils.closeQuietly(mInputStream);
             IoUtils.closeQuietly(mOutputStream);
             IoUtils.closeQuietly(mLocalSocket);
+        }
+    }
+
+    private boolean isCallerShell() {
+        final int callingUid = Binder.getCallingUid();
+        return callingUid == Process.SHELL_UID || callingUid == Process.ROOT_UID;
+    }
+
+    private void enforceShell() {
+        if (!isCallerShell()) {
+            throw new SecurityException("Caller must be shell");
+        }
+    }
+
+    @Override
+    public void onShellCommand(FileDescriptor in, FileDescriptor out, FileDescriptor err,
+            String[] args, ShellCallback callback, ResultReceiver resultReceiver) {
+        enforceShell();
+        final long origId = Binder.clearCallingIdentity();
+        try {
+            new RecoverySystemShellCommand(this).exec(
+                    this, in, out, err, args, callback, resultReceiver);
+        } finally {
+            Binder.restoreCallingIdentity(origId);
         }
     }
 }

@@ -35,10 +35,12 @@ import android.os.Handler;
 import android.os.UserHandle;
 import android.provider.Settings;
 import android.text.TextUtils;
-import android.util.Slog;
+import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.net.module.util.ProxyUtils;
 
+import java.util.Collections;
 import java.util.Objects;
 
 /**
@@ -163,12 +165,13 @@ public class ProxyTracker {
         if (!TextUtils.isEmpty(host) || !TextUtils.isEmpty(pacFileUrl)) {
             ProxyInfo proxyProperties;
             if (!TextUtils.isEmpty(pacFileUrl)) {
-                proxyProperties = new ProxyInfo(Uri.parse(pacFileUrl));
+                proxyProperties = ProxyInfo.buildPacProxy(Uri.parse(pacFileUrl));
             } else {
-                proxyProperties = new ProxyInfo(host, port, exclList);
+                proxyProperties = ProxyInfo.buildDirectProxy(host, port,
+                        ProxyUtils.exclusionStringAsList(exclList));
             }
             if (!proxyProperties.isValid()) {
-                if (DBG) Slog.d(TAG, "Invalid proxy properties, ignoring: " + proxyProperties);
+                if (DBG) Log.d(TAG, "Invalid proxy properties, ignoring: " + proxyProperties);
                 return;
             }
 
@@ -204,7 +207,8 @@ public class ProxyTracker {
                     return false;
                 }
             }
-            final ProxyInfo p = new ProxyInfo(proxyHost, proxyPort, "");
+            final ProxyInfo p = ProxyInfo.buildDirectProxy(proxyHost, proxyPort,
+                    Collections.emptyList());
             setGlobalProxy(p);
             return true;
         }
@@ -219,11 +223,12 @@ public class ProxyTracker {
      */
     public void sendProxyBroadcast() {
         final ProxyInfo defaultProxy = getDefaultProxy();
-        final ProxyInfo proxyInfo = null != defaultProxy ? defaultProxy : new ProxyInfo("", 0, "");
+        final ProxyInfo proxyInfo = null != defaultProxy ?
+                defaultProxy : ProxyInfo.buildDirectProxy("", 0, Collections.emptyList());
         if (mPacManager.setCurrentProxyScriptUrl(proxyInfo) == PacManager.DONT_SEND_BROADCAST) {
             return;
         }
-        if (DBG) Slog.d(TAG, "sending Proxy Broadcast for " + proxyInfo);
+        if (DBG) Log.d(TAG, "sending Proxy Broadcast for " + proxyInfo);
         Intent intent = new Intent(Proxy.PROXY_CHANGE_ACTION);
         intent.addFlags(Intent.FLAG_RECEIVER_REPLACE_PENDING |
                 Intent.FLAG_RECEIVER_REGISTERED_ONLY_BEFORE_BOOT);
@@ -255,13 +260,13 @@ public class ProxyTracker {
             if (proxyInfo != null && (!TextUtils.isEmpty(proxyInfo.getHost()) ||
                     !Uri.EMPTY.equals(proxyInfo.getPacFileUrl()))) {
                 if (!proxyInfo.isValid()) {
-                    if (DBG) Slog.d(TAG, "Invalid proxy properties, ignoring: " + proxyInfo);
+                    if (DBG) Log.d(TAG, "Invalid proxy properties, ignoring: " + proxyInfo);
                     return;
                 }
                 mGlobalProxy = new ProxyInfo(proxyInfo);
                 host = mGlobalProxy.getHost();
                 port = mGlobalProxy.getPort();
-                exclList = mGlobalProxy.getExclusionListAsString();
+                exclList = ProxyUtils.exclusionListAsString(mGlobalProxy.getExclusionList());
                 pacFileUrl = Uri.EMPTY.equals(proxyInfo.getPacFileUrl())
                         ? "" : proxyInfo.getPacFileUrl().toString();
             } else {
@@ -296,7 +301,7 @@ public class ProxyTracker {
         synchronized (mProxyLock) {
             if (Objects.equals(mDefaultProxy, proxyInfo)) return;
             if (proxyInfo != null &&  !proxyInfo.isValid()) {
-                if (DBG) Slog.d(TAG, "Invalid proxy properties, ignoring: " + proxyInfo);
+                if (DBG) Log.d(TAG, "Invalid proxy properties, ignoring: " + proxyInfo);
                 return;
             }
 

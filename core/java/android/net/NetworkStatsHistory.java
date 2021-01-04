@@ -26,12 +26,13 @@ import static android.net.NetworkStatsHistory.DataStreamUtils.writeVarLongArray;
 import static android.net.NetworkStatsHistory.Entry.UNKNOWN;
 import static android.net.NetworkStatsHistory.ParcelUtils.readLongArray;
 import static android.net.NetworkStatsHistory.ParcelUtils.writeLongArray;
-import static android.net.NetworkUtils.multiplySafeByRational;
 import static android.text.format.DateUtils.SECOND_IN_MILLIS;
 
+import static com.android.internal.net.NetworkUtilsInternal.multiplySafeByRational;
 import static com.android.internal.util.ArrayUtils.total;
 
 import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.service.NetworkStatsHistoryBucketProto;
@@ -91,18 +92,18 @@ public class NetworkStatsHistory implements Parcelable {
     public static class Entry {
         public static final long UNKNOWN = -1;
 
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public long bucketDuration;
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public long bucketStart;
         public long activeTime;
         @UnsupportedAppUsage
         public long rxBytes;
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public long rxPackets;
         @UnsupportedAppUsage
         public long txBytes;
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public long txPackets;
         public long operations;
     }
@@ -134,7 +135,7 @@ public class NetworkStatsHistory implements Parcelable {
         recordEntireHistory(existing);
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public NetworkStatsHistory(Parcel in) {
         bucketDuration = in.readLong();
         bucketStart = readLongArray(in);
@@ -220,7 +221,7 @@ public class NetworkStatsHistory implements Parcelable {
         return 0;
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public int size() {
         return bucketCount;
     }
@@ -258,7 +259,7 @@ public class NetworkStatsHistory implements Parcelable {
      * Return index of bucket that contains or is immediately before the
      * requested time.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public int getIndexBefore(long time) {
         int index = Arrays.binarySearch(bucketStart, 0, bucketCount, time);
         if (index < 0) {
@@ -286,7 +287,7 @@ public class NetworkStatsHistory implements Parcelable {
     /**
      * Return specific stats entry.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public Entry getValues(int i, Entry recycle) {
         final Entry entry = recycle != null ? recycle : new Entry();
         entry.bucketStart = bucketStart[i];
@@ -698,7 +699,7 @@ public class NetworkStatsHistory implements Parcelable {
         }
     }
 
-    public void writeToProto(ProtoOutputStream proto, long tag) {
+    public void dumpDebug(ProtoOutputStream proto, long tag) {
         final long start = proto.start(tag);
 
         proto.write(NetworkStatsHistoryProto.BUCKET_DURATION_MS, bucketDuration);
@@ -707,11 +708,11 @@ public class NetworkStatsHistory implements Parcelable {
             final long startBucket = proto.start(NetworkStatsHistoryProto.BUCKETS);
 
             proto.write(NetworkStatsHistoryBucketProto.BUCKET_START_MS, bucketStart[i]);
-            writeToProto(proto, NetworkStatsHistoryBucketProto.RX_BYTES, rxBytes, i);
-            writeToProto(proto, NetworkStatsHistoryBucketProto.RX_PACKETS, rxPackets, i);
-            writeToProto(proto, NetworkStatsHistoryBucketProto.TX_BYTES, txBytes, i);
-            writeToProto(proto, NetworkStatsHistoryBucketProto.TX_PACKETS, txPackets, i);
-            writeToProto(proto, NetworkStatsHistoryBucketProto.OPERATIONS, operations, i);
+            dumpDebug(proto, NetworkStatsHistoryBucketProto.RX_BYTES, rxBytes, i);
+            dumpDebug(proto, NetworkStatsHistoryBucketProto.RX_PACKETS, rxPackets, i);
+            dumpDebug(proto, NetworkStatsHistoryBucketProto.TX_BYTES, txBytes, i);
+            dumpDebug(proto, NetworkStatsHistoryBucketProto.TX_PACKETS, txPackets, i);
+            dumpDebug(proto, NetworkStatsHistoryBucketProto.OPERATIONS, operations, i);
 
             proto.end(startBucket);
         }
@@ -719,7 +720,7 @@ public class NetworkStatsHistory implements Parcelable {
         proto.end(start);
     }
 
-    private static void writeToProto(ProtoOutputStream proto, long tag, long[] array, int index) {
+    private static void dumpDebug(ProtoOutputStream proto, long tag, long[] array, int index) {
         if (array != null) {
             proto.write(tag, array[index]);
         }

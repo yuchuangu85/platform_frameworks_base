@@ -22,6 +22,7 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.IPackageManager;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -63,36 +64,39 @@ public class GraphicsEnvironment {
     private static final String SYSTEM_DRIVER_NAME = "system";
     private static final String SYSTEM_DRIVER_VERSION_NAME = "";
     private static final long SYSTEM_DRIVER_VERSION_CODE = 0;
-    private static final String PROPERTY_GFX_DRIVER = "ro.gfx.driver.0";
+    private static final String PROPERTY_GFX_DRIVER_PRODUCTION = "ro.gfx.driver.0";
     private static final String PROPERTY_GFX_DRIVER_PRERELEASE = "ro.gfx.driver.1";
     private static final String PROPERTY_GFX_DRIVER_BUILD_TIME = "ro.gfx.driver_build_time";
-    private static final String METADATA_DRIVER_BUILD_TIME = "com.android.gamedriver.build_time";
+    private static final String METADATA_DRIVER_BUILD_TIME =
+            "com.android.graphics.driver.build_time";
     private static final String METADATA_DEVELOPER_DRIVER_ENABLE =
             "com.android.graphics.developerdriver.enable";
+    private static final String METADATA_INJECT_LAYERS_ENABLE =
+            "com.android.graphics.injectLayers.enable";
     private static final String ANGLE_RULES_FILE = "a4a_rules.json";
     private static final String ANGLE_TEMP_RULES = "debug.angle.rules";
     private static final String ACTION_ANGLE_FOR_ANDROID = "android.app.action.ANGLE_FOR_ANDROID";
     private static final String ACTION_ANGLE_FOR_ANDROID_TOAST_MESSAGE =
             "android.app.action.ANGLE_FOR_ANDROID_TOAST_MESSAGE";
     private static final String INTENT_KEY_A4A_TOAST_MESSAGE = "A4A Toast Message";
-    private static final String GAME_DRIVER_WHITELIST_ALL = "*";
-    private static final String GAME_DRIVER_SPHAL_LIBRARIES_FILENAME = "sphal_libraries.txt";
+    private static final String UPDATABLE_DRIVER_ALLOWLIST_ALL = "*";
+    private static final String UPDATABLE_DRIVER_SPHAL_LIBRARIES_FILENAME = "sphal_libraries.txt";
     private static final int VULKAN_1_0 = 0x00400000;
     private static final int VULKAN_1_1 = 0x00401000;
 
-    // GAME_DRIVER_ALL_APPS
+    // UPDATABLE_DRIVER_ALL_APPS
     // 0: Default (Invalid values fallback to default as well)
-    // 1: All apps use Game Driver
-    // 2: All apps use Prerelease Driver
+    // 1: All apps use updatable production driver
+    // 2: All apps use updatable prerelease driver
     // 3: All apps use system graphics driver
-    private static final int GAME_DRIVER_GLOBAL_OPT_IN_DEFAULT = 0;
-    private static final int GAME_DRIVER_GLOBAL_OPT_IN_GAME_DRIVER = 1;
-    private static final int GAME_DRIVER_GLOBAL_OPT_IN_PRERELEASE_DRIVER = 2;
-    private static final int GAME_DRIVER_GLOBAL_OPT_IN_OFF = 3;
+    private static final int UPDATABLE_DRIVER_GLOBAL_OPT_IN_DEFAULT = 0;
+    private static final int UPDATABLE_DRIVER_GLOBAL_OPT_IN_PRODUCTION_DRIVER = 1;
+    private static final int UPDATABLE_DRIVER_GLOBAL_OPT_IN_PRERELEASE_DRIVER = 2;
+    private static final int UPDATABLE_DRIVER_GLOBAL_OPT_IN_OFF = 3;
 
     private ClassLoader mClassLoader;
-    private String mLayerPath;
-    private String mDebugLayerPath;
+    private String mLibrarySearchPaths;
+    private String mLibraryPermittedPaths;
 
     /**
      * Set up GraphicsEnvironment
@@ -100,14 +104,16 @@ public class GraphicsEnvironment {
     public void setup(Context context, Bundle coreSettings) {
         final PackageManager pm = context.getPackageManager();
         final String packageName = context.getPackageName();
+        final ApplicationInfo appInfoWithMetaData =
+                getAppInfoWithMetadata(context, pm, packageName);
         Trace.traceBegin(Trace.TRACE_TAG_GRAPHICS, "setupGpuLayers");
-        setupGpuLayers(context, coreSettings, pm, packageName);
+        setupGpuLayers(context, coreSettings, pm, packageName, appInfoWithMetaData);
         Trace.traceEnd(Trace.TRACE_TAG_GRAPHICS);
         Trace.traceBegin(Trace.TRACE_TAG_GRAPHICS, "setupAngle");
         setupAngle(context, coreSettings, pm, packageName);
         Trace.traceEnd(Trace.TRACE_TAG_GRAPHICS);
         Trace.traceBegin(Trace.TRACE_TAG_GRAPHICS, "chooseDriver");
-        if (!chooseDriver(context, coreSettings, pm, packageName)) {
+        if (!chooseDriver(context, coreSettings, pm, packageName, appInfoWithMetaData)) {
             setGpuStats(SYSTEM_DRIVER_NAME, SYSTEM_DRIVER_VERSION_NAME, SYSTEM_DRIVER_VERSION_CODE,
                     SystemProperties.getLong(PROPERTY_GFX_DRIVER_BUILD_TIME, 0), packageName,
                     getVulkanVersion(pm));
@@ -137,19 +143,19 @@ public class GraphicsEnvironment {
                     + "set to: '" + devOptIn + "'");
         }
 
-        // We only want to use ANGLE if the app is whitelisted or the developer has
+        // We only want to use ANGLE if the app is allowlisted or the developer has
         // explicitly chosen something other than default driver.
-        // The whitelist will be generated by the ANGLE APK at both boot time and
+        // The allowlist will be generated by the ANGLE APK at both boot time and
         // ANGLE update time. It will only include apps mentioned in the rules file.
-        final boolean whitelisted = checkAngleWhitelist(context, coreSettings, packageName);
+        final boolean allowlisted = checkAngleAllowlist(context, coreSettings, packageName);
         final boolean requested = devOptIn.equals(sDriverMap.get(OpenGlDriverChoice.ANGLE));
-        final boolean useAngle = (whitelisted || requested);
+        final boolean useAngle = (allowlisted || requested);
         if (!useAngle) {
             return false;
         }
 
-        if (whitelisted) {
-            Log.v(TAG, "ANGLE whitelist includes " + packageName);
+        if (allowlisted) {
+            Log.v(TAG, "ANGLE allowlist includes " + packageName);
         }
         if (requested) {
             Log.v(TAG, "ANGLE developer option for " + packageName + ": " + devOptIn);
@@ -173,117 +179,140 @@ public class GraphicsEnvironment {
     }
 
     /**
-     * Store the layer paths available to the loader.
+     * Check whether application is has set the manifest metadata for layer injection.
+     */
+    private static boolean canInjectLayers(ApplicationInfo ai) {
+        return (ai.metaData != null && ai.metaData.getBoolean(METADATA_INJECT_LAYERS_ENABLE)
+                && setInjectLayersPrSetDumpable());
+    }
+
+    /**
+     * Store the class loader for namespace lookup later.
      */
     public void setLayerPaths(ClassLoader classLoader,
-                              String layerPath,
-                              String debugLayerPath) {
+                              String searchPaths,
+                              String permittedPaths) {
         // We have to store these in the class because they are set up before we
         // have access to the Context to properly set up GraphicsEnvironment
         mClassLoader = classLoader;
-        mLayerPath = layerPath;
-        mDebugLayerPath = debugLayerPath;
+        mLibrarySearchPaths = searchPaths;
+        mLibraryPermittedPaths = permittedPaths;
+    }
+
+    /**
+     * Returns the debug layer paths from settings.
+     * Returns null if:
+     *     1) The application process is not debuggable or layer injection metadata flag is not
+     *        true; Or
+     *     2) ENABLE_GPU_DEBUG_LAYERS is not true; Or
+     *     3) Package name is not equal to GPU_DEBUG_APP.
+     */
+    public String getDebugLayerPathsFromSettings(
+            Bundle coreSettings, IPackageManager pm, String packageName,
+            ApplicationInfo ai) {
+        if (!debugLayerEnabled(coreSettings, packageName, ai)) {
+            return null;
+        }
+        Log.i(TAG, "GPU debug layers enabled for " + packageName);
+        String debugLayerPaths = "";
+
+        // Grab all debug layer apps and add to paths.
+        final String gpuDebugLayerApps =
+                coreSettings.getString(Settings.Global.GPU_DEBUG_LAYER_APP, "");
+        if (!gpuDebugLayerApps.isEmpty()) {
+            Log.i(TAG, "GPU debug layer apps: " + gpuDebugLayerApps);
+            // If a colon is present, treat this as multiple apps, so Vulkan and GLES
+            // layer apps can be provided at the same time.
+            final String[] layerApps = gpuDebugLayerApps.split(":");
+            for (int i = 0; i < layerApps.length; i++) {
+                String paths = getDebugLayerAppPaths(pm, layerApps[i]);
+                if (!paths.isEmpty()) {
+                    // Append the path so files placed in the app's base directory will
+                    // override the external path
+                    debugLayerPaths += paths + File.pathSeparator;
+                }
+            }
+        }
+        return debugLayerPaths;
     }
 
     /**
      * Return the debug layer app's on-disk and in-APK lib directories
      */
-    private static String getDebugLayerAppPaths(PackageManager pm, String app) {
+    private static String getDebugLayerAppPaths(IPackageManager pm, String packageName) {
         final ApplicationInfo appInfo;
         try {
-            appInfo = pm.getApplicationInfo(app, PackageManager.MATCH_ALL);
-        } catch (PackageManager.NameNotFoundException e) {
-            Log.w(TAG, "Debug layer app '" + app + "' not installed");
-
-            return null;
+            appInfo = pm.getApplicationInfo(packageName, PackageManager.MATCH_ALL,
+                    UserHandle.myUserId());
+        } catch (RemoteException e) {
+            return "";
+        }
+        if (appInfo == null) {
+            Log.w(TAG, "Debug layer app '" + packageName + "' not installed");
+            return "";
         }
 
         final String abi = chooseAbi(appInfo);
-
         final StringBuilder sb = new StringBuilder();
         sb.append(appInfo.nativeLibraryDir)
-            .append(File.pathSeparator);
-        sb.append(appInfo.sourceDir)
+            .append(File.pathSeparator)
+            .append(appInfo.sourceDir)
             .append("!/lib/")
             .append(abi);
         final String paths = sb.toString();
-
         if (DEBUG) Log.v(TAG, "Debug layer app libs: " + paths);
 
         return paths;
     }
 
-    /**
-     * Set up layer search paths for all apps
-     * If debuggable, check for additional debug settings
-     */
-    private void setupGpuLayers(
-            Context context, Bundle coreSettings, PackageManager pm, String packageName) {
-        String layerPaths = "";
-
+    private boolean debugLayerEnabled(Bundle coreSettings, String packageName, ApplicationInfo ai) {
         // Only enable additional debug functionality if the following conditions are met:
-        // 1. App is debuggable or device is rooted
+        // 1. App is debuggable or device is rooted or layer injection metadata flag is true
         // 2. ENABLE_GPU_DEBUG_LAYERS is true
         // 3. Package name is equal to GPU_DEBUG_APP
+        if (!isDebuggable() && !canInjectLayers(ai)) {
+            return false;
+        }
+        final int enable = coreSettings.getInt(Settings.Global.ENABLE_GPU_DEBUG_LAYERS, 0);
+        if (enable == 0) {
+            return false;
+        }
+        final String gpuDebugApp = coreSettings.getString(Settings.Global.GPU_DEBUG_APP, "");
+        if (packageName == null
+                || (gpuDebugApp.isEmpty() || packageName.isEmpty())
+                || !gpuDebugApp.equals(packageName)) {
+            return false;
+        }
+        return true;
+    }
 
-        if (isDebuggable()) {
+    /**
+     * Set up layer search paths for all apps
+     */
+    private void setupGpuLayers(
+            Context context, Bundle coreSettings, PackageManager pm, String packageName,
+            ApplicationInfo ai) {
+        final boolean enabled = debugLayerEnabled(coreSettings, packageName, ai);
+        String layerPaths = "";
+        if (enabled) {
+            layerPaths = mLibraryPermittedPaths;
 
-            final int enable = coreSettings.getInt(Settings.Global.ENABLE_GPU_DEBUG_LAYERS, 0);
+            final String layers = coreSettings.getString(Settings.Global.GPU_DEBUG_LAYERS);
+            Log.i(TAG, "Vulkan debug layer list: " + layers);
+            if (layers != null && !layers.isEmpty()) {
+                setDebugLayers(layers);
+            }
 
-            if (enable != 0) {
-
-                final String gpuDebugApp = coreSettings.getString(Settings.Global.GPU_DEBUG_APP);
-
-                if ((gpuDebugApp != null && packageName != null)
-                        && (!gpuDebugApp.isEmpty() && !packageName.isEmpty())
-                        && gpuDebugApp.equals(packageName)) {
-                    Log.i(TAG, "GPU debug layers enabled for " + packageName);
-
-                    // Prepend the debug layer path as a searchable path.
-                    // This will ensure debug layers added will take precedence over
-                    // the layers specified by the app.
-                    layerPaths = mDebugLayerPath + ":";
-
-                    // If there is a debug layer app specified, add its path.
-                    final String gpuDebugLayerApp =
-                            coreSettings.getString(Settings.Global.GPU_DEBUG_LAYER_APP);
-
-                    if (gpuDebugLayerApp != null && !gpuDebugLayerApp.isEmpty()) {
-                        Log.i(TAG, "GPU debug layer app: " + gpuDebugLayerApp);
-                        // If a colon is present, treat this as multiple apps, so Vulkan and GLES
-                        // layer apps can be provided at the same time.
-                        String[] layerApps = gpuDebugLayerApp.split(":");
-                        for (int i = 0; i < layerApps.length; i++) {
-                            String paths = getDebugLayerAppPaths(pm, layerApps[i]);
-                            if (paths != null) {
-                                // Append the path so files placed in the app's base directory will
-                                // override the external path
-                                layerPaths += paths + ":";
-                            }
-                        }
-                    }
-
-                    final String layers = coreSettings.getString(Settings.Global.GPU_DEBUG_LAYERS);
-
-                    Log.i(TAG, "Vulkan debug layer list: " + layers);
-                    if (layers != null && !layers.isEmpty()) {
-                        setDebugLayers(layers);
-                    }
-
-                    final String layersGLES =
-                            coreSettings.getString(Settings.Global.GPU_DEBUG_LAYERS_GLES);
-
-                    Log.i(TAG, "GLES debug layer list: " + layersGLES);
-                    if (layersGLES != null && !layersGLES.isEmpty()) {
-                        setDebugLayersGLES(layersGLES);
-                    }
-                }
+            final String layersGLES =
+                    coreSettings.getString(Settings.Global.GPU_DEBUG_LAYERS_GLES);
+            Log.i(TAG, "GLES debug layer list: " + layersGLES);
+            if (layersGLES != null && !layersGLES.isEmpty()) {
+                setDebugLayersGLES(layersGLES);
             }
         }
 
         // Include the app's lib directory in all cases
-        layerPaths += mLayerPath;
-
+        layerPaths += mLibrarySearchPaths;
         setLayerPaths(mClassLoader, layerPaths);
     }
 
@@ -334,6 +363,20 @@ public class GraphicsEnvironment {
         }
 
         return -1;
+    }
+
+    private static ApplicationInfo getAppInfoWithMetadata(Context context,
+                                                          PackageManager pm, String packageName) {
+        ApplicationInfo ai;
+        try {
+            // Get the ApplicationInfo from PackageManager so that metadata fields present.
+            ai = pm.getApplicationInfo(packageName, PackageManager.GET_META_DATA);
+        } catch (PackageManager.NameNotFoundException e) {
+            // Unlikely to fail for applications, but in case of failure, fall back to use the
+            // ApplicationInfo from context directly.
+            ai = context.getApplicationInfo();
+        }
+        return ai;
     }
 
     private static String getDriverForPkg(Context context, Bundle bundle, String packageName) {
@@ -523,17 +566,17 @@ public class GraphicsEnvironment {
     }
 
     /**
-     * Pull ANGLE whitelist from GlobalSettings and compare against current package
+     * Pull ANGLE allowlist from GlobalSettings and compare against current package
      */
-    private static boolean checkAngleWhitelist(Context context, Bundle bundle, String packageName) {
+    private static boolean checkAngleAllowlist(Context context, Bundle bundle, String packageName) {
         final ContentResolver contentResolver = context.getContentResolver();
-        final List<String> angleWhitelist =
+        final List<String> angleAllowlist =
                 getGlobalSettingsString(contentResolver, bundle,
-                    Settings.Global.GLOBAL_SETTINGS_ANGLE_WHITELIST);
+                    Settings.Global.GLOBAL_SETTINGS_ANGLE_ALLOWLIST);
 
-        if (DEBUG) Log.v(TAG, "ANGLE whitelist: " + angleWhitelist);
+        if (DEBUG) Log.v(TAG, "ANGLE allowlist: " + angleAllowlist);
 
-        return angleWhitelist.contains(packageName);
+        return angleAllowlist.contains(packageName);
     }
 
     /**
@@ -543,7 +586,7 @@ public class GraphicsEnvironment {
      * @param bundle
      * @param packageName
      * @return true: ANGLE setup successfully
-     *         false: ANGLE not setup (not on whitelist, ANGLE not present, etc.)
+     *         false: ANGLE not setup (not on allowlist, ANGLE not present, etc.)
      */
     public boolean setupAngle(Context context, Bundle bundle, PackageManager pm,
             String packageName) {
@@ -680,31 +723,24 @@ public class GraphicsEnvironment {
     /**
      * Return the driver package name to use. Return null for system driver.
      */
-    private static String chooseDriverInternal(
-            Context context, Bundle coreSettings, PackageManager pm, String packageName) {
-        final String gameDriver = SystemProperties.get(PROPERTY_GFX_DRIVER);
-        final boolean hasGameDriver = gameDriver != null && !gameDriver.isEmpty();
+    private static String chooseDriverInternal(Bundle coreSettings, ApplicationInfo ai) {
+        final String productionDriver = SystemProperties.get(PROPERTY_GFX_DRIVER_PRODUCTION);
+        final boolean hasProductionDriver = productionDriver != null && !productionDriver.isEmpty();
 
         final String prereleaseDriver = SystemProperties.get(PROPERTY_GFX_DRIVER_PRERELEASE);
         final boolean hasPrereleaseDriver = prereleaseDriver != null && !prereleaseDriver.isEmpty();
 
-        if (!hasGameDriver && !hasPrereleaseDriver) {
-            if (DEBUG) Log.v(TAG, "Neither Game Driver nor prerelease driver is supported.");
+        if (!hasProductionDriver && !hasPrereleaseDriver) {
+            if (DEBUG) {
+                Log.v(TAG,
+                        "Neither updatable production driver nor prerelease driver is supported.");
+            }
             return null;
         }
 
         // To minimize risk of driver updates crippling the device beyond user repair, never use an
         // updated driver for privileged or non-updated system apps. Presumably pre-installed apps
         // were tested thoroughly with the pre-installed driver.
-        ApplicationInfo ai;
-        try {
-            // Get the ApplicationInfo from PackageManager so that metadata fields present.
-            ai = pm.getApplicationInfo(packageName, PackageManager.GET_META_DATA);
-        } catch (PackageManager.NameNotFoundException e) {
-            // Unlikely to fail for applications, but in case of failure, fall back to use the
-            // ApplicationInfo from context directly.
-            ai = context.getApplicationInfo();
-        }
         if (ai.isPrivilegedApp() || (ai.isSystemApp() && !ai.isUpdatedSystemApp())) {
             if (DEBUG) Log.v(TAG, "Ignoring driver package for privileged/non-updated system app.");
             return null;
@@ -714,79 +750,82 @@ public class GraphicsEnvironment {
                 (ai.metaData != null && ai.metaData.getBoolean(METADATA_DEVELOPER_DRIVER_ENABLE))
                 || isDebuggable();
 
-        // Priority for Game Driver settings global on confliction (Higher priority comes first):
-        // 1. GAME_DRIVER_ALL_APPS
-        // 2. GAME_DRIVER_OPT_OUT_APPS
-        // 3. GAME_DRIVER_PRERELEASE_OPT_IN_APPS
-        // 4. GAME_DRIVER_OPT_IN_APPS
-        // 5. GAME_DRIVER_BLACKLIST
-        // 6. GAME_DRIVER_WHITELIST
-        switch (coreSettings.getInt(Settings.Global.GAME_DRIVER_ALL_APPS, 0)) {
-            case GAME_DRIVER_GLOBAL_OPT_IN_OFF:
-                if (DEBUG) Log.v(TAG, "Game Driver is turned off on this device.");
+        // Priority of updatable driver settings on confliction (Higher priority comes first):
+        // 1. UPDATABLE_DRIVER_ALL_APPS
+        // 2. UPDATABLE_DRIVER_PRODUCTION_OPT_OUT_APPS
+        // 3. UPDATABLE_DRIVER_PRERELEASE_OPT_IN_APPS
+        // 4. UPDATABLE_DRIVER_PRODUCTION_OPT_IN_APPS
+        // 5. UPDATABLE_DRIVER_PRODUCTION_DENYLIST
+        // 6. UPDATABLE_DRIVER_PRODUCTION_ALLOWLIST
+        switch (coreSettings.getInt(Settings.Global.UPDATABLE_DRIVER_ALL_APPS, 0)) {
+            case UPDATABLE_DRIVER_GLOBAL_OPT_IN_OFF:
+                if (DEBUG) Log.v(TAG, "updatable driver is turned off on this device.");
                 return null;
-            case GAME_DRIVER_GLOBAL_OPT_IN_GAME_DRIVER:
-                if (DEBUG) Log.v(TAG, "All apps opt in to use Game Driver.");
-                return hasGameDriver ? gameDriver : null;
-            case GAME_DRIVER_GLOBAL_OPT_IN_PRERELEASE_DRIVER:
-                if (DEBUG) Log.v(TAG, "All apps opt in to use prerelease driver.");
+            case UPDATABLE_DRIVER_GLOBAL_OPT_IN_PRODUCTION_DRIVER:
+                if (DEBUG) Log.v(TAG, "All apps opt in to use updatable production driver.");
+                return hasProductionDriver ? productionDriver : null;
+            case UPDATABLE_DRIVER_GLOBAL_OPT_IN_PRERELEASE_DRIVER:
+                if (DEBUG) Log.v(TAG, "All apps opt in to use updatable prerelease driver.");
                 return hasPrereleaseDriver && enablePrereleaseDriver ? prereleaseDriver : null;
-            case GAME_DRIVER_GLOBAL_OPT_IN_DEFAULT:
+            case UPDATABLE_DRIVER_GLOBAL_OPT_IN_DEFAULT:
             default:
                 break;
         }
 
         final String appPackageName = ai.packageName;
-        if (getGlobalSettingsString(null, coreSettings, Settings.Global.GAME_DRIVER_OPT_OUT_APPS)
+        if (getGlobalSettingsString(null, coreSettings,
+                                    Settings.Global.UPDATABLE_DRIVER_PRODUCTION_OPT_OUT_APPS)
                         .contains(appPackageName)) {
-            if (DEBUG) Log.v(TAG, "App opts out for Game Driver.");
+            if (DEBUG) Log.v(TAG, "App opts out for updatable production driver.");
             return null;
         }
 
         if (getGlobalSettingsString(
-                    null, coreSettings, Settings.Global.GAME_DRIVER_PRERELEASE_OPT_IN_APPS)
+                    null, coreSettings, Settings.Global.UPDATABLE_DRIVER_PRERELEASE_OPT_IN_APPS)
                         .contains(appPackageName)) {
-            if (DEBUG) Log.v(TAG, "App opts in for prerelease Game Driver.");
+            if (DEBUG) Log.v(TAG, "App opts in for updatable prerelease driver.");
             return hasPrereleaseDriver && enablePrereleaseDriver ? prereleaseDriver : null;
         }
 
-        // Early return here since the rest logic is only for Game Driver.
-        if (!hasGameDriver) {
-            if (DEBUG) Log.v(TAG, "Game Driver is not supported on the device.");
+        // Early return here since the rest logic is only for updatable production Driver.
+        if (!hasProductionDriver) {
+            if (DEBUG) Log.v(TAG, "Updatable production driver is not supported on the device.");
             return null;
         }
 
         final boolean isOptIn =
-                getGlobalSettingsString(null, coreSettings, Settings.Global.GAME_DRIVER_OPT_IN_APPS)
+                getGlobalSettingsString(null, coreSettings,
+                                        Settings.Global.UPDATABLE_DRIVER_PRODUCTION_OPT_IN_APPS)
                         .contains(appPackageName);
-        final List<String> whitelist =
-                getGlobalSettingsString(null, coreSettings, Settings.Global.GAME_DRIVER_WHITELIST);
-        if (!isOptIn && whitelist.indexOf(GAME_DRIVER_WHITELIST_ALL) != 0
-                && !whitelist.contains(appPackageName)) {
-            if (DEBUG) Log.v(TAG, "App is not on the whitelist for Game Driver.");
+        final List<String> allowlist =
+                getGlobalSettingsString(null, coreSettings,
+                                        Settings.Global.UPDATABLE_DRIVER_PRODUCTION_ALLOWLIST);
+        if (!isOptIn && allowlist.indexOf(UPDATABLE_DRIVER_ALLOWLIST_ALL) != 0
+                && !allowlist.contains(appPackageName)) {
+            if (DEBUG) Log.v(TAG, "App is not on the allowlist for updatable production driver.");
             return null;
         }
 
-        // If the application is not opted-in, then check whether it's on the blacklist,
-        // terminate early if it's on the blacklist and fallback to system driver.
+        // If the application is not opted-in, then check whether it's on the denylist,
+        // terminate early if it's on the denylist and fallback to system driver.
         if (!isOptIn
                 && getGlobalSettingsString(
-                        null, coreSettings, Settings.Global.GAME_DRIVER_BLACKLIST)
+                        null, coreSettings, Settings.Global.UPDATABLE_DRIVER_PRODUCTION_DENYLIST)
                            .contains(appPackageName)) {
-            if (DEBUG) Log.v(TAG, "App is on the blacklist for Game Driver.");
+            if (DEBUG) Log.v(TAG, "App is on the denylist for updatable production driver.");
             return null;
         }
 
-        return gameDriver;
+        return productionDriver;
     }
 
     /**
      * Choose whether the current process should use the builtin or an updated driver.
      */
     private static boolean chooseDriver(
-            Context context, Bundle coreSettings, PackageManager pm, String packageName) {
-        final String driverPackageName = chooseDriverInternal(context, coreSettings, pm,
-                packageName);
+            Context context, Bundle coreSettings, PackageManager pm, String packageName,
+            ApplicationInfo ai) {
+        final String driverPackageName = chooseDriverInternal(coreSettings, ai);
         if (driverPackageName == null) {
             return false;
         }
@@ -840,9 +879,10 @@ public class GraphicsEnvironment {
             throw new NullPointerException("apk's meta-data cannot be null");
         }
 
-        final String driverBuildTime = driverAppInfo.metaData.getString(METADATA_DRIVER_BUILD_TIME);
-        if (driverBuildTime == null || driverBuildTime.isEmpty()) {
-            throw new IllegalArgumentException("com.android.gamedriver.build_time is not set");
+        String driverBuildTime = driverAppInfo.metaData.getString(METADATA_DRIVER_BUILD_TIME);
+        if (driverBuildTime == null || driverBuildTime.length() <= 1) {
+            Log.v(TAG, "com.android.graphics.driver.build_time is not set");
+            driverBuildTime = "L0";
         }
         // driver_build_time in the meta-data is in "L<Unix epoch timestamp>" format. e.g. L123456.
         // Long.parseLong will throw if the meta-data "driver_build_time" is not set properly.
@@ -870,7 +910,7 @@ public class GraphicsEnvironment {
             final Context driverContext =
                     context.createPackageContext(driverPackageName, Context.CONTEXT_RESTRICTED);
             final BufferedReader reader = new BufferedReader(new InputStreamReader(
-                    driverContext.getAssets().open(GAME_DRIVER_SPHAL_LIBRARIES_FILENAME)));
+                    driverContext.getAssets().open(UPDATABLE_DRIVER_SPHAL_LIBRARIES_FILENAME)));
             final ArrayList<String> assetStrings = new ArrayList<>();
             for (String assetString; (assetString = reader.readLine()) != null;) {
                 assetStrings.add(assetString);
@@ -882,7 +922,7 @@ public class GraphicsEnvironment {
             }
         } catch (IOException e) {
             if (DEBUG) {
-                Log.w(TAG, "Failed to load '" + GAME_DRIVER_SPHAL_LIBRARIES_FILENAME + "'");
+                Log.w(TAG, "Failed to load '" + UPDATABLE_DRIVER_SPHAL_LIBRARIES_FILENAME + "'");
             }
         }
         return "";
@@ -898,4 +938,5 @@ public class GraphicsEnvironment {
     private static native void setAngleInfo(String path, String appPackage, String devOptIn,
             FileDescriptor rulesFd, long rulesOffset, long rulesLength);
     private static native boolean getShouldUseAngle(String packageName);
+    private static native boolean setInjectLayersPrSetDumpable();
 }

@@ -65,7 +65,7 @@ public final class CellIdentityLte extends CellIdentity {
     /**
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public CellIdentityLte() {
         super(TAG, CellInfo.TYPE_LTE, null, null, null, null);
         mCi = CellInfo.UNAVAILABLE;
@@ -366,7 +366,7 @@ public final class CellIdentityLte extends CellIdentity {
         .append(" mPci=").append(mPci)
         .append(" mTac=").append(mTac)
         .append(" mEarfcn=").append(mEarfcn)
-        .append(" mBands=").append(mBands)
+        .append(" mBands=").append(Arrays.toString(mBands))
         .append(" mBandwidth=").append(mBandwidth)
         .append(" mMcc=").append(mMccStr)
         .append(" mMnc=").append(mMncStr)

@@ -302,8 +302,9 @@ static void report_java_lang_error(JNIEnv* env, jthrowable error, const char* ms
     report_java_lang_error_fatal_error(env, error, msg);
 }
 
-static void report_exception(JNIEnv* env, jthrowable excep, const char* msg)
-{
+namespace android {
+
+void binder_report_exception(JNIEnv* env, jthrowable excep, const char* msg) {
     env->ExceptionClear();
 
     ScopedLocalRef<jstring> tagstr(env, env->NewStringUTF(LOG_TAG));
@@ -330,6 +331,8 @@ static void report_exception(JNIEnv* env, jthrowable excep, const char* msg)
         report_java_lang_error(env, excep, msg);
     }
 }
+
+} // namespace android
 
 class JavaBBinderHolder;
 
@@ -405,9 +408,9 @@ protected:
 
         if (env->ExceptionCheck()) {
             ScopedLocalRef<jthrowable> excep(env, env->ExceptionOccurred());
-            report_exception(env, excep.get(),
-                "*** Uncaught remote exception!  "
-                "(Exceptions are not yet supported across processes.)");
+            binder_report_exception(env, excep.get(),
+                                    "*** Uncaught remote exception!  "
+                                    "(Exceptions are not yet supported across processes.)");
             res = JNI_FALSE;
         }
 
@@ -421,8 +424,8 @@ protected:
 
         if (env->ExceptionCheck()) {
             ScopedLocalRef<jthrowable> excep(env, env->ExceptionOccurred());
-            report_exception(env, excep.get(),
-                "*** Uncaught exception in onBinderStrictModePolicyChange");
+            binder_report_exception(env, excep.get(),
+                                    "*** Uncaught exception in onBinderStrictModePolicyChange");
         }
 
         // Need to always call through the native implementation of
@@ -561,13 +564,14 @@ public:
         LOGDEATH("Receiving binderDied() on JavaDeathRecipient %p\n", this);
         if (mObject != NULL) {
             JNIEnv* env = javavm_to_jnienv(mVM);
-
+            ScopedLocalRef<jobject> jBinderProxy(env, javaObjectForIBinder(env, who.promote()));
             env->CallStaticVoidMethod(gBinderProxyOffsets.mClass,
-                    gBinderProxyOffsets.mSendDeathNotice, mObject);
+                                      gBinderProxyOffsets.mSendDeathNotice, mObject,
+                                      jBinderProxy.get());
             if (env->ExceptionCheck()) {
                 jthrowable excep = env->ExceptionOccurred();
-                report_exception(env, excep,
-                        "*** Uncaught exception returned from death notification!");
+                binder_report_exception(env, excep,
+                                        "*** Uncaught exception returned from death notification!");
             }
 
             // Serialize with our containing DeathRecipientList so that we can't
@@ -734,6 +738,9 @@ BinderProxyNativeData* getBPNativeData(JNIEnv* env, jobject obj) {
 // same IBinder, and the original BinderProxy is still alive, return the same BinderProxy.
 jobject javaObjectForIBinder(JNIEnv* env, const sp<IBinder>& val)
 {
+    // N.B. This function is called from a @FastNative JNI method, so don't take locks around
+    // calls to Java code or block the calling thread for a long time for any reason.
+
     if (val == NULL) return NULL;
 
     if (val->checkSubclass(&gBinderOffsets)) {
@@ -1032,31 +1039,6 @@ static void android_os_Binder_blockUntilThreadAvailable(JNIEnv* env, jobject cla
     return IPCThreadState::self()->blockUntilThreadAvailable();
 }
 
-static jobject android_os_Binder_waitForService(
-        JNIEnv *env,
-        jclass /* clazzObj */,
-        jstring serviceNameObj) {
-
-    const jchar* serviceName = env->GetStringCritical(serviceNameObj, nullptr);
-    if (!serviceName) {
-        signalExceptionForError(env, nullptr, BAD_VALUE, true /*canThrowRemoteException*/);
-        return nullptr;
-    }
-    String16 nameCopy = String16(reinterpret_cast<const char16_t *>(serviceName),
-            env->GetStringLength(serviceNameObj));
-    env->ReleaseStringCritical(serviceNameObj, serviceName);
-
-    auto sm = android::defaultServiceManager();
-    sp<IBinder> service = sm->waitForService(nameCopy);
-
-    if (!service) {
-        signalExceptionForError(env, nullptr, NAME_NOT_FOUND, true /*canThrowRemoteException*/);
-        return nullptr;
-    }
-
-    return javaObjectForIBinder(env, service);
-}
-
 static jobject android_os_Binder_getExtension(JNIEnv* env, jobject obj) {
     JavaBBinderHolder* jbh = (JavaBBinderHolder*) env->GetLongField(obj, gBinderOffsets.mObject);
     return javaObjectForIBinder(env, jbh->getExtension());
@@ -1097,7 +1079,6 @@ static const JNINativeMethod gBinderMethods[] = {
     { "getNativeBBinderHolder", "()J", (void*)android_os_Binder_getNativeBBinderHolder },
     { "getNativeFinalizer", "()J", (void*)android_os_Binder_getNativeFinalizer },
     { "blockUntilThreadAvailable", "()V", (void*)android_os_Binder_blockUntilThreadAvailable },
-    { "waitForService", "(Ljava/lang/String;)Landroid/os/IBinder;", (void*)android_os_Binder_waitForService },
     { "getExtension", "()Landroid/os/IBinder;", (void*)android_os_Binder_getExtension },
     { "setExtension", "(Landroid/os/IBinder;)V", (void*)android_os_Binder_setExtension },
 };
@@ -1185,8 +1166,8 @@ static void android_os_BinderInternal_proxyLimitcallback(int uid)
 
     if (env->ExceptionCheck()) {
         ScopedLocalRef<jthrowable> excep(env, env->ExceptionOccurred());
-        report_exception(env, excep.get(),
-            "*** Uncaught exception in binderProxyLimitCallbackFromNative");
+        binder_report_exception(env, excep.get(),
+                                "*** Uncaught exception in binderProxyLimitCallbackFromNative");
     }
 }
 
@@ -1582,8 +1563,9 @@ static int int_register_android_os_BinderProxy(JNIEnv* env)
     gBinderProxyOffsets.mClass = MakeGlobalRefOrDie(env, clazz);
     gBinderProxyOffsets.mGetInstance = GetStaticMethodIDOrDie(env, clazz, "getInstance",
             "(JJ)Landroid/os/BinderProxy;");
-    gBinderProxyOffsets.mSendDeathNotice = GetStaticMethodIDOrDie(env, clazz, "sendDeathNotice",
-            "(Landroid/os/IBinder$DeathRecipient;)V");
+    gBinderProxyOffsets.mSendDeathNotice =
+            GetStaticMethodIDOrDie(env, clazz, "sendDeathNotice",
+                                   "(Landroid/os/IBinder$DeathRecipient;Landroid/os/IBinder;)V");
     gBinderProxyOffsets.mNativeData = GetFieldIDOrDie(env, clazz, "mNativeData", "J");
 
     clazz = FindClassOrDie(env, "java/lang/Class");

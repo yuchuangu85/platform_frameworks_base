@@ -55,6 +55,14 @@ public final class DeviceAdminInfo implements Parcelable {
     static final String TAG = "DeviceAdminInfo";
 
     /**
+     * A type of policy that this device admin can use: profile owner on an organization-owned
+     * device.
+     *
+     * @hide
+     */
+    public static final int USES_POLICY_ORGANIZATION_OWNED_PROFILE_OWNER = -3;
+
+    /**
      * A type of policy that this device admin can use: device owner meta-policy
      * for an admin that is designated as owner of the device.
      *
@@ -475,7 +483,7 @@ public final class DeviceAdminInfo implements Parcelable {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ArrayList<PolicyInfo> getUsedPolicies() {
         ArrayList<PolicyInfo> res = new ArrayList<PolicyInfo>();
         for (int i=0; i<sPoliciesDisplayOrder.size(); i++) {

@@ -18,11 +18,11 @@ package com.android.systemui.doze;
 
 import static com.android.systemui.plugins.SensorManagerPlugin.Sensor.TYPE_WAKE_LOCK_SCREEN;
 
+import static org.junit.Assert.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -33,6 +33,7 @@ import static org.mockito.Mockito.when;
 
 import android.app.AlarmManager;
 import android.database.ContentObserver;
+import android.hardware.Sensor;
 import android.hardware.display.AmbientDisplayConfiguration;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
@@ -44,7 +45,8 @@ import com.android.systemui.SysuiTestCase;
 import com.android.systemui.doze.DozeSensors.TriggerSensor;
 import com.android.systemui.plugins.SensorManagerPlugin;
 import com.android.systemui.statusbar.phone.DozeParameters;
-import com.android.systemui.util.AsyncSensorManager;
+import com.android.systemui.util.sensors.AsyncSensorManager;
+import com.android.systemui.util.sensors.ProximitySensor;
 import com.android.systemui.util.wakelock.WakeLock;
 
 import org.junit.Before;
@@ -78,6 +80,10 @@ public class DozeSensorsTest extends SysuiTestCase {
     private AlwaysOnDisplayPolicy mAlwaysOnDisplayPolicy;
     @Mock
     private TriggerSensor mTriggerSensor;
+    @Mock
+    private DozeLog mDozeLog;
+    @Mock
+    private ProximitySensor mProximitySensor;
     private SensorManagerPlugin.SensorEventListener mWakeLockScreenListener;
     private TestableLooper mTestableLooper;
     private DozeSensors mDozeSensors;
@@ -93,6 +99,13 @@ public class DozeSensorsTest extends SysuiTestCase {
             return null;
         }).when(mWakeLock).wrap(any(Runnable.class));
         mDozeSensors = new TestableDozeSensors();
+    }
+
+    @Test
+    public void testRegisterProx() {
+        assertFalse(mProximitySensor.isRegistered());
+        mDozeSensors.setProxListening(true);
+        verify(mProximitySensor).resume();
     }
 
     @Test
@@ -114,6 +127,7 @@ public class DozeSensorsTest extends SysuiTestCase {
 
     @Test
     public void testSetListening_firstTrue_registerSettingsObserver() {
+        verify(mSensorManager, never()).registerListener(any(), any(Sensor.class), anyInt());
         mDozeSensors.setListening(true);
 
         verify(mTriggerSensor).registerSettingsObserver(any(ContentObserver.class));
@@ -121,6 +135,7 @@ public class DozeSensorsTest extends SysuiTestCase {
 
     @Test
     public void testSetListening_twiceTrue_onlyRegisterSettingsObserverOnce() {
+        verify(mSensorManager, never()).registerListener(any(), any(Sensor.class), anyInt());
         mDozeSensors.setListening(true);
         mDozeSensors.setListening(true);
 
@@ -128,25 +143,18 @@ public class DozeSensorsTest extends SysuiTestCase {
     }
 
     @Test
-    public void testSetPaused_doesntPause_sensors() {
-        mDozeSensors.setListening(true);
-        verify(mTriggerSensor).setListening(eq(true));
+    public void testDestroy() {
+        mDozeSensors.destroy();
 
-        clearInvocations(mTriggerSensor);
-        mDozeSensors.setPaused(true);
-        verify(mTriggerSensor).setListening(eq(true));
-
-        clearInvocations(mTriggerSensor);
-        mDozeSensors.setListening(false);
-        verify(mTriggerSensor).setListening(eq(false));
+        verify(mTriggerSensor).setListening(false);
     }
 
     private class TestableDozeSensors extends DozeSensors {
 
         TestableDozeSensors() {
             super(getContext(), mAlarmManager, mSensorManager, mDozeParameters,
-                    mAmbientDisplayConfiguration, mWakeLock, mCallback, mProxCallback,
-                    mAlwaysOnDisplayPolicy);
+                    mAmbientDisplayConfiguration, mWakeLock, mCallback, mProxCallback, mDozeLog,
+                    mProximitySensor);
             for (TriggerSensor sensor : mSensors) {
                 if (sensor instanceof PluginSensor
                         && ((PluginSensor) sensor).mPluginSensor.getType()

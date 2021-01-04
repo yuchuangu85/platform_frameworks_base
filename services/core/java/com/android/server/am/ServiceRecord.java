@@ -16,12 +16,13 @@
 
 package com.android.server.am;
 
+import static android.app.PendingIntent.FLAG_IMMUTABLE;
+import static android.app.PendingIntent.FLAG_UPDATE_CURRENT;
+
 import static com.android.server.am.ActivityManagerDebugConfig.TAG_AM;
 import static com.android.server.am.ActivityManagerDebugConfig.TAG_WITH_CLASS_NAME;
 
-import android.app.INotificationManager;
 import android.app.Notification;
-import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.ComponentName;
 import android.content.Context;
@@ -33,7 +34,6 @@ import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
-import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
 import android.provider.Settings;
@@ -43,6 +43,7 @@ import android.util.TimeUtils;
 import android.util.proto.ProtoOutputStream;
 import android.util.proto.ProtoUtils;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.app.procstats.ServiceState;
 import com.android.internal.os.BatteryStatsImpl;
 import com.android.server.LocalServices;
@@ -138,9 +139,18 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
     private Runnable mStartedWhitelistingBgActivityStartsCleanUp;
     private ProcessRecord mAppForStartedWhitelistingBgActivityStarts;
 
+    // allow while-in-use permissions in foreground service or not.
+    // while-in-use permissions in FGS started from background might be restricted.
+    boolean mAllowWhileInUsePermissionInFgs;
+
+    // the most recent package that start/bind this service.
+    String mRecentCallingPackage;
+
     String stringName;      // caching of toString
 
     private int lastStartId;    // identifier of most recent start request.
+
+    boolean mKeepWarming; // Whether or not it'll keep critical code path of the host warm
 
     static class StartItem {
         final ServiceRecord sr;
@@ -180,7 +190,7 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
             }
         }
 
-        public void writeToProto(ProtoOutputStream proto, long fieldId, long now) {
+        public void dumpDebug(ProtoOutputStream proto, long fieldId, long now) {
             long token = proto.start(fieldId);
             proto.write(ServiceRecordProto.StartItem.ID, id);
             ProtoUtils.toDuration(proto,
@@ -188,14 +198,14 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
             proto.write(ServiceRecordProto.StartItem.DELIVERY_COUNT, deliveryCount);
             proto.write(ServiceRecordProto.StartItem.DONE_EXECUTING_COUNT, doneExecutingCount);
             if (intent != null) {
-                intent.writeToProto(proto, ServiceRecordProto.StartItem.INTENT, true, true,
+                intent.dumpDebug(proto, ServiceRecordProto.StartItem.INTENT, true, true,
                         true, false);
             }
             if (neededGrants != null) {
-                neededGrants.writeToProto(proto, ServiceRecordProto.StartItem.NEEDED_GRANTS);
+                neededGrants.dumpDebug(proto, ServiceRecordProto.StartItem.NEEDED_GRANTS);
             }
             if (uriPermissions != null) {
-                uriPermissions.writeToProto(proto, ServiceRecordProto.StartItem.URI_PERMISSIONS);
+                uriPermissions.dumpDebug(proto, ServiceRecordProto.StartItem.URI_PERMISSIONS);
             }
             proto.end(token);
         }
@@ -250,7 +260,7 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
         }
     }
 
-    void writeToProto(ProtoOutputStream proto, long fieldId) {
+    void dumpDebug(ProtoOutputStream proto, long fieldId) {
         long token = proto.start(fieldId);
         proto.write(ServiceRecordProto.SHORT_NAME, this.shortInstanceName);
         proto.write(ServiceRecordProto.IS_RUNNING, app != null);
@@ -258,8 +268,8 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
             proto.write(ServiceRecordProto.PID, app.pid);
         }
         if (intent != null) {
-            intent.getIntent().writeToProto(proto, ServiceRecordProto.INTENT, false, true, false,
-                    true);
+            intent.getIntent().dumpDebug(proto, ServiceRecordProto.INTENT, false, true, false,
+                    false);
         }
         proto.write(ServiceRecordProto.PACKAGE_NAME, packageName);
         proto.write(ServiceRecordProto.PROCESS_NAME, processName);
@@ -277,17 +287,17 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
             proto.end(appInfoToken);
         }
         if (app != null) {
-            app.writeToProto(proto, ServiceRecordProto.APP);
+            app.dumpDebug(proto, ServiceRecordProto.APP);
         }
         if (isolatedProc != null) {
-            isolatedProc.writeToProto(proto, ServiceRecordProto.ISOLATED_PROC);
+            isolatedProc.dumpDebug(proto, ServiceRecordProto.ISOLATED_PROC);
         }
         proto.write(ServiceRecordProto.WHITELIST_MANAGER, whitelistManager);
         proto.write(ServiceRecordProto.DELAYED, delayed);
         if (isForeground || foregroundId != 0) {
             long fgToken = proto.start(ServiceRecordProto.FOREGROUND);
             proto.write(ServiceRecordProto.Foreground.ID, foregroundId);
-            foregroundNoti.writeToProto(proto, ServiceRecordProto.Foreground.NOTIFICATION);
+            foregroundNoti.dumpDebug(proto, ServiceRecordProto.Foreground.NOTIFICATION);
             proto.end(fgToken);
         }
         ProtoUtils.toDuration(proto, ServiceRecordProto.CREATE_REAL_TIME, createRealTime, nowReal);
@@ -296,6 +306,8 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
         ProtoUtils.toDuration(proto, ServiceRecordProto.LAST_ACTIVITY_TIME, lastActivity, now);
         ProtoUtils.toDuration(proto, ServiceRecordProto.RESTART_TIME, restartTime, now);
         proto.write(ServiceRecordProto.CREATED_FROM_FG, createdFromFg);
+        proto.write(ServiceRecordProto.ALLOW_WHILE_IN_USE_PERMISSION_IN_FGS,
+                mAllowWhileInUsePermissionInFgs);
 
         if (startRequested || delayedStop || lastStartId != 0) {
             long startToken = proto.start(ServiceRecordProto.START);
@@ -330,21 +342,21 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
         if (deliveredStarts.size() > 0) {
             final int N = deliveredStarts.size();
             for (int i = 0; i < N; i++) {
-                deliveredStarts.get(i).writeToProto(proto,
+                deliveredStarts.get(i).dumpDebug(proto,
                         ServiceRecordProto.DELIVERED_STARTS, now);
             }
         }
         if (pendingStarts.size() > 0) {
             final int N = pendingStarts.size();
             for (int i = 0; i < N; i++) {
-                pendingStarts.get(i).writeToProto(proto, ServiceRecordProto.PENDING_STARTS, now);
+                pendingStarts.get(i).dumpDebug(proto, ServiceRecordProto.PENDING_STARTS, now);
             }
         }
         if (bindings.size() > 0) {
             final int N = bindings.size();
             for (int i=0; i<N; i++) {
                 IntentBindRecord b = bindings.valueAt(i);
-                b.writeToProto(proto, ServiceRecordProto.BINDINGS);
+                b.dumpDebug(proto, ServiceRecordProto.BINDINGS);
             }
         }
         if (connections.size() > 0) {
@@ -352,7 +364,7 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
             for (int conni=0; conni<N; conni++) {
                 ArrayList<ConnectionRecord> c = connections.valueAt(conni);
                 for (int i=0; i<c.size(); i++) {
-                    c.get(i).writeToProto(proto, ServiceRecordProto.CONNECTIONS);
+                    c.get(i).dumpDebug(proto, ServiceRecordProto.CONNECTIONS);
                 }
             }
         }
@@ -361,7 +373,7 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
 
     void dump(PrintWriter pw, String prefix) {
         pw.print(prefix); pw.print("intent={");
-                pw.print(intent.getIntent().toShortString(false, true, false, true));
+                pw.print(intent.getIntent().toShortString(false, true, false, false));
                 pw.println('}');
         pw.print(prefix); pw.print("packageName="); pw.println(packageName);
         pw.print(prefix); pw.print("processName="); pw.println(processName);
@@ -392,6 +404,10 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
             pw.print(prefix); pw.print("hasStartedWhitelistingBgActivityStarts=");
             pw.println(mHasStartedWhitelistingBgActivityStarts);
         }
+        pw.print(prefix); pw.print("allowWhileInUsePermissionInFgs=");
+                pw.println(mAllowWhileInUsePermissionInFgs);
+        pw.print(prefix); pw.print("recentCallingPackage=");
+                pw.println(mRecentCallingPackage);
         if (delayed) {
             pw.print(prefix); pw.print("delayed="); pw.println(delayed);
         }
@@ -504,6 +520,7 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
         lastActivity = SystemClock.uptimeMillis();
         userId = UserHandle.getUserId(appInfo.uid);
         createdFromFg = callerIsFg;
+        updateKeepWarmLocked();
     }
 
     public ServiceState getTracker() {
@@ -623,6 +640,14 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
         }
     }
 
+    /**
+     * @return {@code true} if the killed service which was started by {@link Context#startService}
+     *         has no reason to start again. Note this condition doesn't consider the bindings.
+     */
+    boolean canStopIfKilled(boolean isStartCanceled) {
+        return startRequested && (stopIfKilled || isStartCanceled) && pendingStarts.isEmpty();
+    }
+
     void updateHasBindingWhitelistingBgActivityStarts() {
         boolean hasWhitelistingBinding = false;
         for (int conni = connections.size() - 1; conni >= 0; conni--) {
@@ -712,6 +737,14 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
         } else {
             app.removeAllowBackgroundActivityStartsToken(this);
         }
+    }
+
+    @GuardedBy("ams")
+    void updateKeepWarmLocked() {
+        mKeepWarming = ams.mConstants.KEEP_WARMING_SERVICES.contains(name)
+                && (ams.mUserController.getCurrentUserId() == userId
+                || ams.isSingleton(processName, appInfo, instanceName.getClassName(),
+                        serviceInfo.flags));
     }
 
     public AppBindRecord retrieveAppBindingLocked(Intent intent,
@@ -843,7 +876,7 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
                                 runningIntent.setData(Uri.fromParts("package",
                                         appInfo.packageName, null));
                                 PendingIntent pi = PendingIntent.getActivityAsUser(ams.mContext, 0,
-                                        runningIntent, PendingIntent.FLAG_UPDATE_CURRENT, null,
+                                        runningIntent, FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE, null,
                                         UserHandle.of(userId));
                                 notiBuilder.setColor(ams.mContext.getColor(
                                         com.android.internal
@@ -882,7 +915,7 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
                         }
                         if (localForegroundNoti.getSmallIcon() == null) {
                             // Notifications whose icon is 0 are defined to not show
-                            // a notification, silently ignoring it.  We don't want to
+                            // a notification.  We don't want to
                             // just ignore it, we want to prevent the service from
                             // being foreground.
                             throw new RuntimeException("invalid service notification: "
@@ -910,18 +943,20 @@ final class ServiceRecord extends Binder implements ComponentName.WithComponentN
         // avoid deadlocks.
         final String localPackageName = packageName;
         final int localForegroundId = foregroundId;
+        final int appUid = appInfo.uid;
+        final int appPid = app != null ? app.pid : 0;
         ams.mHandler.post(new Runnable() {
             public void run() {
-                INotificationManager inm = NotificationManager.getService();
-                if (inm == null) {
+                NotificationManagerInternal nm = LocalServices.getService(
+                        NotificationManagerInternal.class);
+                if (nm == null) {
                     return;
                 }
                 try {
-                    inm.cancelNotificationWithTag(localPackageName, null,
-                            localForegroundId, userId);
+                    nm.cancelNotification(localPackageName, localPackageName, appUid, appPid,
+                            null, localForegroundId, userId);
                 } catch (RuntimeException e) {
                     Slog.w(TAG, "Error canceling notification for service", e);
-                } catch (RemoteException e) {
                 }
             }
         });

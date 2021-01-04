@@ -29,6 +29,7 @@ import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.res.Resources;
 import android.os.Binder;
+import android.os.Build;
 import android.text.TextUtils;
 
 import com.android.internal.telephony.GsmAlphabet;
@@ -133,7 +134,7 @@ public class SmsMessage {
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private int mSubId = 0;
 
     /** set Subscription information
@@ -314,6 +315,23 @@ public class SmsMessage {
         }
 
         return wrappedMessage != null ? new SmsMessage(wrappedMessage) : null;
+    }
+
+    /**
+     * Create an SmsMessage from a native SMS-Submit PDU, specified by Bluetooth Message Access
+     * Profile Specification v1.4.2 5.8.
+     * This is used by Bluetooth MAP profile to decode message when sending non UTF-8 SMS messages.
+     *
+     * @param data Message data.
+     * @param isCdma Indicates weather the type of the SMS is CDMA.
+     * @return An SmsMessage representing the message.
+     *
+     * @hide
+     */
+    @SystemApi
+    @Nullable
+    public static SmsMessage createFromNativeSmsSubmitPdu(@NonNull byte[] data, boolean isCdma) {
+        return null;
     }
 
     /**
@@ -744,9 +762,9 @@ public class SmsMessage {
 
         if (isTypeGsm) {
             data = com.android.internal.telephony.gsm.SmsMessage.getSubmitPdu(null,
-                destinationAddress, message, false,
-                SmsHeader.toByteArray(smsHeader), encoding, languageTable,
-                languageShiftTable).encodedMessage;
+                    destinationAddress, message, false,
+                    SmsHeader.toByteArray(smsHeader), encoding, languageTable,
+                    languageShiftTable).encodedMessage;
         } else { // SMS_TYPE_CDMA
             UserData uData = new UserData();
             uData.payloadStr = message;
@@ -758,7 +776,7 @@ public class SmsMessage {
             }
             uData.msgEncodingSet = true;
             data = com.android.internal.telephony.cdma.SmsMessage.getSubmitPdu(
-                destinationAddress, uData, false).encodedMessage;
+                    destinationAddress, uData, false).encodedMessage;
         }
         if (data == null) {
             return new byte[0];
@@ -1037,7 +1055,7 @@ public class SmsMessage {
      *
      * @return true if Cdma format should be used for MO SMS, false otherwise.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private static boolean useCdmaFormatForMoSms(int subId) {
         SmsManager smsManager = SmsManager.getSmsManagerForSubscriptionId(subId);
         if (!smsManager.isImsSmsSupported()) {
@@ -1176,6 +1194,7 @@ public class SmsMessage {
     /**
      * Returns the recipient address(receiver) of this SMS message in String form or null if
      * unavailable.
+     * {@hide}
      */
     @Nullable
     public String getRecipientAddress() {

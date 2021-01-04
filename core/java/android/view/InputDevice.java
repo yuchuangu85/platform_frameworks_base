@@ -16,6 +16,7 @@
 
 package android.view;
 
+import android.annotation.IntDef;
 import android.annotation.RequiresPermission;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
@@ -28,6 +29,8 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.Vibrator;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -137,6 +140,19 @@ public final class InputDevice implements Parcelable {
      * Use {@link #getMotionRange} to query the range of positions.
      */
     public static final int SOURCE_CLASS_JOYSTICK = 0x00000010;
+
+    /** @hide */
+    @IntDef(flag = true, prefix = { "SOURCE_CLASS_" }, value = {
+            SOURCE_CLASS_NONE,
+            SOURCE_CLASS_BUTTON,
+            SOURCE_CLASS_POINTER,
+            SOURCE_CLASS_POINTER,
+            SOURCE_CLASS_TRACKBALL,
+            SOURCE_CLASS_POSITION,
+            SOURCE_CLASS_JOYSTICK
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @interface InputSourceClass {}
 
     /**
      * The input source is unknown.
@@ -408,7 +424,7 @@ public final class InputDevice implements Parcelable {
     };
 
     // Called by native code.
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private InputDevice(int id, int generation, int controllerNumber, String name, int vendorId,
             int productId, String descriptor, boolean isExternal, int sources, int keyboardType,
             KeyCharacterMap keyCharacterMap, boolean hasVibrator, boolean hasMicrophone,
@@ -741,7 +757,7 @@ public final class InputDevice implements Parcelable {
     }
 
     // Called from native code.
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private void addMotionRange(int axis, int source,
             float min, float max, float flat, float fuzz, float resolution) {
         mMotionRanges.add(new MotionRange(axis, source, min, max, flat, fuzz, resolution));

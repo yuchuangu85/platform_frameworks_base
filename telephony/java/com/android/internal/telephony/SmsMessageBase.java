@@ -34,28 +34,23 @@ import java.util.regex.Pattern;
  * {@hide}
  */
 public abstract class SmsMessageBase {
-
     // Copied from Telephony.Mms.NAME_ADDR_EMAIL_PATTERN
     public static final Pattern NAME_ADDR_EMAIL_PATTERN =
             Pattern.compile("\\s*(\"[^\"]*\"|[^<>\"]+)\\s*<([^<>]+)>\\s*");
 
-    @UnsupportedAppUsage
-    public SmsMessageBase() {
-    }
-
     /** {@hide} The address of the SMSC. May be null */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected String mScAddress;
 
     /** {@hide} The address of the sender */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected SmsAddress mOriginatingAddress;
 
     /** {@hide} The address of the receiver */
     protected SmsAddress mRecipientAddress;
 
     /** {@hide} The message body as a string. May be null if the message isn't text */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected String mMessageBody;
 
     /** {@hide} */
@@ -81,21 +76,21 @@ public abstract class SmsMessageBase {
     protected byte[] mUserData;
 
     /** {@hide} */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected SmsHeader mUserDataHeader;
 
     // "Message Waiting Indication Group"
     // 23.038 Section 4
     /** {@hide} */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected boolean mIsMwi;
 
     /** {@hide} */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected boolean mMwiSense;
 
     /** {@hide} */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     protected boolean mMwiDontStore;
 
     /**
@@ -109,8 +104,12 @@ public abstract class SmsMessageBase {
     protected int mIndexOnIcc = -1;
 
     /** TP-Message-Reference - Message Reference of sent message. @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public int mMessageRef;
+
+    @UnsupportedAppUsage
+    public SmsMessageBase() {
+    }
 
     // TODO(): This class is duplicated in SmsMessage.java. Refactor accordingly.
     public static abstract class SubmitPduBase  {

@@ -27,16 +27,18 @@ interface IDreamManager {
     void dream();
     @UnsupportedAppUsage
     void awaken();
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void setDreamComponents(in ComponentName[] componentNames);
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     ComponentName[] getDreamComponents();
-    ComponentName getDefaultDreamComponent();
-    void testDream(in ComponentName componentName);
+    ComponentName getDefaultDreamComponentForUser(int userId);
+    void testDream(int userId, in ComponentName componentName);
     @UnsupportedAppUsage
     boolean isDreaming();
     void finishSelf(in IBinder token, boolean immediate);
     void startDozing(in IBinder token, int screenState, int screenBrightness);
     void stopDozing(in IBinder token);
     void forceAmbientDisplayEnabled(boolean enabled);
+    ComponentName[] getDreamComponentsForUser(int userId);
+    void setDreamComponentsForUser(int userId, in ComponentName[] componentNames);
 }

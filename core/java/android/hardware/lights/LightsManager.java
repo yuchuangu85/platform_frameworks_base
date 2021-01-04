@@ -45,7 +45,6 @@ import java.util.List;
  * @hide
  */
 @SystemApi
-@TestApi
 @SystemService(Context.LIGHTS_SERVICE)
 public final class LightsManager {
     private static final String TAG = "LightsManager";
@@ -161,7 +160,7 @@ public final class LightsManager {
          * @param request the settings for lights that should change
          */
         @RequiresPermission(Manifest.permission.CONTROL_DEVICE_LIGHTS)
-        public void setLights(@NonNull LightsRequest request) {
+        public void requestLights(@NonNull LightsRequest request) {
             Preconditions.checkNotNull(request);
             if (!mClosed) {
                 try {

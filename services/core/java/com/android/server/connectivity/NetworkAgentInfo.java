@@ -132,6 +132,17 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo> {
     // TODO: make this private with a getter.
     public NetworkCapabilities networkCapabilities;
     public final NetworkAgentConfig networkAgentConfig;
+
+    // Underlying networks declared by the agent. Only set if supportsUnderlyingNetworks is true.
+    // The networks in this list might be declared by a VPN app using setUnderlyingNetworks and are
+    // not guaranteed to be current or correct, or even to exist.
+    public @Nullable Network[] declaredUnderlyingNetworks;
+
+    // The capabilities originally announced by the NetworkAgent, regardless of any capabilities
+    // that were added or removed due to this network's underlying networks.
+    // Only set if #supportsUnderlyingNetworks is true.
+    public @Nullable NetworkCapabilities declaredCapabilities;
+
     // Indicates if netd has been told to create this Network. From this point on the appropriate
     // routing rules are setup and routes are added so packets can begin flowing over the Network.
     // This is a sticky bit; once set it is never cleared.
@@ -474,8 +485,14 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo> {
                         networkCapabilities);
     }
 
+    /** Whether this network is a VPN. */
     public boolean isVPN() {
         return networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
+    }
+
+    /** Whether this network might have underlying networks. Currently only true for VPNs. */
+    public boolean supportsUnderlyingNetworks() {
+        return isVPN();
     }
 
     private int getCurrentScore(boolean pretendValidated) {
@@ -594,7 +611,7 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo> {
         if (newExpiry > 0) {
             mLingerMessage = new WakeupMessage(
                     mContext, mHandler,
-                    "NETWORK_LINGER_COMPLETE." + network.netId /* cmdName */,
+                    "NETWORK_LINGER_COMPLETE." + network.getNetId() /* cmdName */,
                     EVENT_NETWORK_LINGER_COMPLETE /* cmd */,
                     0 /* arg1 (unused) */, 0 /* arg2 (unused) */,
                     this /* obj (NetworkAgentInfo) */);
@@ -685,7 +702,7 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo> {
      * This represents the network with something like "[100 WIFI|VPN]" or "[108 MOBILE]".
      */
     public String toShortString() {
-        return "[" + network.netId + " "
+        return "[" + network.getNetId() + " "
                 + transportNamesOf(networkCapabilities.getTransportTypes()) + "]";
     }
 

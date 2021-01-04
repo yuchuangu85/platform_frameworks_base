@@ -19,9 +19,12 @@ package com.android.internal.util;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
 import android.text.TextUtils;
 
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Objects;
 
 /**
  * Simple static methods to be called at the start of your own methods to verify
@@ -44,7 +47,7 @@ public class Preconditions {
      *     be converted to a string using {@link String#valueOf(Object)}
      * @throws IllegalArgumentException if {@code expression} is false
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static void checkArgument(boolean expression, final Object errorMessage) {
         if (!expression) {
             throw new IllegalArgumentException(String.valueOf(errorMessage));
@@ -165,7 +168,7 @@ public class Preconditions {
      * @param message exception message
      * @throws IllegalStateException if {@code expression} is false
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static void checkState(final boolean expression, String message) {
         if (!expression) {
             throw new IllegalStateException(message);
@@ -377,7 +380,7 @@ public class Preconditions {
      *
      * @throws IllegalArgumentException if {@code value} was not within the range
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static int checkArgumentInRange(int value, int lower, int upper,
             String valueName) {
         if (value < lower) {
@@ -494,6 +497,64 @@ public class Preconditions {
             throw new IllegalArgumentException(valueName + " is empty");
         }
         return value;
+    }
+
+    /**
+     * Ensures that the given byte array is not {@code null}, and contains at least one element.
+     *
+     * @param value an array of elements.
+     * @param valueName the name of the argument to use if the check fails.
+
+     * @return the validated array
+     *
+     * @throws NullPointerException if the {@code value} was {@code null}
+     * @throws IllegalArgumentException if the {@code value} was empty
+     */
+    @NonNull
+    public static byte[] checkByteArrayNotEmpty(final byte[] value, final String valueName) {
+        if (value == null) {
+            throw new NullPointerException(valueName + " must not be null");
+        }
+        if (value.length == 0) {
+            throw new IllegalArgumentException(valueName + " is empty");
+        }
+        return value;
+    }
+
+    /**
+     * Ensures that argument {@code value} is one of {@code supportedValues}.
+     *
+     * @param supportedValues an array of string values
+     * @param value a string value
+     *
+     * @return the validated value
+     *
+     * @throws NullPointerException if either {@code value} or {@code supportedValues} is null
+     * @throws IllegalArgumentException if the {@code value} is not in {@code supportedValues}
+     */
+    @NonNull
+    public static String checkArgumentIsSupported(final String[] supportedValues,
+            final String value) {
+        checkNotNull(value);
+        checkNotNull(supportedValues);
+
+        if (!contains(supportedValues, value)) {
+            throw new IllegalArgumentException(value + "is not supported "
+                    + Arrays.toString(supportedValues));
+        }
+        return value;
+    }
+
+    private static boolean contains(String[] values, String value) {
+        if (values == null) {
+            return false;
+        }
+        for (int i = 0; i < values.length; ++i) {
+            if (Objects.equals(value, values[i])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

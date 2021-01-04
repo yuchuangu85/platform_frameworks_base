@@ -23,6 +23,7 @@ import android.annotation.StringRes;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.text.TextUtils;
@@ -160,7 +161,6 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final int PROTECTION_FLAG_OEM = 0x4000;
 
     /**
@@ -181,7 +181,6 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final int PROTECTION_FLAG_SYSTEM_TEXT_CLASSIFIER = 0x10000;
 
     /**
@@ -192,7 +191,6 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final int PROTECTION_FLAG_WELLBEING = 0x20000;
 
     /**
@@ -202,7 +200,6 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final int PROTECTION_FLAG_DOCUMENTER = 0x40000;
 
     /**
@@ -212,7 +209,6 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final int PROTECTION_FLAG_CONFIGURATOR = 0x80000;
 
     /**
@@ -223,7 +219,6 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final int PROTECTION_FLAG_INCIDENT_REPORT_APPROVER = 0x100000;
 
     /**
@@ -234,19 +229,27 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final int PROTECTION_FLAG_APP_PREDICTOR = 0x200000;
 
     /**
      * Additional flag for {@link #protectionLevel}, corresponding
-     * to the <code>telephony</code> value of
+     * to the <code>companion</code> value of
      * {@link android.R.attr#protectionLevel}.
      *
      * @hide
      */
     @SystemApi
-    @TestApi
-    public static final int PROTECTION_FLAG_TELEPHONY = 0x400000;
+    public static final int PROTECTION_FLAG_COMPANION = 0x800000;
+
+    /**
+     * Additional flag for {@link #protectionLevel}, corresponding
+     * to the <code>retailDemo</code> value of
+     * {@link android.R.attr#protectionLevel}.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final int PROTECTION_FLAG_RETAIL_DEMO = 0x1000000;
 
     /** @hide */
     @IntDef(flag = true, prefix = { "PROTECTION_FLAG_" }, value = {
@@ -269,7 +272,8 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
             PROTECTION_FLAG_CONFIGURATOR,
             PROTECTION_FLAG_INCIDENT_REPORT_APPROVER,
             PROTECTION_FLAG_APP_PREDICTOR,
-            PROTECTION_FLAG_TELEPHONY,
+            PROTECTION_FLAG_COMPANION,
+            PROTECTION_FLAG_RETAIL_DEMO,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ProtectionFlags {}
@@ -328,7 +332,6 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
      * value of {@link android.R.attr#permissionFlags}.
      * @hide
      */
-    @TestApi
     @SystemApi
     public static final int FLAG_REMOVED = 1<<1;
 
@@ -359,7 +362,7 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
      *
      * <p>This permission is restricted immutably which means that its
      * restriction state may be specified only on the first install of
-     * the app and will stay in this initial whitelist state until
+     * the app and will stay in this initial allowlist state until
      * the app is uninstalled.
      */
     public static final int FLAG_IMMUTABLY_RESTRICTED = 1<<4;
@@ -416,7 +419,6 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
      * @hide
      */
     @SystemApi
-    @TestApi
     public final @Nullable String backgroundPermission;
 
     /**
@@ -442,7 +444,7 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static @NonNull String protectionToString(int level) {
         String protLevel = "????";
         switch (level & PROTECTION_MASK_BASE) {
@@ -513,8 +515,11 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
         if ((level & PermissionInfo.PROTECTION_FLAG_APP_PREDICTOR) != 0) {
             protLevel += "|appPredictor";
         }
-        if ((level & PermissionInfo.PROTECTION_FLAG_TELEPHONY) != 0) {
-            protLevel += "|telephony";
+        if ((level & PermissionInfo.PROTECTION_FLAG_COMPANION) != 0) {
+            protLevel += "|companion";
+        }
+        if ((level & PermissionInfo.PROTECTION_FLAG_RETAIL_DEMO) != 0) {
+            protLevel += "|retailDemo";
         }
         return protLevel;
     }
@@ -606,8 +611,8 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
         super.writeToParcel(dest, parcelableFlags);
         dest.writeInt(protectionLevel);
         dest.writeInt(flags);
-        dest.writeString(group);
-        dest.writeString(backgroundPermission);
+        dest.writeString8(group);
+        dest.writeString8(backgroundPermission);
         dest.writeInt(descriptionRes);
         dest.writeInt(requestRes);
         TextUtils.writeToParcel(nonLocalizedDescription, dest, parcelableFlags);
@@ -666,8 +671,8 @@ public class PermissionInfo extends PackageItemInfo implements Parcelable {
         super(source);
         protectionLevel = source.readInt();
         flags = source.readInt();
-        group = source.readString();
-        backgroundPermission = source.readString();
+        group = source.readString8();
+        backgroundPermission = source.readString8();
         descriptionRes = source.readInt();
         requestRes = source.readInt();
         nonLocalizedDescription = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(source);

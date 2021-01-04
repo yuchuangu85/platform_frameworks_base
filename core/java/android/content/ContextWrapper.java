@@ -35,6 +35,7 @@ import android.database.sqlite.SQLiteDatabase.CursorFactory;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -42,6 +43,7 @@ import android.os.Looper;
 import android.os.UserHandle;
 import android.view.Display;
 import android.view.DisplayAdjustments;
+import android.view.WindowManager.LayoutParams.WindowType;
 import android.view.autofill.AutofillManager.AutofillClient;
 
 import java.io.File;
@@ -161,6 +163,12 @@ public class ContextWrapper extends Context {
         return mBase.getOpPackageName();
     }
 
+    /** @hide */
+    @Override
+    public @Nullable String getAttributionTag() {
+        return mBase.getAttributionTag();
+    }
+
     @Override
     public ApplicationInfo getApplicationInfo() {
         return mBase.getApplicationInfo();
@@ -244,6 +252,16 @@ public class ContextWrapper extends Context {
     @Override
     public File getFilesDir() {
         return mBase.getFilesDir();
+    }
+
+    /**
+     * {@inheritDoc Context#getCrateDir()}
+     * @hide
+     */
+    @NonNull
+    @Override
+    public File getCrateDir(@NonNull String cratedId) {
+        return mBase.getCrateDir(cratedId);
     }
 
     @Override
@@ -458,7 +476,8 @@ public class ContextWrapper extends Context {
 
     /** @hide */
     @Override
-    public void sendBroadcastMultiplePermissions(Intent intent, String[] receiverPermissions) {
+    public void sendBroadcastMultiplePermissions(@NonNull Intent intent,
+            @NonNull String[] receiverPermissions) {
         mBase.sendBroadcastMultiplePermissions(intent, receiverPermissions);
     }
 
@@ -721,7 +740,7 @@ public class ContextWrapper extends Context {
 
     /** @hide */
     @Override
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ComponentName startForegroundServiceAsUser(Intent service, UserHandle user) {
         return mBase.startForegroundServiceAsUser(service, user);
     }
@@ -924,7 +943,7 @@ public class ContextWrapper extends Context {
 
     /** @hide */
     @Override
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public Context createApplicationContext(ApplicationInfo application,
             int flags) throws PackageManager.NameNotFoundException {
         return mBase.createApplicationContext(application, flags);
@@ -960,6 +979,17 @@ public class ContextWrapper extends Context {
     }
 
     @Override
+    @NonNull
+    public Context createWindowContext(@WindowType int type, @Nullable Bundle options) {
+        return mBase.createWindowContext(type, options);
+    }
+
+    @Override
+    public @NonNull Context createAttributionContext(@Nullable String attributionTag) {
+        return mBase.createAttributionContext(attributionTag);
+    }
+
+    @Override
     public boolean isRestricted() {
         return mBase.isRestricted();
     }
@@ -970,12 +1000,15 @@ public class ContextWrapper extends Context {
         return mBase.getDisplayAdjustments(displayId);
     }
 
-    /** @hide */
-    @UnsupportedAppUsage
-    @TestApi
     @Override
-    public Display getDisplay() {
+    public @Nullable Display getDisplay() {
         return mBase.getDisplay();
+    }
+
+    /** @hide */
+    @Override
+    public @Nullable Display getDisplayNoVerify() {
+        return mBase.getDisplayNoVerify();
     }
 
     /**
@@ -1112,5 +1145,16 @@ public class ContextWrapper extends Context {
         if (mBase != null) {
             mBase.setContentCaptureOptions(options);
         }
+    }
+
+    /**
+     * @hide
+     */
+    @Override
+    public boolean isUiContext() {
+        if (mBase == null) {
+            return false;
+        }
+        return mBase.isUiContext();
     }
 }

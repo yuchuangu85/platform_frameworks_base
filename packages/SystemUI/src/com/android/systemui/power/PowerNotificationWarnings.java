@@ -24,6 +24,7 @@ import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.media.AudioAttributes;
@@ -302,13 +303,15 @@ public class PowerNotificationWarnings implements PowerUI.WarningsUI {
     }
 
     private void showAutoSaverSuggestionNotification() {
+        final CharSequence message = mContext.getString(R.string.auto_saver_text);
         final Notification.Builder nb =
                 new Notification.Builder(mContext, NotificationChannels.HINTS)
                         .setSmallIcon(R.drawable.ic_power_saver)
                         .setWhen(0)
                         .setShowWhen(false)
                         .setContentTitle(mContext.getString(R.string.auto_saver_title))
-                        .setContentText(mContext.getString(R.string.auto_saver_text));
+                        .setStyle(new Notification.BigTextStyle().bigText(message))
+                        .setContentText(message);
         nb.setContentIntent(pendingBroadcast(ACTION_ENABLE_AUTO_SAVER));
         nb.setDeleteIntent(pendingBroadcast(ACTION_DISMISS_AUTO_SAVER_SUGGESTION));
         nb.addAction(0,
@@ -374,13 +377,15 @@ public class PowerNotificationWarnings implements PowerUI.WarningsUI {
             return;
         }
         mHighTempWarning = true;
+        final String message = mContext.getString(R.string.high_temp_notif_message);
         final Notification.Builder nb =
                 new Notification.Builder(mContext, NotificationChannels.ALERTS)
                         .setSmallIcon(R.drawable.ic_device_thermostat_24)
                         .setWhen(0)
                         .setShowWhen(false)
                         .setContentTitle(mContext.getString(R.string.high_temp_title))
-                        .setContentText(mContext.getString(R.string.high_temp_notif_message))
+                        .setContentText(message)
+                        .setStyle(new Notification.BigTextStyle().bigText(message))
                         .setVisibility(Notification.VISIBILITY_PUBLIC)
                         .setContentIntent(pendingBroadcast(ACTION_CLICKED_TEMP_WARNING))
                         .setDeleteIntent(pendingBroadcast(ACTION_DISMISSED_TEMP_WARNING))
@@ -400,6 +405,23 @@ public class PowerNotificationWarnings implements PowerUI.WarningsUI {
         d.setPositiveButton(com.android.internal.R.string.ok, null);
         d.setShowForAllUsers(true);
         d.setOnDismissListener(dialog -> mHighTempDialog = null);
+        final String url = mContext.getString(R.string.high_temp_dialog_help_url);
+        if (!url.isEmpty()) {
+            d.setNeutralButton(R.string.high_temp_dialog_help_text,
+                    new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialog, int which) {
+                            final Intent helpIntent =
+                                    new Intent(Intent.ACTION_VIEW)
+                                            .setData(Uri.parse(url))
+                                            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            Dependency.get(ActivityStarter.class).startActivity(helpIntent,
+                                    true /* dismissShade */, resultCode -> {
+                                        mHighTempDialog = null;
+                                    });
+                        }
+                    });
+        }
         d.show();
         mHighTempDialog = d;
     }
@@ -418,19 +440,38 @@ public class PowerNotificationWarnings implements PowerUI.WarningsUI {
         d.setPositiveButton(com.android.internal.R.string.ok, null);
         d.setShowForAllUsers(true);
         d.setOnDismissListener(dialog -> mThermalShutdownDialog = null);
+        final String url = mContext.getString(R.string.thermal_shutdown_dialog_help_url);
+        if (!url.isEmpty()) {
+            d.setNeutralButton(R.string.thermal_shutdown_dialog_help_text,
+                    new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialog, int which) {
+                            final Intent helpIntent =
+                                    new Intent(Intent.ACTION_VIEW)
+                                            .setData(Uri.parse(url))
+                                            .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            Dependency.get(ActivityStarter.class).startActivity(helpIntent,
+                                    true /* dismissShade */, resultCode -> {
+                                        mThermalShutdownDialog = null;
+                                    });
+                        }
+                    });
+        }
         d.show();
         mThermalShutdownDialog = d;
     }
 
     @Override
     public void showThermalShutdownWarning() {
+        final String message = mContext.getString(R.string.thermal_shutdown_message);
         final Notification.Builder nb =
                 new Notification.Builder(mContext, NotificationChannels.ALERTS)
                         .setSmallIcon(R.drawable.ic_device_thermostat_24)
                         .setWhen(0)
                         .setShowWhen(false)
                         .setContentTitle(mContext.getString(R.string.thermal_shutdown_title))
-                        .setContentText(mContext.getString(R.string.thermal_shutdown_message))
+                        .setContentText(message)
+                        .setStyle(new Notification.BigTextStyle().bigText(message))
                         .setVisibility(Notification.VISIBILITY_PUBLIC)
                         .setContentIntent(pendingBroadcast(ACTION_CLICKED_THERMAL_SHUTDOWN_WARNING))
                         .setDeleteIntent(
@@ -476,7 +517,7 @@ public class PowerNotificationWarnings implements PowerUI.WarningsUI {
                 });
         d.setOnDismissListener(dialogInterface -> {
             mUsbHighTempDialog = null;
-            Events.writeEvent(mContext, Events.EVENT_DISMISS_USB_OVERHEAT_ALARM,
+            Events.writeEvent(Events.EVENT_DISMISS_USB_OVERHEAT_ALARM,
                     Events.DISMISS_REASON_USB_OVERHEAD_ALARM_CHANGED,
                     mKeyguard.isKeyguardLocked());
         });
@@ -485,7 +526,7 @@ public class PowerNotificationWarnings implements PowerUI.WarningsUI {
         d.show();
         mUsbHighTempDialog = d;
 
-        Events.writeEvent(mContext, Events.EVENT_SHOW_USB_OVERHEAT_ALARM,
+        Events.writeEvent(Events.EVENT_SHOW_USB_OVERHEAT_ALARM,
                 Events.SHOW_REASON_USB_OVERHEAD_ALARM_CHANGED,
                 mKeyguard.isKeyguardLocked());
     }
@@ -585,10 +626,10 @@ public class PowerNotificationWarnings implements PowerUI.WarningsUI {
                                 resolver,
                                 Global.LOW_POWER_MODE_TRIGGER_LEVEL,
                                 batterySaverTriggerLevel);
-                        Secure.putInt(
+                        Secure.putIntForUser(
                                 resolver,
                                 Secure.LOW_POWER_WARNING_ACKNOWLEDGED,
-                                1);
+                                1, UserHandle.USER_CURRENT);
                     });
         } else {
             d.setTitle(R.string.battery_saver_confirmation_title);

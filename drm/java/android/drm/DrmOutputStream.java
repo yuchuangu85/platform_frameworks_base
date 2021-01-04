@@ -25,9 +25,10 @@ import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
 
+import com.android.internal.util.ArrayUtils;
+
 import libcore.io.IoBridge;
 import libcore.io.Streams;
-import libcore.util.ArrayUtils;
 
 import java.io.FileDescriptor;
 import java.io.FilterOutputStream;
@@ -40,7 +41,9 @@ import java.net.UnknownServiceException;
  * writing to disk, similar to a {@link FilterOutputStream}.
  *
  * @hide
+ * @deprecated Please use {@link android.media.MediaDrm}
  */
+@Deprecated
 public class DrmOutputStream extends OutputStream {
     private static final String TAG = "DrmOutputStream";
 

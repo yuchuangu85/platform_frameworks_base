@@ -167,7 +167,7 @@ public class AndroidKeyStoreSecretKeyFactorySpi extends SecretKeyFactorySpi {
         boolean userAuthenticationRequired =
                 !keyCharacteristics.getBoolean(KeymasterDefs.KM_TAG_NO_AUTH_REQUIRED);
         long userAuthenticationValidityDurationSeconds =
-                keyCharacteristics.getUnsignedInt(KeymasterDefs.KM_TAG_AUTH_TIMEOUT, -1);
+                keyCharacteristics.getUnsignedInt(KeymasterDefs.KM_TAG_AUTH_TIMEOUT, 0);
         if (userAuthenticationValidityDurationSeconds > Integer.MAX_VALUE) {
             throw new ProviderException("User authentication timeout validity too long: "
                     + userAuthenticationValidityDurationSeconds + " seconds");
@@ -177,7 +177,7 @@ public class AndroidKeyStoreSecretKeyFactorySpi extends SecretKeyFactorySpi {
                 && (keymasterSwEnforcedUserAuthenticators == 0);
         boolean userAuthenticationValidWhileOnBody =
                 keyCharacteristics.hwEnforced.getBoolean(KeymasterDefs.KM_TAG_ALLOW_WHILE_ON_BODY);
-        boolean trustedUserPresenceRequred =
+        boolean trustedUserPresenceRequired =
                 keyCharacteristics.hwEnforced.getBoolean(
                     KeymasterDefs.KM_TAG_TRUSTED_USER_PRESENCE_REQUIRED);
 
@@ -206,11 +206,16 @@ public class AndroidKeyStoreSecretKeyFactorySpi extends SecretKeyFactorySpi {
                 blockModes,
                 userAuthenticationRequired,
                 (int) userAuthenticationValidityDurationSeconds,
+                keymasterHwEnforcedUserAuthenticators,
                 userAuthenticationRequirementEnforcedBySecureHardware,
                 userAuthenticationValidWhileOnBody,
-                trustedUserPresenceRequred,
+                trustedUserPresenceRequired,
                 invalidatedByBiometricEnrollment,
-                userConfirmationRequired);
+                userConfirmationRequired,
+                // Keystore 1.0 does not tell us the exact security level of the key
+                // so we report an unknown but secure security level.
+                insideSecureHardware ? KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE
+                        : KeyProperties.SECURITY_LEVEL_SOFTWARE);
     }
 
     private static BigInteger getGateKeeperSecureUserId() throws ProviderException {

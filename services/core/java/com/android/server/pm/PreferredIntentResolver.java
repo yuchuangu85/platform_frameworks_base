@@ -16,9 +16,13 @@
 
 package com.android.server.pm;
 
+import android.annotation.NonNull;
+import android.content.IntentFilter;
+
 import java.io.PrintWriter;
 
 import com.android.server.IntentResolver;
+import java.util.ArrayList;
 
 public class PreferredIntentResolver
         extends IntentResolver<PreferredActivity, PreferredActivity> {
@@ -36,5 +40,30 @@ public class PreferredIntentResolver
     protected void dumpFilter(PrintWriter out, String prefix,
             PreferredActivity filter) {
         filter.mPref.dump(out, prefix, filter);
+    }
+
+    @Override
+    protected IntentFilter getIntentFilter(@NonNull PreferredActivity input) {
+        return input;
+    }
+
+    public boolean shouldAddPreferredActivity(PreferredActivity pa) {
+        ArrayList<PreferredActivity> pal = findFilters(pa);
+        if (pal == null || pal.isEmpty()) {
+            return true;
+        }
+        if (!pa.mPref.mAlways) {
+            return false;
+        }
+        final int activityCount = pal.size();
+        for (int i = 0; i < activityCount; i++) {
+            PreferredActivity cur = pal.get(i);
+            if (cur.mPref.mAlways
+                    && cur.mPref.mMatch == (pa.mPref.mMatch & IntentFilter.MATCH_CATEGORY_MASK)
+                    && cur.mPref.sameSet(pa.mPref)) {
+                return false;
+            }
+        }
+        return true;
     }
 }

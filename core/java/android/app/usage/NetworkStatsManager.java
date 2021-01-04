@@ -34,6 +34,7 @@ import android.net.NetworkTemplate;
 import android.net.netstats.provider.INetworkStatsProviderCallback;
 import android.net.netstats.provider.NetworkStatsProvider;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
@@ -41,6 +42,7 @@ import android.os.Messenger;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.ServiceManager.ServiceNotFoundException;
+import android.telephony.TelephonyManager;
 import android.util.DataUnit;
 import android.util.Log;
 
@@ -128,7 +130,7 @@ public class NetworkStatsManager {
     /**
      * {@hide}
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public NetworkStatsManager(Context context) throws ServiceNotFoundException {
         this(context, INetworkStatsService.Stub.asInterface(
                 ServiceManager.getServiceOrThrow(Context.NETWORK_STATS_SERVICE)));
@@ -152,7 +154,7 @@ public class NetworkStatsManager {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @TestApi
     public void setPollForce(boolean pollForce) {
         if (pollForce) {
@@ -198,6 +200,12 @@ public class NetworkStatsManager {
      *            {@link ConnectivityManager#TYPE_MOBILE}, {@link ConnectivityManager#TYPE_WIFI}
      *            etc.
      * @param subscriberId If applicable, the subscriber id of the network interface.
+     *                     <p>Starting with API level 29, the {@code subscriberId} is guarded by
+     *                     additional restrictions. Calling apps that do not meet the new
+     *                     requirements to access the {@code subscriberId} can provide a {@code
+     *                     null} value when querying for the mobile network type to receive usage
+     *                     for all mobile networks. For additional details see {@link
+     *                     TelephonyManager#getSubscriberId()}.
      * @param startTime Start of period. Defined in terms of "Unix time", see
      *            {@link java.lang.System#currentTimeMillis}.
      * @param endTime End of period. Defined in terms of "Unix time", see
@@ -231,6 +239,12 @@ public class NetworkStatsManager {
      *            {@link ConnectivityManager#TYPE_MOBILE}, {@link ConnectivityManager#TYPE_WIFI}
      *            etc.
      * @param subscriberId If applicable, the subscriber id of the network interface.
+     *                     <p>Starting with API level 29, the {@code subscriberId} is guarded by
+     *                     additional restrictions. Calling apps that do not meet the new
+     *                     requirements to access the {@code subscriberId} can provide a {@code
+     *                     null} value when querying for the mobile network type to receive usage
+     *                     for all mobile networks. For additional details see {@link
+     *                     TelephonyManager#getSubscriberId()}.
      * @param startTime Start of period. Defined in terms of "Unix time", see
      *            {@link java.lang.System#currentTimeMillis}.
      * @param endTime End of period. Defined in terms of "Unix time", see
@@ -268,6 +282,12 @@ public class NetworkStatsManager {
      *            {@link ConnectivityManager#TYPE_MOBILE}, {@link ConnectivityManager#TYPE_WIFI}
      *            etc.
      * @param subscriberId If applicable, the subscriber id of the network interface.
+     *                     <p>Starting with API level 29, the {@code subscriberId} is guarded by
+     *                     additional restrictions. Calling apps that do not meet the new
+     *                     requirements to access the {@code subscriberId} can provide a {@code
+     *                     null} value when querying for the mobile network type to receive usage
+     *                     for all mobile networks. For additional details see {@link
+     *                     TelephonyManager#getSubscriberId()}.
      * @param startTime Start of period. Defined in terms of "Unix time", see
      *            {@link java.lang.System#currentTimeMillis}.
      * @param endTime End of period. Defined in terms of "Unix time", see
@@ -301,7 +321,7 @@ public class NetworkStatsManager {
     /**
      * Query network usage statistics details for a given uid.
      *
-     * #see queryDetailsForUidTagState(int, String, long, long, int, int, int)
+     * @see #queryDetailsForUidTagState(int, String, long, long, int, int, int)
      */
     public NetworkStats queryDetailsForUid(int networkType, String subscriberId,
             long startTime, long endTime, int uid) throws SecurityException {
@@ -319,7 +339,7 @@ public class NetworkStatsManager {
     /**
      * Query network usage statistics details for a given uid and tag.
      *
-     * #see queryDetailsForUidTagState(int, String, long, long, int, int, int)
+     * @see #queryDetailsForUidTagState(int, String, long, long, int, int, int)
      */
     public NetworkStats queryDetailsForUidTag(int networkType, String subscriberId,
             long startTime, long endTime, int uid, int tag) throws SecurityException {
@@ -344,6 +364,12 @@ public class NetworkStatsManager {
      *            {@link ConnectivityManager#TYPE_MOBILE}, {@link ConnectivityManager#TYPE_WIFI}
      *            etc.
      * @param subscriberId If applicable, the subscriber id of the network interface.
+     *                     <p>Starting with API level 29, the {@code subscriberId} is guarded by
+     *                     additional restrictions. Calling apps that do not meet the new
+     *                     requirements to access the {@code subscriberId} can provide a {@code
+     *                     null} value when querying for the mobile network type to receive usage
+     *                     for all mobile networks. For additional details see {@link
+     *                     TelephonyManager#getSubscriberId()}.
      * @param startTime Start of period. Defined in terms of "Unix time", see
      *            {@link java.lang.System#currentTimeMillis}.
      * @param endTime End of period. Defined in terms of "Unix time", see
@@ -398,6 +424,12 @@ public class NetworkStatsManager {
      *            {@link ConnectivityManager#TYPE_MOBILE}, {@link ConnectivityManager#TYPE_WIFI}
      *            etc.
      * @param subscriberId If applicable, the subscriber id of the network interface.
+     *                     <p>Starting with API level 29, the {@code subscriberId} is guarded by
+     *                     additional restrictions. Calling apps that do not meet the new
+     *                     requirements to access the {@code subscriberId} can provide a {@code
+     *                     null} value when querying for the mobile network type to receive usage
+     *                     for all mobile networks. For additional details see {@link
+     *                     TelephonyManager#getSubscriberId()}.
      * @param startTime Start of period. Defined in terms of "Unix time", see
      *            {@link java.lang.System#currentTimeMillis}.
      * @param endTime End of period. Defined in terms of "Unix time", see
@@ -455,7 +487,7 @@ public class NetworkStatsManager {
     /**
      * Registers to receive notifications about data usage on specified networks.
      *
-     * #see registerUsageCallback(int, String[], long, UsageCallback, Handler)
+     * @see #registerUsageCallback(int, String, long, UsageCallback, Handler)
      */
     public void registerUsageCallback(int networkType, String subscriberId, long thresholdBytes,
             UsageCallback callback) {
@@ -472,6 +504,12 @@ public class NetworkStatsManager {
      * @param networkType Type of network to monitor. Either
                   {@link ConnectivityManager#TYPE_MOBILE} or {@link ConnectivityManager#TYPE_WIFI}.
      * @param subscriberId If applicable, the subscriber id of the network interface.
+     *                     <p>Starting with API level 29, the {@code subscriberId} is guarded by
+     *                     additional restrictions. Calling apps that do not meet the new
+     *                     requirements to access the {@code subscriberId} can provide a {@code
+     *                     null} value when registering for the mobile network type to receive
+     *                     notifications for all mobile networks. For additional details see {@link
+     *                     TelephonyManager#getSubscriberId()}.
      * @param thresholdBytes Threshold in bytes to be notified on.
      * @param callback The {@link UsageCallback} that the system will call when data usage
      *            has exceeded the specified threshold.

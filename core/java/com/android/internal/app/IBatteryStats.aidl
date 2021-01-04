@@ -19,10 +19,10 @@ package com.android.internal.app;
 import com.android.internal.os.BatteryStatsImpl;
 
 import android.bluetooth.BluetoothActivityEnergyInfo;
-import android.net.wifi.WifiActivityEnergyInfo;
 import android.os.ParcelFileDescriptor;
 import android.os.WorkSource;
 import android.os.connectivity.CellularBatteryStats;
+import android.os.connectivity.WifiActivityEnergyInfo;
 import android.os.connectivity.WifiBatteryStats;
 import android.os.connectivity.GpsBatteryStats;
 import android.os.health.HealthStatsParceler;
@@ -55,7 +55,7 @@ interface IBatteryStats {
     ParcelFileDescriptor getStatisticsStream();
 
     // Return true if we see the battery as currently charging.
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     boolean isCharging();
 
     // Return the computed amount of time remaining on battery, in milliseconds.
@@ -64,15 +64,15 @@ interface IBatteryStats {
 
     // Return the computed amount of time remaining to fully charge, in milliseconds.
     // Returns -1 if nothing could be computed.
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     long computeChargeTimeRemaining();
 
     void noteEvent(int code, String name, int uid);
 
     void noteSyncStart(String name, int uid);
     void noteSyncFinish(String name, int uid);
-    void noteJobStart(String name, int uid, int standbyBucket, int jobid);
-    void noteJobFinish(String name, int uid, int stopReason, int standbyBucket, int jobid);
+    void noteJobStart(String name, int uid);
+    void noteJobFinish(String name, int uid, int stopReason);
 
     void noteStartWakelock(int uid, int pid, String name, String historyName,
             int type, boolean unimportantForLogging);
@@ -134,7 +134,7 @@ interface IBatteryStats {
     void noteDeviceIdleMode(int mode, String activeReason, int activeUid);
     void setBatteryState(int status, int health, int plugType, int level, int temp, int volt,
             int chargeUAh, int chargeFullUAh, long chargeTimeToFullSeconds);
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     long getAwakeTimeBattery();
     long getAwakeTimePlugged();
 

@@ -336,7 +336,7 @@ public class WifiTrackerTest {
     private static OsuProvider buildOsuProvider(String friendlyName) {
         Map<String, String> friendlyNames = new HashMap<>();
         friendlyNames.put("en", friendlyName);
-        return new OsuProvider(null, friendlyNames, null, null, null, null, null);
+        return new OsuProvider((WifiSsid) null, friendlyNames, null, null, null, null);
     }
 
     private WifiTracker createTrackerWithImmediateBroadcastsAndInjectInitialScanResults(
@@ -494,7 +494,6 @@ public class WifiTrackerTest {
 
         WifiConfiguration selfAddedNoAssociation = new WifiConfiguration();
         selfAddedNoAssociation.ephemeral = true;
-        selfAddedNoAssociation.selfAdded = true;
         selfAddedNoAssociation.numAssociation = 0;
         selfAddedNoAssociation.SSID = SSID_2;
         selfAddedNoAssociation.BSSID = BSSID_2;
@@ -902,7 +901,7 @@ public class WifiTrackerTest {
         tracker.mReceiver.onReceive(
                 mContext, new Intent(WifiManager.CONFIGURED_NETWORKS_CHANGED_ACTION));
         tracker.mReceiver.onReceive(
-                mContext, new Intent(WifiManager.LINK_CONFIGURATION_CHANGED_ACTION));
+                mContext, new Intent(WifiManager.ACTION_LINK_CONFIGURATION_CHANGED));
 
 
         verify(mockWifiListener, never()).onAccessPointsChanged();
@@ -920,7 +919,7 @@ public class WifiTrackerTest {
         tracker.mReceiver.onReceive(
                 mContext, new Intent(WifiManager.CONFIGURED_NETWORKS_CHANGED_ACTION));
         tracker.mReceiver.onReceive(
-                mContext, new Intent(WifiManager.LINK_CONFIGURATION_CHANGED_ACTION));
+                mContext, new Intent(WifiManager.ACTION_LINK_CONFIGURATION_CHANGED));
 
         verify(mockWifiListener, never()).onAccessPointsChanged();
 
@@ -1091,7 +1090,7 @@ public class WifiTrackerTest {
 
         // Verify second update AP is the same object as the first update AP
         assertThat(passpointAccessPointsFirstUpdate.get(0))
-                .isSameAs(passpointAccessPointsSecondUpdate.get(0));
+                .isSameInstanceAs(passpointAccessPointsSecondUpdate.get(0));
         // Verify second update AP has the average of the first and second update RSSIs
         assertThat(passpointAccessPointsSecondUpdate.get(0).getRssi())
                 .isEqualTo((prevRssi + newRssi) / 2);
@@ -1211,7 +1210,8 @@ public class WifiTrackerTest {
                 providersAndScans, cachedAccessPoints);
 
         // Verify second update AP is the same object as the first update AP
-        assertThat(osuAccessPointsFirstUpdate.get(0)).isSameAs(osuAccessPointsSecondUpdate.get(0));
+        assertThat(osuAccessPointsFirstUpdate.get(0))
+                .isSameInstanceAs(osuAccessPointsSecondUpdate.get(0));
         // Verify second update AP has the average of the first and second update RSSIs
         assertThat(osuAccessPointsSecondUpdate.get(0).getRssi())
                 .isEqualTo((prevRssi + newRssi) / 2);

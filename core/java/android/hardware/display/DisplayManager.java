@@ -26,8 +26,10 @@ import android.annotation.TestApi;
 import android.app.KeyguardManager;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Point;
 import android.media.projection.MediaProjection;
+import android.os.Build;
 import android.os.Handler;
 import android.util.Pair;
 import android.util.SparseArray;
@@ -63,7 +65,7 @@ public final class DisplayManager {
      * </p>
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final String ACTION_WIFI_DISPLAY_STATUS_CHANGED =
             "android.hardware.display.action.WIFI_DISPLAY_STATUS_CHANGED";
 
@@ -71,7 +73,7 @@ public final class DisplayManager {
      * Contains a {@link WifiDisplayStatus} object.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final String EXTRA_WIFI_DISPLAY_STATUS =
             "android.hardware.display.extra.WIFI_DISPLAY_STATUS";
 
@@ -79,7 +81,7 @@ public final class DisplayManager {
      * Display category: Presentation displays.
      * <p>
      * This category can be used to identify secondary displays that are suitable for
-     * use as presentation displays such as HDMI or Wireless displays.  Applications
+     * use as presentation displays such as external or wireless displays.  Applications
      * may automatically project their content to presentation displays to provide
      * richer second screen experiences.
      * </p>
@@ -99,7 +101,7 @@ public final class DisplayManager {
      * When this flag is set, the virtual display is public.
      * </p><p>
      * A public virtual display behaves just like most any other display that is connected
-     * to the system such as an HDMI or Wireless display.  Applications can open
+     * to the system such as an external or wireless display.  Applications can open
      * windows on the display and the system may mirror the contents of other displays
      * onto it.
      * </p><p>
@@ -302,12 +304,24 @@ public final class DisplayManager {
     /**
      * Virtual display flag: Indicates that the display should support system decorations. Virtual
      * displays without this flag shouldn't show home, IME or any other system decorations.
+     * <p>This flag doesn't work without {@link #VIRTUAL_DISPLAY_FLAG_TRUSTED}</p>
      *
      * @see #createVirtualDisplay
+     * @see #VIRTUAL_DISPLAY_FLAG_TRUSTED
      * @hide
      */
     // TODO (b/114338689): Remove the flag and use IWindowManager#setShouldShowSystemDecors
     public static final int VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS = 1 << 9;
+
+    /**
+     * Virtual display flags: Indicates that the display is trusted to show system decorations and
+     * receive inputs without users' touch.
+     *
+     * @see #createVirtualDisplay
+     * @see #VIRTUAL_DISPLAY_FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS
+     * @hide
+     */
+    public static final int VIRTUAL_DISPLAY_FLAG_TRUSTED = 1 << 10;
 
     /** @hide */
     public DisplayManager(Context context) {
@@ -363,7 +377,7 @@ public final class DisplayManager {
                     addAllDisplaysLocked(mTempDisplays, displayIds);
                 } else if (category.equals(DISPLAY_CATEGORY_PRESENTATION)) {
                     addPresentationDisplaysLocked(mTempDisplays, displayIds, Display.TYPE_WIFI);
-                    addPresentationDisplaysLocked(mTempDisplays, displayIds, Display.TYPE_HDMI);
+                    addPresentationDisplaysLocked(mTempDisplays, displayIds, Display.TYPE_EXTERNAL);
                     addPresentationDisplaysLocked(mTempDisplays, displayIds, Display.TYPE_OVERLAY);
                     addPresentationDisplaysLocked(mTempDisplays, displayIds, Display.TYPE_VIRTUAL);
                 }
@@ -400,10 +414,10 @@ public final class DisplayManager {
         if (display == null) {
             // TODO: We cannot currently provide any override configurations for metrics on displays
             // other than the display the context is associated with.
-            final Context context = mContext.getDisplayId() == displayId
-                    ? mContext : mContext.getApplicationContext();
+            final Resources resources = mContext.getDisplayId() == displayId
+                    ? mContext.getResources() : null;
 
-            display = mGlobal.getCompatibleDisplay(displayId, context.getResources());
+            display = mGlobal.getCompatibleDisplay(displayId, resources);
             if (display != null) {
                 mDisplays.put(displayId, display);
             }
@@ -633,17 +647,39 @@ public final class DisplayManager {
     public VirtualDisplay createVirtualDisplay(@NonNull String name,
             int width, int height, int densityDpi, @Nullable Surface surface, int flags,
             @Nullable VirtualDisplay.Callback callback, @Nullable Handler handler) {
-        return createVirtualDisplay(null /* projection */, name, width, height, densityDpi, surface,
-                flags, callback, handler, null /* uniqueId */);
+        final VirtualDisplayConfig.Builder builder = new VirtualDisplayConfig.Builder(name, width,
+                height, densityDpi);
+        builder.setFlags(flags);
+        if (surface != null) {
+            builder.setSurface(surface);
+        }
+        return createVirtualDisplay(null /* projection */, builder.build(), callback, handler);
     }
 
+    // TODO : Remove this hidden API after remove all callers. (Refer to MultiDisplayService)
     /** @hide */
     public VirtualDisplay createVirtualDisplay(@Nullable MediaProjection projection,
             @NonNull String name, int width, int height, int densityDpi, @Nullable Surface surface,
             int flags, @Nullable VirtualDisplay.Callback callback, @Nullable Handler handler,
             @Nullable String uniqueId) {
-        return mGlobal.createVirtualDisplay(mContext, projection,
-                name, width, height, densityDpi, surface, flags, callback, handler, uniqueId);
+        final VirtualDisplayConfig.Builder builder = new VirtualDisplayConfig.Builder(name, width,
+                height, densityDpi);
+        builder.setFlags(flags);
+        if (uniqueId != null) {
+            builder.setUniqueId(uniqueId);
+        }
+        if (surface != null) {
+            builder.setSurface(surface);
+        }
+        return createVirtualDisplay(projection, builder.build(), callback, handler);
+    }
+
+    /** @hide */
+    public VirtualDisplay createVirtualDisplay(@Nullable MediaProjection projection,
+            @NonNull VirtualDisplayConfig virtualDisplayConfig,
+            @Nullable VirtualDisplay.Callback callback, @Nullable Handler handler) {
+        return mGlobal.createVirtualDisplay(mContext, projection, virtualDisplayConfig, callback,
+                handler);
     }
 
     /**
@@ -656,7 +692,6 @@ public final class DisplayManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     public Point getStableDisplaySize() {
         return mGlobal.getStableDisplaySize();
     }
@@ -666,7 +701,6 @@ public final class DisplayManager {
      * @hide until we make it a system api.
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(Manifest.permission.BRIGHTNESS_SLIDER_USAGE)
     public List<BrightnessChangeEvent> getBrightnessEvents() {
         return mGlobal.getBrightnessEvents(mContext.getOpPackageName());
@@ -678,7 +712,6 @@ public final class DisplayManager {
      * @hide until we make it a system api
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(Manifest.permission.ACCESS_AMBIENT_LIGHT_STATS)
     public List<AmbientBrightnessDayStats> getAmbientBrightnessStats() {
         return mGlobal.getAmbientBrightnessStats();
@@ -690,7 +723,6 @@ public final class DisplayManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(Manifest.permission.CONFIGURE_DISPLAY_BRIGHTNESS)
     public void setBrightnessConfiguration(BrightnessConfiguration c) {
         setBrightnessConfigurationForUser(c, mContext.getUserId(), mContext.getPackageName());
@@ -715,7 +747,6 @@ public final class DisplayManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(Manifest.permission.CONFIGURE_DISPLAY_BRIGHTNESS)
     public BrightnessConfiguration getBrightnessConfiguration() {
         return getBrightnessConfigurationForUser(mContext.getUserId());
@@ -741,11 +772,21 @@ public final class DisplayManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(Manifest.permission.CONFIGURE_DISPLAY_BRIGHTNESS)
     @Nullable
     public BrightnessConfiguration getDefaultBrightnessConfiguration() {
         return mGlobal.getDefaultBrightnessConfiguration();
+    }
+
+
+    /**
+     * Gets the last requested minimal post processing setting for the display with displayId.
+     *
+     * @hide
+     */
+    @TestApi
+    public boolean isMinimalPostProcessingRequested(int displayId) {
+        return mGlobal.isMinimalPostProcessingRequested(displayId);
     }
 
     /**
@@ -754,11 +795,11 @@ public final class DisplayManager {
      * Requires the {@link android.Manifest.permission#CONTROL_DISPLAY_BRIGHTNESS} permission.
      * </p>
      *
-     * @param brightness The brightness value from 0 to 255.
+     * @param brightness The brightness value from 0.0f to 1.0f.
      *
      * @hide Requires signature permission.
      */
-    public void setTemporaryBrightness(int brightness) {
+    public void setTemporaryBrightness(float brightness) {
         mGlobal.setTemporaryBrightness(brightness);
     }
 

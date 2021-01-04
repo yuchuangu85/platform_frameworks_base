@@ -3,7 +3,6 @@ package android.app.assist;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
@@ -36,11 +35,10 @@ import android.view.WindowManagerGlobal;
 import android.view.autofill.AutofillId;
 import android.view.autofill.AutofillValue;
 
-import com.android.internal.util.Preconditions;
-
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * <p>This API automatically creates assist data from the platform's
@@ -641,6 +639,7 @@ public class AssistStructure implements Parcelable {
         int mMaxEms = -1;
         int mMaxLength = -1;
         @Nullable String mTextIdEntry;
+        @Nullable String mHintIdEntry;
         @AutofillImportance int mImportantForAutofill;
 
         // POJO used to override some autofill-related values when the node is parcelized.
@@ -683,23 +682,25 @@ public class AssistStructure implements Parcelable {
         static final int FLAGS_HAS_EXTRAS = 0x00400000;
         static final int FLAGS_HAS_ID = 0x00200000;
         static final int FLAGS_HAS_CHILDREN = 0x00100000;
-        static final int FLAGS_HAS_URL = 0x00080000;
+        static final int FLAGS_HAS_URL_DOMAIN = 0x00080000;
         static final int FLAGS_HAS_INPUT_TYPE = 0x00040000;
+        static final int FLAGS_HAS_URL_SCHEME = 0x00020000;
         static final int FLAGS_HAS_LOCALE_LIST = 0x00010000;
         static final int FLAGS_ALL_CONTROL = 0xfff00000;
 
-        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_VIEW_ID =         0x001;
-        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_VIRTUAL_VIEW_ID = 0x002;
-        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_VALUE =           0x004;
-        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_TYPE =            0x008;
-        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_HINTS =           0x010;
-        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_OPTIONS =         0x020;
-        static final int AUTOFILL_FLAGS_HAS_HTML_INFO =                0x040;
-        static final int AUTOFILL_FLAGS_HAS_TEXT_ID_ENTRY =            0x080;
-        static final int AUTOFILL_FLAGS_HAS_MIN_TEXT_EMS =             0x100;
-        static final int AUTOFILL_FLAGS_HAS_MAX_TEXT_EMS =             0x200;
-        static final int AUTOFILL_FLAGS_HAS_MAX_TEXT_LENGTH =          0x400;
-        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_SESSION_ID =      0x800;
+        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_VIEW_ID =         0x0001;
+        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_VIRTUAL_VIEW_ID = 0x0002;
+        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_VALUE =           0x0004;
+        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_TYPE =            0x0008;
+        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_HINTS =           0x0010;
+        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_OPTIONS =         0x0020;
+        static final int AUTOFILL_FLAGS_HAS_HTML_INFO =                0x0040;
+        static final int AUTOFILL_FLAGS_HAS_TEXT_ID_ENTRY =            0x0080;
+        static final int AUTOFILL_FLAGS_HAS_MIN_TEXT_EMS =             0x0100;
+        static final int AUTOFILL_FLAGS_HAS_MAX_TEXT_EMS =             0x0200;
+        static final int AUTOFILL_FLAGS_HAS_MAX_TEXT_LENGTH =          0x0400;
+        static final int AUTOFILL_FLAGS_HAS_AUTOFILL_SESSION_ID =      0x0800;
+        static final int AUTOFILL_FLAGS_HAS_HINT_ID_ENTRY =            0x1000;
 
         int mFlags;
         int mAutofillFlags;
@@ -720,7 +721,6 @@ public class AssistStructure implements Parcelable {
         // COntent Capture.
         /** @hide */
         @SystemApi
-        @TestApi
         public ViewNode() {
         }
 
@@ -786,6 +786,9 @@ public class AssistStructure implements Parcelable {
                 if ((autofillFlags & AUTOFILL_FLAGS_HAS_TEXT_ID_ENTRY) != 0) {
                     mTextIdEntry = preader.readString();
                 }
+                if ((autofillFlags & AUTOFILL_FLAGS_HAS_HINT_ID_ENTRY) != 0) {
+                    mHintIdEntry = preader.readString();
+                }
             }
             if ((flags&FLAGS_HAS_LARGE_COORDS) != 0) {
                 mX = in.readInt();
@@ -824,8 +827,10 @@ public class AssistStructure implements Parcelable {
             if ((flags&FLAGS_HAS_INPUT_TYPE) != 0) {
                 mInputType = in.readInt();
             }
-            if ((flags&FLAGS_HAS_URL) != 0) {
+            if ((flags&FLAGS_HAS_URL_SCHEME) != 0) {
                 mWebScheme = in.readString();
+            }
+            if ((flags&FLAGS_HAS_URL_DOMAIN) != 0) {
                 mWebDomain = in.readString();
             }
             if ((flags&FLAGS_HAS_LOCALE_LIST) != 0) {
@@ -886,8 +891,11 @@ public class AssistStructure implements Parcelable {
             if (mInputType != 0) {
                 flags |= FLAGS_HAS_INPUT_TYPE;
             }
-            if (mWebScheme != null || mWebDomain != null) {
-                flags |= FLAGS_HAS_URL;
+            if (mWebScheme != null) {
+                flags |= FLAGS_HAS_URL_SCHEME;
+            }
+            if (mWebDomain != null) {
+                flags |= FLAGS_HAS_URL_DOMAIN;
             }
             if (mLocaleList != null) {
                 flags |= FLAGS_HAS_LOCALE_LIST;
@@ -933,6 +941,9 @@ public class AssistStructure implements Parcelable {
             }
             if (mTextIdEntry != null) {
                 autofillFlags |= AUTOFILL_FLAGS_HAS_TEXT_ID_ENTRY;
+            }
+            if (mHintIdEntry != null) {
+                autofillFlags |= AUTOFILL_FLAGS_HAS_HINT_ID_ENTRY;
             }
 
             pwriter.writeString(mClassName);
@@ -1011,6 +1022,9 @@ public class AssistStructure implements Parcelable {
                 if ((autofillFlags & AUTOFILL_FLAGS_HAS_TEXT_ID_ENTRY) != 0) {
                     pwriter.writeString(mTextIdEntry);
                 }
+                if ((autofillFlags & AUTOFILL_FLAGS_HAS_HINT_ID_ENTRY) != 0) {
+                    pwriter.writeString(mHintIdEntry);
+                }
             }
             if ((flags&FLAGS_HAS_LARGE_COORDS) != 0) {
                 out.writeInt(mX);
@@ -1044,8 +1058,10 @@ public class AssistStructure implements Parcelable {
             if ((flags&FLAGS_HAS_INPUT_TYPE) != 0) {
                 out.writeInt(mInputType);
             }
-            if ((flags&FLAGS_HAS_URL) != 0) {
+            if ((flags & FLAGS_HAS_URL_SCHEME) != 0) {
                 out.writeString(mWebScheme);
+            }
+            if ((flags&FLAGS_HAS_URL_DOMAIN) != 0) {
                 out.writeString(mWebDomain);
             }
             if ((flags&FLAGS_HAS_LOCALE_LIST) != 0) {
@@ -1069,6 +1085,7 @@ public class AssistStructure implements Parcelable {
          * identifier.  See {@link android.view.ViewStructure#setId ViewStructure.setId}
          * for more information.
          */
+        @Nullable
         public String getIdPackage() {
             return mIdPackage;
         }
@@ -1078,6 +1095,7 @@ public class AssistStructure implements Parcelable {
          * identifier.  See {@link android.view.ViewStructure#setId ViewStructure.setId}
          * for more information.
          */
+        @Nullable
         public String getIdType() {
             return mIdType;
         }
@@ -1087,6 +1105,7 @@ public class AssistStructure implements Parcelable {
          * identifier.  See {@link android.view.ViewStructure#setId ViewStructure.setId}
          * for more information.
          */
+        @Nullable
         public String getIdEntry() {
             return mIdEntry;
         }
@@ -1380,6 +1399,7 @@ public class AssistStructure implements Parcelable {
          * For example, a button will report "android.widget.Button" meaning it behaves
          * like a {@link android.widget.Button}.
          */
+        @Nullable
         public String getClassName() {
             return mClassName;
         }
@@ -1388,6 +1408,7 @@ public class AssistStructure implements Parcelable {
          * Returns any content description associated with the node, which semantically describes
          * its purpose for accessibility and other uses.
          */
+        @Nullable
         public CharSequence getContentDescription() {
             return mContentDescription;
         }
@@ -1415,13 +1436,18 @@ public class AssistStructure implements Parcelable {
         public void setWebDomain(@Nullable String domain) {
             if (domain == null) return;
 
-            final Uri uri = Uri.parse(domain);
+            Uri uri = Uri.parse(domain);
             if (uri == null) {
                 // Cannot log domain because it could contain PII;
                 Log.w(TAG, "Failed to parse web domain");
                 return;
             }
+
             mWebScheme = uri.getScheme();
+            if (mWebScheme == null) {
+                uri = Uri.parse("http://" + domain);
+            }
+
             mWebDomain = uri.getHost();
         }
 
@@ -1462,6 +1488,7 @@ public class AssistStructure implements Parcelable {
          * Returns any text associated with the node that is displayed to the user, or null
          * if there is none.
          */
+        @Nullable
         public CharSequence getText() {
             return mText != null ? mText.mText : null;
         }
@@ -1549,6 +1576,7 @@ public class AssistStructure implements Parcelable {
          * <p>It's only relevant when the {@link AssistStructure} is used for assist purposes,
          * not for autofill purposes.
          */
+        @Nullable
         public int[] getTextLineCharOffsets() {
             return mText != null ? mText.mLineCharOffsets : null;
         }
@@ -1562,6 +1590,7 @@ public class AssistStructure implements Parcelable {
          * <p>It's only relevant when the {@link AssistStructure} is used for assist purposes,
          * not for autofill purposes.
          */
+        @Nullable
         public int[] getTextLineBaselines() {
             return mText != null ? mText.mLineBaselines : null;
         }
@@ -1581,13 +1610,26 @@ public class AssistStructure implements Parcelable {
          * Return additional hint text associated with the node; this is typically used with
          * a node that takes user input, describing to the user what the input means.
          */
+        @Nullable
         public String getHint() {
             return mText != null ? mText.mHint : null;
         }
 
         /**
+         * Gets the identifier used to set the hint associated with this view.
+         *
+         * <p>It's only relevant when the {@link AssistStructure} is used for autofill purposes,
+         * not for assist purposes.
+         */
+        @Nullable
+        public String getHintIdEntry() {
+            return mHintIdEntry;
+        }
+
+        /**
          * Return a Bundle containing optional vendor-specific extension information.
          */
+        @Nullable
         public Bundle getExtras() {
             return mExtras;
         }
@@ -1844,12 +1886,17 @@ public class AssistStructure implements Parcelable {
 
         @Override
         public void setTextIdEntry(@NonNull String entryName) {
-            mNode.mTextIdEntry = Preconditions.checkNotNull(entryName);
+            mNode.mTextIdEntry = Objects.requireNonNull(entryName);
         }
 
         @Override
         public void setHint(CharSequence hint) {
             getNodeText().mHint = hint != null ? hint.toString() : null;
+        }
+
+        @Override
+        public void setHintIdEntry(@NonNull String entryName) {
+            mNode.mHintIdEntry = Objects.requireNonNull(entryName);
         }
 
         @Override
@@ -2185,7 +2232,7 @@ public class AssistStructure implements Parcelable {
             ensureData();
         }
         Log.i(TAG, "Task id: " + mTaskId);
-        Log.i(TAG, "Activity: " + (mActivityComponent != null 
+        Log.i(TAG, "Activity: " + (mActivityComponent != null
                 ? mActivityComponent.flattenToShortString()
                 : null));
         Log.i(TAG, "Sanitize on write: " + mSanitizeOnWrite);
@@ -2266,6 +2313,7 @@ public class AssistStructure implements Parcelable {
         String hint = node.getHint();
         if (hint != null) {
             Log.i(TAG, prefix + "  Hint: " + hint);
+            Log.i(TAG, prefix + "  Resource id: " + node.getHintIdEntry());
         }
         Bundle extras = node.getExtras();
         if (extras != null) {

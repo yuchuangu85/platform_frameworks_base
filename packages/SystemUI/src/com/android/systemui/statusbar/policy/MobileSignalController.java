@@ -37,8 +37,6 @@ import android.text.TextUtils;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.telephony.TelephonyIntents;
-import com.android.internal.telephony.cdma.EriInfo;
 import com.android.settingslib.Utils;
 import com.android.settingslib.graph.SignalDrawable;
 import com.android.settingslib.net.SignalStrengthUtil;
@@ -54,6 +52,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.Executor;
 
 
 public class MobileSignalController extends SignalController<
@@ -99,10 +98,10 @@ public class MobileSignalController extends SignalController<
         mPhone = phone;
         mDefaults = defaults;
         mSubscriptionInfo = info;
-        mPhoneStateListener = new MobilePhoneStateListener(receiverLooper);
-        mNetworkNameSeparator = getStringIfExists(R.string.status_bar_network_name_separator)
+        mPhoneStateListener = new MobilePhoneStateListener((new Handler(receiverLooper))::post);
+        mNetworkNameSeparator = getTextIfExists(R.string.status_bar_network_name_separator)
                 .toString();
-        mNetworkNameDefault = getStringIfExists(
+        mNetworkNameDefault = getTextIfExists(
                 com.android.internal.R.string.lockscreen_carrier_default).toString();
 
         mapIconSets();
@@ -284,6 +283,9 @@ public class MobileSignalController extends SignalController<
         mNetworkToIconLookup.put(toDisplayIconKey(
                 TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA_MMWAVE),
                 TelephonyIcons.NR_5G_PLUS);
+        mNetworkToIconLookup.put(toIconKey(
+                TelephonyManager.NETWORK_TYPE_NR),
+                TelephonyIcons.NR_5G);
     }
 
     private String getIconKey() {
@@ -306,9 +308,9 @@ public class MobileSignalController extends SignalController<
             case TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_LTE_ADVANCED_PRO:
                 return toIconKey(TelephonyManager.NETWORK_TYPE_LTE) + "_CA_Plus";
             case TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA:
-                return "5G";
+                return toIconKey(TelephonyManager.NETWORK_TYPE_NR);
             case TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA_MMWAVE:
-                return "5G_Plus";
+                return toIconKey(TelephonyManager.NETWORK_TYPE_NR) + "_Plus";
             default:
                 return "unsupported";
         }
@@ -321,9 +323,9 @@ public class MobileSignalController extends SignalController<
 
     private int getNumLevels() {
         if (mInflateSignalStrengths) {
-            return SignalStrength.NUM_SIGNAL_STRENGTH_BINS + 1;
+            return CellSignalStrength.getNumSignalStrengthLevels() + 1;
         }
-        return SignalStrength.NUM_SIGNAL_STRENGTH_BINS;
+        return CellSignalStrength.getNumSignalStrengthLevels();
     }
 
     @Override
@@ -358,8 +360,8 @@ public class MobileSignalController extends SignalController<
     public void notifyListeners(SignalCallback callback) {
         MobileIconGroup icons = getIcons();
 
-        String contentDescription = getStringIfExists(getContentDescription()).toString();
-        CharSequence dataContentDescriptionHtml = getStringIfExists(icons.mDataContentDescription);
+        String contentDescription = getTextIfExists(getContentDescription()).toString();
+        CharSequence dataContentDescriptionHtml = getTextIfExists(icons.mDataContentDescription);
 
         //TODO: Hacky
         // The data content description can sometimes be shown in a text view and might come to us
@@ -415,16 +417,18 @@ public class MobileSignalController extends SignalController<
         return (mServiceState != null && mServiceState.isEmergencyOnly());
     }
 
+    public boolean isInService() {
+        return Utils.isInService(mServiceState);
+    }
+
     private boolean isRoaming() {
         // During a carrier change, roaming indications need to be supressed.
         if (isCarrierNetworkChangeActive()) {
             return false;
         }
-        if (isCdma() && mServiceState != null) {
-            final int iconMode = mServiceState.getCdmaEriIconMode();
-            return mServiceState.getCdmaEriIconIndex() != EriInfo.ROAMING_INDICATOR_OFF
-                    && (iconMode == EriInfo.ROAMING_ICON_MODE_NORMAL
-                    || iconMode == EriInfo.ROAMING_ICON_MODE_FLASH);
+        if (isCdma()) {
+            return mPhone.getCdmaEnhancedRoamingIndicatorDisplayNumber()
+                    != TelephonyManager.ERI_OFF;
         } else {
             return mServiceState != null && mServiceState.getRoaming();
         }
@@ -436,14 +440,14 @@ public class MobileSignalController extends SignalController<
 
     public void handleBroadcast(Intent intent) {
         String action = intent.getAction();
-        if (action.equals(TelephonyIntents.SPN_STRINGS_UPDATED_ACTION)) {
-            updateNetworkName(intent.getBooleanExtra(TelephonyIntents.EXTRA_SHOW_SPN, false),
-                    intent.getStringExtra(TelephonyIntents.EXTRA_SPN),
-                    intent.getStringExtra(TelephonyIntents.EXTRA_DATA_SPN),
-                    intent.getBooleanExtra(TelephonyIntents.EXTRA_SHOW_PLMN, false),
-                    intent.getStringExtra(TelephonyIntents.EXTRA_PLMN));
+        if (action.equals(TelephonyManager.ACTION_SERVICE_PROVIDERS_UPDATED)) {
+            updateNetworkName(intent.getBooleanExtra(TelephonyManager.EXTRA_SHOW_SPN, false),
+                    intent.getStringExtra(TelephonyManager.EXTRA_SPN),
+                    intent.getStringExtra(TelephonyManager.EXTRA_DATA_SPN),
+                    intent.getBooleanExtra(TelephonyManager.EXTRA_SHOW_PLMN, false),
+                    intent.getStringExtra(TelephonyManager.EXTRA_PLMN));
             notifyListenersIfNecessary();
-        } else if (action.equals(TelephonyIntents.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED)) {
+        } else if (action.equals(TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED)) {
             updateDataSim();
             notifyListenersIfNecessary();
         }
@@ -619,8 +623,8 @@ public class MobileSignalController extends SignalController<
     }
 
     class MobilePhoneStateListener extends PhoneStateListener {
-        public MobilePhoneStateListener(Looper looper) {
-            super(looper);
+        public MobilePhoneStateListener(Executor executor) {
+            super(executor);
         }
 
         @Override

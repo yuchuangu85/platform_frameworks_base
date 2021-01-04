@@ -105,14 +105,13 @@ public class SmsMessage extends SmsMessageBase {
 
     private static final int INVALID_VALIDITY_PERIOD = -1;
 
-    @UnsupportedAppUsage
-    public SmsMessage() {
-    }
-
     public static class SubmitPdu extends SubmitPduBase {
         @UnsupportedAppUsage
-        public SubmitPdu() {
-        }
+        public SubmitPdu() {}
+    }
+
+    @UnsupportedAppUsage
+    public SmsMessage() {
     }
 
     /**
@@ -267,7 +266,7 @@ public class SmsMessage extends SmsMessageBase {
      *         encoded message. Returns null on encode error.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static SubmitPdu getSubmitPdu(String scAddress,
             String destinationAddress, String message,
             boolean statusReportRequested, byte[] header, int encoding,
@@ -293,7 +292,7 @@ public class SmsMessage extends SmsMessageBase {
      *         encoded message. Returns null on encode error.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static SubmitPdu getSubmitPdu(String scAddress,
             String destinationAddress, String message,
             boolean statusReportRequested, byte[] header, int encoding,
@@ -492,7 +491,7 @@ public class SmsMessage extends SmsMessageBase {
      * @return a <code>SubmitPdu</code> containing the encoded SC address if applicable and the
      *         encoded message. Returns null on encode error.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static SubmitPdu getSubmitPdu(String scAddress,
             String destinationAddress, String message,
             boolean statusReportRequested, int validityPeriod) {
@@ -775,9 +774,9 @@ public class SmsMessage extends SmsMessageBase {
     }
 
     private static class PduParser {
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         byte mPdu[];
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         int mCur;
         SmsHeader mUserDataHeader;
         byte[] mUserData;
@@ -1169,14 +1168,14 @@ public class SmsMessage extends SmsMessageBase {
     }
 
     /** {@inheritDoc} */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @Override
     public int getStatus() {
         return mStatus;
     }
 
     /** {@inheritDoc} */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @Override
     public boolean isStatusReportMessage() {
         return mIsStatusReportMessage;

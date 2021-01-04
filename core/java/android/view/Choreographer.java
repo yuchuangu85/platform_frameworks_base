@@ -22,6 +22,7 @@ import static android.view.DisplayEventReceiver.VSYNC_SOURCE_SURFACE_FLINGER;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.graphics.FrameInfo;
+import android.graphics.Insets;
 import android.hardware.display.DisplayManagerGlobal;
 import android.os.Build;
 import android.os.Handler;
@@ -218,9 +219,10 @@ public final class Choreographer {
     /**
      * Callback type: Animation callback to handle inset updates. This is separate from
      * {@link #CALLBACK_ANIMATION} as we need to "gather" all inset animation updates via
-     * {@link WindowInsetsAnimationController#changeInsets} for multiple ongoing animations but then
-     * update the whole view system with a single callback to {@link View#dispatchWindowInsetsAnimationProgress}
-     * that contains all the combined updated insets.
+     * {@link WindowInsetsAnimationController#setInsetsAndAlpha(Insets, float, float)} for multiple
+     * ongoing animations but then update the whole view system with a single callback to
+     * {@link View#dispatchWindowInsetsAnimationProgress} that contains all the combined updated
+     * insets.
      * <p>
      * Both input and animation may change insets, so we need to run this after these callbacks, but
      * before traversals.
@@ -825,7 +827,7 @@ public final class Choreographer {
         }
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private void scheduleVsyncLocked() {
         mDisplayEventReceiver.scheduleVsync();
     }
@@ -962,7 +964,7 @@ public final class Choreographer {
         public Object action; // Runnable or FrameCallback
         public Object token;
 
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public void run(long frameTimeNanos) {
             if (token == FRAME_CALLBACK_TOKEN) {
                 ((FrameCallback)action).doFrame(frameTimeNanos);

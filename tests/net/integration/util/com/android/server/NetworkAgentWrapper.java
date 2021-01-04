@@ -29,7 +29,7 @@ import static com.android.server.ConnectivityServiceTestUtils.transportToLegacyT
 import static junit.framework.Assert.assertTrue;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.fail;
 
 import android.content.Context;
 import android.net.ConnectivityManager;
@@ -38,7 +38,6 @@ import android.net.Network;
 import android.net.NetworkAgent;
 import android.net.NetworkAgentConfig;
 import android.net.NetworkCapabilities;
-import android.net.NetworkInfo;
 import android.net.NetworkProvider;
 import android.net.NetworkSpecifier;
 import android.net.SocketKeepalive;
@@ -53,9 +52,9 @@ import com.android.testutils.HandlerUtils;
 import com.android.testutils.TestableNetworkCallback;
 
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
-    private final NetworkInfo mNetworkInfo;
     private final NetworkCapabilities mNetworkCapabilities;
     private final HandlerThread mHandlerThread;
     private final Context mContext;
@@ -63,18 +62,21 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
 
     private final ConditionVariable mDisconnected = new ConditionVariable();
     private final ConditionVariable mPreventReconnectReceived = new ConditionVariable();
+    private final AtomicBoolean mConnected = new AtomicBoolean(false);
     private int mScore;
     private NetworkAgent mNetworkAgent;
     private int mStartKeepaliveError = SocketKeepalive.ERROR_UNSUPPORTED;
     private int mStopKeepaliveError = SocketKeepalive.NO_KEEPALIVE;
+    // Controls how test network agent is going to wait before responding to keepalive
+    // start/stop. Useful when simulate KeepaliveTracker is waiting for response from modem.
+    private long mKeepaliveResponseDelay = 0L;
     private Integer mExpectedKeepaliveSlot = null;
 
-    public NetworkAgentWrapper(int transport, LinkProperties linkProperties, Context context)
-            throws Exception {
+    public NetworkAgentWrapper(int transport, LinkProperties linkProperties,
+            NetworkCapabilities ncTemplate, Context context) throws Exception {
         final int type = transportToLegacyType(transport);
         final String typeName = ConnectivityManager.getNetworkTypeName(type);
-        mNetworkInfo = new NetworkInfo(type, 0, typeName, "Mock");
-        mNetworkCapabilities = new NetworkCapabilities();
+        mNetworkCapabilities = (ncTemplate != null) ? ncTemplate : new NetworkCapabilities();
         mNetworkCapabilities.addCapability(NET_CAPABILITY_NOT_SUSPENDED);
         mNetworkCapabilities.addTransportType(transport);
         switch (transport) {
@@ -105,22 +107,29 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
         mHandlerThread = new HandlerThread(mLogTag);
         mHandlerThread.start();
 
-        mNetworkAgent = makeNetworkAgent(linkProperties);
+        mNetworkAgent = makeNetworkAgent(linkProperties, type, typeName);
     }
 
-    protected InstrumentedNetworkAgent makeNetworkAgent(LinkProperties linkProperties)
+    protected InstrumentedNetworkAgent makeNetworkAgent(LinkProperties linkProperties,
+            final int type, final String typeName)
             throws Exception {
-        return new InstrumentedNetworkAgent(this, linkProperties);
+        return new InstrumentedNetworkAgent(this, linkProperties, type, typeName);
     }
 
     public static class InstrumentedNetworkAgent extends NetworkAgent {
         private final NetworkAgentWrapper mWrapper;
+        private static final String PROVIDER_NAME = "InstrumentedNetworkAgentProvider";
 
-        public InstrumentedNetworkAgent(NetworkAgentWrapper wrapper, LinkProperties lp) {
-            super(wrapper.mHandlerThread.getLooper(), wrapper.mContext, wrapper.mLogTag,
-                    wrapper.mNetworkInfo, wrapper.mNetworkCapabilities, lp, wrapper.mScore,
-                    new NetworkAgentConfig(), NetworkProvider.ID_NONE);
+        public InstrumentedNetworkAgent(NetworkAgentWrapper wrapper, LinkProperties lp,
+                final int type, final String typeName) {
+            super(wrapper.mContext, wrapper.mHandlerThread.getLooper(), wrapper.mLogTag,
+                    wrapper.mNetworkCapabilities, lp, wrapper.mScore,
+                    new NetworkAgentConfig.Builder()
+                            .setLegacyType(type).setLegacyTypeName(typeName).build(),
+                    new NetworkProvider(wrapper.mContext, wrapper.mHandlerThread.getLooper(),
+                            PROVIDER_NAME));
             mWrapper = wrapper;
+            register();
         }
 
         @Override
@@ -134,12 +143,17 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
             if (mWrapper.mExpectedKeepaliveSlot != null) {
                 assertEquals((int) mWrapper.mExpectedKeepaliveSlot, slot);
             }
-            onSocketKeepaliveEvent(slot, mWrapper.mStartKeepaliveError);
+            mWrapper.mHandlerThread.getThreadHandler().postDelayed(
+                    () -> onSocketKeepaliveEvent(slot, mWrapper.mStartKeepaliveError),
+                    mWrapper.mKeepaliveResponseDelay);
         }
 
         @Override
         public void stopSocketKeepalive(Message msg) {
-            onSocketKeepaliveEvent(msg.arg1, mWrapper.mStopKeepaliveError);
+            final int slot = msg.arg1;
+            mWrapper.mHandlerThread.getThreadHandler().postDelayed(
+                    () -> onSocketKeepaliveEvent(slot, mWrapper.mStopKeepaliveError),
+                    mWrapper.mKeepaliveResponseDelay);
         }
 
         @Override
@@ -204,10 +218,12 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
     }
 
     public void connect() {
-        assertNotEquals("MockNetworkAgents can only be connected once",
-                getNetworkInfo().getDetailedState(), NetworkInfo.DetailedState.CONNECTED);
-        mNetworkInfo.setDetailedState(NetworkInfo.DetailedState.CONNECTED, null, null);
-        mNetworkAgent.sendNetworkInfo(mNetworkInfo);
+        if (!mConnected.compareAndSet(false /* expect */, true /* update */)) {
+            // compareAndSet returns false when the value couldn't be updated because it did not
+            // match the expected value.
+            fail("Test NetworkAgents can only be connected once");
+        }
+        mNetworkAgent.markConnected();
     }
 
     public void suspend() {
@@ -219,8 +235,7 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
     }
 
     public void disconnect() {
-        mNetworkInfo.setDetailedState(NetworkInfo.DetailedState.DISCONNECTED, null, null);
-        mNetworkAgent.sendNetworkInfo(mNetworkInfo);
+        mNetworkAgent.unregister();
     }
 
     @Override
@@ -248,16 +263,16 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
         mStopKeepaliveError = reason;
     }
 
+    public void setKeepaliveResponseDelay(long delay) {
+        mKeepaliveResponseDelay = delay;
+    }
+
     public void setExpectedKeepaliveSlot(Integer slot) {
         mExpectedKeepaliveSlot = slot;
     }
 
     public NetworkAgent getNetworkAgent() {
         return mNetworkAgent;
-    }
-
-    public NetworkInfo getNetworkInfo() {
-        return mNetworkInfo;
     }
 
     public NetworkCapabilities getNetworkCapabilities() {

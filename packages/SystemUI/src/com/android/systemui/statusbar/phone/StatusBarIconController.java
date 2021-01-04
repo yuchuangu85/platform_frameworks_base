@@ -40,6 +40,7 @@ import com.android.systemui.Dependency;
 import com.android.systemui.R;
 import com.android.systemui.plugins.DarkIconDispatcher;
 import com.android.systemui.plugins.DarkIconDispatcher.DarkReceiver;
+import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.StatusBarIconView;
 import com.android.systemui.statusbar.StatusBarMobileView;
 import com.android.systemui.statusbar.StatusBarWifiView;
@@ -66,6 +67,15 @@ public interface StatusBarIconController {
     public void setSignalIcon(String slot, WifiIconState state);
     public void setMobileIcons(String slot, List<MobileIconState> states);
     public void setIconVisibility(String slot, boolean b);
+
+    /**
+     * Sets the live region mode for the icon
+     * @see android.view.View#setAccessibilityLiveRegion(int)
+     * @param slot Icon slot to set region for
+     * @param accessibilityLiveRegion live region mode for the icon
+     */
+    void setIconAccessibilityLiveRegion(String slot, int accessibilityLiveRegion);
+
     /**
      * If you don't know what to pass for `tag`, either remove all icons for slot, or use
      * TAG_PRIMARY to refer to the first icon at a given slot.
@@ -73,15 +83,16 @@ public interface StatusBarIconController {
     public void removeIcon(String slot, int tag);
     public void removeAllIconsForSlot(String slot);
 
-    public static final String ICON_BLACKLIST = "icon_blacklist";
+    // TODO: See if we can rename this tunable name.
+    String ICON_HIDE_LIST = "icon_blacklist";
 
-    public static ArraySet<String> getIconBlacklist(String blackListStr) {
+    /** Reads the default hide list from config value unless hideListStr is provided. */
+    static ArraySet<String> getIconHideList(Context context, String hideListStr) {
         ArraySet<String> ret = new ArraySet<>();
-        if (blackListStr == null) {
-            blackListStr = "rotate,headset";
-        }
-        String[] blacklist = blackListStr.split(",");
-        for (String slot : blacklist) {
+        String[] hideList = hideListStr == null
+            ? context.getResources().getStringArray(R.array.config_statusBarIconBlackList)
+            : hideListStr.split(",");
+        for (String slot : hideList) {
             if (!TextUtils.isEmpty(slot)) {
                 ret.add(slot);
             }
@@ -96,8 +107,8 @@ public interface StatusBarIconController {
         private final DarkIconDispatcher mDarkIconDispatcher;
         private int mIconHPadding;
 
-        public DarkIconManager(LinearLayout linearLayout) {
-            super(linearLayout);
+        public DarkIconManager(LinearLayout linearLayout, CommandQueue commandQueue) {
+            super(linearLayout, commandQueue);
             mIconHPadding = mContext.getResources().getDimensionPixelSize(
                     R.dimen.status_bar_icon_padding);
             mDarkIconDispatcher = Dependency.get(DarkIconDispatcher.class);
@@ -156,8 +167,8 @@ public interface StatusBarIconController {
     public static class TintedIconManager extends IconManager {
         private int mColor;
 
-        public TintedIconManager(ViewGroup group) {
-            super(group);
+        public TintedIconManager(ViewGroup group, CommandQueue commandQueue) {
+            super(group, commandQueue);
         }
 
         @Override
@@ -203,14 +214,14 @@ public interface StatusBarIconController {
         private boolean mIsInDemoMode;
         protected DemoStatusIcons mDemoStatusIcons;
 
-        public IconManager(ViewGroup group) {
+        public IconManager(ViewGroup group, CommandQueue commandQueue) {
             mGroup = group;
             mContext = group.getContext();
             mIconSize = mContext.getResources().getDimensionPixelSize(
                     com.android.internal.R.dimen.status_bar_icon_size);
 
             DisableStateTracker tracker =
-                    new DisableStateTracker(DISABLE_NONE, DISABLE2_SYSTEM_ICONS);
+                    new DisableStateTracker(DISABLE_NONE, DISABLE2_SYSTEM_ICONS, commandQueue);
             mGroup.addOnAttachStateChangeListener(tracker);
             if (mGroup.isAttachedToWindow()) {
                 // In case we miss the first onAttachedToWindow event

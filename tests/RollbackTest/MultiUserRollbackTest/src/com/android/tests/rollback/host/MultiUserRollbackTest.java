@@ -24,8 +24,11 @@ import com.android.tradefed.testtype.junit4.BaseHostJUnit4Test;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * Runs rollback tests for multiple users.
@@ -38,20 +41,21 @@ public class MultiUserRollbackTest extends BaseHostJUnit4Test {
     private static final long SWITCH_USER_COMPLETED_NUMBER_OF_POLLS = 60;
     private static final long SWITCH_USER_COMPLETED_POLL_INTERVAL_IN_MILLIS = 1000;
 
+    @Rule
+    public AbandonSessionsRule mHostTestRule = new AbandonSessionsRule(this);
 
     @After
     public void tearDown() throws Exception {
-        getDevice().switchUser(mOriginalUserId);
-        getDevice().executeShellCommand("pm uninstall com.android.cts.install.lib.testapp.A");
         removeSecondaryUserIfNecessary();
+        runPhaseForUsers("cleanUp", mOriginalUserId);
     }
 
     @Before
     public void setup() throws Exception {
         mOriginalUserId = getDevice().getCurrentUser();
-        installPackageAsUser("RollbackTest.apk", true, mOriginalUserId);
-        createAndSwitchToSecondaryUserIfNecessary();
-        installPackageAsUser("RollbackTest.apk", true, mSecondaryUserId);
+        createAndStartSecondaryUser();
+        installPackage("RollbackTest.apk", "--user all");
+        runPhaseForUsers("cleanUp", mOriginalUserId);
     }
 
     @Test
@@ -59,12 +63,35 @@ public class MultiUserRollbackTest extends BaseHostJUnit4Test {
         runPhaseForUsers("testBasic", mSecondaryUserId);
     }
 
+    /**
+     * Tests staged install/rollback works correctly on the 2nd user.
+     */
+    @Test
+    public void testStagedRollback() throws Exception {
+        runPhaseForUsers("testStagedRollback_Phase1", mSecondaryUserId);
+        getDevice().reboot();
+
+        // Need to unlock the user for device tests to run successfully
+        getDevice().startUser(mSecondaryUserId);
+        awaitUserUnlocked(mSecondaryUserId);
+        runPhaseForUsers("testStagedRollback_Phase2", mSecondaryUserId);
+        getDevice().reboot();
+
+        getDevice().startUser(mSecondaryUserId);
+        awaitUserUnlocked(mSecondaryUserId);
+        runPhaseForUsers("testStagedRollback_Phase3", mSecondaryUserId);
+        getDevice().reboot();
+
+        getDevice().startUser(mSecondaryUserId);
+        awaitUserUnlocked(mSecondaryUserId);
+        runPhaseForUsers("testStagedRollback_Phase4", mSecondaryUserId);
+    }
+
     @Test
     public void testMultipleUsers() throws Exception {
         runPhaseForUsers("testMultipleUsersInstallV1", mOriginalUserId, mSecondaryUserId);
         runPhaseForUsers("testMultipleUsersUpgradeToV2", mOriginalUserId);
         runPhaseForUsers("testMultipleUsersUpdateUserData", mOriginalUserId, mSecondaryUserId);
-        switchToUser(mOriginalUserId);
         getDevice().executeShellCommand("pm rollback-app com.android.cts.install.lib.testapp.A");
         runPhaseForUsers("testMultipleUsersVerifyUserdataRollback", mOriginalUserId,
                 mSecondaryUserId);
@@ -74,11 +101,11 @@ public class MultiUserRollbackTest extends BaseHostJUnit4Test {
      * Run the phase for the given user ids, in the order they are given.
      */
     private void runPhaseForUsers(String phase, int... userIds) throws Exception {
+        final long timeout = TimeUnit.MINUTES.toMillis(10);
         for (int userId: userIds) {
-            switchToUser(userId);
-            assertTrue(runDeviceTests("com.android.tests.rollback",
+            assertTrue(runDeviceTests(getDevice(), "com.android.tests.rollback",
                     "com.android.tests.rollback.MultiUserRollbackTest",
-                    phase));
+                    phase, userId, timeout));
         }
     }
 
@@ -89,21 +116,7 @@ public class MultiUserRollbackTest extends BaseHostJUnit4Test {
         }
     }
 
-    private void createAndSwitchToSecondaryUserIfNecessary() throws Exception {
-        if (mSecondaryUserId == -1) {
-            mOriginalUserId = getDevice().getCurrentUser();
-            mSecondaryUserId = getDevice().createUser("MultiUserRollbackTest_User"
-                    + System.currentTimeMillis());
-            switchToUser(mSecondaryUserId);
-        }
-    }
-
-    private void switchToUser(int userId) throws Exception {
-        if (getDevice().getCurrentUser() == userId) {
-            return;
-        }
-
-        assertTrue(getDevice().switchUser(userId));
+    private void awaitUserUnlocked(int userId) throws Exception {
         for (int i = 0; i < SWITCH_USER_COMPLETED_NUMBER_OF_POLLS; ++i) {
             String userState = getDevice().executeShellCommand("am get-started-user-state "
                     + userId);
@@ -112,6 +125,14 @@ public class MultiUserRollbackTest extends BaseHostJUnit4Test {
             }
             Thread.sleep(SWITCH_USER_COMPLETED_POLL_INTERVAL_IN_MILLIS);
         }
-        fail("User switch to user " + userId + " timed out");
+        fail("Timed out in unlocking user: " + userId);
+    }
+
+    private void createAndStartSecondaryUser() throws Exception {
+        String name = "MultiUserRollbackTest_User" + System.currentTimeMillis();
+        mSecondaryUserId = getDevice().createUser(name);
+        getDevice().startUser(mSecondaryUserId);
+        // Note we can't install apps on a locked user
+        awaitUserUnlocked(mSecondaryUserId);
     }
 }

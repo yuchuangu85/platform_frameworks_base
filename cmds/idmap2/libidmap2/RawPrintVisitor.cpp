@@ -16,21 +16,21 @@
 
 #include "idmap2/RawPrintVisitor.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <string>
 
 #include "android-base/macros.h"
 #include "android-base/stringprintf.h"
 #include "androidfw/ApkAssets.h"
+#include "idmap2/PolicyUtils.h"
 #include "idmap2/ResourceUtils.h"
 #include "idmap2/Result.h"
 
 using android::ApkAssets;
+using android::idmap2::policy::PoliciesToDebugString;
 
 namespace android::idmap2 {
-
-// verbatim copy fomr PrettyPrintVisitor.cpp, move to common utils
-#define RESID(pkg, type, entry) (((pkg) << 24) | ((type) << 16) | (entry))
 
 void RawPrintVisitor::visit(const Idmap& idmap ATTRIBUTE_UNUSED) {
 }
@@ -40,53 +40,136 @@ void RawPrintVisitor::visit(const IdmapHeader& header) {
   print(header.GetVersion(), "version");
   print(header.GetTargetCrc(), "target crc");
   print(header.GetOverlayCrc(), "overlay crc");
-  print(header.GetTargetPath().to_string(), "target path");
-  print(header.GetOverlayPath().to_string(), "overlay path");
+  print(header.GetFulfilledPolicies(), "fulfilled policies: %s",
+        PoliciesToDebugString(header.GetFulfilledPolicies()).c_str());
+  print(static_cast<uint32_t>(header.GetEnforceOverlayable()), "enforce overlayable");
+  print(header.GetTargetPath().to_string(), kIdmapStringLength, "target path");
+  print(header.GetOverlayPath().to_string(), kIdmapStringLength, "overlay path");
 
-  target_apk_ = ApkAssets::Load(header.GetTargetPath().to_string());
+  uint32_t debug_info_size = header.GetDebugInfo().size();
+  print(debug_info_size, "debug info size");
+  print("...", debug_info_size + CalculatePadding(debug_info_size), "debug info");
+
+  auto target_apk_ = ApkAssets::Load(header.GetTargetPath().to_string());
   if (target_apk_) {
     target_am_.SetApkAssets({target_apk_.get()});
+    apk_assets_.push_back(std::move(target_apk_));
+  }
+
+  auto overlay_apk_ = ApkAssets::Load(header.GetOverlayPath().to_string());
+  if (overlay_apk_) {
+    overlay_am_.SetApkAssets({overlay_apk_.get()});
+    apk_assets_.push_back(std::move(overlay_apk_));
   }
 }
 
 void RawPrintVisitor::visit(const IdmapData& data ATTRIBUTE_UNUSED) {
+  const bool target_package_loaded = !target_am_.GetApkAssets().empty();
+  const bool overlay_package_loaded = !overlay_am_.GetApkAssets().empty();
+
+  for (auto& target_entry : data.GetTargetEntries()) {
+    Result<std::string> target_name(Error(""));
+    if (target_package_loaded) {
+      target_name = utils::ResToTypeEntryName(target_am_, target_entry.target_id);
+    }
+    if (target_name) {
+      print(target_entry.target_id, "target id: %s", target_name->c_str());
+    } else {
+      print(target_entry.target_id, "target id");
+    }
+
+    Result<std::string> overlay_name(Error(""));
+    if (overlay_package_loaded) {
+      overlay_name = utils::ResToTypeEntryName(overlay_am_, target_entry.overlay_id);
+    }
+    if (overlay_name) {
+      print(target_entry.overlay_id, "overlay id: %s", overlay_name->c_str());
+    } else {
+      print(target_entry.overlay_id, "overlay id");
+    }
+  }
+
+  for (auto& target_entry : data.GetTargetInlineEntries()) {
+    Result<std::string> target_name(Error(""));
+    if (target_package_loaded) {
+      target_name = utils::ResToTypeEntryName(target_am_, target_entry.target_id);
+    }
+    if (target_name) {
+      print(target_entry.target_id, "target id: %s", target_name->c_str());
+    } else {
+      print(target_entry.target_id, "target id");
+    }
+
+    print("...", sizeof(Res_value::size) + sizeof(Res_value::res0), "padding");
+
+    print(target_entry.value.data_type, "type: %s",
+          utils::DataTypeToString(target_entry.value.data_type).data());
+
+    Result<std::string> overlay_name(Error(""));
+    if (overlay_package_loaded &&
+        (target_entry.value.data_value == Res_value::TYPE_REFERENCE ||
+         target_entry.value.data_value == Res_value::TYPE_DYNAMIC_REFERENCE)) {
+      overlay_name = utils::ResToTypeEntryName(overlay_am_, target_entry.value.data_value);
+    }
+
+    if (overlay_name) {
+      print(target_entry.value.data_value, "data: %s", overlay_name->c_str());
+    } else {
+      print(target_entry.value.data_value, "data");
+    }
+  }
+
+  for (auto& overlay_entry : data.GetOverlayEntries()) {
+    Result<std::string> overlay_name(Error(""));
+    if (overlay_package_loaded) {
+      overlay_name = utils::ResToTypeEntryName(overlay_am_, overlay_entry.overlay_id);
+    }
+
+    if (overlay_name) {
+      print(overlay_entry.overlay_id, "overlay id: %s", overlay_name->c_str());
+    } else {
+      print(overlay_entry.overlay_id, "overlay id");
+    }
+
+    Result<std::string> target_name(Error(""));
+    if (target_package_loaded) {
+      target_name = utils::ResToTypeEntryName(target_am_, overlay_entry.target_id);
+    }
+
+    if (target_name) {
+      print(overlay_entry.target_id, "target id: %s", target_name->c_str());
+    } else {
+      print(overlay_entry.target_id, "target id");
+    }
+  }
+
+  uint32_t string_pool_size = data.GetStringPoolData().size();
+  print(string_pool_size, "string pool size");
+  print("...", string_pool_size + CalculatePadding(string_pool_size), "string pool");
 }
 
 void RawPrintVisitor::visit(const IdmapData::Header& header) {
-  print(static_cast<uint16_t>(header.GetTargetPackageId()), "target package id");
-  print(header.GetTypeCount(), "type count");
-  last_seen_package_id_ = header.GetTargetPackageId();
+  print(header.GetTargetPackageId(), "target package id");
+  print(header.GetOverlayPackageId(), "overlay package id");
+  print("...", sizeof(Idmap_data_header::p0), "padding");
+  print(header.GetTargetEntryCount(), "target entry count");
+  print(header.GetTargetInlineEntryCount(), "target inline entry count");
+  print(header.GetOverlayEntryCount(), "overlay entry count");
+  print(header.GetStringPoolIndexOffset(), "string pool index offset");
 }
 
-void RawPrintVisitor::visit(const IdmapData::TypeEntry& type_entry) {
-  const bool target_package_loaded = !target_am_.GetApkAssets().empty();
+// NOLINTNEXTLINE(cert-dcl50-cpp)
+void RawPrintVisitor::print(uint8_t value, const char* fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  std::string comment;
+  base::StringAppendV(&comment, fmt, ap);
+  va_end(ap);
 
-  print(static_cast<uint16_t>(type_entry.GetTargetTypeId()), "target type");
-  print(static_cast<uint16_t>(type_entry.GetOverlayTypeId()), "overlay type");
-  print(static_cast<uint16_t>(type_entry.GetEntryCount()), "entry count");
-  print(static_cast<uint16_t>(type_entry.GetEntryOffset()), "entry offset");
+  stream_ << base::StringPrintf("%08zx:       %02x", offset_, value) << "  " << comment
+          << std::endl;
 
-  for (uint16_t i = 0; i < type_entry.GetEntryCount(); i++) {
-    const EntryId entry = type_entry.GetEntry(i);
-    if (entry == kNoEntry) {
-      print(kPadding, "no entry");
-    } else {
-      const ResourceId target_resid = RESID(last_seen_package_id_, type_entry.GetTargetTypeId(),
-                                            type_entry.GetEntryOffset() + i);
-      const ResourceId overlay_resid =
-          RESID(last_seen_package_id_, type_entry.GetOverlayTypeId(), entry);
-      Result<std::string> name(Error(""));
-      if (target_package_loaded) {
-        name = utils::ResToTypeEntryName(target_am_, target_resid);
-      }
-      if (name) {
-        print(static_cast<uint32_t>(entry), "0x%08x -> 0x%08x %s", target_resid, overlay_resid,
-              name->c_str());
-      } else {
-        print(static_cast<uint32_t>(entry), "0x%08x -> 0x%08x", target_resid, overlay_resid);
-      }
-    }
-  }
+  offset_ += sizeof(uint8_t);
 }
 
 // NOLINTNEXTLINE(cert-dcl50-cpp)
@@ -116,17 +199,17 @@ void RawPrintVisitor::print(uint32_t value, const char* fmt, ...) {
 }
 
 // NOLINTNEXTLINE(cert-dcl50-cpp)
-void RawPrintVisitor::print(const std::string& value, const char* fmt, ...) {
+void RawPrintVisitor::print(const std::string& value, size_t encoded_size, const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   std::string comment;
   base::StringAppendV(&comment, fmt, ap);
   va_end(ap);
 
-  stream_ << base::StringPrintf("%08zx: ", offset_) << "........ " << comment << ": " << value
+  stream_ << base::StringPrintf("%08zx: ", offset_) << "........  " << comment << ": " << value
           << std::endl;
 
-  offset_ += kIdmapStringLength;
+  offset_ += encoded_size;
 }
 
 }  // namespace android::idmap2

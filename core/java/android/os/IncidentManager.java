@@ -23,7 +23,6 @@ import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
-import android.annotation.TestApi;
 import android.content.Context;
 import android.net.Uri;
 import android.util.Slog;
@@ -31,10 +30,12 @@ import android.util.Slog;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 
 /**
@@ -43,7 +44,6 @@ import java.util.concurrent.Executor;
  * @hide
  */
 @SystemApi
-@TestApi
 @SystemService(Context.INCIDENT_SERVICE)
 public class IncidentManager {
     private static final String TAG = "IncidentManager";
@@ -157,7 +157,6 @@ public class IncidentManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static class PendingReport {
         /**
          * Encoded data.
@@ -275,7 +274,6 @@ public class IncidentManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static class IncidentReport implements Parcelable, Closeable {
         private final long mTimestampNs;
         private final int mPrivacyPolicy;
@@ -421,6 +419,43 @@ public class IncidentManager {
     }
 
     /**
+     * Callback for dumping an extended (usually vendor-supplied) incident report section
+     *
+     * @see #registerSection
+     * @see #unregisterSection
+     */
+    public static class DumpCallback {
+        private int mId;
+        private Executor mExecutor;
+
+        IIncidentDumpCallback.Stub mBinder = new IIncidentDumpCallback.Stub() {
+            @Override
+            public void onDumpSection(ParcelFileDescriptor pfd) {
+                if (mExecutor != null) {
+                    mExecutor.execute(() -> {
+                        DumpCallback.this.onDumpSection(mId,
+                                new ParcelFileDescriptor.AutoCloseOutputStream(pfd));
+                    });
+                } else {
+                    DumpCallback.this.onDumpSection(mId,
+                            new ParcelFileDescriptor.AutoCloseOutputStream(pfd));
+                }
+            }
+        };
+
+        /**
+         * Dump the registered section as a protobuf message to the given OutputStream. Called when
+         * incidentd requests to dump this section.
+         *
+         * @param id  the id of the registered section. The same id used in calling
+         *            {@link #registerSection(int, String, DumpCallback)} will be passed in here.
+         * @param out the OutputStream to write the protobuf message
+         */
+        public void onDumpSection(int id, @NonNull OutputStream out) {
+        }
+    }
+
+    /**
      * @hide
      */
     public IncidentManager(Context context) {
@@ -528,6 +563,62 @@ public class IncidentManager {
     }
 
     /**
+     * Register a callback to dump an extended incident report section with the given id and name,
+     * running on the supplied executor.
+     *
+     * Calling <code>registerSection</code> with a duplicate id will override previous registration.
+     * However, the request must come from the same calling uid.
+     *
+     * @param id       the ID of the extended section. It should be unique system-wide, and be
+     *                 different from IDs of all existing section in
+     *                 frameworks/base/core/proto/android/os/incident.proto.
+     *                 Also see incident.proto for other rules about the ID.
+     * @param name     the name to display in logs and/or stderr when taking an incident report
+     *                 containing this section, mainly for debugging purpose
+     * @param executor the executor used to run the callback
+     * @param callback the callback function to be invoked when an incident report with all sections
+     *                 or sections matching the given id is being taken
+     */
+    public void registerSection(int id, @NonNull String name,
+                @NonNull @CallbackExecutor Executor executor, @NonNull DumpCallback callback) {
+        Objects.requireNonNull(executor, "executor cannot be null");
+        Objects.requireNonNull(callback, "callback cannot be null");
+        try {
+            if (callback.mExecutor != null) {
+                throw new RuntimeException("Do not reuse DumpCallback objects when calling"
+                        + " registerSection");
+            }
+            callback.mExecutor = executor;
+            callback.mId = id;
+            final IIncidentManager service = getIIncidentManagerLocked();
+            if (service == null) {
+                Slog.e(TAG, "registerSection can't find incident binder service");
+                return;
+            }
+            service.registerSection(id, name, callback.mBinder);
+        } catch (RemoteException ex) {
+            Slog.e(TAG, "registerSection failed", ex);
+        }
+    }
+
+    /**
+     * Unregister an extended section dump function. The section must be previously registered with
+     * {@link #registerSection(int, String, DumpCallback)} by the same calling uid.
+     */
+    public void unregisterSection(int id) {
+        try {
+            final IIncidentManager service = getIIncidentManagerLocked();
+            if (service == null) {
+                Slog.e(TAG, "unregisterSection can't find incident binder service");
+                return;
+            }
+            service.unregisterSection(id);
+        } catch (RemoteException ex) {
+            Slog.e(TAG, "unregisterSection failed", ex);
+        }
+    }
+
+    /**
      * Get the incident reports that are available for upload for the supplied
      * broadcast recevier.
      *
@@ -630,7 +721,7 @@ public class IncidentManager {
                 throw new RuntimeException("Invalid URI: No "
                         + URI_PARAM_REPORT_ID + " parameter. " + uri);
             }
-        
+
             try {
                 getCompanionServiceLocked().deleteIncidentReports(pkg, cls, id);
             } catch (RemoteException ex) {

@@ -20,7 +20,6 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
@@ -33,6 +32,8 @@ import android.os.ServiceManager;
 import android.os.UserHandle;
 import android.util.Log;
 import android.util.Pair;
+
+import java.util.List;
 
 /**
  * The interface through which an application interacts with the Android backup service to
@@ -846,7 +847,6 @@ public class BackupManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(android.Manifest.permission.BACKUP)
     public Intent getConfigurationIntent(String transportName) {
         checkServiceBinder();
@@ -868,7 +868,6 @@ public class BackupManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(android.Manifest.permission.BACKUP)
     public String getDestinationString(String transportName) {
         checkServiceBinder();
@@ -890,7 +889,6 @@ public class BackupManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(android.Manifest.permission.BACKUP)
     public Intent getDataManagementIntent(String transportName) {
         checkServiceBinder();
@@ -916,7 +914,6 @@ public class BackupManager {
      */
     @Deprecated
     @SystemApi
-    @TestApi
     @RequiresPermission(android.Manifest.permission.BACKUP)
     @Nullable
     public String getDataManagementLabel(@NonNull String transportName) {
@@ -933,7 +930,6 @@ public class BackupManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     @RequiresPermission(android.Manifest.permission.BACKUP)
     @Nullable
     public CharSequence getDataManagementIntentLabel(@NonNull String transportName) {
@@ -946,6 +942,29 @@ public class BackupManager {
             }
         }
         return null;
+    }
+
+    /**
+     * Excludes keys from KV restore for a given package. The corresponding data will be excluded
+     * from the data set available the backup agent during restore. However,  final list  of keys
+     * that have been excluded will be passed to the agent to make it aware of the exclusions.
+     *
+     * @param packageName The name of the package for which to exclude keys.
+     * @param keys The list of keys to exclude.
+     *
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.BACKUP)
+    public void excludeKeysFromRestore(@NonNull String packageName, @NonNull List<String> keys) {
+        checkServiceBinder();
+        if (sService != null) {
+            try {
+                sService.excludeKeysFromRestore(packageName, keys);
+            } catch (RemoteException e) {
+                Log.e(TAG, "excludeKeysFromRestore() couldn't connect");
+            }
+        }
     }
 
     /*

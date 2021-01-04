@@ -68,6 +68,7 @@ import android.widget.RemoteViews.RemoteView;
 
 import com.android.internal.R;
 
+import java.text.NumberFormat;
 import java.util.ArrayList;
 
 /**
@@ -165,7 +166,6 @@ import java.util.ArrayList;
 public class ProgressBar extends View {
 
     private static final int MAX_LEVEL = 10000;
-    private static final int TIMEOUT_SEND_ACCESSIBILITY_EVENT = 200;
 
     /** Interpolator used for smooth progress animations. */
     private static final DecelerateInterpolator PROGRESS_ANIM_INTERPOLATOR =
@@ -239,14 +239,14 @@ public class ProgressBar extends View {
     /** Value used to track progress animation, in the range [0...1]. */
     private float mVisualProgress;
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     boolean mMirrorForRtl = false;
 
     private boolean mAggregatedIsVisible;
 
-    private final ArrayList<RefreshData> mRefreshData = new ArrayList<RefreshData>();
+    private CharSequence mCustomStateDescription = null;
 
-    private AccessibilityEventSender mAccessibilityEventSender;
+    private final ArrayList<RefreshData> mRefreshData = new ArrayList<RefreshData>();
 
     private ObjectAnimator mLastProgressAnimator;
 
@@ -1569,9 +1569,54 @@ public class ProgressBar extends View {
         }
     }
 
+    private float getPercent(int progress) {
+        final float maxProgress = getMax();
+        final float minProgress = getMin();
+        final float currentProgress = progress;
+        final float diffProgress = maxProgress - minProgress;
+        if (diffProgress <= 0.0f) {
+            return 0.0f;
+        }
+        final float percent = (currentProgress - minProgress) / diffProgress;
+        return Math.max(0.0f, Math.min(1.0f, percent));
+    }
+
+    /**
+     * Default percentage format of the state description based on progress, for example,
+     * "50 percent".
+     *
+     * @param progress the progress value, between {@link #getMin()} and {@link #getMax()}
+     * @return state description based on progress
+     */
+    private CharSequence formatStateDescription(int progress) {
+        return NumberFormat.getPercentInstance(mContext.getResources().getConfiguration().locale)
+                .format(getPercent(progress));
+    }
+
+    /**
+     * This function is called when an instance or subclass sets the state description. Once this
+     * is called and the argument is not null, the app developer will be responsible for updating
+     * state description when progress changes and the default state description will not be used.
+     * App developers can restore the default behavior by setting the argument to null. If set
+     * progress is called first and then setStateDescription is called, two state change events
+     * will be merged by event throttling and we can still get the correct state description.
+     *
+     * @param stateDescription The state description.
+     */
+    @Override
+    public void setStateDescription(@Nullable CharSequence stateDescription) {
+        mCustomStateDescription = stateDescription;
+        if (stateDescription == null) {
+            super.setStateDescription(formatStateDescription(mProgress));
+        } else {
+            super.setStateDescription(stateDescription);
+        }
+    }
+
     void onProgressRefresh(float scale, boolean fromUser, int progress) {
-        if (AccessibilityManager.getInstance(mContext).isEnabled()) {
-            scheduleAccessibilityEventSender();
+        if (AccessibilityManager.getInstance(mContext).isEnabled()
+                && mCustomStateDescription == null) {
+            super.setStateDescription(formatStateDescription(mProgress));
         }
     }
 
@@ -1617,7 +1662,7 @@ public class ProgressBar extends View {
         // Stub method.
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private synchronized void refreshProgress(int id, int progress, boolean fromUser,
             boolean animate) {
         if (mUiThreadId == Thread.currentThread().getId()) {
@@ -2265,9 +2310,6 @@ public class ProgressBar extends View {
             removeCallbacks(mRefreshProgressRunnable);
             mRefreshIsPosted = false;
         }
-        if (mAccessibilityEventSender != null) {
-            removeCallbacks(mAccessibilityEventSender);
-        }
         // This should come after stopAnimation(), otherwise an invalidate message remains in the
         // queue, which can prevent the entire view hierarchy from being GC'ed during a rotation
         super.onDetachedFromWindow();
@@ -2297,23 +2339,8 @@ public class ProgressBar extends View {
                     AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_INT, getMin(), getMax(),
                     getProgress());
             info.setRangeInfo(rangeInfo);
+            info.setStateDescription(formatStateDescription(mProgress));
         }
-    }
-
-    /**
-     * Schedule a command for sending an accessibility event.
-     * </br>
-     * Note: A command is used to ensure that accessibility events
-     *       are sent at most one in a given time frame to save
-     *       system resources while the progress changes quickly.
-     */
-    private void scheduleAccessibilityEventSender() {
-        if (mAccessibilityEventSender == null) {
-            mAccessibilityEventSender = new AccessibilityEventSender();
-        } else {
-            removeCallbacks(mAccessibilityEventSender);
-        }
-        postDelayed(mAccessibilityEventSender, TIMEOUT_SEND_ACCESSIBILITY_EVENT);
     }
 
     /** @hide */
@@ -2337,15 +2364,6 @@ public class ProgressBar extends View {
      */
     public boolean isAnimating() {
         return isIndeterminate() && getWindowVisibility() == VISIBLE && isShown();
-    }
-
-    /**
-     * Command for sending an accessibility event.
-     */
-    private class AccessibilityEventSender implements Runnable {
-        public void run() {
-            sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SELECTED);
-        }
     }
 
     private static class ProgressTintInfo {

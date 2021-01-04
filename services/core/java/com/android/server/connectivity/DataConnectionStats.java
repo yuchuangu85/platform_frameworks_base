@@ -19,13 +19,12 @@ package com.android.server.connectivity;
 import static android.telephony.AccessNetworkConstants.TRANSPORT_TYPE_WWAN;
 import static android.telephony.NetworkRegistrationInfo.DOMAIN_PS;
 
+import android.annotation.NonNull;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.net.ConnectivityManager;
 import android.os.Handler;
-import android.os.Looper;
 import android.os.RemoteException;
 import android.telephony.NetworkRegistrationInfo;
 import android.telephony.PhoneStateListener;
@@ -36,6 +35,9 @@ import android.util.Log;
 
 import com.android.internal.app.IBatteryStats;
 import com.android.server.am.BatteryStatsService;
+
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
 
 public class DataConnectionStats extends BroadcastReceiver {
     private static final String TAG = "DataConnectionStats";
@@ -55,7 +57,8 @@ public class DataConnectionStats extends BroadcastReceiver {
         mContext = context;
         mBatteryStats = BatteryStatsService.getService();
         mListenerHandler = listenerHandler;
-        mPhoneStateListener = new PhoneStateListenerImpl(listenerHandler.getLooper());
+        mPhoneStateListener =
+                new PhoneStateListenerImpl(new PhoneStateListenerExecutor(listenerHandler));
     }
 
     public void startMonitoring() {
@@ -69,8 +72,6 @@ public class DataConnectionStats extends BroadcastReceiver {
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_SIM_STATE_CHANGED);
-        filter.addAction(ConnectivityManager.CONNECTIVITY_ACTION);
-        filter.addAction(ConnectivityManager.INET_CONDITION_ACTION);
         mContext.registerReceiver(this, filter, null /* broadcastPermission */, mListenerHandler);
     }
 
@@ -80,10 +81,7 @@ public class DataConnectionStats extends BroadcastReceiver {
         if (action.equals(Intent.ACTION_SIM_STATE_CHANGED)) {
             updateSimState(intent);
             notePhoneDataConnectionState();
-        } else if (action.equals(ConnectivityManager.CONNECTIVITY_ACTION) ||
-                action.equals(ConnectivityManager.INET_CONDITION_ACTION)) {
-            notePhoneDataConnectionState();
-       }
+        }
     }
 
     private void notePhoneDataConnectionState() {
@@ -99,6 +97,11 @@ public class DataConnectionStats extends BroadcastReceiver {
                 mServiceState.getNetworkRegistrationInfo(DOMAIN_PS, TRANSPORT_TYPE_WWAN);
         int networkType = regInfo == null ? TelephonyManager.NETWORK_TYPE_UNKNOWN
                 : regInfo.getAccessNetworkTechnology();
+        // If the device is in NSA NR connection the networkType will report as LTE.
+        // For cell dwell rate metrics, this should report NR instead.
+        if (regInfo != null && regInfo.getNrState() == NetworkRegistrationInfo.NR_STATE_CONNECTED) {
+            networkType = TelephonyManager.NETWORK_TYPE_NR;
+        }
         if (DEBUG) Log.d(TAG, String.format("Noting data connection for network type %s: %svisible",
                 networkType, visible ? "" : "not "));
         try {
@@ -140,9 +143,24 @@ public class DataConnectionStats extends BroadcastReceiver {
                 && mServiceState.getState() != ServiceState.STATE_POWER_OFF;
     }
 
+    private static class PhoneStateListenerExecutor implements Executor {
+        @NonNull
+        private final Handler mHandler;
+
+        PhoneStateListenerExecutor(@NonNull Handler handler) {
+            mHandler = handler;
+        }
+        @Override
+        public void execute(Runnable command) {
+            if (!mHandler.post(command)) {
+                throw new RejectedExecutionException(mHandler + " is shutting down");
+            }
+        }
+    }
+
     private class PhoneStateListenerImpl extends PhoneStateListener {
-        PhoneStateListenerImpl(Looper looper) {
-            super(looper);
+        PhoneStateListenerImpl(Executor executor) {
+            super(executor);
         }
 
         @Override

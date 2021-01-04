@@ -33,6 +33,11 @@ interface IFingerprintService {
     void authenticate(IBinder token, long sessionId, int userId,
             IFingerprintServiceReceiver receiver, int flags, String opPackageName);
 
+    // Uses the fingerprint hardware to detect for the presence of a finger, without giving details
+    // about accept/reject/lockout.
+    void detectFingerprint(IBinder token, int userId, IFingerprintServiceReceiver receiver,
+            String opPackageName);
+
     // This method prepares the service to start authenticating, but doesn't start authentication.
     // This is protected by the MANAGE_BIOMETRIC signatuer permission. This method should only be
     // called from BiometricService. The additional uid, pid, userId arguments should be determined
@@ -47,6 +52,9 @@ interface IFingerprintService {
 
     // Cancel authentication for the given sessionId
     void cancelAuthentication(IBinder token, String opPackageName);
+
+    // Cancel finger detection
+    void cancelFingerprintDetect(IBinder token, String opPackageName);
 
     // Same as above, except this is protected by the MANAGE_BIOMETRIC signature permission. Takes
     // an additional uid, pid, userid.
@@ -71,7 +79,7 @@ interface IFingerprintService {
     List<Fingerprint> getEnrolledFingerprints(int groupId, String opPackageName);
 
     // Determine if HAL is loaded and ready
-    boolean isHardwareDetected(long deviceId, String opPackageName);
+    boolean isHardwareDetected(String opPackageName);
 
     // Get a pre-enrollment authentication token
     long preEnroll(IBinder token);
@@ -89,7 +97,7 @@ interface IFingerprintService {
     // long getHardwareDevice(int i);
 
     // Gets the authenticator ID for fingerprint
-    long getAuthenticatorId(String opPackageName);
+    long getAuthenticatorId(int callingUserId);
 
     // Reset the timeout when user authenticates with strong auth (e.g. PIN, pattern or password)
     void resetTimeout(in byte [] cryptoToken);
@@ -111,4 +119,7 @@ interface IFingerprintService {
 
     // Removes a callback set by addClientActiveCallback
     void removeClientActiveCallback(IFingerprintClientActiveCallback callback);
+
+    // Initialize the OEM configured biometric strength
+    void initConfiguredStrength(int strength);
 }

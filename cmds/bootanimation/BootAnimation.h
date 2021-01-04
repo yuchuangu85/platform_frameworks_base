@@ -18,11 +18,15 @@
 #define ANDROID_BOOTANIMATION_H
 
 #include <vector>
+#include <queue>
+#include <climits>
 
 #include <stdint.h>
 #include <sys/types.h>
 
 #include <androidfw/AssetManager.h>
+#include <gui/DisplayEventReceiver.h>
+#include <utils/Looper.h>
 #include <utils/Thread.h>
 #include <binder/IBinder.h>
 
@@ -42,6 +46,8 @@ class SurfaceControl;
 class BootAnimation : public Thread, public IBinder::DeathRecipient
 {
 public:
+    static constexpr int MAX_FADED_FRAMES_COUNT = std::numeric_limits<int>::max();
+
     struct Texture {
         GLint   w;
         GLint   h;
@@ -81,10 +87,15 @@ public:
             String8 trimData;
             SortedVector<Frame> frames;
             bool playUntilComplete;
+            int framesToFadeCount;
             float backgroundColor[3];
             uint8_t* audioData;
             int audioLength;
             Animation* animation;
+
+            bool hasFadingPhase() const {
+                return !playUntilComplete && framesToFadeCount > 0;
+            }
         };
         int fps;
         int width;
@@ -145,6 +156,11 @@ private:
         BootAnimation* mBootAnimation;
     };
 
+    // Display event handling
+    class DisplayEventCallback;
+    int displayEventCallback(int fd, int events, void* data);
+    void processDisplayEvents();
+
     status_t initTexture(Texture* texture, AssetManager& asset, const char* name);
     status_t initTexture(FileMap* map, int* width, int* height);
     status_t initFont(Font* font, const char* fallback);
@@ -152,6 +168,8 @@ private:
     bool movie();
     void drawText(const char* str, const Font& font, bool bold, int* x, int* y);
     void drawClock(const Font& font, const int xPos, const int yPos);
+    void fadeFrame(int frameLeft, int frameBottom, int frameWidth, int frameHeight,
+                   const Animation::Part& part, int fadedFramesCount);
     bool validClock(const Animation::Part& part);
     Animation* loadAnimation(const String8&);
     bool playAnimation(const Animation&);
@@ -161,7 +179,12 @@ private:
     void findBootAnimationFile();
     bool findBootAnimationFileInternal(const std::vector<std::string>& files);
     bool preloadAnimation();
+    EGLConfig getEglConfig(const EGLDisplay&);
+    ui::Size limitSurfaceSize(int width, int height) const;
+    void resizeSurface(int newWidth, int newHeight);
+    void projectSceneToWindow();
 
+    bool shouldStopPlayingPart(const Animation::Part& part, int fadedFramesCount);
     void checkExit();
 
     void handleViewport(nsecs_t timestep);
@@ -171,6 +194,8 @@ private:
     Texture     mAndroid[2];
     int         mWidth;
     int         mHeight;
+    int         mMaxWidth = 0;
+    int         mMaxHeight = 0;
     int         mCurrentInset;
     int         mTargetInset;
     bool        mUseNpotTextures = false;
@@ -189,6 +214,8 @@ private:
     sp<TimeCheckThread> mTimeCheckThread = nullptr;
     sp<Callbacks> mCallbacks;
     Animation* mAnimation = nullptr;
+    std::unique_ptr<DisplayEventReceiver> mDisplayEventReceiver;
+    sp<Looper> mLooper;
 };
 
 // ---------------------------------------------------------------------------

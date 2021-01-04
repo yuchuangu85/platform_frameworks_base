@@ -62,6 +62,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Base class for implementing application instrumentation code.  When running
@@ -89,6 +90,8 @@ public class Instrumentation {
     public static final String REPORT_KEY_STREAMRESULT = "stream";
 
     private static final String TAG = "Instrumentation";
+
+    private static final long CONNECT_TIMEOUT_MILLIS = 5000;
 
     /**
      * @hide
@@ -493,6 +496,7 @@ public class Instrumentation {
     public Activity startActivitySync(@NonNull Intent intent, @Nullable Bundle options) {
         validateNotAppThread();
 
+        final Activity activity;
         synchronized (mSync) {
             intent = new Intent(intent);
 
@@ -527,16 +531,18 @@ public class Instrumentation {
                 } catch (InterruptedException e) {
                 }
             } while (mWaitingActivities.contains(aw));
-
-            waitForEnterAnimationComplete(aw.activity);
-
-            // Apply an empty transaction to ensure SF has a chance to update before
-            // the Activity is ready (b/138263890).
-            try (SurfaceControl.Transaction t = new SurfaceControl.Transaction()) {
-                t.apply(true);
-            }
-            return aw.activity;
+            activity = aw.activity;
         }
+
+        // Do not call this method within mSync, lest it could block the main thread.
+        waitForEnterAnimationComplete(activity);
+
+        // Apply an empty transaction to ensure SF has a chance to update before
+        // the Activity is ready (b/138263890).
+        try (SurfaceControl.Transaction t = new SurfaceControl.Transaction()) {
+            t.apply(true);
+        }
+        return activity;
     }
 
     /**
@@ -1409,7 +1415,7 @@ public class Instrumentation {
     /**
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void callActivityOnNewIntent(Activity activity, ReferrerIntent intent) {
         final String oldReferrer = activity.mReferrer;
         try {
@@ -1515,6 +1521,16 @@ public class Instrumentation {
      */
     public void callActivityOnUserLeaving(Activity activity) {
         activity.performUserLeaving();
+    }
+
+    /**
+     * Perform calling of an activity's {@link Activity#onPictureInPictureRequested} method.
+     * The default implementation simply calls through to that method.
+     *
+     * @param activity The activity being notified that picture-in-picture is being requested.
+     */
+    public void callActivityOnPictureInPictureRequested(@NonNull Activity activity) {
+        activity.onPictureInPictureRequested();
     }
     
     /*
@@ -1670,7 +1686,6 @@ public class Instrumentation {
      *
      * @see Activity#startActivity(Intent)
      * @see Activity#startActivityForResult(Intent, int)
-     * @see Activity#startActivityFromChild
      *
      * {@hide}
      */
@@ -1706,13 +1721,12 @@ public class Instrumentation {
             }
         }
         try {
-            intent.migrateExtraStreamToClipData();
+            intent.migrateExtraStreamToClipData(who);
             intent.prepareToLeaveProcess(who);
-            int result = ActivityTaskManager.getService()
-                .startActivity(whoThread, who.getBasePackageName(), intent,
-                        intent.resolveTypeIfNeeded(who.getContentResolver()),
-                        token, target != null ? target.mEmbeddedID : null,
-                        requestCode, 0, null, options);
+            int result = ActivityTaskManager.getService().startActivity(whoThread,
+                    who.getBasePackageName(), who.getAttributionTag(), intent,
+                    intent.resolveTypeIfNeeded(who.getContentResolver()), token,
+                    target != null ? target.mEmbeddedID : null, requestCode, 0, null, options);
             checkStartActivityResult(result, intent);
         } catch (RemoteException e) {
             throw new RuntimeException("Failure from system", e);
@@ -1747,7 +1761,7 @@ public class Instrumentation {
      *
      * {@hide}
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public int execStartActivitiesAsUser(Context who, IBinder contextThread,
             IBinder token, Activity target, Intent[] intents, Bundle options,
             int userId) {
@@ -1777,13 +1791,13 @@ public class Instrumentation {
         try {
             String[] resolvedTypes = new String[intents.length];
             for (int i=0; i<intents.length; i++) {
-                intents[i].migrateExtraStreamToClipData();
+                intents[i].migrateExtraStreamToClipData(who);
                 intents[i].prepareToLeaveProcess(who);
                 resolvedTypes[i] = intents[i].resolveTypeIfNeeded(who.getContentResolver());
             }
-            int result = ActivityTaskManager.getService()
-                .startActivities(whoThread, who.getBasePackageName(), intents, resolvedTypes,
-                        token, options, userId);
+            int result = ActivityTaskManager.getService().startActivities(whoThread,
+                    who.getBasePackageName(), who.getAttributionTag(), intents, resolvedTypes,
+                    token, options, userId);
             checkStartActivityResult(result, intents[0]);
             return result;
         } catch (RemoteException e) {
@@ -1815,7 +1829,6 @@ public class Instrumentation {
      * 
      * @see Activity#startActivity(Intent)
      * @see Activity#startActivityForResult(Intent, int)
-     * @see Activity#startActivityFromChild
      * 
      * {@hide}
      */
@@ -1847,12 +1860,12 @@ public class Instrumentation {
             }
         }
         try {
-            intent.migrateExtraStreamToClipData();
+            intent.migrateExtraStreamToClipData(who);
             intent.prepareToLeaveProcess(who);
-            int result = ActivityTaskManager.getService()
-                .startActivity(whoThread, who.getBasePackageName(), intent,
-                        intent.resolveTypeIfNeeded(who.getContentResolver()),
-                        token, target, requestCode, 0, null, options);
+            int result = ActivityTaskManager.getService().startActivity(whoThread,
+                    who.getBasePackageName(), who.getAttributionTag(), intent,
+                    intent.resolveTypeIfNeeded(who.getContentResolver()), token, target,
+                    requestCode, 0, null, options);
             checkStartActivityResult(result, intent);
         } catch (RemoteException e) {
             throw new RuntimeException("Failure from system", e);
@@ -1883,7 +1896,6 @@ public class Instrumentation {
      *
      * @see Activity#startActivity(Intent)
      * @see Activity#startActivityForResult(Intent, int)
-     * @see Activity#startActivityFromChild
      *
      * {@hide}
      */
@@ -1915,13 +1927,12 @@ public class Instrumentation {
             }
         }
         try {
-            intent.migrateExtraStreamToClipData();
+            intent.migrateExtraStreamToClipData(who);
             intent.prepareToLeaveProcess(who);
-            int result = ActivityTaskManager.getService()
-                .startActivityAsUser(whoThread, who.getBasePackageName(), intent,
-                        intent.resolveTypeIfNeeded(who.getContentResolver()),
-                        token, resultWho,
-                        requestCode, 0, null, options, user.getIdentifier());
+            int result = ActivityTaskManager.getService().startActivityAsUser(whoThread,
+                    who.getBasePackageName(), who.getAttributionTag(), intent,
+                    intent.resolveTypeIfNeeded(who.getContentResolver()), token, resultWho,
+                    requestCode, 0, null, options, user.getIdentifier());
             checkStartActivityResult(result, intent);
         } catch (RemoteException e) {
             throw new RuntimeException("Failure from system", e);
@@ -1933,7 +1944,7 @@ public class Instrumentation {
      * Special version!
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ActivityResult execStartActivityAsCaller(
             Context who, IBinder contextThread, IBinder token, Activity target,
             Intent intent, int requestCode, Bundle options, IBinder permissionToken,
@@ -1962,7 +1973,7 @@ public class Instrumentation {
             }
         }
         try {
-            intent.migrateExtraStreamToClipData();
+            intent.migrateExtraStreamToClipData(who);
             intent.prepareToLeaveProcess(who);
             int result = ActivityTaskManager.getService()
                 .startActivityAsCaller(whoThread, who.getBasePackageName(), intent,
@@ -1981,7 +1992,7 @@ public class Instrumentation {
      * Special version!
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void execStartActivityFromAppTask(
             Context who, IBinder contextThread, IAppTask appTask,
             Intent intent, Bundle options) {
@@ -2009,10 +2020,11 @@ public class Instrumentation {
             }
         }
         try {
-            intent.migrateExtraStreamToClipData();
+            intent.migrateExtraStreamToClipData(who);
             intent.prepareToLeaveProcess(who);
             int result = appTask.startActivity(whoThread.asBinder(), who.getBasePackageName(),
-                    intent, intent.resolveTypeIfNeeded(who.getContentResolver()), options);
+                    who.getAttributionTag(), intent,
+                    intent.resolveTypeIfNeeded(who.getContentResolver()), options);
             checkStartActivityResult(result, intent);
         } catch (RemoteException e) {
             throw new RuntimeException("Failure from system", e);
@@ -2116,6 +2128,13 @@ public class Instrumentation {
      * Equivalent to {@code getUiAutomation(0)}. If a {@link UiAutomation} exists with different
      * flags, the flags on that instance will be changed, and then it will be returned.
      * </p>
+     * <p>
+     * Compatibility mode: This method is infallible for apps targeted for
+     * {@link Build.VERSION_CODES#R} and earlier versions; for apps targeted for later versions, it
+     * will return null if {@link UiAutomation} fails to connect. The caller can check the return
+     * value and retry on error.
+     * </p>
+     *
      * @return The UI automation instance.
      *
      * @see UiAutomation
@@ -2143,6 +2162,12 @@ public class Instrumentation {
      * If a {@link UiAutomation} exists with different flags, the flags on that instance will be
      * changed, and then it will be returned.
      * </p>
+     * <p>
+     * Compatibility mode: This method is infallible for apps targeted for
+     * {@link Build.VERSION_CODES#R} and earlier versions; for apps targeted for later versions, it
+     * will return null if {@link UiAutomation} fails to connect. The caller can check the return
+     * value and retry on error.
+     * </p>
      *
      * @param flags The flags to be passed to the UiAutomation, for example
      *        {@link UiAutomation#FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES}.
@@ -2164,8 +2189,17 @@ public class Instrumentation {
             } else {
                 mUiAutomation.disconnect();
             }
-            mUiAutomation.connect(flags);
-            return mUiAutomation;
+            if (getTargetContext().getApplicationInfo().targetSdkVersion <= Build.VERSION_CODES.R) {
+                mUiAutomation.connect(flags);
+                return mUiAutomation;
+            }
+            try {
+                mUiAutomation.connectWithTimeout(flags, CONNECT_TIMEOUT_MILLIS);
+                return mUiAutomation;
+            } catch (TimeoutException e) {
+                mUiAutomation.destroy();
+                mUiAutomation = null;
+            }
         }
         return null;
     }

@@ -1,10 +1,13 @@
 {
-  "presubmit": [
+  "presubmit-large": [
     {
       "name": "RollbackTest"
     },
     {
       "name": "StagedRollbackTest"
+    },
+    {
+      "name": "NetworkStagedRollbackTest"
     },
     {
       "name": "MultiUserRollbackTest"

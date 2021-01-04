@@ -150,7 +150,7 @@ public interface IBinder {
     int LIKE_TRANSACTION   = ('_'<<24)|('L'<<16)|('I'<<8)|'K';
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     int SYSPROPS_TRANSACTION = ('_'<<24)|('S'<<16)|('P'<<8)|'R';
 
     /**
@@ -170,11 +170,33 @@ public interface IBinder {
     int FLAG_ONEWAY             = 0x00000001;
 
     /**
+     * Flag to {@link #transact}: request binder driver to clear transaction data.
+     *
+     * Be very careful when using this flag in Java, since Java objects read from a Java
+     * Parcel may be non-trivial to clear.
+     * @hide
+     */
+    int FLAG_CLEAR_BUF          = 0x00000020;
+
+    /**
+     * @hide
+     */
+    int FLAG_COLLECT_NOTED_APP_OPS = 0x00000002;
+
+    /**
      * Limit that should be placed on IPC sizes to keep them safely under the
      * transaction buffer limit.
      * @hide
      */
     public static final int MAX_IPC_SIZE = 64 * 1024;
+
+    /**
+     * Limit that should be placed on IPC sizes, in bytes, to keep them safely under the transaction
+     * buffer limit.
+     */
+    static int getSuggestedMaxIpcSizeBytes() {
+        return MAX_IPC_SIZE;
+    }
 
     /**
      * Get the canonical name of the interface supported by this binder.
@@ -284,6 +306,13 @@ public interface IBinder {
      */
     public interface DeathRecipient {
         public void binderDied();
+
+        /**
+         * @hide
+         */
+        default void binderDied(IBinder who) {
+            binderDied();
+        }
     }
 
     /**

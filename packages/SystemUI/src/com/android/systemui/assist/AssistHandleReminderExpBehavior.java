@@ -26,6 +26,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ResolveInfo;
+import android.database.ContentObserver;
+import android.net.Uri;
 import android.os.Handler;
 import android.provider.Settings;
 
@@ -33,8 +35,11 @@ import androidx.annotation.Nullable;
 import androidx.slice.Clock;
 
 import com.android.internal.config.sysui.SystemUiDeviceConfigFlags;
+import com.android.systemui.BootCompleteCache;
 import com.android.systemui.assist.AssistHandleBehaviorController.BehaviorController;
+import com.android.systemui.broadcast.BroadcastDispatcher;
 import com.android.systemui.keyguard.WakefulnessLifecycle;
+import com.android.systemui.model.SysUiState;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.recents.OverviewProxyService;
 import com.android.systemui.shared.system.ActivityManagerWrapper;
@@ -63,8 +68,10 @@ import dagger.Lazy;
 @Singleton
 final class AssistHandleReminderExpBehavior implements BehaviorController {
 
-    private static final String LEARNING_TIME_ELAPSED_KEY = "reminder_exp_learning_time_elapsed";
-    private static final String LEARNING_EVENT_COUNT_KEY = "reminder_exp_learning_event_count";
+    private static final Uri LEARNING_TIME_ELAPSED_URI =
+            Settings.Secure.getUriFor(Settings.Secure.ASSIST_HANDLES_LEARNING_TIME_ELAPSED_MILLIS);
+    private static final Uri LEARNING_EVENT_COUNT_URI =
+            Settings.Secure.getUriFor(Settings.Secure.ASSIST_HANDLES_LEARNING_EVENT_COUNT);
     private static final String LEARNED_HINT_LAST_SHOWN_KEY =
             "reminder_exp_learned_hint_last_shown";
     private static final long DEFAULT_LEARNING_TIME_MS = TimeUnit.DAYS.toMillis(10);
@@ -81,7 +88,6 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
 
     private static final String[] DEFAULT_HOME_CHANGE_ACTIONS = new String[] {
             PackageManagerWrapper.ACTION_PREFERRED_ACTIVITY_CHANGED,
-            Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_PACKAGE_ADDED,
             Intent.ACTION_PACKAGE_CHANGED,
             Intent.ACTION_PACKAGE_REMOVED
@@ -117,12 +123,9 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
                 public void onOverviewShown(boolean fromHome) {
                     handleOverviewShown();
                 }
-
-                @Override
-                public void onSystemUiStateChanged(int sysuiStateFlags) {
-                    handleSystemUiStateChanged(sysuiStateFlags);
-                }
             };
+    private final SysUiState.SysUiStateCallback mSysUiStateCallback =
+            this::handleSystemUiStateChanged;
     private final WakefulnessLifecycle.Observer mWakefulnessLifecycleObserver =
             new WakefulnessLifecycle.Observer() {
                 @Override
@@ -151,6 +154,15 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
             mDefaultHome = getCurrentDefaultHome();
         }
     };
+
+    private final BootCompleteCache.BootCompleteListener mBootCompleteListener =
+            new BootCompleteCache.BootCompleteListener() {
+        @Override
+        public void onBootComplete() {
+            mDefaultHome = getCurrentDefaultHome();
+        }
+    };
+
     private final IntentFilter mDefaultHomeIntentFilter;
     private final Runnable mResetConsecutiveTaskSwitches = this::resetConsecutiveTaskSwitches;
 
@@ -160,8 +172,11 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
     private final Lazy<StatusBarStateController> mStatusBarStateController;
     private final Lazy<ActivityManagerWrapper> mActivityManagerWrapper;
     private final Lazy<OverviewProxyService> mOverviewProxyService;
+    private final Lazy<SysUiState> mSysUiFlagContainer;
     private final Lazy<WakefulnessLifecycle> mWakefulnessLifecycle;
     private final Lazy<PackageManagerWrapper> mPackageManagerWrapper;
+    private final Lazy<BroadcastDispatcher> mBroadcastDispatcher;
+    private final Lazy<BootCompleteCache> mBootCompleteCache;
 
     private boolean mOnLockscreen;
     private boolean mIsDozing;
@@ -170,6 +185,7 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
     private boolean mIsNavBarHidden;
     private boolean mIsLauncherShowing;
     private int mConsecutiveTaskSwitches;
+    @Nullable private ContentObserver mSettingObserver;
 
     /** Whether user has learned the gesture. */
     private boolean mIsLearned;
@@ -192,20 +208,26 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
             Lazy<StatusBarStateController> statusBarStateController,
             Lazy<ActivityManagerWrapper> activityManagerWrapper,
             Lazy<OverviewProxyService> overviewProxyService,
+            Lazy<SysUiState> sysUiFlagContainer,
             Lazy<WakefulnessLifecycle> wakefulnessLifecycle,
-            Lazy<PackageManagerWrapper> packageManagerWrapper) {
+            Lazy<PackageManagerWrapper> packageManagerWrapper,
+            Lazy<BroadcastDispatcher> broadcastDispatcher,
+            Lazy<BootCompleteCache> bootCompleteCache) {
         mClock = clock;
         mHandler = handler;
         mDeviceConfigHelper = deviceConfigHelper;
         mStatusBarStateController = statusBarStateController;
         mActivityManagerWrapper = activityManagerWrapper;
         mOverviewProxyService = overviewProxyService;
+        mSysUiFlagContainer = sysUiFlagContainer;
         mWakefulnessLifecycle = wakefulnessLifecycle;
         mPackageManagerWrapper = packageManagerWrapper;
         mDefaultHomeIntentFilter = new IntentFilter();
         for (String action : DEFAULT_HOME_CHANGE_ACTIONS) {
             mDefaultHomeIntentFilter.addAction(action);
         }
+        mBroadcastDispatcher = broadcastDispatcher;
+        mBootCompleteCache = bootCompleteCache;
     }
 
     @Override
@@ -213,8 +235,10 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
         mContext = context;
         mAssistHandleCallbacks = callbacks;
         mConsecutiveTaskSwitches = 0;
+        mBootCompleteCache.get().addListener(mBootCompleteListener);
         mDefaultHome = getCurrentDefaultHome();
-        context.registerReceiver(mDefaultHomeBroadcastReceiver, mDefaultHomeIntentFilter);
+        mBroadcastDispatcher.get()
+                .registerReceiver(mDefaultHomeBroadcastReceiver, mDefaultHomeIntentFilter);
         mOnLockscreen = onLockscreen(mStatusBarStateController.get().getState());
         mIsDozing = mStatusBarStateController.get().isDozing();
         mStatusBarStateController.get().addCallback(mStatusBarStateListener);
@@ -223,14 +247,28 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
         mRunningTaskId = runningTaskInfo == null ? 0 : runningTaskInfo.taskId;
         mActivityManagerWrapper.get().registerTaskStackListener(mTaskStackChangeListener);
         mOverviewProxyService.get().addCallback(mOverviewProxyListener);
+        mSysUiFlagContainer.get().addCallback(mSysUiStateCallback);
         mIsAwake = mWakefulnessLifecycle.get().getWakefulness()
                 == WakefulnessLifecycle.WAKEFULNESS_AWAKE;
         mWakefulnessLifecycle.get().addObserver(mWakefulnessLifecycleObserver);
 
         mLearningTimeElapsed = Settings.Secure.getLong(
-                context.getContentResolver(), LEARNING_TIME_ELAPSED_KEY, /* default = */ 0);
+                context.getContentResolver(),
+                Settings.Secure.ASSIST_HANDLES_LEARNING_TIME_ELAPSED_MILLIS,
+                /* default = */ 0);
         mLearningCount = Settings.Secure.getInt(
-                context.getContentResolver(), LEARNING_EVENT_COUNT_KEY, /* default = */ 0);
+                context.getContentResolver(),
+                Settings.Secure.ASSIST_HANDLES_LEARNING_EVENT_COUNT,
+                /* default = */ 0);
+        mSettingObserver = new SettingsObserver(context, mHandler);
+        context.getContentResolver().registerContentObserver(
+                LEARNING_TIME_ELAPSED_URI,
+                /* notifyForDescendants = */ true,
+                mSettingObserver);
+        context.getContentResolver().registerContentObserver(
+                LEARNING_EVENT_COUNT_URI,
+                /* notifyForDescendants = */ true,
+                mSettingObserver);
         mLearnedHintLastShownEpochDay = Settings.Secure.getLong(
                 context.getContentResolver(), LEARNED_HINT_LAST_SHOWN_KEY, /* default = */ 0);
         mLastLearningTimestamp = mClock.currentTimeMillis();
@@ -242,15 +280,29 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
     public void onModeDeactivated() {
         mAssistHandleCallbacks = null;
         if (mContext != null) {
-            mContext.unregisterReceiver(mDefaultHomeBroadcastReceiver);
-            Settings.Secure.putLong(mContext.getContentResolver(), LEARNING_TIME_ELAPSED_KEY, 0);
-            Settings.Secure.putInt(mContext.getContentResolver(), LEARNING_EVENT_COUNT_KEY, 0);
+            mBroadcastDispatcher.get().unregisterReceiver(mDefaultHomeBroadcastReceiver);
+            mBootCompleteCache.get().removeListener(mBootCompleteListener);
+            mContext.getContentResolver().unregisterContentObserver(mSettingObserver);
+            mSettingObserver = null;
+            // putString to use overrideableByRestore
+            Settings.Secure.putString(
+                    mContext.getContentResolver(),
+                    Settings.Secure.ASSIST_HANDLES_LEARNING_TIME_ELAPSED_MILLIS,
+                    Long.toString(0L),
+                    /* overrideableByRestore = */ true);
+            // putString to use overrideableByRestore
+            Settings.Secure.putString(
+                    mContext.getContentResolver(),
+                    Settings.Secure.ASSIST_HANDLES_LEARNING_EVENT_COUNT,
+                    Integer.toString(0),
+                    /* overrideableByRestore = */ true);
             Settings.Secure.putLong(mContext.getContentResolver(), LEARNED_HINT_LAST_SHOWN_KEY, 0);
             mContext = null;
         }
         mStatusBarStateController.get().removeCallback(mStatusBarStateListener);
         mActivityManagerWrapper.get().unregisterTaskStackListener(mTaskStackChangeListener);
         mOverviewProxyService.get().removeCallback(mOverviewProxyListener);
+        mSysUiFlagContainer.get().removeCallback(mSysUiStateCallback);
         mWakefulnessLifecycle.get().removeObserver(mWakefulnessLifecycleObserver);
     }
 
@@ -260,8 +312,12 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
             return;
         }
 
-        Settings.Secure.putLong(
-                mContext.getContentResolver(), LEARNING_EVENT_COUNT_KEY, ++mLearningCount);
+        // putString to use overrideableByRestore
+        Settings.Secure.putString(
+                mContext.getContentResolver(),
+                Settings.Secure.ASSIST_HANDLES_LEARNING_EVENT_COUNT,
+                Integer.toString(++mLearningCount),
+                /* overrideableByRestore = */ true);
     }
 
     @Override
@@ -438,8 +494,12 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
         mIsLearned =
                 mLearningCount >= getLearningCount() || mLearningTimeElapsed >= getLearningTimeMs();
 
-        mHandler.post(() -> Settings.Secure.putLong(
-                mContext.getContentResolver(), LEARNING_TIME_ELAPSED_KEY, mLearningTimeElapsed));
+        // putString to use overrideableByRestore
+        mHandler.post(() -> Settings.Secure.putString(
+                mContext.getContentResolver(),
+                Settings.Secure.ASSIST_HANDLES_LEARNING_TIME_ELAPSED_MILLIS,
+                Long.toString(mLearningTimeElapsed),
+                /* overrideableByRestore = */ true));
     }
 
     private void resetConsecutiveTaskSwitches() {
@@ -566,5 +626,33 @@ final class AssistHandleReminderExpBehavior implements BehaviorController {
                 + SystemUiDeviceConfigFlags.ASSIST_HANDLES_SHOW_WHEN_TAUGHT
                 + "="
                 + getShowWhenTaught());
+    }
+
+    private final class SettingsObserver extends ContentObserver {
+
+        private final Context mContext;
+
+        SettingsObserver(Context context, Handler handler) {
+            super(handler);
+            mContext = context;
+        }
+
+        @Override
+        public void onChange(boolean selfChange, @Nullable Uri uri) {
+            if (LEARNING_TIME_ELAPSED_URI.equals(uri)) {
+                mLastLearningTimestamp = mClock.currentTimeMillis();
+                mLearningTimeElapsed = Settings.Secure.getLong(
+                        mContext.getContentResolver(),
+                        Settings.Secure.ASSIST_HANDLES_LEARNING_TIME_ELAPSED_MILLIS,
+                        /* default = */ 0);
+            } else if (LEARNING_EVENT_COUNT_URI.equals(uri)) {
+                mLearningCount = Settings.Secure.getInt(
+                        mContext.getContentResolver(),
+                        Settings.Secure.ASSIST_HANDLES_LEARNING_EVENT_COUNT,
+                        /* default = */ 0);
+            }
+
+            super.onChange(selfChange, uri);
+        }
     }
 }

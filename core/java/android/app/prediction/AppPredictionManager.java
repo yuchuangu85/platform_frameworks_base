@@ -17,10 +17,9 @@ package android.app.prediction;
 
 import android.annotation.NonNull;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.content.Context;
 
-import com.android.internal.util.Preconditions;
+import java.util.Objects;
 
 /**
  * Class that provides methods to create prediction clients.
@@ -28,7 +27,6 @@ import com.android.internal.util.Preconditions;
  * @hide
  */
 @SystemApi
-@TestApi
 public final class AppPredictionManager {
 
     private final Context mContext;
@@ -37,7 +35,7 @@ public final class AppPredictionManager {
      * @hide
      */
     public AppPredictionManager(Context context) {
-        mContext = Preconditions.checkNotNull(context);
+        mContext = Objects.requireNonNull(context);
     }
 
     /**

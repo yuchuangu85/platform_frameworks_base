@@ -24,7 +24,6 @@ import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
-import android.annotation.TestApi;
 import android.annotation.UserIdInt;
 import android.content.Context;
 import android.content.Intent;
@@ -42,6 +41,7 @@ import com.android.internal.util.Preconditions;
 import com.android.internal.util.function.pooled.PooledLambda;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
@@ -143,7 +143,6 @@ public final class RoleManager {
      * @hide
      */
     @SystemApi
-    @TestApi
     public static final int MANAGE_HOLDERS_FLAG_DONT_KILL_APP = 1;
 
     /**
@@ -254,7 +253,6 @@ public final class RoleManager {
     @NonNull
     @RequiresPermission(Manifest.permission.MANAGE_ROLE_HOLDERS)
     @SystemApi
-    @TestApi
     public List<String> getRoleHolders(@NonNull String roleName) {
         return getRoleHoldersAsUser(roleName, Process.myUserHandle());
     }
@@ -280,10 +278,9 @@ public final class RoleManager {
     @NonNull
     @RequiresPermission(Manifest.permission.MANAGE_ROLE_HOLDERS)
     @SystemApi
-    @TestApi
     public List<String> getRoleHoldersAsUser(@NonNull String roleName, @NonNull UserHandle user) {
         Preconditions.checkStringNotEmpty(roleName, "roleName cannot be null or empty");
-        Preconditions.checkNotNull(user, "user cannot be null");
+        Objects.requireNonNull(user, "user cannot be null");
         try {
             return mService.getRoleHoldersAsUser(roleName, user.getIdentifier());
         } catch (RemoteException e) {
@@ -314,15 +311,14 @@ public final class RoleManager {
      */
     @RequiresPermission(Manifest.permission.MANAGE_ROLE_HOLDERS)
     @SystemApi
-    @TestApi
     public void addRoleHolderAsUser(@NonNull String roleName, @NonNull String packageName,
             @ManageHoldersFlags int flags, @NonNull UserHandle user,
             @CallbackExecutor @NonNull Executor executor, @NonNull Consumer<Boolean> callback) {
         Preconditions.checkStringNotEmpty(roleName, "roleName cannot be null or empty");
         Preconditions.checkStringNotEmpty(packageName, "packageName cannot be null or empty");
-        Preconditions.checkNotNull(user, "user cannot be null");
-        Preconditions.checkNotNull(executor, "executor cannot be null");
-        Preconditions.checkNotNull(callback, "callback cannot be null");
+        Objects.requireNonNull(user, "user cannot be null");
+        Objects.requireNonNull(executor, "executor cannot be null");
+        Objects.requireNonNull(callback, "callback cannot be null");
         try {
             mService.addRoleHolderAsUser(roleName, packageName, flags, user.getIdentifier(),
                     createRemoteCallback(executor, callback));
@@ -353,15 +349,14 @@ public final class RoleManager {
      */
     @RequiresPermission(Manifest.permission.MANAGE_ROLE_HOLDERS)
     @SystemApi
-    @TestApi
     public void removeRoleHolderAsUser(@NonNull String roleName, @NonNull String packageName,
             @ManageHoldersFlags int flags, @NonNull UserHandle user,
             @CallbackExecutor @NonNull Executor executor, @NonNull Consumer<Boolean> callback) {
         Preconditions.checkStringNotEmpty(roleName, "roleName cannot be null or empty");
         Preconditions.checkStringNotEmpty(packageName, "packageName cannot be null or empty");
-        Preconditions.checkNotNull(user, "user cannot be null");
-        Preconditions.checkNotNull(executor, "executor cannot be null");
-        Preconditions.checkNotNull(callback, "callback cannot be null");
+        Objects.requireNonNull(user, "user cannot be null");
+        Objects.requireNonNull(executor, "executor cannot be null");
+        Objects.requireNonNull(callback, "callback cannot be null");
         try {
             mService.removeRoleHolderAsUser(roleName, packageName, flags, user.getIdentifier(),
                     createRemoteCallback(executor, callback));
@@ -391,14 +386,13 @@ public final class RoleManager {
      */
     @RequiresPermission(Manifest.permission.MANAGE_ROLE_HOLDERS)
     @SystemApi
-    @TestApi
     public void clearRoleHoldersAsUser(@NonNull String roleName, @ManageHoldersFlags int flags,
             @NonNull UserHandle user, @CallbackExecutor @NonNull Executor executor,
             @NonNull Consumer<Boolean> callback) {
         Preconditions.checkStringNotEmpty(roleName, "roleName cannot be null or empty");
-        Preconditions.checkNotNull(user, "user cannot be null");
-        Preconditions.checkNotNull(executor, "executor cannot be null");
-        Preconditions.checkNotNull(callback, "callback cannot be null");
+        Objects.requireNonNull(user, "user cannot be null");
+        Objects.requireNonNull(executor, "executor cannot be null");
+        Objects.requireNonNull(callback, "callback cannot be null");
         try {
             mService.clearRoleHoldersAsUser(roleName, flags, user.getIdentifier(),
                     createRemoteCallback(executor, callback));
@@ -438,12 +432,11 @@ public final class RoleManager {
      */
     @RequiresPermission(Manifest.permission.OBSERVE_ROLE_HOLDERS)
     @SystemApi
-    @TestApi
     public void addOnRoleHoldersChangedListenerAsUser(@CallbackExecutor @NonNull Executor executor,
             @NonNull OnRoleHoldersChangedListener listener, @NonNull UserHandle user) {
-        Preconditions.checkNotNull(executor, "executor cannot be null");
-        Preconditions.checkNotNull(listener, "listener cannot be null");
-        Preconditions.checkNotNull(user, "user cannot be null");
+        Objects.requireNonNull(executor, "executor cannot be null");
+        Objects.requireNonNull(listener, "listener cannot be null");
+        Objects.requireNonNull(user, "user cannot be null");
         int userId = user.getIdentifier();
         synchronized (mListenersLock) {
             ArrayMap<OnRoleHoldersChangedListener, OnRoleHoldersChangedListenerDelegate> listeners =
@@ -484,11 +477,10 @@ public final class RoleManager {
      */
     @RequiresPermission(Manifest.permission.OBSERVE_ROLE_HOLDERS)
     @SystemApi
-    @TestApi
     public void removeOnRoleHoldersChangedListenerAsUser(
             @NonNull OnRoleHoldersChangedListener listener, @NonNull UserHandle user) {
-        Preconditions.checkNotNull(listener, "listener cannot be null");
-        Preconditions.checkNotNull(user, "user cannot be null");
+        Objects.requireNonNull(listener, "listener cannot be null");
+        Objects.requireNonNull(user, "user cannot be null");
         int userId = user.getIdentifier();
         synchronized (mListenersLock) {
             ArrayMap<OnRoleHoldersChangedListener, OnRoleHoldersChangedListenerDelegate> listeners =
@@ -526,9 +518,8 @@ public final class RoleManager {
      */
     @RequiresPermission(PERMISSION_MANAGE_ROLES_FROM_CONTROLLER)
     @SystemApi
-    @TestApi
     public void setRoleNamesFromController(@NonNull List<String> roleNames) {
-        Preconditions.checkNotNull(roleNames, "roleNames cannot be null");
+        Objects.requireNonNull(roleNames, "roleNames cannot be null");
         try {
             mService.setRoleNamesFromController(roleNames);
         } catch (RemoteException e) {
@@ -557,7 +548,6 @@ public final class RoleManager {
      */
     @RequiresPermission(PERMISSION_MANAGE_ROLES_FROM_CONTROLLER)
     @SystemApi
-    @TestApi
     public boolean addRoleHolderFromController(@NonNull String roleName,
             @NonNull String packageName) {
         Preconditions.checkStringNotEmpty(roleName, "roleName cannot be null or empty");
@@ -590,7 +580,6 @@ public final class RoleManager {
      */
     @RequiresPermission(PERMISSION_MANAGE_ROLES_FROM_CONTROLLER)
     @SystemApi
-    @TestApi
     public boolean removeRoleHolderFromController(@NonNull String roleName,
             @NonNull String packageName) {
         Preconditions.checkStringNotEmpty(roleName, "roleName cannot be null or empty");
@@ -613,7 +602,6 @@ public final class RoleManager {
     @NonNull
     @RequiresPermission(PERMISSION_MANAGE_ROLES_FROM_CONTROLLER)
     @SystemApi
-    @TestApi
     public List<String> getHeldRolesFromController(@NonNull String packageName) {
         Preconditions.checkStringNotEmpty(packageName, "packageName cannot be null or empty");
         try {
@@ -633,7 +621,6 @@ public final class RoleManager {
      * @hide
      */
     @Nullable
-    @SystemApi
     public String getDefaultSmsPackage(@UserIdInt int userId) {
         try {
             return mService.getDefaultSmsPackage(userId);

@@ -21,7 +21,6 @@ import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.os.Bundle;
 import android.os.RemoteException;
-import android.os.ServiceManager;
 import android.telephony.cdma.CdmaCellLocation;
 import android.telephony.gsm.GsmCellLocation;
 
@@ -30,7 +29,10 @@ import com.android.internal.telephony.PhoneConstants;
 
 /**
  * Abstract class that represents the location of the device.  {@more}
+ *
+ * @deprecated use {@link android.telephony.CellIdentity CellIdentity}.
  */
+@Deprecated
 public abstract class CellLocation {
 
     /**
@@ -56,7 +58,11 @@ public abstract class CellLocation {
         if (appContext == null) return; // should never happen
 
         try {
-            ITelephony phone = ITelephony.Stub.asInterface(ServiceManager.getService("phone"));
+            ITelephony phone = ITelephony.Stub.asInterface(
+                    TelephonyFrameworkInitializer
+                            .getTelephonyServiceManager()
+                            .getTelephonyServiceRegisterer()
+                            .get());
             if (phone != null) {
                 phone.updateServiceLocationWithPackageName(appContext.getOpPackageName());
             }
@@ -68,8 +74,7 @@ public abstract class CellLocation {
     /**
      * Create a new CellLocation from a intent notifier Bundle
      *
-     * This method is used by PhoneStateIntentReceiver and maybe by
-     * external applications.
+     * This method maybe used by external applications.
      *
      * @param bundle Bundle from intent notifier
      * @return newly created CellLocation
@@ -93,12 +98,14 @@ public abstract class CellLocation {
     /**
      * @hide
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @UnsupportedAppUsage
     public abstract void fillInNotifierBundle(Bundle bundle);
 
     /**
      * @hide
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @UnsupportedAppUsage
     public abstract boolean isEmpty();
 
@@ -106,6 +113,7 @@ public abstract class CellLocation {
      * Invalidate this object.  The location area code and the cell id are set to -1.
      * @hide
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     public abstract void setStateInvalid();
 
     /**

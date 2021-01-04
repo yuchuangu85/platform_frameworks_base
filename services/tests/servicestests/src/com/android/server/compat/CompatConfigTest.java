@@ -24,6 +24,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.testng.Assert.assertThrows;
 
+import android.app.compat.ChangeIdStateCache;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -74,6 +75,7 @@ public class CompatConfigTest {
         // Assume userdebug/eng non-final build
         when(mBuildClassifier.isDebuggableBuild()).thenReturn(true);
         when(mBuildClassifier.isFinalBuild()).thenReturn(false);
+        ChangeIdStateCache.disable();
     }
 
     @Test
@@ -96,7 +98,7 @@ public class CompatConfigTest {
     @Test
     public void testTargetSdkChangeDisabled() throws Exception {
         CompatConfig compatConfig = CompatConfigBuilder.create(mBuildClassifier, mContext)
-                .addTargetSdkChangeWithId(2, 1234L)
+                .addEnableAfterSdkChangeWithId(2, 1234L)
                 .build();
 
         assertThat(compatConfig.isChangeEnabled(1234L,
@@ -107,7 +109,7 @@ public class CompatConfigTest {
     @Test
     public void testTargetSdkChangeEnabled() throws Exception {
         CompatConfig compatConfig = CompatConfigBuilder.create(mBuildClassifier, mContext)
-                .addTargetSdkChangeWithId(2, 1234L)
+                .addEnableAfterSdkChangeWithId(2, 1234L)
                 .build();
 
         assertThat(compatConfig.isChangeEnabled(1234L,
@@ -117,7 +119,7 @@ public class CompatConfigTest {
     @Test
     public void testDisabledOverrideTargetSdkChange() throws Exception {
         CompatConfig compatConfig = CompatConfigBuilder.create(mBuildClassifier, mContext)
-                .addTargetSdkDisabledChangeWithId(2, 1234L)
+                .addEnableAfterSdkChangeWithIdDefaultDisabled(2, 1234L)
                 .build();
 
         assertThat(compatConfig.isChangeEnabled(1234L,
@@ -185,6 +187,22 @@ public class CompatConfigTest {
                 .withPackageName("com.some.package").build())).isFalse();
         assertThat(compatConfig.isChangeEnabled(1234L, ApplicationInfoBuilder.create()
                 .withPackageName("com.other.package").build())).isTrue();
+    }
+
+    @Test
+    public void testIsChangeEnabledForInvalidApp() throws Exception {
+        final long disabledChangeId = 1234L;
+        final long enabledChangeId = 1235L;
+        final long targetSdkChangeId = 1236L;
+        CompatConfig compatConfig = CompatConfigBuilder.create(mBuildClassifier, mContext)
+                .addEnabledChangeWithId(enabledChangeId)
+                .addDisabledChangeWithId(disabledChangeId)
+                .addEnableSinceSdkChangeWithId(42, targetSdkChangeId)
+                .build();
+
+        assertThat(compatConfig.isChangeEnabled(enabledChangeId, null)).isTrue();
+        assertThat(compatConfig.isChangeEnabled(disabledChangeId, null)).isFalse();
+        assertThat(compatConfig.isChangeEnabled(targetSdkChangeId, null)).isTrue();
     }
 
     @Test
@@ -291,8 +309,8 @@ public class CompatConfigTest {
         CompatConfig compatConfig = CompatConfigBuilder.create(mBuildClassifier, mContext)
                 .addEnabledChangeWithId(1L)
                 .addDisabledChangeWithId(2L)
-                .addTargetSdkChangeWithId(3, 3L)
-                .addTargetSdkChangeWithId(4, 4L)
+                .addEnableSinceSdkChangeWithId(3, 3L)
+                .addEnableSinceSdkChangeWithId(4, 4L)
                 .build();
         ApplicationInfo applicationInfo = ApplicationInfoBuilder.create()
                 .withPackageName("foo.bar")
@@ -312,8 +330,8 @@ public class CompatConfigTest {
         CompatConfig compatConfig = CompatConfigBuilder.create(mBuildClassifier, mContext)
                 .addEnabledChangeWithId(1L)
                 .addDisabledChangeWithId(2L)
-                .addTargetSdkChangeWithId(3, 3L)
-                .addTargetSdkChangeWithId(4, 4L)
+                .addEnableSinceSdkChangeWithId(3, 3L)
+                .addEnableSinceSdkChangeWithId(4, 4L)
                 .build();
         ApplicationInfo applicationInfo = ApplicationInfoBuilder.create()
                 .withPackageName("foo.bar")

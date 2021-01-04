@@ -36,7 +36,7 @@ public class BroadcastOptions {
     private boolean mAllowBackgroundActivityStarts;
 
     /**
-     * How long to temporarily put an app on the power whitelist when executing this broadcast
+     * How long to temporarily put an app on the power allowlist when executing this broadcast
      * to it.
      */
     static final String KEY_TEMPORARY_APP_WHITELIST_DURATION
@@ -87,8 +87,8 @@ public class BroadcastOptions {
 
     /**
      * Set a duration for which the system should temporary place an application on the
-     * power whitelist when this broadcast is being delivered to it.
-     * @param duration The duration in milliseconds; 0 means to not place on whitelist.
+     * power allowlist when this broadcast is being delivered to it.
+     * @param duration The duration in milliseconds; 0 means to not place on allowlist.
      */
     @RequiresPermission(android.Manifest.permission.CHANGE_DEVICE_IDLE_TEMP_WHITELIST)
     public void setTemporaryAppWhitelistDuration(long duration) {
@@ -127,6 +127,7 @@ public class BroadcastOptions {
      * them.  This only applies to receivers declared in the app's AndroidManifest.xml.
      * @hide
      */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
     public void setMaxManifestReceiverApiLevel(int apiLevel) {
         mMaxManifestReceiverApiLevel = apiLevel;
     }
@@ -135,6 +136,7 @@ public class BroadcastOptions {
      * Return {@link #setMaxManifestReceiverApiLevel}.
      * @hide
      */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
     public int getMaxManifestReceiverApiLevel() {
         return mMaxManifestReceiverApiLevel;
     }

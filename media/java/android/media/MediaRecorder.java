@@ -108,7 +108,7 @@ public class MediaRecorder implements AudioRouting,
     private long mNativeContext;
 
     @SuppressWarnings("unused")
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private Surface mSurface;
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
@@ -337,9 +337,14 @@ public class MediaRecorder implements AudioRouting,
 
         /**
          * Audio source for capturing broadcast radio tuner output.
+         * Capturing the radio tuner output requires the
+         * {@link android.Manifest.permission#CAPTURE_AUDIO_OUTPUT} permission.
+         * This permission is reserved for use by system components and is not available to
+         * third-party applications.
          * @hide
          */
         @SystemApi
+        @RequiresPermission(android.Manifest.permission.CAPTURE_AUDIO_OUTPUT)
         public static final int RADIO_TUNER = 1998;
 
         /**
@@ -396,6 +401,32 @@ public class MediaRecorder implements AudioRouting,
             return false;
         default:
             return true;
+        }
+    }
+
+    /**
+     * @hide
+     * @param source An audio source to test
+     * @return true if the source is a valid one
+     */
+    public static boolean isValidAudioSource(int source) {
+        switch(source) {
+            case AudioSource.MIC:
+            case AudioSource.VOICE_UPLINK:
+            case AudioSource.VOICE_DOWNLINK:
+            case AudioSource.VOICE_CALL:
+            case AudioSource.CAMCORDER:
+            case AudioSource.VOICE_RECOGNITION:
+            case AudioSource.VOICE_COMMUNICATION:
+            case AudioSource.REMOTE_SUBMIX:
+            case AudioSource.UNPROCESSED:
+            case AudioSource.VOICE_PERFORMANCE:
+            case AudioSource.ECHO_REFERENCE:
+            case AudioSource.RADIO_TUNER:
+            case AudioSource.HOTWORD:
+                return true;
+            default:
+                return false;
         }
     }
 
@@ -582,6 +613,46 @@ public class MediaRecorder implements AudioRouting,
     }
 
     /**
+     * Indicates that this capture request is privacy sensitive and that
+     * any concurrent capture is not permitted.
+     * <p>
+     * The default is not privacy sensitive except when the audio source set with
+     * {@link #setAudioSource(int)} is {@link AudioSource#VOICE_COMMUNICATION} or
+     * {@link AudioSource#CAMCORDER}.
+     * <p>
+     * Always takes precedence over default from audio source when set explicitly.
+     * <p>
+     * Using this API is only permitted when the audio source is one of:
+     * <ul>
+     * <li>{@link AudioSource#MIC}</li>
+     * <li>{@link AudioSource#CAMCORDER}</li>
+     * <li>{@link AudioSource#VOICE_RECOGNITION}</li>
+     * <li>{@link AudioSource#VOICE_COMMUNICATION}</li>
+     * <li>{@link AudioSource#UNPROCESSED}</li>
+     * <li>{@link AudioSource#VOICE_PERFORMANCE}</li>
+     * </ul>
+     * Invoking {@link #prepare()} will throw an IOException if this
+     * condition is not met.
+     * <p>
+     * Must be called after {@link #setAudioSource(int)} and before {@link #setOutputFormat(int)}.
+     * @param privacySensitive True if capture from this MediaRecorder must be marked as privacy
+     * sensitive, false otherwise.
+     * @throws IllegalStateException if called before {@link #setAudioSource(int)}
+     * or after {@link #setOutputFormat(int)}
+     */
+    public native void setPrivacySensitive(boolean privacySensitive);
+
+    /**
+     * Returns whether this MediaRecorder is marked as privacy sensitive or not with
+     * regard to audio capture.
+     * <p>
+     * See {@link #setPrivacySensitive(boolean)}
+     * <p>
+     * @return true if privacy sensitive, false otherwise
+     */
+    public native boolean isPrivacySensitive();
+
+    /**
      * Sets the video source to be used for recording. If this method is not
      * called, the output file will not contain an video track. The source needs
      * to be specified before setting recording-parameters or encoders. Call
@@ -720,7 +791,7 @@ public class MediaRecorder implements AudioRouting,
 
     /**
      * Sets the width and height of the video to be captured.  Must be called
-     * after setVideoSource(). Call this after setOutFormat() but before
+     * after setVideoSource(). Call this after setOutputFormat() but before
      * prepare().
      *
      * @param width the width of the video to be captured
@@ -733,7 +804,7 @@ public class MediaRecorder implements AudioRouting,
 
     /**
      * Sets the frame rate of the video to be captured.  Must be called
-     * after setVideoSource(). Call this after setOutFormat() but before
+     * after setVideoSource(). Call this after setOutputFormat() but before
      * prepare().
      *
      * @param rate the number of frames per second of video to capture
@@ -748,7 +819,7 @@ public class MediaRecorder implements AudioRouting,
 
     /**
      * Sets the maximum duration (in ms) of the recording session.
-     * Call this after setOutFormat() but before prepare().
+     * Call this after setOutputFormat() but before prepare().
      * After recording reaches the specified duration, a notification
      * will be sent to the {@link android.media.MediaRecorder.OnInfoListener}
      * with a "what" code of {@link #MEDIA_RECORDER_INFO_MAX_DURATION_REACHED}
@@ -769,7 +840,7 @@ public class MediaRecorder implements AudioRouting,
 
     /**
      * Sets the maximum filesize (in bytes) of the recording session.
-     * Call this after setOutFormat() but before prepare().
+     * Call this after setOutputFormat() but before prepare().
      * After recording reaches the specified filesize, a notification
      * will be sent to the {@link android.media.MediaRecorder.OnInfoListener}
      * with a "what" code of {@link #MEDIA_RECORDER_INFO_MAX_FILESIZE_REACHED}
@@ -1624,6 +1695,9 @@ public class MediaRecorder implements AudioRouting,
      * @hide
      */
     public int getPortId() {
+        if (mNativeContext == 0) {
+            return 0;
+        }
         return native_getPortId();
     }
 

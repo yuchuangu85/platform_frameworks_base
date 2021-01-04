@@ -19,11 +19,19 @@
 
 #include <cstdlib>
 #include <memory>
+#include <sstream>
 #include <vector>
 
-#include "android-base/macros.h"
+#include <android-base/macros.h>
+#include <util/map_ptr.h>
 
 #include "androidfw/StringPiece.h"
+
+#ifdef __ANDROID__
+#define ANDROID_LOG(x) LOG(x)
+#else
+#define ANDROID_LOG(x) std::stringstream()
+#endif
 
 namespace android {
 namespace util {
@@ -118,6 +126,11 @@ std::u16string Utf8ToUtf16(const StringPiece& utf8);
 std::string Utf16ToUtf8(const StringPiece16& utf16);
 
 std::vector<std::string> SplitAndLowercase(const android::StringPiece& str, char sep);
+
+template <typename T>
+bool IsFourByteAligned(const incfs::map_ptr<T>& data) {
+  return ((size_t)data.unsafe_ptr() & 0x3U) == 0;
+}
 
 }  // namespace util
 }  // namespace android

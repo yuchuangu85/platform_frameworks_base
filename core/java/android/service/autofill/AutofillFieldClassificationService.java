@@ -20,7 +20,6 @@ import static com.android.internal.util.function.pooled.PooledLambda.obtainMessa
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 import android.app.Service;
 import android.content.Intent;
 import android.os.Bundle;
@@ -53,7 +52,6 @@ import java.util.Map;
  * {@hide}
  */
 @SystemApi
-@TestApi
 public abstract class AutofillFieldClassificationService extends Service {
 
     private static final String TAG = "AutofillFieldClassificationService";
@@ -93,6 +91,13 @@ public abstract class AutofillFieldClassificationService extends Service {
      */
     public static final String REQUIRED_ALGORITHM_EXACT_MATCH = "EXACT_MATCH";
 
+    /**
+     * Field classification algorithm that compares a credit card string to known last four digits.
+     *
+     * <p>Service implementation must provide this algorithm.</p>
+     */
+    public static final String REQUIRED_ALGORITHM_CREDIT_CARD = "CREDIT_CARD";
+
     /** {@hide} **/
     public static final String EXTRA_SCORES = "scores";
 
@@ -113,8 +118,8 @@ public abstract class AutofillFieldClassificationService extends Service {
     private final Handler mHandler = new Handler(Looper.getMainLooper(), null, true);
 
     /** @hide */
+    @SystemApi
     public AutofillFieldClassificationService() {
-
     }
 
     @Override

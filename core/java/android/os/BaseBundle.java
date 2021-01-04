@@ -315,7 +315,7 @@ public class BaseBundle {
     /**
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public boolean isParcelled() {
         return mParcelledData != null;
     }
@@ -568,6 +568,35 @@ public class BaseBundle {
     public Set<String> keySet() {
         unparcel();
         return mMap.keySet();
+    }
+
+    /** {@hide} */
+    public void putObject(@Nullable String key, @Nullable Object value) {
+        if (value == null) {
+            putString(key, null);
+        } else if (value instanceof Boolean) {
+            putBoolean(key, (Boolean) value);
+        } else if (value instanceof Integer) {
+            putInt(key, (Integer) value);
+        } else if (value instanceof Long) {
+            putLong(key, (Long) value);
+        } else if (value instanceof Double) {
+            putDouble(key, (Double) value);
+        } else if (value instanceof String) {
+            putString(key, (String) value);
+        } else if (value instanceof boolean[]) {
+            putBooleanArray(key, (boolean[]) value);
+        } else if (value instanceof int[]) {
+            putIntArray(key, (int[]) value);
+        } else if (value instanceof long[]) {
+            putLongArray(key, (long[]) value);
+        } else if (value instanceof double[]) {
+            putDoubleArray(key, (double[]) value);
+        } else if (value instanceof String[]) {
+            putStringArray(key, (String[]) value);
+        } else {
+            throw new IllegalArgumentException("Unsupported type " + value.getClass());
+        }
     }
 
     /**
@@ -1584,7 +1613,7 @@ public class BaseBundle {
             return;
         }
         int lengthPos = parcel.dataPosition();
-        parcel.writeInt(-1); // dummy, will hold length
+        parcel.writeInt(-1); // placeholder, will hold length
         parcel.writeInt(BUNDLE_MAGIC);
 
         int startPos = parcel.dataPosition();

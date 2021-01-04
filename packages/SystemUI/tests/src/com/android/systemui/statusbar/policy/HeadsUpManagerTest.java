@@ -16,12 +16,15 @@
 
 package com.android.systemui.statusbar.policy;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
 
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doReturn;
 
+import android.app.Notification;
 import android.content.Context;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
@@ -30,6 +33,7 @@ import androidx.test.filters.SmallTest;
 
 import com.android.systemui.statusbar.AlertingNotificationManager;
 import com.android.systemui.statusbar.AlertingNotificationManagerTest;
+import com.android.systemui.statusbar.notification.collection.NotificationEntryBuilder;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -73,7 +77,7 @@ public class HeadsUpManagerTest extends AlertingNotificationManagerTest {
                 .getRecommendedTimeoutMillis(anyInt(), anyInt());
         mHeadsUpManager.showNotification(mEntry);
         Runnable pastNormalTimeRunnable =
-                () -> mLivesPastNormalTime = mHeadsUpManager.isAlerting(mEntry.key);
+                () -> mLivesPastNormalTime = mHeadsUpManager.isAlerting(mEntry.getKey());
         mTestHandler.postDelayed(pastNormalTimeRunnable,
                         (TEST_A11Y_AUTO_DISMISS_TIME + TEST_AUTO_DISMISS_TIME) / 2);
         mTestHandler.postDelayed(TEST_TIMEOUT_RUNNABLE, TEST_A11Y_TIMEOUT_TIME);
@@ -82,7 +86,27 @@ public class HeadsUpManagerTest extends AlertingNotificationManagerTest {
 
         assertFalse("Test timed out", mTimedOut);
         assertTrue("Heads up should live long enough", mLivesPastNormalTime);
-        assertFalse(mHeadsUpManager.isAlerting(mEntry.key));
+        assertFalse(mHeadsUpManager.isAlerting(mEntry.getKey()));
+    }
+
+    @Test
+    public void testAlertEntryCompareTo_ongoingCallLessThanActiveRemoteInput() {
+        HeadsUpManager.HeadsUpEntry ongoingCall = mHeadsUpManager.new HeadsUpEntry();
+        ongoingCall.setEntry(new NotificationEntryBuilder()
+                .setSbn(createNewSbn(0,
+                        new Notification.Builder(mContext, "")
+                                .setCategory(Notification.CATEGORY_CALL)
+                                .setOngoing(true)))
+                .build());
+
+        HeadsUpManager.HeadsUpEntry activeRemoteInput = mHeadsUpManager.new HeadsUpEntry();
+        activeRemoteInput.setEntry(new NotificationEntryBuilder()
+                .setSbn(createNewNotification(1))
+                .build());
+        activeRemoteInput.remoteInputActive = true;
+
+        assertThat(ongoingCall.compareTo(activeRemoteInput)).isLessThan(0);
+        assertThat(activeRemoteInput.compareTo(ongoingCall)).isGreaterThan(0);
     }
 }
 

@@ -266,7 +266,7 @@ public final class MessageQueue {
     }
 
     // Called from native code.
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private int dispatchEvents(int fd, int events) {
         // Get the file descriptor record and any state that might change.
         final FileDescriptorRecord record;
@@ -550,11 +550,12 @@ public final class MessageQueue {
         if (msg.target == null) {
             throw new IllegalArgumentException("Message must have a target.");
         }
-        if (msg.isInUse()) {
-            throw new IllegalStateException(msg + " This message is already in use.");
-        }
 
         synchronized (this) {
+            if (msg.isInUse()) {
+                throw new IllegalStateException(msg + " This message is already in use.");
+            }
+
             if (mQuitting) {
                 IllegalStateException e = new IllegalStateException(
                         msg.target + " sending message to a Handler on a dead thread");
@@ -634,7 +635,7 @@ public final class MessageQueue {
         }
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     boolean hasMessages(Handler h, Runnable r, Object object) {
         if (h == null) {
             return false;
@@ -925,11 +926,11 @@ public final class MessageQueue {
         }
     }
 
-    void writeToProto(ProtoOutputStream proto, long fieldId) {
+    void dumpDebug(ProtoOutputStream proto, long fieldId) {
         final long messageQueueToken = proto.start(fieldId);
         synchronized (this) {
             for (Message msg = mMessages; msg != null; msg = msg.next) {
-                msg.writeToProto(proto, MessageQueueProto.MESSAGES);
+                msg.dumpDebug(proto, MessageQueueProto.MESSAGES);
             }
             proto.write(MessageQueueProto.IS_POLLING_LOCKED, isPollingLocked());
             proto.write(MessageQueueProto.IS_QUITTING, mQuitting);

@@ -193,7 +193,7 @@ public class UsbManager {
      *
      * {@hide}
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final String USB_DATA_UNLOCKED = "unlocked";
 
     /**
@@ -709,7 +709,7 @@ public class UsbManager {
      * {@hide}
      */
     @Deprecated
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public boolean isFunctionEnabled(String function) {
         try {
             return mService.isFunctionEnabled(function);
@@ -826,6 +826,25 @@ public class UsbManager {
     public long getScreenUnlockedFunctions() {
         try {
             return mService.getScreenUnlockedFunctions();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Resets the USB Gadget.
+     * <p>
+     * Performs USB data stack reset through USB Gadget HAL.
+     * It will force USB data connection reset. The connection will disconnect and reconnect.
+     * </p>
+     *
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MANAGE_USB)
+    public void resetUsbGadget() {
+        try {
+            mService.resetUsbGadget();
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }

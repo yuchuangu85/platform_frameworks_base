@@ -183,7 +183,7 @@ public class PopupWindow {
     private boolean mClipToScreen;
     private boolean mAllowScrollingAnchorParent = true;
     private boolean mLayoutInsetDecor = false;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private boolean mNotTouchModal;
     private boolean mAttachedInDecor = true;
     private boolean mAttachedInDecorSet = false;
@@ -1818,7 +1818,7 @@ public class PopupWindow {
         final int winOffsetY = screenLocationY - drawingLocationY;
         final int anchorTopInScreen = outParams.y + winOffsetY;
         final int spaceBelow = displayFrameBottom - anchorTopInScreen;
-        if (anchorTopInScreen >= 0 && height <= spaceBelow) {
+        if (anchorTopInScreen >= displayFrameTop && height <= spaceBelow) {
             return true;
         }
 
@@ -1880,7 +1880,7 @@ public class PopupWindow {
         final int winOffsetX = screenLocationX - drawingLocationX;
         final int anchorLeftInScreen = outParams.x + winOffsetX;
         final int spaceRight = displayFrameRight - anchorLeftInScreen;
-        if (anchorLeftInScreen >= 0 && width <= spaceRight) {
+        if (anchorLeftInScreen >= displayFrameLeft && width <= spaceRight) {
             return true;
         }
 

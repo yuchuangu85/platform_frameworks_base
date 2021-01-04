@@ -38,6 +38,7 @@ import android.content.res.Resources;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.FileUtils;
+import android.os.GraphicsEnvironment;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Process;
@@ -46,6 +47,8 @@ import android.os.StrictMode;
 import android.os.SystemProperties;
 import android.os.Trace;
 import android.os.UserHandle;
+import android.provider.Settings;
+import android.security.net.config.NetworkSecurityConfigProvider;
 import android.sysprop.VndkProperties;
 import android.text.TextUtils;
 import android.util.AndroidRuntimeException;
@@ -100,7 +103,6 @@ final class ServiceConnectionLeaked extends AndroidRuntimeException {
 public final class LoadedApk {
     static final String TAG = "LoadedApk";
     static final boolean DEBUG = false;
-    private static final String PROPERTY_NAME_APPEND_NATIVE = "pi.append_native_lib_paths";
 
     @UnsupportedAppUsage
     private final ActivityThread mActivityThread;
@@ -115,7 +117,7 @@ public final class LoadedApk {
     private String[] mOverlayDirs;
     @UnsupportedAppUsage
     private String mDataDir;
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private String mLibDir;
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     private File mDataDirFile;
@@ -251,7 +253,7 @@ public final class LoadedApk {
     }
 
     private AppComponentFactory createAppFactory(ApplicationInfo appInfo, ClassLoader cl) {
-        if (appInfo.appComponentFactory != null && cl != null) {
+        if (mIncludeCode && appInfo.appComponentFactory != null && cl != null) {
             try {
                 return (AppComponentFactory)
                         cl.loadClass(appInfo.appComponentFactory).newInstance();
@@ -365,7 +367,8 @@ public final class LoadedApk {
                 mResources = ResourcesManager.getInstance().getResources(null, mResDir,
                         splitPaths, mOverlayDirs, mApplicationInfo.sharedLibraryFiles,
                         Display.DEFAULT_DISPLAY, null, getCompatibilityInfo(),
-                        getClassLoader());
+                        getClassLoader(), mApplication == null ? null
+                                : mApplication.getResources().getLoaders());
             }
         }
         mAppComponentFactory = createAppFactory(aInfo, mDefaultClassLoader);
@@ -464,6 +467,9 @@ public final class LoadedApk {
                     || appDir.equals(instrumentedAppDir)) {
                 outZipPaths.clear();
                 outZipPaths.add(instrumentationAppDir);
+                if (!instrumentationAppDir.equals(instrumentedAppDir)) {
+                    outZipPaths.add(instrumentedAppDir);
+                }
 
                 // Only add splits if the app did not request isolated split loading.
                 if (!aInfo.requestsIsolatedSplitLoading()) {
@@ -472,7 +478,6 @@ public final class LoadedApk {
                     }
 
                     if (!instrumentationAppDir.equals(instrumentedAppDir)) {
-                        outZipPaths.add(instrumentedAppDir);
                         if (instrumentedSplitAppDirs != null) {
                             Collections.addAll(outZipPaths, instrumentedSplitAppDirs);
                         }
@@ -796,12 +801,9 @@ public final class LoadedApk {
 
         makePaths(mActivityThread, isBundledApp, mApplicationInfo, zipPaths, libPaths);
 
-        String libraryPermittedPath = mDataDir;
-        if (mActivityThread == null) {
-            // In a zygote context where mActivityThread is null we can't access the app data dir
-            // and including this in libraryPermittedPath would cause SELinux denials.
-            libraryPermittedPath = "";
-        }
+        // Including an inaccessible dir in libraryPermittedPath would cause SELinux denials
+        // when the loader attempts to canonicalise the path. so we don't.
+        String libraryPermittedPath = canAccessDataDir() ? mDataDir : "";
 
         if (isBundledApp) {
             // For bundled apps, add the base directory of the app (e.g.,
@@ -819,6 +821,32 @@ public final class LoadedApk {
         }
 
         final String librarySearchPath = TextUtils.join(File.pathSeparator, libPaths);
+
+        if (mActivityThread != null) {
+            final String gpuDebugApp = mActivityThread.getStringCoreSetting(
+                    Settings.Global.GPU_DEBUG_APP, "");
+            if (!gpuDebugApp.isEmpty() && mPackageName.equals(gpuDebugApp)) {
+
+                // The current application is used to debug, attempt to get the debug layers.
+                try {
+                    // Get the ApplicationInfo from PackageManager so that metadata fields present.
+                    final ApplicationInfo ai = ActivityThread.getPackageManager()
+                            .getApplicationInfo(mPackageName, PackageManager.GET_META_DATA,
+                                    UserHandle.myUserId());
+                    final String debugLayerPath = GraphicsEnvironment.getInstance()
+                            .getDebugLayerPathsFromSettings(mActivityThread.getCoreSettings(),
+                                    ActivityThread.getPackageManager(), mPackageName, ai);
+                    if (debugLayerPath != null) {
+                        libraryPermittedPath += File.pathSeparator + debugLayerPath;
+                    }
+                } catch (RemoteException e) {
+                    // Unlikely to fail for applications, but in case of failure, something is wrong
+                    // inside the system server, hence just skip.
+                    Slog.e(ActivityThread.TAG,
+                            "RemoteException when fetching debug layer paths for: " + mPackageName);
+                }
+            }
+        }
 
         // If we're not asked to include code, we construct a classloader that has
         // no code path included. We still need to set up the library search paths
@@ -877,7 +905,7 @@ public final class LoadedApk {
             needToSetupJitProfiles = true;
         }
 
-        if (!libPaths.isEmpty() && SystemProperties.getBoolean(PROPERTY_NAME_APPEND_NATIVE, true)) {
+        if (!libPaths.isEmpty()) {
             // Temporarily disable logging of disk reads on the Looper thread as this is necessary
             StrictMode.ThreadPolicy oldPolicy = allowThreadDiskReads();
             try {
@@ -916,6 +944,33 @@ public final class LoadedApk {
         if (mClassLoader == null) {
             mClassLoader = mAppComponentFactory.instantiateClassLoader(mDefaultClassLoader,
                     new ApplicationInfo(mApplicationInfo));
+        }
+    }
+
+    /**
+     * Return whether we can access the package's private data directory in order to be able to
+     * load code from it.
+     */
+    private boolean canAccessDataDir() {
+        // In a zygote context where mActivityThread is null we can't access the app data dir.
+        if (mActivityThread == null) {
+            return false;
+        }
+
+        // A package can access its own data directory (the common case, so short-circuit it).
+        if (Objects.equals(mPackageName, ActivityThread.currentPackageName())) {
+            return true;
+        }
+
+        // Temporarily disable logging of disk reads on the Looper thread as this is necessary -
+        // and the loader will access the directory anyway if we don't check it.
+        StrictMode.ThreadPolicy oldPolicy = allowThreadDiskReads();
+        try {
+            // We are constructing a classloader for a different package. It is likely,
+            // but not certain, that we can't acccess its app data dir - so check.
+            return new File(mDataDir).canExecute();
+        } finally {
+            setThreadPolicy(oldPolicy);
         }
     }
 
@@ -1003,17 +1058,11 @@ public final class LoadedApk {
      */
     private void initializeJavaContextClassLoader() {
         IPackageManager pm = ActivityThread.getPackageManager();
-        android.content.pm.PackageInfo pi;
-        try {
-            pi = pm.getPackageInfo(mPackageName, PackageManager.MATCH_DEBUG_TRIAGED_MISSING,
-                    UserHandle.myUserId());
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
-        if (pi == null) {
-            throw new IllegalStateException("Unable to get package info for "
-                    + mPackageName + "; is package not installed?");
-        }
+        android.content.pm.PackageInfo pi =
+                PackageManager.getPackageInfoAsUserCached(
+                        mPackageName,
+                        PackageManager.MATCH_DEBUG_TRIAGED_MISSING,
+                        UserHandle.myUserId());
         /*
          * Two possible indications that this package could be
          * sharing its virtual machine with other packages:
@@ -1161,7 +1210,7 @@ public final class LoadedApk {
             mResources = ResourcesManager.getInstance().getResources(null, mResDir,
                     splitPaths, mOverlayDirs, mApplicationInfo.sharedLibraryFiles,
                     Display.DEFAULT_DISPLAY, null, getCompatibilityInfo(),
-                    getClassLoader());
+                    getClassLoader(), null);
         }
         return mResources;
     }
@@ -1183,14 +1232,30 @@ public final class LoadedApk {
         }
 
         try {
-            java.lang.ClassLoader cl = getClassLoader();
+            final java.lang.ClassLoader cl = getClassLoader();
             if (!mPackageName.equals("android")) {
                 Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER,
                         "initializeJavaContextClassLoader");
                 initializeJavaContextClassLoader();
                 Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
             }
+
+            // Rewrite the R 'constants' for all library apks.
+            SparseArray<String> packageIdentifiers = getAssets().getAssignedPackageIdentifiers(
+                    false, false);
+            for (int i = 0, n = packageIdentifiers.size(); i < n; i++) {
+                final int id = packageIdentifiers.keyAt(i);
+                if (id == 0x01 || id == 0x7f) {
+                    continue;
+                }
+
+                rewriteRValues(cl, packageIdentifiers.valueAt(i), id);
+            }
+
             ContextImpl appContext = ContextImpl.createAppContext(mActivityThread, this);
+            // The network security config needs to be aware of multiple
+            // applications in the same process to handle discrepancies
+            NetworkSecurityConfigProvider.handleNewApplication(appContext);
             app = mActivityThread.mInstrumentation.newApplication(
                     cl, appClass, appContext);
             appContext.setOuterContext(app);
@@ -1216,18 +1281,6 @@ public final class LoadedApk {
                         + ": " + e.toString(), e);
                 }
             }
-        }
-
-        // Rewrite the R 'constants' for all library apks.
-        SparseArray<String> packageIdentifiers = getAssets().getAssignedPackageIdentifiers();
-        final int N = packageIdentifiers.size();
-        for (int i = 0; i < N; i++) {
-            final int id = packageIdentifiers.keyAt(i);
-            if (id == 0x01 || id == 0x7f) {
-                continue;
-            }
-
-            rewriteRValues(getClassLoader(), packageIdentifiers.valueAt(i), id);
         }
 
         Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);
@@ -1665,7 +1718,7 @@ public final class LoadedApk {
         }
     }
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public IServiceConnection lookupServiceDispatcher(ServiceConnection c,
             Context context) {
         synchronized (mServices) {
@@ -1731,7 +1784,7 @@ public final class LoadedApk {
 
     static final class ServiceDispatcher {
         private final ServiceDispatcher.InnerConnection mIServiceConnection;
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         private final ServiceConnection mConnection;
         @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
         private final Context mContext;
@@ -1750,7 +1803,7 @@ public final class LoadedApk {
         }
 
         private static class InnerConnection extends IServiceConnection.Stub {
-            @UnsupportedAppUsage
+            @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
             final WeakReference<LoadedApk.ServiceDispatcher> mDispatcher;
 
             InnerConnection(LoadedApk.ServiceDispatcher sd) {
@@ -1769,7 +1822,7 @@ public final class LoadedApk {
         private final ArrayMap<ComponentName, ServiceDispatcher.ConnectionInfo> mActiveConnections
             = new ArrayMap<ComponentName, ServiceDispatcher.ConnectionInfo>();
 
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         ServiceDispatcher(ServiceConnection conn,
                 Context context, Handler activityThread, int flags) {
             mIServiceConnection = new InnerConnection(this);
@@ -1834,7 +1887,7 @@ public final class LoadedApk {
             return mConnection;
         }
 
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         IServiceConnection getIServiceConnection() {
             return mIServiceConnection;
         }

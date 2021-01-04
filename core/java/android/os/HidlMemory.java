@@ -20,7 +20,6 @@ import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
-import android.annotation.TestApi;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -41,7 +40,6 @@ import java.io.IOException;
  * @hide
  */
 @SystemApi
-@TestApi
 public class HidlMemory implements Closeable {
     private final @NonNull String mName;
     private final long mSize;
@@ -85,11 +83,11 @@ public class HidlMemory implements Closeable {
     }
 
     /**
-     * Disowns the underlying handle and returns it. This object becomes invalid.
+     * Disowns the underlying handle and returns it. The underlying handle becomes null.
      *
      * @return The underlying handle.
      */
-    @NonNull
+    @Nullable
     public NativeHandle releaseHandle() {
         NativeHandle handle = mHandle;
         mHandle = null;

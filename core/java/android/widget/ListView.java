@@ -1979,7 +1979,7 @@ public class ListView extends AbsListView {
     }
 
     @Override
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     boolean trackMotionScroll(int deltaY, int incrementalDeltaY) {
         final boolean result = super.trackMotionScroll(deltaY, incrementalDeltaY);
         removeUnusedFixedViews(mHeaderViewInfos);
@@ -3255,6 +3255,9 @@ public class ListView extends AbsListView {
      */
     @UnsupportedAppUsage
     private void scrollListItemsBy(int amount) {
+        int oldX = mScrollX;
+        int oldY = mScrollY;
+
         offsetChildrenTopAndBottom(amount);
 
         final int listBottom = getHeight() - mListPadding.bottom;
@@ -3327,6 +3330,7 @@ public class ListView extends AbsListView {
         recycleBin.fullyDetachScrapViews();
         removeUnusedFixedViews(mHeaderViewInfos);
         removeUnusedFixedViews(mFooterViewInfos);
+        onScrollChanged(mScrollX, mScrollY, oldX, oldY);
     }
 
     private View addViewAbove(View theView, int position) {
@@ -4024,7 +4028,7 @@ public class ListView extends AbsListView {
     }
 
     @Override
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     int getHeightForPosition(int position) {
         final int height = super.getHeightForPosition(position);
         if (shouldAdjustHeightForDivider(position)) {
@@ -4105,7 +4109,7 @@ public class ListView extends AbsListView {
         final int rowsCount = getCount();
         final int selectionMode = getSelectionModeForAccessibility();
         final CollectionInfo collectionInfo = CollectionInfo.obtain(
-                rowsCount, 1, false, selectionMode);
+                -1, -1, false, selectionMode);
         info.setCollectionInfo(collectionInfo);
 
         if (rowsCount > 0) {

@@ -18,7 +18,6 @@ package android.telephony;
 
 import android.annotation.ElapsedRealtimeLong;
 import android.annotation.NonNull;
-import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 import android.os.Bundle;
@@ -95,8 +94,7 @@ public class SignalStrength implements Parcelable {
     /**
      * Create a new SignalStrength from a intent notifier Bundle
      *
-     * This method is used by PhoneStateIntentReceiver and maybe by
-     * external applications.
+     * This method may be used by external applications.
      *
      * @param m Bundle from intent notifier
      * @return newly created SignalStrength
@@ -181,6 +179,21 @@ public class SignalStrength implements Parcelable {
      * @hide
      */
     public SignalStrength(android.hardware.radio.V1_4.SignalStrength signalStrength) {
+        this(new CellSignalStrengthCdma(signalStrength.cdma, signalStrength.evdo),
+                new CellSignalStrengthGsm(signalStrength.gsm),
+                new CellSignalStrengthWcdma(signalStrength.wcdma),
+                new CellSignalStrengthTdscdma(signalStrength.tdscdma),
+                new CellSignalStrengthLte(signalStrength.lte),
+                new CellSignalStrengthNr(signalStrength.nr));
+    }
+
+    /**
+     * Constructor for Radio HAL V1.6.
+     *
+     * @param signalStrength signal strength reported from modem.
+     * @hide
+     */
+    public SignalStrength(android.hardware.radio.V1_6.SignalStrength signalStrength) {
         this(new CellSignalStrengthCdma(signalStrength.cdma, signalStrength.evdo),
                 new CellSignalStrengthGsm(signalStrength.gsm),
                 new CellSignalStrengthWcdma(signalStrength.wcdma),
@@ -289,13 +302,10 @@ public class SignalStrength implements Parcelable {
     }
 
     /**
-     * Copy constructors
+     * This constructor is used to create a copy of an existing SignalStrength object.
      *
      * @param s Source SignalStrength
-     *
-     * @hide
      */
-    @SystemApi
     public SignalStrength(@NonNull SignalStrength s) {
         copyFrom(s);
     }

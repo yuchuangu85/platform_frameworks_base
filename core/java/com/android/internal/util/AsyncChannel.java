@@ -29,7 +29,7 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.Messenger;
 import android.os.RemoteException;
-import android.util.Slog;
+import android.util.Log;
 
 import java.util.Stack;
 
@@ -401,7 +401,7 @@ public class AsyncChannel {
      * @param srcHandler
      * @param dstMessenger
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void connected(Context srcContext, Handler srcHandler, Messenger dstMessenger) {
         if (DBG) log("connected srcHandler to the dstMessenger  E");
 
@@ -514,7 +514,7 @@ public class AsyncChannel {
      * @param what
      * @param arg1
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void sendMessage(int what, int arg1) {
         Message msg = Message.obtain();
         msg.what = what;
@@ -606,7 +606,7 @@ public class AsyncChannel {
      * @param what
      * @param arg1
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void replyToMessage(Message srcMsg, int what, int arg1) {
         Message msg = Message.obtain();
         msg.what = what;
@@ -639,7 +639,7 @@ public class AsyncChannel {
      * @param arg2
      * @param obj
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void replyToMessage(Message srcMsg, int what, int arg1, int arg2, Object obj) {
         Message msg = Message.obtain();
         msg.what = what;
@@ -656,7 +656,7 @@ public class AsyncChannel {
      * @param what
      * @param obj
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void replyToMessage(Message srcMsg, int what, Object obj) {
         Message msg = Message.obtain();
         msg.what = what;
@@ -670,7 +670,7 @@ public class AsyncChannel {
      * @param msg to send
      * @return reply message or null if an error.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public Message sendMessageSynchronously(Message msg) {
         Message resultMsg = SyncMessenger.sendMessageSynchronously(mDstMessenger, msg);
         return resultMsg;
@@ -712,7 +712,7 @@ public class AsyncChannel {
      * @param arg2
      * @return reply message or null if an error.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public Message sendMessageSynchronously(int what, int arg1, int arg2) {
         Message msg = Message.obtain();
         msg.what = what;
@@ -841,7 +841,7 @@ public class AsyncChannel {
                     msg.replyTo = sm.mMessenger;
                     synchronized (sm.mHandler.mLockObject) {
                         if (sm.mHandler.mResultMsg != null) {
-                            Slog.wtf(TAG, "mResultMsg should be null here");
+                            Log.wtf(TAG, "mResultMsg should be null here");
                             sm.mHandler.mResultMsg = null;
                         }
                         dstMessenger.send(msg);
@@ -851,9 +851,9 @@ public class AsyncChannel {
                     }
                 }
             } catch (InterruptedException e) {
-                Slog.e(TAG, "error in sendMessageSynchronously", e);
+                Log.e(TAG, "error in sendMessageSynchronously", e);
             } catch (RemoteException e) {
-                Slog.e(TAG, "error in sendMessageSynchronously", e);
+                Log.e(TAG, "error in sendMessageSynchronously", e);
             }
             sm.recycle();
             return resultMsg;
@@ -939,7 +939,7 @@ public class AsyncChannel {
      * @param s
      */
     private static void log(String s) {
-        Slog.d(TAG, s);
+        Log.d(TAG, s);
     }
 
     private final class DeathMonitor implements IBinder.DeathRecipient {

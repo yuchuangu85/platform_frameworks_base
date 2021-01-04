@@ -29,7 +29,6 @@ import com.android.internal.statusbar.StatusBarIcon;
 import com.android.systemui.Dependency;
 import com.android.systemui.Dumpable;
 import com.android.systemui.R;
-import com.android.systemui.SysUiServiceProvider;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.StatusIconDisplayable;
 import com.android.systemui.statusbar.phone.StatusBarSignalPolicy.MobileIconState;
@@ -60,7 +59,7 @@ public class StatusBarIconControllerImpl extends StatusBarIconList implements Tu
     private static final String TAG = "StatusBarIconController";
 
     private final ArrayList<IconManager> mIconGroups = new ArrayList<>();
-    private final ArraySet<String> mIconBlacklist = new ArraySet<>();
+    private final ArraySet<String> mIconHideList = new ArraySet<>();
 
     // Points to light or dark context depending on the... context?
     private Context mContext;
@@ -70,7 +69,7 @@ public class StatusBarIconControllerImpl extends StatusBarIconList implements Tu
     private boolean mIsDark = false;
 
     @Inject
-    public StatusBarIconControllerImpl(Context context) {
+    public StatusBarIconControllerImpl(Context context, CommandQueue commandQueue) {
         super(context.getResources().getStringArray(
                 com.android.internal.R.array.config_statusBarIcons));
         Dependency.get(ConfigurationController.class).addCallback(this);
@@ -79,9 +78,8 @@ public class StatusBarIconControllerImpl extends StatusBarIconList implements Tu
 
         loadDimens();
 
-        SysUiServiceProvider.getComponent(context, CommandQueue.class)
-                .addCallback(this);
-        Dependency.get(TunerService.class).addTunable(this, ICON_BLACKLIST);
+        commandQueue.addCallback(this);
+        Dependency.get(TunerService.class).addTunable(this, ICON_HIDE_LIST);
     }
 
     @Override
@@ -91,12 +89,12 @@ public class StatusBarIconControllerImpl extends StatusBarIconList implements Tu
         for (int i = 0; i < allSlots.size(); i++) {
             Slot slot = allSlots.get(i);
             List<StatusBarIconHolder> holders = slot.getHolderListInViewOrder();
-            boolean blocked = mIconBlacklist.contains(slot.getName());
+            boolean hidden = mIconHideList.contains(slot.getName());
 
             for (StatusBarIconHolder holder : holders) {
                 int tag = holder.getTag();
                 int viewIndex = getViewIndex(getSlotIndex(slot.getName()), holder.getTag());
-                group.onIconAdded(viewIndex, slot.getName(), blocked, holder);
+                group.onIconAdded(viewIndex, slot.getName(), hidden, holder);
             }
         }
     }
@@ -109,11 +107,11 @@ public class StatusBarIconControllerImpl extends StatusBarIconList implements Tu
 
     @Override
     public void onTuningChanged(String key, String newValue) {
-        if (!ICON_BLACKLIST.equals(key)) {
+        if (!ICON_HIDE_LIST.equals(key)) {
             return;
         }
-        mIconBlacklist.clear();
-        mIconBlacklist.addAll(StatusBarIconController.getIconBlacklist(newValue));
+        mIconHideList.clear();
+        mIconHideList.addAll(StatusBarIconController.getIconHideList(mContext, newValue));
         ArrayList<Slot> currentSlots = getSlots();
         ArrayMap<Slot, List<StatusBarIconHolder>> slotsToReAdd = new ArrayMap<>();
 
@@ -144,9 +142,9 @@ public class StatusBarIconControllerImpl extends StatusBarIconList implements Tu
     private void addSystemIcon(int index, StatusBarIconHolder holder) {
         String slot = getSlotName(index);
         int viewIndex = getViewIndex(index, holder.getTag());
-        boolean blocked = mIconBlacklist.contains(slot);
+        boolean hidden = mIconHideList.contains(slot);
 
-        mIconGroups.forEach(l -> l.onIconAdded(viewIndex, slot, blocked, holder));
+        mIconGroups.forEach(l -> l.onIconAdded(viewIndex, slot, hidden, holder));
     }
 
     @Override
@@ -265,6 +263,22 @@ public class StatusBarIconControllerImpl extends StatusBarIconList implements Tu
 
         holder.setVisible(visibility);
         handleSet(index, holder);
+    }
+
+    @Override
+    public void setIconAccessibilityLiveRegion(String slotName, int accessibilityLiveRegion) {
+        Slot slot = getSlot(slotName);
+        if (!slot.hasIconsInSlot()) {
+            return;
+        }
+
+        int slotIndex = getSlotIndex(slotName);
+        List<StatusBarIconHolder> iconsToUpdate = slot.getHolderListInViewOrder();
+        for (StatusBarIconHolder holder : iconsToUpdate) {
+            int viewIndex = getViewIndex(slotIndex, holder.getTag());
+            mIconGroups.forEach(l -> l.mGroup.getChildAt(viewIndex)
+                    .setAccessibilityLiveRegion(accessibilityLiveRegion));
+        }
     }
 
     public void removeIcon(String slot) {

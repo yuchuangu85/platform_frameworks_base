@@ -19,6 +19,7 @@ package android.companion;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.provider.OneTimeUseBuilder;
@@ -60,14 +61,14 @@ public final class AssociationRequest implements Parcelable {
     }
 
     /** @hide */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public boolean isSingleDevice() {
         return mSingleDevice;
     }
 
     /** @hide */
     @NonNull
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public List<DeviceFilter<?>> getDeviceFilters() {
         return mDeviceFilters;
     }
@@ -127,6 +128,12 @@ public final class AssociationRequest implements Parcelable {
         public Builder() {}
 
         /**
+         * Whether only a single device should match the provided filter.
+         *
+         * When scanning for a single device with a specifc {@link BluetoothDeviceFilter} mac
+         * address, bonded devices are also searched among. This allows to obtain the necessary app
+         * privileges even if the device is already paired.
+         *
          * @param singleDevice if true, scanning for a device will stop as soon as at least one
          *                     fitting device is found
          */

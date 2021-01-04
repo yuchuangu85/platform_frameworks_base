@@ -16,11 +16,13 @@
 
 package android.app;
 
+import android.accessibilityservice.AccessibilityGestureEvent;
 import android.accessibilityservice.AccessibilityService.Callbacks;
 import android.accessibilityservice.AccessibilityService.IAccessibilityServiceClientWrapper;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.IAccessibilityServiceClient;
 import android.accessibilityservice.IAccessibilityServiceConnection;
+import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
@@ -41,6 +43,7 @@ import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
 import android.util.Log;
+import android.util.SparseArray;
 import android.view.Display;
 import android.view.InputEvent;
 import android.view.KeyEvent;
@@ -58,6 +61,8 @@ import com.android.internal.util.function.pooled.PooledLambda;
 import libcore.io.IoUtils;
 
 import java.io.IOException;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
@@ -114,6 +119,28 @@ public final class UiAutomation {
     /** Rotation constant: Freeze rotation to 270 degrees . */
     public static final int ROTATION_FREEZE_270 = Surface.ROTATION_270;
 
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(value = {
+            ConnectionState.DISCONNECTED,
+            ConnectionState.CONNECTING,
+            ConnectionState.CONNECTED,
+            ConnectionState.FAILED
+    })
+    private @interface ConnectionState {
+        /** The initial state before {@link #connect} or after {@link #disconnect} is called. */
+        int DISCONNECTED = 0;
+        /**
+         * The temporary state after {@link #connect} is called. Will transition to
+         * {@link #CONNECTED} or {@link #FAILED} depending on whether {@link #connect} succeeds or
+         * not.
+         */
+        int CONNECTING = 1;
+        /** The state when {@link #connect} has succeeded. */
+        int CONNECTED = 2;
+        /** The state when {@link #connect} has failed. */
+        int FAILED = 3;
+    }
+
     /**
      * UiAutomation supresses accessibility services by default. This flag specifies that
      * existing accessibility services should continue to run, and that new ones may start.
@@ -142,11 +169,13 @@ public final class UiAutomation {
 
     private long mLastEventTimeMillis;
 
-    private boolean mIsConnecting;
+    private @ConnectionState int mConnectionState = ConnectionState.DISCONNECTED;
 
     private boolean mIsDestroyed;
 
     private int mFlags;
+
+    private int mGenerationId = 0;
 
     /**
      * Listener for observing the {@link AccessibilityEvent} stream.
@@ -208,32 +237,55 @@ public final class UiAutomation {
     }
 
     /**
-     * Connects this UiAutomation to the accessibility introspection APIs with default flags.
+     * Connects this UiAutomation to the accessibility introspection APIs with default flags
+     * and default timeout.
      *
      * @hide
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     public void connect() {
-        connect(0);
+        try {
+            connectWithTimeout(0, CONNECT_TIMEOUT_MILLIS);
+        } catch (TimeoutException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Connects this UiAutomation to the accessibility introspection APIs with default timeout.
+     *
+     * @hide
+     */
+    public void connect(int flags) {
+        try {
+            connectWithTimeout(flags, CONNECT_TIMEOUT_MILLIS);
+        } catch (TimeoutException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     /**
      * Connects this UiAutomation to the accessibility introspection APIs.
      *
      * @param flags Any flags to apply to the automation as it gets connected
+     * @param timeoutMillis The wait timeout in milliseconds
+     *
+     * @throws TimeoutException If not connected within the timeout
      *
      * @hide
      */
-    public void connect(int flags) {
+    public void connectWithTimeout(int flags, long timeoutMillis) throws TimeoutException {
         synchronized (mLock) {
             throwIfConnectedLocked();
-            if (mIsConnecting) {
+            if (mConnectionState == ConnectionState.CONNECTING) {
                 return;
             }
-            mIsConnecting = true;
+            mConnectionState = ConnectionState.CONNECTING;
             mRemoteCallbackThread = new HandlerThread("UiAutomation");
             mRemoteCallbackThread.start();
-            mClient = new IAccessibilityServiceClientImpl(mRemoteCallbackThread.getLooper());
+            // Increment the generation since we are about to interact with a new client
+            mClient = new IAccessibilityServiceClientImpl(
+                    mRemoteCallbackThread.getLooper(), ++mGenerationId);
         }
 
         try {
@@ -241,29 +293,26 @@ public final class UiAutomation {
             mUiAutomationConnection.connect(mClient, flags);
             mFlags = flags;
         } catch (RemoteException re) {
-            throw new RuntimeException("Error while connecting UiAutomation", re);
+            throw new RuntimeException("Error while connecting " + this, re);
         }
 
         synchronized (mLock) {
             final long startTimeMillis = SystemClock.uptimeMillis();
-            try {
-                while (true) {
-                    if (isConnectedLocked()) {
-                        break;
-                    }
-                    final long elapsedTimeMillis = SystemClock.uptimeMillis() - startTimeMillis;
-                    final long remainingTimeMillis = CONNECT_TIMEOUT_MILLIS - elapsedTimeMillis;
-                    if (remainingTimeMillis <= 0) {
-                        throw new RuntimeException("Error while connecting UiAutomation");
-                    }
-                    try {
-                        mLock.wait(remainingTimeMillis);
-                    } catch (InterruptedException ie) {
-                        /* ignore */
-                    }
+            while (true) {
+                if (mConnectionState == ConnectionState.CONNECTED) {
+                    break;
                 }
-            } finally {
-                mIsConnecting = false;
+                final long elapsedTimeMillis = SystemClock.uptimeMillis() - startTimeMillis;
+                final long remainingTimeMillis = timeoutMillis - elapsedTimeMillis;
+                if (remainingTimeMillis <= 0) {
+                    mConnectionState = ConnectionState.FAILED;
+                    throw new TimeoutException("Timeout while connecting " + this);
+                }
+                try {
+                    mLock.wait(remainingTimeMillis);
+                } catch (InterruptedException ie) {
+                    /* ignore */
+                }
             }
         }
     }
@@ -287,18 +336,23 @@ public final class UiAutomation {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     public void disconnect() {
         synchronized (mLock) {
-            if (mIsConnecting) {
+            if (mConnectionState == ConnectionState.CONNECTING) {
                 throw new IllegalStateException(
-                        "Cannot call disconnect() while connecting!");
+                        "Cannot call disconnect() while connecting " + this);
             }
-            throwIfNotConnectedLocked();
+            if (mConnectionState == ConnectionState.DISCONNECTED) {
+                return;
+            }
+            mConnectionState = ConnectionState.DISCONNECTED;
             mConnectionId = CONNECTION_ID_UNDEFINED;
+            // Increment the generation so we no longer interact with the existing client
+            ++mGenerationId;
         }
         try {
             // Calling out without a lock held.
             mUiAutomationConnection.disconnect();
         } catch (RemoteException re) {
-            throw new RuntimeException("Error while disconnecting UiAutomation", re);
+            throw new RuntimeException("Error while disconnecting " + this, re);
         } finally {
             mRemoteCallbackThread.quit();
             mRemoteCallbackThread = null;
@@ -534,7 +588,7 @@ public final class UiAutomation {
     }
 
     /**
-     * Gets the windows on the screen. This method returns only the windows
+     * Gets the windows on the screen of the default display. This method returns only the windows
      * that a sighted user can interact with, as opposed to all windows.
      * For example, if there is a modal dialog shown and the user cannot touch
      * anything behind it, then only the modal window will be reported
@@ -558,6 +612,35 @@ public final class UiAutomation {
         // Calling out without a lock held.
         return AccessibilityInteractionClient.getInstance()
                 .getWindows(connectionId);
+    }
+
+    /**
+     * Gets the windows on the screen of all displays. This method returns only the windows
+     * that a sighted user can interact with, as opposed to all windows.
+     * For example, if there is a modal dialog shown and the user cannot touch
+     * anything behind it, then only the modal window will be reported
+     * (assuming it is the top one). For convenience the returned windows
+     * are ordered in a descending layer order, which is the windows that
+     * are higher in the Z-order are reported first.
+     * <p>
+     * <strong>Note:</strong> In order to access the windows you have to opt-in
+     * to retrieve the interactive windows by setting the
+     * {@link AccessibilityServiceInfo#FLAG_RETRIEVE_INTERACTIVE_WINDOWS} flag.
+     * </p>
+     *
+     * @return The windows of all displays if there are windows and the service is can retrieve
+     *         them, otherwise an empty list. The key of SparseArray is display ID.
+     */
+    @NonNull
+    public SparseArray<List<AccessibilityWindowInfo>> getWindowsOnAllDisplays() {
+        final int connectionId;
+        synchronized (mLock) {
+            throwIfNotConnectedLocked();
+            connectionId = mConnectionId;
+        }
+        // Calling out without a lock held.
+        return AccessibilityInteractionClient.getInstance()
+                .getWindowsOnAllDisplays(connectionId);
     }
 
     /**
@@ -1183,19 +1266,25 @@ public final class UiAutomation {
         return result;
     }
 
-    private boolean isConnectedLocked() {
-        return mConnectionId != CONNECTION_ID_UNDEFINED;
+    @Override
+    public String toString() {
+        final StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("UiAutomation@").append(Integer.toHexString(hashCode()));
+        stringBuilder.append("[id=").append(mConnectionId);
+        stringBuilder.append(", flags=").append(mFlags);
+        stringBuilder.append("]");
+        return stringBuilder.toString();
     }
 
     private void throwIfConnectedLocked() {
-        if (mConnectionId != CONNECTION_ID_UNDEFINED) {
-            throw new IllegalStateException("UiAutomation not connected!");
+        if (mConnectionState == ConnectionState.CONNECTED) {
+            throw new IllegalStateException("UiAutomation connected, " + this);
         }
     }
 
     private void throwIfNotConnectedLocked() {
-        if (!isConnectedLocked()) {
-            throw new IllegalStateException("UiAutomation not connected!");
+        if (mConnectionState != ConnectionState.CONNECTED) {
+            throw new IllegalStateException("UiAutomation not connected, " + this);
         }
     }
 
@@ -1211,13 +1300,30 @@ public final class UiAutomation {
 
     private class IAccessibilityServiceClientImpl extends IAccessibilityServiceClientWrapper {
 
-        public IAccessibilityServiceClientImpl(Looper looper) {
+        public IAccessibilityServiceClientImpl(Looper looper, int generationId) {
             super(null, looper, new Callbacks() {
+                private final int mGenerationId = generationId;
+                /**
+                 * True if UiAutomation doesn't interact with this client anymore.
+                 * Used by methods below to stop sending notifications or changing members
+                 * of {@link UiAutomation}.
+                 */
+                private boolean isGenerationChangedLocked() {
+                    return mGenerationId != UiAutomation.this.mGenerationId;
+                }
+
                 @Override
                 public void init(int connectionId, IBinder windowToken) {
                     synchronized (mLock) {
+                        if (isGenerationChangedLocked()) {
+                            return;
+                        }
+                        mConnectionState = ConnectionState.CONNECTED;
                         mConnectionId = connectionId;
                         mLock.notifyAll();
+                    }
+                    if (Build.IS_DEBUGGABLE) {
+                        Log.v(LOG_TAG, "Init " + UiAutomation.this);
                     }
                 }
 
@@ -1232,7 +1338,12 @@ public final class UiAutomation {
                 }
 
                 @Override
-                public boolean onGesture(int gestureId) {
+                public void onSystemActionsChanged() {
+                    /* do nothing */
+                }
+
+                @Override
+                public boolean onGesture(AccessibilityGestureEvent gestureEvent) {
                     /* do nothing */
                     return false;
                 }
@@ -1241,6 +1352,9 @@ public final class UiAutomation {
                 public void onAccessibilityEvent(AccessibilityEvent event) {
                     final OnAccessibilityEventListener listener;
                     synchronized (mLock) {
+                        if (isGenerationChangedLocked()) {
+                            return;
+                        }
                         mLastEventTimeMillis = event.getEventTime();
                         if (mWaitingForEventDelivery) {
                             mEventQueue.add(AccessibilityEvent.obtain(event));
@@ -1288,7 +1402,7 @@ public final class UiAutomation {
                 }
 
                 @Override
-                public void onAccessibilityButtonClicked() {
+                public void onAccessibilityButtonClicked(int displayId) {
                     /* do nothing */
                 }
 

@@ -21,6 +21,7 @@ import android.annotation.AnimRes;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.TypedArray;
+import android.os.Build;
 import android.util.AttributeSet;
 import android.view.View;
 import android.view.ViewGroup;
@@ -57,6 +58,9 @@ public class ViewAnimator extends FrameLayout {
         super(context, attrs);
 
         TypedArray a = context.obtainStyledAttributes(attrs, com.android.internal.R.styleable.ViewAnimator);
+        saveAttributeDataForStyleable(context, com.android.internal.R.styleable.ViewAnimator,
+                attrs, a, 0, 0);
+
         int resource = a.getResourceId(com.android.internal.R.styleable.ViewAnimator_inAnimation, 0);
         if (resource > 0) {
             setInAnimation(context, resource);
@@ -90,6 +94,8 @@ public class ViewAnimator extends FrameLayout {
         // attribute to override.
         final TypedArray a = context.obtainStyledAttributes(attrs,
                 com.android.internal.R.styleable.FrameLayout);
+        saveAttributeDataForStyleable(context, com.android.internal.R.styleable.FrameLayout,
+                attrs, a, 0, 0);
         final boolean measureAllChildren = a.getBoolean(
                 com.android.internal.R.styleable.FrameLayout_measureAllChildren, true);
         setMeasureAllChildren(measureAllChildren);
@@ -151,7 +157,7 @@ public class ViewAnimator extends FrameLayout {
      * @param animate Whether or not to use the in and out animations, defaults
      *            to true.
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     void showOnly(int childIndex, boolean animate) {
         final int count = getChildCount();
         for (int i = 0; i < count; i++) {

@@ -88,7 +88,7 @@ public final class Debug
     // set/cleared by waitForDebugger()
     private static volatile boolean mWaiting = false;
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private Debug() {}
 
     /*
@@ -120,7 +120,7 @@ public final class Debug
         @UnsupportedAppUsage
         public int dalvikSwappablePss;
         /** @hide The resident set size for dalvik heap.  (Without other Dalvik overhead.) */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public int dalvikRss;
         /** The private dirty pages used by dalvik heap. */
         public int dalvikPrivateDirty;
@@ -140,7 +140,7 @@ public final class Debug
         public int dalvikSwappedOut;
         /** The dirty dalvik pages that have been swapped out, proportional. */
         /** @hide We may want to expose this, eventually. */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public int dalvikSwappedOutPss;
 
         /** The proportional set size for the native heap. */
@@ -150,7 +150,7 @@ public final class Debug
         @UnsupportedAppUsage
         public int nativeSwappablePss;
         /** @hide The resident set size for the native heap. */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public int nativeRss;
         /** The private dirty pages used by the native heap. */
         public int nativePrivateDirty;
@@ -170,7 +170,7 @@ public final class Debug
         public int nativeSwappedOut;
         /** The dirty native pages that have been swapped out, proportional. */
         /** @hide We may want to expose this, eventually. */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public int nativeSwappedOutPss;
 
         /** The proportional set size for everything else. */
@@ -180,7 +180,7 @@ public final class Debug
         @UnsupportedAppUsage
         public int otherSwappablePss;
         /** @hide The resident set size for everything else. */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public int otherRss;
         /** The private dirty pages used by everything else. */
         public int otherPrivateDirty;
@@ -200,12 +200,12 @@ public final class Debug
         public int otherSwappedOut;
         /** The dirty pages used by anyting else that have been swapped out, proportional. */
         /** @hide We may want to expose this, eventually. */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public int otherSwappedOutPss;
 
         /** Whether the kernel reports proportional swap usage */
         /** @hide */
-        @UnsupportedAppUsage
+        @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public boolean hasSwappedOutPss;
 
         /** @hide */
@@ -789,6 +789,70 @@ public final class Debug
             return getTotalPss()
               - getTotalPrivateClean()
               - getTotalPrivateDirty();
+        }
+
+        /**
+         * Rss of Java Heap bytes in KB due to the application.
+         * @hide
+         */
+        public int getSummaryJavaHeapRss() {
+            return dalvikRss + getOtherRss(OTHER_ART);
+        }
+
+        /**
+         * Rss of Native Heap bytes in KB due to the application.
+         * @hide
+         */
+        public int getSummaryNativeHeapRss() {
+            return nativeRss;
+        }
+
+        /**
+         * Rss of code and other static resource bytes in KB due to
+         * the application.
+         * @hide
+         */
+        public int getSummaryCodeRss() {
+            return getOtherRss(OTHER_SO)
+                + getOtherRss(OTHER_JAR)
+                + getOtherRss(OTHER_APK)
+                + getOtherRss(OTHER_TTF)
+                + getOtherRss(OTHER_DEX)
+                + getOtherRss(OTHER_OAT)
+                + getOtherRss(OTHER_DALVIK_OTHER_ZYGOTE_CODE_CACHE)
+                + getOtherRss(OTHER_DALVIK_OTHER_APP_CODE_CACHE);
+        }
+
+        /**
+         * Rss in KB of the stack due to the application.
+         * @hide
+         */
+        public int getSummaryStackRss() {
+            return getOtherRss(OTHER_STACK);
+        }
+
+        /**
+         * Rss in KB of graphics due to the application.
+         * @hide
+         */
+        public int getSummaryGraphicsRss() {
+            return getOtherRss(OTHER_GL_DEV)
+                + getOtherRss(OTHER_GRAPHICS)
+                + getOtherRss(OTHER_GL);
+        }
+
+        /**
+         * Rss in KB due to either the application or system that haven't otherwise been
+         * accounted for.
+         * @hide
+         */
+        public int getSummaryUnknownRss() {
+            return getTotalRss()
+                - getSummaryJavaHeapRss()
+                - getSummaryNativeHeapRss()
+                - getSummaryCodeRss()
+                - getSummaryStackRss()
+                - getSummaryGraphicsRss();
         }
 
         /**
@@ -1820,10 +1884,13 @@ public final class Debug
     /**
      * Note: currently only works when the requested pid has the same UID
      * as the caller.
+     *
+     * @return true if the meminfo was read successfully, false if not (i.e., given pid has gone).
+     *
      * @hide
      */
     @UnsupportedAppUsage
-    public static native void getMemoryInfo(int pid, MemoryInfo memoryInfo);
+    public static native boolean getMemoryInfo(int pid, MemoryInfo memoryInfo);
 
     /**
      * Retrieves the PSS memory used by the process as given by the
@@ -1836,6 +1903,8 @@ public final class Debug
      * array of up to 3 entries to also receive (up to 3 values in order): the Uss and SwapPss and
      * Rss (only filled in as of {@link android.os.Build.VERSION_CODES#P}) of the process, and
      * another array to also retrieve the separate memtrack size.
+     *
+     * @return The PSS memory usage, or 0 if failed to retrieve (i.e., given pid has gone).
      * @hide
      */
     public static native long getPss(int pid, long[] outUssSwapPssRss, long[] outMemtrack);
@@ -1973,7 +2042,7 @@ public final class Debug
      *
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static native void dumpNativeHeap(FileDescriptor fd);
 
     /**
@@ -2482,14 +2551,16 @@ public final class Debug
     public static native long getZramFreeKb();
 
     /**
-     * Return memory size in kilobytes allocated for ION heaps.
+     * Return memory size in kilobytes allocated for ION heaps or -1 if
+     * /sys/kernel/ion/total_heaps_kb could not be read.
      *
      * @hide
      */
     public static native long getIonHeapsSizeKb();
 
     /**
-     * Return memory size in kilobytes allocated for ION pools.
+     * Return memory size in kilobytes allocated for ION pools or -1 if
+     * /sys/kernel/ion/total_pools_kb could not be read.
      *
      * @hide
      */
@@ -2503,6 +2574,13 @@ public final class Debug
      * @hide
      */
     public static native long getIonMappedSizeKb();
+
+    /**
+     * Return memory size in kilobytes used by GPU.
+     *
+     * @hide
+     */
+    public static native long getGpuTotalUsageKb();
 
     /**
      * Return whether virtually-mapped kernel stacks are enabled (CONFIG_VMAP_STACK).

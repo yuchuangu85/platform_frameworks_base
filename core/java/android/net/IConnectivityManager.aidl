@@ -25,13 +25,13 @@ import android.net.Network;
 import android.net.NetworkAgentConfig;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
-import android.net.NetworkQuotaInfo;
 import android.net.NetworkRequest;
 import android.net.NetworkState;
 import android.net.ISocketKeepaliveCallback;
 import android.net.ProxyInfo;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.os.INetworkActivityListener;
 import android.os.Messenger;
 import android.os.ParcelFileDescriptor;
 import android.os.PersistableBundle;
@@ -73,10 +73,9 @@ interface IConnectivityManager
 
     NetworkCapabilities getNetworkCapabilities(in Network network, String callingPackageName);
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     NetworkState[] getAllNetworkState();
 
-    NetworkQuotaInfo getActiveNetworkQuotaInfo();
     boolean isActiveNetworkMetered();
 
     boolean requestRouteToHostAddress(int networkType, in byte[] hostAddress,
@@ -134,7 +133,7 @@ interface IConnectivityManager
 
     VpnConfig getVpnConfig(int userId);
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void startLegacyVpn(in VpnProfile profile);
 
     LegacyVpnInfo getLegacyVpnInfo(int userId);
@@ -233,4 +232,12 @@ interface IConnectivityManager
 
     void simulateDataStall(int detectionMethod, long timestampMillis, in Network network,
                 in PersistableBundle extras);
+
+    void systemReady();
+
+    void registerNetworkActivityListener(in INetworkActivityListener l);
+
+    void unregisterNetworkActivityListener(in INetworkActivityListener l);
+
+    boolean isDefaultNetworkActive();
 }

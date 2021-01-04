@@ -102,6 +102,9 @@ public abstract class CookieManager {
      * path and name will be replaced with the new cookie. The cookie being set
      * will be ignored if it is expired.
      *
+     * <p class="note"><b>Note:</b> if specifying a {@code value} containing the {@code "Secure"}
+     * attribute, {@code url} must use the {@code "https://"} scheme.
+     *
      * @param url the URL for which the cookie is to be set
      * @param value the cookie as a string, using the format of the 'Set-Cookie'
      *              HTTP response header
@@ -121,6 +124,9 @@ public abstract class CookieManager {
      * You can pass {@code null} as the callback if you don't need to know when the operation
      * completes or whether it succeeded, and in this case it is safe to call the method from a
      * thread without a Looper.
+     *
+     * <p class="note"><b>Note:</b> if specifying a {@code value} containing the {@code "Secure"}
+     * attribute, {@code url} must use the {@code "https://"} scheme.
      *
      * @param url the URL for which the cookie is to be set
      * @param value the cookie as a string, using the format of the 'Set-Cookie'
@@ -148,6 +154,7 @@ public abstract class CookieManager {
      *               HTTP request header
      * @hide Used by Browser and by WebViewProvider implementations.
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     public abstract String getCookie(String url, boolean privateBrowsing);
 
@@ -224,6 +231,7 @@ public abstract class CookieManager {
      * @param privateBrowsing whether to use the private browsing cookie jar
      * @hide Used by Browser and WebViewProvider implementations.
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     public abstract boolean hasCookies(boolean privateBrowsing);
 
@@ -258,21 +266,33 @@ public abstract class CookieManager {
      *
      * @hide Only for use by WebViewProvider implementations
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     protected abstract boolean allowFileSchemeCookiesImpl();
 
     /**
-     * Sets whether the application's {@link WebView} instances should send and
-     * accept cookies for file scheme URLs.
-     * Use of cookies with file scheme URLs is potentially insecure and turned
-     * off by default.
-     * Do not use this feature unless you can be sure that no unintentional
-     * sharing of cookie data can take place.
+     * Sets whether the application's {@link WebView} instances should send and accept cookies for
+     * file scheme URLs.
      * <p>
-     * Note that calls to this method will have no effect if made after a
-     * {@link WebView} or CookieManager instance has been created.
+     * Use of cookies with file scheme URLs is potentially insecure and turned off by default. All
+     * {@code file://} URLs share all their cookies, which may lead to leaking private app cookies
+     * (ex. any malicious file can access cookies previously set by other (trusted) files).
+     * <p class="note">
+     * Loading content via {@code file://} URLs is generally discouraged. See the note in
+     * {@link WebSettings#setAllowFileAccess}.
+     * Using <a href="{@docRoot}reference/androidx/webkit/WebViewAssetLoader.html">
+     * androidx.webkit.WebViewAssetLoader</a> to load files over {@code http(s)://} URLs allows
+     * the standard web security model to be used for setting and sharing cookies for local files.
+     * <p>
+     * Note that calls to this method will have no effect if made after calling other
+     * {@link CookieManager} APIs.
+     *
+     * @deprecated This setting is not secure, please use
+     *             <a href="{@docRoot}reference/androidx/webkit/WebViewAssetLoader.html">
+     *             androidx.webkit.WebViewAssetLoader</a> instead.
      */
     // Static for backward compatibility.
+    @Deprecated
     public static void setAcceptFileSchemeCookies(boolean accept) {
         getInstance().setAcceptFileSchemeCookiesImpl(accept);
     }
@@ -282,6 +302,7 @@ public abstract class CookieManager {
      *
      * @hide Only for use by WebViewProvider implementations
      */
+    @SuppressWarnings("HiddenAbstractMethod")
     @SystemApi
     protected abstract void setAcceptFileSchemeCookiesImpl(boolean accept);
 }

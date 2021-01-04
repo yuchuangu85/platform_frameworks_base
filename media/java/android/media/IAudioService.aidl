@@ -18,6 +18,7 @@ package android.media;
 
 import android.bluetooth.BluetoothDevice;
 import android.media.AudioAttributes;
+import android.media.AudioDeviceAttributes;
 import android.media.AudioFocusInfo;
 import android.media.AudioPlaybackConfiguration;
 import android.media.AudioRecordingConfiguration;
@@ -25,9 +26,12 @@ import android.media.AudioRoutesInfo;
 import android.media.IAudioFocusDispatcher;
 import android.media.IAudioRoutesObserver;
 import android.media.IAudioServerStateDispatcher;
+import android.media.ICapturePresetDevicesRoleDispatcher;
+import android.media.ICommunicationDeviceDispatcher;
 import android.media.IPlaybackConfigDispatcher;
 import android.media.IRecordingConfigDispatcher;
 import android.media.IRingtonePlayer;
+import android.media.IStrategyPreferredDevicesDispatcher;
 import android.media.IVolumeController;
 import android.media.IVolumeController;
 import android.media.PlayerBase;
@@ -38,6 +42,7 @@ import android.media.audiopolicy.AudioVolumeGroup;
 import android.media.audiopolicy.IAudioPolicyCallback;
 import android.media.projection.IMediaProjection;
 import android.net.Uri;
+import android.view.KeyEvent;
 
 /**
  * {@hide}
@@ -73,8 +78,11 @@ interface IAudioService {
 
     void adjustStreamVolume(int streamType, int direction, int flags, String callingPackage);
 
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void setStreamVolume(int streamType, int index, int flags, String callingPackage);
+
+    oneway void handleVolumeKey(in KeyEvent event, boolean isOnTv,
+            String callingPackage, String caller);
 
     boolean isStreamMute(int streamType);
 
@@ -103,6 +111,10 @@ interface IAudioService {
     int getMinVolumeIndexForAttributes(in AudioAttributes aa);
 
     int getLastAudibleStreamVolume(int streamType);
+
+    void setSupportedSystemUsages(in int[] systemUsages);
+
+    int[] getSupportedSystemUsages();
 
     List<AudioProductStrategy> getAudioProductStrategies();
 
@@ -144,7 +156,7 @@ interface IAudioService {
 
     oneway void avrcpSupportsAbsoluteVolume(String address, boolean support);
 
-    void setSpeakerphoneOn(boolean on);
+    void setSpeakerphoneOn(IBinder cb, boolean on);
 
     boolean isSpeakerphoneOn();
 
@@ -261,12 +273,61 @@ interface IAudioService {
 
     int removeUidDeviceAffinity(in IAudioPolicyCallback pcb, in int uid);
 
+    int setUserIdDeviceAffinity(in IAudioPolicyCallback pcb, in int userId, in int[] deviceTypes,
+             in String[] deviceAddresses);
+    int removeUserIdDeviceAffinity(in IAudioPolicyCallback pcb, in int userId);
+
     boolean hasHapticChannels(in Uri uri);
+
+    boolean isCallScreeningModeSupported();
+
+    int setPreferredDevicesForStrategy(in int strategy, in List<AudioDeviceAttributes> device);
+
+    int removePreferredDevicesForStrategy(in int strategy);
+
+    List<AudioDeviceAttributes> getPreferredDevicesForStrategy(in int strategy);
+
+    List<AudioDeviceAttributes> getDevicesForAttributes(in AudioAttributes attributes);
 
     int setAllowedCapturePolicy(in int capturePolicy);
 
     int getAllowedCapturePolicy();
 
+    void registerStrategyPreferredDevicesDispatcher(IStrategyPreferredDevicesDispatcher dispatcher);
+
+    oneway void unregisterStrategyPreferredDevicesDispatcher(
+            IStrategyPreferredDevicesDispatcher dispatcher);
+
+    oneway void setRttEnabled(in boolean rttEnabled);
+
+    void setDeviceVolumeBehavior(in AudioDeviceAttributes device,
+             in int deviceVolumeBehavior, in String pkgName);
+
+    int getDeviceVolumeBehavior(in AudioDeviceAttributes device);
+
     // WARNING: read warning at top of file, new methods that need to be used by native
     // code via IAudioManager.h need to be added to the top section.
+
+    oneway void setMultiAudioFocusEnabled(in boolean enabled);
+
+    int setPreferredDevicesForCapturePreset(
+            in int capturePreset, in List<AudioDeviceAttributes> devices);
+
+    int clearPreferredDevicesForCapturePreset(in int capturePreset);
+
+    List<AudioDeviceAttributes> getPreferredDevicesForCapturePreset(in int capturePreset);
+
+    void registerCapturePresetDevicesRoleDispatcher(ICapturePresetDevicesRoleDispatcher dispatcher);
+
+    oneway void unregisterCapturePresetDevicesRoleDispatcher(
+            ICapturePresetDevicesRoleDispatcher dispatcher);
+
+    boolean setDeviceForCommunication(IBinder cb, int portId);
+
+    int getDeviceForCommunication();
+
+    void registerCommunicationDeviceDispatcher(ICommunicationDeviceDispatcher dispatcher);
+
+    oneway void unregisterCommunicationDeviceDispatcher(
+            ICommunicationDeviceDispatcher dispatcher);
 }

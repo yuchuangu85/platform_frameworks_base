@@ -18,7 +18,6 @@ package com.android.internal.location;
 
 import android.app.Notification;
 import android.app.NotificationManager;
-import android.app.PendingIntent;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -29,7 +28,6 @@ import android.location.LocationManager;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
-import android.telephony.PhoneNumberUtils;
 import android.telephony.PhoneStateListener;
 import android.telephony.TelephonyManager;
 import android.util.Log;
@@ -162,7 +160,7 @@ public class GpsNetInitiatedHandler {
                        be set to true when the phone is having emergency call, and then will
                        be set to false by mPhoneStateListener when the emergency call ends.
                 */
-                mIsInEmergencyCall = PhoneNumberUtils.isEmergencyNumber(phoneNumber);
+                mIsInEmergencyCall = mTelephonyManager.isEmergencyNumber(phoneNumber);
                 if (DEBUG) Log.v(TAG, "ACTION_NEW_OUTGOING_CALL - " + getInEmergency());
             } else if (action.equals(LocationManager.MODE_CHANGED_ACTION)) {
                 updateLocationMode();
@@ -402,13 +400,9 @@ public class GpsNetInitiatedHandler {
             mNiNotificationBuilder.setDefaults(0);
         }
 
-        // if not to popup dialog immediately, pending intent will open the dialog
-        Intent intent = !mPopupImmediately ? getDlgIntent(notif) : new Intent();
-        PendingIntent pi = PendingIntent.getBroadcast(mContext, 0, intent, 0);
         mNiNotificationBuilder.setTicker(getNotifTicker(notif, mContext))
                 .setContentTitle(title)
-                .setContentText(message)
-                .setContentIntent(pi);
+                .setContentText(message);
 
         notificationManager.notifyAsUser(null, notif.notificationId, mNiNotificationBuilder.build(),
                 UserHandle.ALL);

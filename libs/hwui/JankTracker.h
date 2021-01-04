@@ -23,7 +23,6 @@
 #include "utils/RingBuffer.h"
 
 #include <cutils/compiler.h>
-#include <ui/DisplayInfo.h>
 
 #include <array>
 #include <memory>
@@ -49,7 +48,7 @@ struct ProfileDataDescription {
 // TODO: Replace DrawProfiler with this
 class JankTracker {
 public:
-    explicit JankTracker(ProfileDataContainer* globalData, const DisplayInfo& displayInfo);
+    explicit JankTracker(ProfileDataContainer* globalData);
 
     void setDescription(JankTrackerType type, const std::string&& name) {
         mDescription.type = type;
@@ -58,6 +57,7 @@ public:
 
     FrameInfo* startFrame() { return &mFrames.next(); }
     void finishFrame(const FrameInfo& frame);
+    void finishGpuDraw(const FrameInfo& frame);
 
     void dumpStats(int fd) { dumpData(fd, &mDescription, mData.get()); }
     void dumpFrames(int fd);
@@ -75,7 +75,7 @@ private:
 
     std::array<int64_t, NUM_BUCKETS> mThresholds;
     int64_t mFrameInterval;
-    nsecs_t mSwapDeadline;
+    nsecs_t mSwapDeadline = -1;
     // The amount of time we will erase from the total duration to account
     // for SF vsync offsets with HWC2 blocking dequeueBuffers.
     // (Vsync + mDequeueBlockTolerance) is the point at which we expect

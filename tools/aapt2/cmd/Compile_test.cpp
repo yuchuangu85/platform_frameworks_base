@@ -200,7 +200,7 @@ static void AssertTranslations(CommandTestFixture *ctf, std::string file_name,
   const std::string compiled_files_dir = ctf->GetTestPath("/compiled_" + file_name);
   const std::string out_apk = ctf->GetTestPath("/" + file_name + ".apk");
 
-  CHECK(ctf->WriteFile(source_file, sTranslatableXmlContent));
+  ctf->WriteFile(source_file, sTranslatableXmlContent);
   CHECK(file::mkdirs(compiled_files_dir.data()));
 
   ASSERT_EQ(CompileCommand(&diag).Execute({
@@ -252,5 +252,4 @@ TEST_F(CompilerTest, DoNotTranslateTest) {
   AssertTranslations(this, "donottranslate", expected_not_translatable);
   AssertTranslations(this, "donottranslate_foo", expected_not_translatable);
 }
-
 }  // namespace aapt

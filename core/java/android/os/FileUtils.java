@@ -181,7 +181,7 @@ public final class FileUtils {
      * @return 0 on success, otherwise errno.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static int setPermissions(FileDescriptor fd, int mode, int uid, int gid) {
         try {
             Os.fchmod(fd, mode);
@@ -664,7 +664,7 @@ public final class FileUtils {
     }
 
     /** {@hide} */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static void stringToFile(File file, String string) throws IOException {
         stringToFile(file.getAbsolutePath(), string);
     }
@@ -713,7 +713,7 @@ public final class FileUtils {
      *             to its potential for collision.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     @Deprecated
     public static long checksumCrc32(File file) throws FileNotFoundException, IOException {
         CRC32 checkSummer = new CRC32();
@@ -743,6 +743,8 @@ public final class FileUtils {
      *            {@link MessageDigest#getInstance(String)}.
      * @hide
      */
+    @TestApi
+    @NonNull
     public static byte[] digest(@NonNull File file, @NonNull String algorithm)
             throws IOException, NoSuchAlgorithmException {
         try (FileInputStream in = new FileInputStream(file)) {
@@ -757,6 +759,8 @@ public final class FileUtils {
      *            {@link MessageDigest#getInstance(String)}.
      * @hide
      */
+    @TestApi
+    @NonNull
     public static byte[] digest(@NonNull InputStream in, @NonNull String algorithm)
             throws IOException, NoSuchAlgorithmException {
         // TODO: implement kernel optimizations
@@ -796,7 +800,7 @@ public final class FileUtils {
      * @return if any files were deleted.
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static boolean deleteOlderFiles(File dir, int minCount, long minAgeMs) {
         if (minCount < 0 || minAgeMs < 0) {
             throw new IllegalArgumentException("Constraints must be positive or 0");
@@ -905,7 +909,7 @@ public final class FileUtils {
     }
 
     /** {@hide} */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static boolean deleteContents(File dir) {
         File[] files = dir.listFiles();
         boolean success = true;
