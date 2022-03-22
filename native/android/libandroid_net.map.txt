@@ -14,6 +14,14 @@ LIBANDROID_NET {
     android_res_nquery; # llndk
     android_res_nresult; # llndk
     android_res_nsend; # llndk
+    # These functions have been part of the NDK since API 31.
+    android_getprocnetwork; # llndk
+    android_setprocdns; # llndk
+    android_getprocdns; # llndk
+    # These functions have been part of the NDK since API 33.
+    android_tag_socket_with_uid; # llndk
+    android_tag_socket;  # llndk
+    android_untag_socket; # llndk
   local:
     *;
 };

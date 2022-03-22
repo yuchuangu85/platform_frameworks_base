@@ -21,6 +21,8 @@ import static android.service.notification.NotificationListenerService.REASON_CA
 
 import static com.android.systemui.statusbar.notification.NotificationEntryManager.UNDEFINED_DISMISS_REASON;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static junit.framework.Assert.assertNotNull;
 import static junit.framework.Assert.assertNull;
 import static junit.framework.Assert.assertTrue;
@@ -30,6 +32,7 @@ import static org.junit.Assert.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
@@ -57,13 +60,15 @@ import android.util.ArraySet;
 import androidx.annotation.NonNull;
 import androidx.test.filters.SmallTest;
 
+import com.android.internal.statusbar.IStatusBarService;
 import com.android.internal.statusbar.NotificationVisibility;
 import com.android.systemui.Dependency;
 import com.android.systemui.R;
 import com.android.systemui.SysuiTestCase;
-import com.android.systemui.bubbles.BubbleController;
-import com.android.systemui.statusbar.FeatureFlags;
+import com.android.systemui.dump.DumpManager;
+import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.statusbar.NotificationLifetimeExtender;
+import com.android.systemui.statusbar.NotificationListener;
 import com.android.systemui.statusbar.NotificationMediaManager;
 import com.android.systemui.statusbar.NotificationPresenter;
 import com.android.systemui.statusbar.NotificationRemoteInputManager;
@@ -75,12 +80,14 @@ import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.NotificationEntryBuilder;
 import com.android.systemui.statusbar.notification.collection.NotificationRankingManager;
 import com.android.systemui.statusbar.notification.collection.inflation.NotificationRowBinder;
+import com.android.systemui.statusbar.notification.collection.legacy.NotificationGroupManagerLegacy;
+import com.android.systemui.statusbar.notification.collection.notifcollection.DismissedByUserStats;
+import com.android.systemui.statusbar.notification.collection.notifcollection.NotifCollectionListener;
 import com.android.systemui.statusbar.notification.collection.provider.HighPriorityProvider;
 import com.android.systemui.statusbar.notification.people.PeopleNotificationIdentifier;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 import com.android.systemui.statusbar.notification.row.NotificationEntryManagerInflationTest;
 import com.android.systemui.statusbar.notification.row.RowInflaterTask;
-import com.android.systemui.statusbar.phone.NotificationGroupManager;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController;
 import com.android.systemui.statusbar.policy.HeadsUpManager;
 import com.android.systemui.util.leak.LeakDetector;
@@ -89,6 +96,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatcher;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
@@ -98,8 +106,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
-
-import dagger.Lazy;
 
 /**
  * Unit tests for {@link NotificationEntryManager}. This test will not test any interactions with
@@ -117,10 +123,11 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
     @Mock private KeyguardEnvironment mEnvironment;
     @Mock private ExpandableNotificationRow mRow;
     @Mock private NotificationEntryListener mEntryListener;
+    @Mock private NotifCollectionListener mNotifCollectionListener;
     @Mock private NotificationRemoveInterceptor mRemoveInterceptor;
     @Mock private HeadsUpManager mHeadsUpManager;
     @Mock private RankingMap mRankingMap;
-    @Mock private NotificationGroupManager mGroupManager;
+    @Mock private NotificationGroupManagerLegacy mGroupManager;
     @Mock private NotificationRemoteInputManager mRemoteInputManager;
     @Mock private DeviceProvisionedController mDeviceProvisionedController;
     @Mock private RowInflaterTask mAsyncInflationTask;
@@ -129,7 +136,7 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
     @Mock private LeakDetector mLeakDetector;
     @Mock private NotificationMediaManager mNotificationMediaManager;
     @Mock private NotificationRowBinder mNotificationRowBinder;
-    @Mock private Lazy<BubbleController> mBubbleControllerLazy;
+    @Mock private NotificationListener mNotificationListener;
 
     private int mId;
     private NotificationEntry mEntry;
@@ -149,7 +156,7 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
                     IMPORTANCE_DEFAULT,
                     null, null,
                     null, null, null, true, sentiment, false, -1, false, null, null, false, false,
-                    false, null, false);
+                    false, null, 0, false);
             return true;
         }).when(mRankingMap).getRanking(eq(key), any(Ranking.class));
     }
@@ -168,7 +175,7 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
                     null, null,
                     null, null, null, true,
                     Ranking.USER_SENTIMENT_NEUTRAL, false, -1,
-                    false, smartActions, null, false, false, false, null, false);
+                    false, smartActions, null, false, false, false, null, 0, false);
             return true;
         }).when(mRankingMap).getRanking(eq(key), any(Ranking.class));
     }
@@ -190,6 +197,16 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
         mEntryManager = new NotificationEntryManager(
                 mLogger,
                 mGroupManager,
+                mFeatureFlags,
+                () -> mNotificationRowBinder,
+                () -> mRemoteInputManager,
+                mLeakDetector,
+                mock(ForegroundServiceDismissalFeatureController.class),
+                mock(IStatusBarService.class),
+                mock(DumpManager.class)
+        );
+        mEntryManager.initialize(
+                mNotificationListener,
                 new NotificationRankingManager(
                         () -> mNotificationMediaManager,
                         mGroupManager,
@@ -198,17 +215,11 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
                         mLogger,
                         mock(NotificationSectionsFeatureManager.class),
                         mock(PeopleNotificationIdentifier.class),
-                        mock(HighPriorityProvider.class)),
-                mEnvironment,
-                mFeatureFlags,
-                () -> mNotificationRowBinder,
-                () -> mRemoteInputManager,
-                mLeakDetector,
-                mBubbleControllerLazy,
-                mock(ForegroundServiceDismissalFeatureController.class)
-        );
+                        mock(HighPriorityProvider.class),
+                        mEnvironment));
         mEntryManager.setUpWithPresenter(mPresenter);
         mEntryManager.addNotificationEntryListener(mEntryListener);
+        mEntryManager.addCollectionListener(mNotifCollectionListener);
         mEntryManager.addNotificationRemoveInterceptor(mRemoveInterceptor);
 
         setUserSentiment(mSbn.getKey(), Ranking.USER_SENTIMENT_NEUTRAL);
@@ -296,7 +307,8 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
         assertTrue(entriesContainKey(mEntryManager.getAllNotifs(), mSbn.getKey()));
 
         // WHEN the uninflated entry is removed
-        mEntryManager.performRemoveNotification(mSbn, UNDEFINED_DISMISS_REASON);
+        mEntryManager.performRemoveNotification(mSbn, mock(DismissedByUserStats.class),
+                UNDEFINED_DISMISS_REASON);
 
         // THEN the entry is still removed from the allNotifications list
         assertFalse(entriesContainKey(mEntryManager.getAllNotifs(), mSbn.getKey()));
@@ -311,13 +323,20 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
                 eq(mEntry), any(), eq(false) /* removedByUser */, eq(UNDEFINED_DISMISS_REASON));
     }
 
+    /** Regression test for b/201097913. */
     @Test
-    public void testRemoveNotification_whilePending() {
+    public void testRemoveNotification_whilePending_onlyCollectionListenerNotified() {
+        // Add and then remove a pending entry (entry that hasn't been inflated).
         mEntryManager.addNotification(mSbn, mRankingMap);
         mEntryManager.removeNotification(mSbn.getKey(), mRankingMap, UNDEFINED_DISMISS_REASON);
 
+        // Verify that only the listener for the NEW pipeline is notified.
+        // Old pipeline:
         verify(mEntryListener, never()).onEntryRemoved(
-                eq(mEntry), any(), eq(false /* removedByUser */), eq(UNDEFINED_DISMISS_REASON));
+                argThat(matchEntryOnSbn()), any(), anyBoolean(), anyInt());
+        // New pipeline:
+        verify(mNotifCollectionListener).onEntryRemoved(
+                argThat(matchEntryOnSbn()), anyInt());
     }
 
     @Test
@@ -347,8 +366,7 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
         setSmartActions(mEntry.getKey(), null);
 
         mEntryManager.updateNotificationRanking(mRankingMap);
-        verify(mRow, never()).setEntry(eq(mEntry));
-        assertNull(mEntry.getSmartActions());
+        assertThat(mEntry.getSmartActions()).isEmpty();
     }
 
     @Test
@@ -361,7 +379,6 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
         setSmartActions(mEntry.getKey(), new ArrayList<>(Arrays.asList(createAction())));
 
         mEntryManager.updateNotificationRanking(mRankingMap);
-        verify(mRow, never()).setEntry(eq(mEntry));
         assertEquals(1, mEntry.getSmartActions().size());
         assertEquals("action", mEntry.getSmartActions().get(0).title);
     }
@@ -376,9 +393,38 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
         setSmartActions(mEntry.getKey(), new ArrayList<>(Arrays.asList(createAction())));
 
         mEntryManager.updateNotificationRanking(mRankingMap);
-        verify(mRow, never()).setEntry(eq(mEntry));
         assertEquals(1, mEntry.getSmartActions().size());
         assertEquals("action", mEntry.getSmartActions().get(0).title);
+    }
+
+    @Test
+    public void testUpdatePendingNotification_rankingUpdated() {
+        // GIVEN a notification with ranking is pending
+        final Ranking originalRanking = mEntry.getRanking();
+        mEntryManager.mPendingNotifications.put(mEntry.getKey(), mEntry);
+
+        // WHEN the same notification has been updated with a new ranking
+        final int newRank = 2345;
+        doAnswer(invocationOnMock -> {
+            Ranking ranking = (Ranking)
+                    invocationOnMock.getArguments()[1];
+            ranking.populate(
+                    mEntry.getKey(),
+                    newRank, /* this changed!! */
+                    false,
+                    0,
+                    0,
+                    IMPORTANCE_DEFAULT,
+                    null, null,
+                    null, null, null, true,
+                    Ranking.USER_SENTIMENT_NEUTRAL, false, -1,
+                    false, null, null, false, false, false, null, 0, false);
+            return true;
+        }).when(mRankingMap).getRanking(eq(mEntry.getKey()), any(Ranking.class));
+        mEntryManager.addNotification(mSbn, mRankingMap);
+
+        // THEN ranking for the entry has been updated with new ranking
+        assertEquals(newRank, mEntry.getRanking().getRank());
     }
 
     @Test
@@ -472,7 +518,8 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
     @Test
     public void testPerformRemoveNotification_removedEntry() {
         mEntryManager.removeNotification(mSbn.getKey(), null, 0);
-        mEntryManager.performRemoveNotification(mSbn, REASON_CANCEL);
+        mEntryManager.performRemoveNotification(mSbn, mock(DismissedByUserStats.class),
+                REASON_CANCEL);
     }
 
     @Test
@@ -600,7 +647,13 @@ public class NotificationEntryManagerTest extends SysuiTestCase {
         return new Notification.Action.Builder(
                 Icon.createWithResource(getContext(), android.R.drawable.sym_def_app_icon),
                 "action",
-                PendingIntent.getBroadcast(getContext(), 0, new Intent("Action"), 0)).build();
+                PendingIntent.getBroadcast(getContext(), 0, new Intent("Action"),
+                    PendingIntent.FLAG_IMMUTABLE)).build();
+    }
+
+    // TODO(b/201321631): Update more tests to use this function instead of eq(mEntry).
+    private ArgumentMatcher<NotificationEntry> matchEntryOnSbn() {
+        return e -> e.getSbn().equals(mSbn);
     }
 
     private static class FakeNotificationLifetimeExtender implements NotificationLifetimeExtender {

@@ -21,9 +21,11 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
+import android.content.Context;
 import android.net.Uri;
 import android.os.RemoteException;
 import android.telephony.ims.RcsUceAdapter;
+import android.telephony.ims.aidl.CapabilityExchangeAidlWrapper;
 import android.telephony.ims.aidl.ICapabilityExchangeEventListener;
 import android.telephony.ims.aidl.IImsCapabilityCallback;
 import android.telephony.ims.aidl.IImsRcsFeature;
@@ -33,6 +35,7 @@ import android.telephony.ims.aidl.ISubscribeResponseCallback;
 import android.telephony.ims.aidl.RcsOptionsResponseAidlWrapper;
 import android.telephony.ims.aidl.RcsPublishResponseAidlWrapper;
 import android.telephony.ims.aidl.RcsSubscribeResponseAidlWrapper;
+import android.telephony.ims.stub.CapabilityExchangeEventListener;
 import android.telephony.ims.stub.ImsRegistrationImplBase;
 import android.telephony.ims.stub.RcsCapabilityExchangeImplBase;
 import android.telephony.ims.stub.RcsCapabilityExchangeImplBase.OptionsResponseCallback;
@@ -44,6 +47,7 @@ import com.android.internal.telephony.util.TelephonyUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -55,9 +59,7 @@ import java.util.function.Supplier;
 /**
  * Base implementation of the RcsFeature APIs. Any ImsService wishing to support RCS should extend
  * this class and provide implementations of the RcsFeature methods that they support.
- * @hide
  */
-@SystemApi
 public class RcsFeature extends ImsFeature {
 
     private static final String LOG_TAG = "RcsFeature";
@@ -66,7 +68,7 @@ public class RcsFeature extends ImsFeature {
         // Reference the outer class in order to have better test coverage metrics instead of
         // creating a inner class referencing the outer class directly.
         private final RcsFeature mReference;
-        private final Executor mExecutor;
+        private Executor mExecutor;
 
         RcsFeatureBinder(RcsFeature classRef, @CallbackExecutor Executor executor) {
             mReference = classRef;
@@ -114,7 +116,9 @@ public class RcsFeature extends ImsFeature {
         @Override
         public void setCapabilityExchangeEventListener(
                 @Nullable ICapabilityExchangeEventListener listener) throws RemoteException {
-            executeMethodAsync(() -> mReference.setCapabilityExchangeEventListener(listener),
+            CapabilityExchangeEventListener listenerWrapper =
+                    new CapabilityExchangeAidlWrapper(listener);
+            executeMethodAsync(() -> mReference.setCapabilityExchangeEventListener(listenerWrapper),
                     "setCapabilityExchangeEventListener");
         }
 
@@ -140,8 +144,8 @@ public class RcsFeature extends ImsFeature {
                 throws RemoteException {
             OptionsResponseCallback callbackWrapper = new RcsOptionsResponseAidlWrapper(callback);
             executeMethodAsync(() -> mReference.getCapabilityExchangeImplBaseInternal()
-                    .sendOptionsCapabilityRequest(contactUri, myCapabilities, callbackWrapper),
-                    "sendOptionsCapabilityRequest");
+                    .sendOptionsCapabilityRequest(contactUri, new HashSet<>(myCapabilities),
+                        callbackWrapper), "sendOptionsCapabilityRequest");
         }
 
         // Call the methods with a clean calling identity on the executor and wait indefinitely for
@@ -180,16 +184,15 @@ public class RcsFeature extends ImsFeature {
      * Contains the capabilities defined and supported by a {@link RcsFeature} in the
      * form of a bitmask. The capabilities that are used in the RcsFeature are
      * defined as:
-     * {@link RcsUceAdatper.RcsImsCapabilityFlag#CAPABILITY_TYPE_OPTIONS_UCE}
-     * {@link RceUceAdapter.RcsImsCapabilityFlag#CAPABILITY_TYPE_PRESENCE_UCE}
+     * {RcsUceAdapter.RcsImsCapabilityFlag#CAPABILITY_TYPE_OPTIONS_UCE}
+     * {RcsUceAdapter.RcsImsCapabilityFlag#CAPABILITY_TYPE_PRESENCE_UCE}
      *
      * The enabled capabilities of this RcsFeature will be set by the framework
-     * using {@link #changeEnabledCapabilities(CapabilityChangeRequest, CapabilityCallbackProxy)}.
+     * using {#changeEnabledCapabilities(CapabilityChangeRequest, CapabilityCallbackProxy)}.
      * After the capabilities have been set, the RcsFeature may then perform the necessary bring up
      * of the capability and notify the capability status as true using
-     * {@link #notifyCapabilitiesStatusChanged(RcsImsCapabilities)}. This will signal to the
+     * {#notifyCapabilitiesStatusChanged(RcsImsCapabilities)}. This will signal to the
      * framework that the capability is available for usage.
-     * @hide
      */
     public static class RcsImsCapabilities extends Capabilities {
         /** @hide*/
@@ -221,33 +224,63 @@ public class RcsFeature extends ImsFeature {
          */
         public static final int CAPABILITY_TYPE_PRESENCE_UCE =  1 << 1;
 
+        /**
+         * This is used to check the upper range of RCS capability
+         * {@hide}
+         */
+        public static final int CAPABILITY_TYPE_MAX = CAPABILITY_TYPE_PRESENCE_UCE + 1;
+
+        /**
+         * Create a new {@link RcsImsCapabilities} instance with the provided capabilities.
+         * @param capabilities The capabilities that are supported for RCS in the form of a
+         * bitfield.
+         * @hide
+         */
+        @SystemApi
         public RcsImsCapabilities(@RcsUceAdapter.RcsImsCapabilityFlag int capabilities) {
             super(capabilities);
         }
 
-        private RcsImsCapabilities(Capabilities c) {
-            super(c.getMask());
+        /**
+         * Create a new {@link RcsImsCapabilities} instance with the provided capabilities.
+         * @param capabilities The capabilities instance that are supported for RCS
+         */
+        private RcsImsCapabilities(Capabilities capabilities) {
+            super(capabilities.getMask());
         }
 
+        /**
+         * @hide
+         */
         @Override
+        @SystemApi
         public void addCapabilities(@RcsUceAdapter.RcsImsCapabilityFlag int capabilities) {
             super.addCapabilities(capabilities);
         }
 
+        /**
+         * @hide
+         */
         @Override
+        @SystemApi
         public void removeCapabilities(@RcsUceAdapter.RcsImsCapabilityFlag int capabilities) {
             super.removeCapabilities(capabilities);
         }
 
+        /**
+         * @hide
+         */
         @Override
+        @SystemApi
         public boolean isCapable(@RcsUceAdapter.RcsImsCapabilityFlag int capabilities) {
             return super.isCapable(capabilities);
         }
     }
 
+    private Executor mExecutor;
     private final RcsFeatureBinder mImsRcsBinder;
     private RcsCapabilityExchangeImplBase mCapabilityExchangeImpl;
-    private ICapabilityExchangeEventListener mCapExchangeEventListener;
+    private CapabilityExchangeEventListener mCapExchangeEventListener;
 
     /**
      * Create a new RcsFeature.
@@ -255,26 +288,45 @@ public class RcsFeature extends ImsFeature {
      * Method stubs called from the framework will be called asynchronously. To specify the
      * {@link Executor} that the methods stubs will be called, use
      * {@link RcsFeature#RcsFeature(Executor)} instead.
+     * @hide
      */
+    @SystemApi
     public RcsFeature() {
         super();
         // Run on the Binder threads that call them.
-        mImsRcsBinder = new RcsFeatureBinder(this, Runnable::run);
+        mImsRcsBinder = new RcsFeatureBinder(this, mExecutor);
     }
 
     /**
      * Create a new RcsFeature using the Executor specified for methods being called by the
      * framework.
-     * @param executor The executor for the framework to use when making calls to this service.
+     * @param executor The executor for the framework to use when executing the methods overridden
+     * by the implementation of RcsFeature.
      * @hide
      */
+    @SystemApi
     public RcsFeature(@NonNull Executor executor) {
         super();
         if (executor == null) {
             throw new IllegalArgumentException("executor can not be null.");
         }
+        mExecutor = executor;
         // Run on the Binder thread by default.
-        mImsRcsBinder = new RcsFeatureBinder(this, executor);
+        mImsRcsBinder = new RcsFeatureBinder(this, mExecutor);
+    }
+
+    /**
+     * Called when the RcsFeature is initialized.
+     *
+     * @param context The context that is used in the ImsService.
+     * @param slotId The slot ID associated with the RcsFeature.
+     * @hide
+     */
+    @Override
+    public void initialize(@NonNull Context context, @NonNull int slotId) {
+        super.initialize(context, slotId);
+        // Notify that the RcsFeature is ready.
+        mExecutor.execute(() -> onFeatureReady());
     }
 
     /**
@@ -282,9 +334,11 @@ public class RcsFeature extends ImsFeature {
      * set, the {@link RcsFeature} has brought up the capability and is ready for framework
      * requests. To change the status of the capabilities
      * {@link #notifyCapabilitiesStatusChanged(RcsImsCapabilities)} should be called.
+     * @return A copy of the current RcsFeature capability status.
      * @hide
      */
     @Override
+    @SystemApi
     public @NonNull final RcsImsCapabilities queryCapabilityStatus() {
         return new RcsImsCapabilities(super.queryCapabilityStatus());
     }
@@ -293,13 +347,15 @@ public class RcsFeature extends ImsFeature {
      * Notify the framework that the capabilities status has changed. If a capability is enabled,
      * this signals to the framework that the capability has been initialized and is ready.
      * Call {@link #queryCapabilityStatus()} to return the current capability status.
+     * @param capabilities The current capability status of the RcsFeature.
      * @hide
      */
-    public final void notifyCapabilitiesStatusChanged(@NonNull RcsImsCapabilities c) {
-        if (c == null) {
+    @SystemApi
+    public final void notifyCapabilitiesStatusChanged(@NonNull RcsImsCapabilities capabilities) {
+        if (capabilities == null) {
             throw new IllegalArgumentException("RcsImsCapabilities must be non-null!");
         }
-        super.notifyCapabilitiesStatusChanged(c);
+        super.notifyCapabilitiesStatusChanged(capabilities);
     }
 
     /**
@@ -308,8 +364,12 @@ public class RcsFeature extends ImsFeature {
      * {@link #changeEnabledCapabilities(CapabilityChangeRequest, CapabilityCallbackProxy)} to
      * enable or disable capability A, this method should return the correct configuration for
      * capability A afterwards (until it has changed).
+     * @param capability The capability that we are querying the configuration for.
+     * @param radioTech The radio technology type that we are querying.
+     * @return true if the capability is enabled, false otherwise.
      * @hide
      */
+    @SystemApi
     public boolean queryCapabilityConfiguration(
             @RcsUceAdapter.RcsImsCapabilityFlag int capability,
             @ImsRegistrationImplBase.ImsRegistrationTech int radioTech) {
@@ -330,11 +390,14 @@ public class RcsFeature extends ImsFeature {
      * If for some reason one or more of these capabilities can not be enabled/disabled,
      * {@link CapabilityCallbackProxy#onChangeCapabilityConfigurationError(int, int, int)} should
      * be called for each capability change that resulted in an error.
+     * @param request The request to change the capability.
+     * @param callback To notify the framework that the result of the capability changes.
      * @hide
      */
     @Override
+    @SystemApi
     public void changeEnabledCapabilities(@NonNull CapabilityChangeRequest request,
-            @NonNull CapabilityCallbackProxy c) {
+            @NonNull CapabilityCallbackProxy callback) {
         // Base Implementation - Override to provide functionality
     }
 
@@ -348,23 +411,44 @@ public class RcsFeature extends ImsFeature {
      * operation and the RcsFeature sets the status of the capability to true using
      * {@link #notifyCapabilitiesStatusChanged(RcsImsCapabilities)}.
      *
-     * @return An instance of {@link RcsCapabilityExchangeImplBase} that implements presence
+     * @param listener A {@link CapabilityExchangeEventListener} to send the capability exchange
+     * event to the framework.
+     * @return An instance of {@link RcsCapabilityExchangeImplBase} that implements capability
      * exchange if it is supported by the device.
      * @hide
      */
-    public @NonNull RcsCapabilityExchangeImplBase createCapabilityExchangeImpl() {
+    @SystemApi
+    public @NonNull RcsCapabilityExchangeImplBase createCapabilityExchangeImpl(
+            @NonNull CapabilityExchangeEventListener listener) {
         // Base Implementation, override to implement functionality
         return new RcsCapabilityExchangeImplBase();
     }
 
-    /**{@inheritDoc}*/
+    /**
+     * Remove the given CapabilityExchangeImplBase instance.
+     * @param capExchangeImpl The {@link RcsCapabilityExchangeImplBase} instance to be destroyed.
+     * @hide
+     */
+    @SystemApi
+    public void destroyCapabilityExchangeImpl(
+            @NonNull RcsCapabilityExchangeImplBase capExchangeImpl) {
+        // Override to implement the process of destroying RcsCapabilityExchangeImplBase instance.
+    }
+
+    /**{@inheritDoc}
+     * @hide
+     */
     @Override
+    @SystemApi
     public void onFeatureRemoved() {
 
     }
 
-    /**{@inheritDoc}*/
+    /**{@inheritDoc}
+     * @hide
+     */
     @Override
+    @SystemApi
     public void onFeatureReady() {
 
     }
@@ -377,20 +461,69 @@ public class RcsFeature extends ImsFeature {
         return mImsRcsBinder;
     }
 
-    private void setCapabilityExchangeEventListener(ICapabilityExchangeEventListener listener) {
-        mCapExchangeEventListener = listener;
-        if (mCapExchangeEventListener != null) {
-            onFeatureReady();
+    /**
+     * Set the capability exchange listener.
+     * @param listener A {@link CapabilityExchangeEventListener} to send the capability exchange
+     * event to the framework.
+     */
+    private void setCapabilityExchangeEventListener(
+            @Nullable CapabilityExchangeEventListener listener) {
+        synchronized (mLock) {
+            mCapExchangeEventListener = listener;
+            if (mCapExchangeEventListener != null) {
+                initRcsCapabilityExchangeImplBase(mCapExchangeEventListener);
+            } else {
+                // Remove the RcsCapabilityExchangeImplBase instance when the capability exchange
+                // instance has been removed in the framework.
+                if (mCapabilityExchangeImpl != null) {
+                    destroyCapabilityExchangeImpl(mCapabilityExchangeImpl);
+                }
+                mCapabilityExchangeImpl = null;
+            }
         }
     }
 
-    private RcsCapabilityExchangeImplBase getCapabilityExchangeImplBaseInternal() {
+    /**
+     * Initialize the RcsCapabilityExchangeImplBase instance if the capability exchange instance
+     * has already been created in the framework.
+     * @param listener A {@link CapabilityExchangeEventListener} to send the capability exchange
+     * event to the framework.
+     */
+    private void initRcsCapabilityExchangeImplBase(
+            @NonNull CapabilityExchangeEventListener listener) {
         synchronized (mLock) {
+            // Remove the original instance
+            if (mCapabilityExchangeImpl != null) {
+                destroyCapabilityExchangeImpl(mCapabilityExchangeImpl);
+            }
+            mCapabilityExchangeImpl = createCapabilityExchangeImpl(listener);
+        }
+    }
+
+    /**
+     * @return the {@link RcsCapabilityExchangeImplBase} associated with the RcsFeature.
+     */
+    private @NonNull RcsCapabilityExchangeImplBase getCapabilityExchangeImplBaseInternal() {
+        synchronized (mLock) {
+            // The method should not be called if the instance of RcsCapabilityExchangeImplBase has
+            // not been created yet.
             if (mCapabilityExchangeImpl == null) {
-                mCapabilityExchangeImpl = createCapabilityExchangeImpl();
-                mCapabilityExchangeImpl.setEventListener(mCapExchangeEventListener);
+                throw new IllegalStateException("Session is not available.");
             }
             return mCapabilityExchangeImpl;
+        }
+    }
+
+    /**
+     * Set default Executor from ImsService.
+     * @param executor The default executor for the framework to use when executing the methods
+     * overridden by the implementation of RcsFeature.
+     * @hide
+     */
+    public final void setDefaultExecutor(@NonNull Executor executor) {
+        if (mImsRcsBinder.mExecutor == null) {
+            mExecutor = executor;
+            mImsRcsBinder.mExecutor = executor;
         }
     }
 }

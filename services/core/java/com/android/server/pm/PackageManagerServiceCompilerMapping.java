@@ -29,7 +29,8 @@ public class PackageManagerServiceCompilerMapping {
     // Names for compilation reasons.
     public static final String REASON_STRINGS[] = {
         "first-boot",
-        "boot",
+        "boot-after-ota",
+        "post-boot",
         "install",
         "install-fast",
         "install-bulk",
@@ -39,6 +40,7 @@ public class PackageManagerServiceCompilerMapping {
         "bg-dexopt",
         "ab-ota",
         "inactive",
+        "cmdline",
         // "shared" must be the last entry
         "shared"
     };
@@ -140,9 +142,6 @@ public class PackageManagerServiceCompilerMapping {
     }
 
     public static String getReasonName(int reason) {
-        if (reason == PackageManagerService.REASON_UNKNOWN) {
-            return "unknown";
-        }
         if (reason < 0 || reason >= REASON_STRINGS.length) {
             throw new IllegalArgumentException("reason " + reason + " invalid");
         }

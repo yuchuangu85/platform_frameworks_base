@@ -30,7 +30,6 @@ import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyPermanentlyInvalidatedException;
 import android.security.keystore.KeyProperties;
 import android.security.keystore.KeyProtection;
-import android.security.keystore.KeymasterUtils;
 import android.security.keystore.SecureKeyImportUnavailableException;
 import android.security.keystore.WrappedKeyEntry;
 import android.system.keystore2.AuthenticatorSpec;
@@ -41,6 +40,8 @@ import android.system.keystore2.KeyEntryResponse;
 import android.system.keystore2.KeyMetadata;
 import android.system.keystore2.ResponseCode;
 import android.util.Log;
+
+import com.android.internal.annotations.VisibleForTesting;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -100,7 +101,7 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
     public static final String NAME = "AndroidKeyStore";
 
     private KeyStore2 mKeyStore;
-    private int mNamespace = KeyProperties.NAMESPACE_APPLICATION;
+    private @KeyProperties.Namespace int mNamespace = KeyProperties.NAMESPACE_APPLICATION;
 
     @Override
     public Key engineGetKey(String alias, char[] password) throws NoSuchAlgorithmException,
@@ -490,7 +491,7 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
             int[] keymasterEncryptionPaddings =
                     KeyProperties.EncryptionPadding.allToKeymaster(
                             spec.getEncryptionPaddings());
-            if (((spec.getPurposes() & KeyProperties.PURPOSE_DECRYPT) != 0)
+            if (((spec.getPurposes() & KeyProperties.PURPOSE_ENCRYPT) != 0)
                     && (spec.isRandomizedEncryptionRequired())) {
                 for (int keymasterPadding : keymasterEncryptionPaddings) {
                     if (!KeymasterUtils
@@ -535,6 +536,12 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
                         spec.getKeyValidityForConsumptionEnd()
                 ));
             }
+            if (spec.getMaxUsageCount() != KeyProperties.UNRESTRICTED_USAGE_COUNT) {
+                importArgs.add(KeyStore2ParameterUtils.makeInt(
+                        KeymasterDefs.KM_TAG_USAGE_COUNT_LIMIT,
+                        spec.getMaxUsageCount()
+                ));
+            }
         } catch (IllegalArgumentException | IllegalStateException e) {
             throw new KeyStoreException(e);
         }
@@ -572,7 +579,7 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         //
         // Note: mNamespace == KeyProperties.NAMESPACE_APPLICATION implies that the target domain
         // is Domain.APP and Domain.SELINUX is the target domain otherwise.
-        if (alias != descriptor.alias
+        if (!alias.equals(descriptor.alias)
                 || descriptor.domain != targetDomain
                 || (descriptor.domain == Domain.SELINUX && descriptor.nspace != targetNamespace)) {
             throw new KeyStoreException("Can only replace keys with same alias: " + alias
@@ -594,8 +601,6 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         }
         KeyProtection params = (KeyProtection) param;
 
-        @SecurityLevel int securityLevel = params.isStrongBoxBacked() ? SecurityLevel.STRONGBOX :
-                SecurityLevel.TRUSTED_ENVIRONMENT;
         @Domain int targetDomain = (getTargetDomain());
 
         if (key instanceof AndroidKeyStoreSecretKey) {
@@ -772,6 +777,12 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
                         params.getKeyValidityForConsumptionEnd()
                 ));
             }
+            if (params.getMaxUsageCount() != KeyProperties.UNRESTRICTED_USAGE_COUNT) {
+                importArgs.add(KeyStore2ParameterUtils.makeInt(
+                        KeymasterDefs.KM_TAG_USAGE_COUNT_LIMIT,
+                        params.getMaxUsageCount()
+                ));
+            }
         } catch (IllegalArgumentException | IllegalStateException e) {
             throw new KeyStoreException(e);
         }
@@ -780,6 +791,9 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         if (params.isCriticalToDeviceEncryption()) {
             flags |= IKeystoreSecurityLevel.KEY_FLAG_AUTH_BOUND_WITHOUT_CRYPTOGRAPHIC_LSKF_BINDING;
         }
+
+        @SecurityLevel int securityLevel = params.isStrongBoxBacked() ? SecurityLevel.STRONGBOX :
+                SecurityLevel.TRUSTED_ENVIRONMENT;
 
         try {
             KeyStoreSecurityLevel securityLevelInterface = mKeyStore.getSecurityLevel(
@@ -854,7 +868,8 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         try {
             response = mKeyStore.getKeyEntry(wrappingkey);
         } catch (android.security.KeyStoreException e) {
-            throw new KeyStoreException("Failed to load wrapping key.", e);
+            throw new KeyStoreException("Failed to import wrapped key. Keystore error code: "
+                    + e.getErrorCode(), e);
         }
 
         KeyDescriptor wrappedKey = makeKeyDescriptor(alias);
@@ -962,7 +977,6 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
     }
 
     private Set<String> getUniqueAliases() {
-
         try {
             final KeyDescriptor[] keys = mKeyStore.list(
                     getTargetDomain(),
@@ -975,7 +989,7 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
             return aliases;
         } catch (android.security.KeyStoreException e) {
             Log.e(TAG, "Failed to list keystore entries.", e);
-            return null;
+            return new HashSet<>();
         }
     }
 
@@ -1087,6 +1101,17 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
         return caAlias;
     }
 
+    /**
+     * Used by Tests to initialize with a fake KeyStore2.
+     * @hide
+     * @param keystore
+     */
+    @VisibleForTesting
+    public void initForTesting(KeyStore2 keystore) {
+        mKeyStore = keystore;
+        mNamespace = KeyProperties.NAMESPACE_APPLICATION;
+    }
+
     @Override
     public void engineStore(OutputStream stream, char[] password) throws IOException,
             NoSuchAlgorithmException, CertificateException {
@@ -1112,7 +1137,7 @@ public class AndroidKeyStoreSpi extends KeyStoreSpi {
     @Override
     public void engineLoad(LoadStoreParameter param) throws IOException,
             NoSuchAlgorithmException, CertificateException {
-        int namespace = KeyProperties.NAMESPACE_APPLICATION;
+        @KeyProperties.Namespace int namespace = KeyProperties.NAMESPACE_APPLICATION;
         if (param != null) {
             if (param instanceof AndroidKeyStoreLoadStoreParameter) {
                 namespace = ((AndroidKeyStoreLoadStoreParameter) param).getNamespace();

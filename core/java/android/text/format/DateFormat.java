@@ -29,6 +29,7 @@ import android.provider.Settings;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.SpannedString;
+import android.text.TextUtils;
 
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
@@ -267,7 +268,8 @@ public class DateFormat {
         DateTimePatternGenerator dtpg = DateTimePatternGenerator.getInstance(locale);
         boolean allowDuplicateFields = !CompatChanges.isChangeEnabled(
                 DISALLOW_DUPLICATE_FIELD_IN_SKELETON);
-        return dtpg.getBestPattern(skeleton, allowDuplicateFields);
+        return dtpg.getBestPattern(skeleton, DateTimePatternGenerator.MATCH_NO_OPTIONS,
+                allowDuplicateFields);
     }
 
     /**

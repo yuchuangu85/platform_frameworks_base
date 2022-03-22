@@ -66,9 +66,6 @@ public final class KeymasterDefs {
     public static final int KM_TAG_CALLER_NONCE = Tag.CALLER_NONCE; // KM_BOOL | 7;
     public static final int KM_TAG_MIN_MAC_LENGTH = Tag.MIN_MAC_LENGTH; // KM_UINT | 8;
 
-    public static final int KM_TAG_BLOB_USAGE_REQUIREMENTS =
-            Tag.BLOB_USAGE_REQUIREMENTS; // KM_ENUM | 705;
-
     public static final int KM_TAG_RSA_PUBLIC_EXPONENT = Tag.RSA_PUBLIC_EXPONENT; // KM_ULONG | 200;
     public static final int KM_TAG_INCLUDE_UNIQUE_ID = Tag.INCLUDE_UNIQUE_ID; // KM_BOOL | 202;
 
@@ -80,6 +77,7 @@ public final class KeymasterDefs {
     public static final int KM_TAG_MIN_SECONDS_BETWEEN_OPS =
             Tag.MIN_SECONDS_BETWEEN_OPS; // KM_UINT | 403;
     public static final int KM_TAG_MAX_USES_PER_BOOT = Tag.MAX_USES_PER_BOOT; // KM_UINT | 404;
+    public static final int KM_TAG_USAGE_COUNT_LIMIT = Tag.USAGE_COUNT_LIMIT; // KM_UINT | 405;
 
     public static final int KM_TAG_USER_ID = Tag.USER_ID; // KM_UINT | 501;
     public static final int KM_TAG_USER_SECURE_ID = Tag.USER_SECURE_ID; // KM_ULONG_REP | 502;
@@ -126,9 +124,17 @@ public final class KeymasterDefs {
     public static final int KM_TAG_DEVICE_UNIQUE_ATTESTATION =
             Tag.DEVICE_UNIQUE_ATTESTATION; // KM_BOOL | 720;
 
-    public static final int KM_TAG_ASSOCIATED_DATA = Tag.ASSOCIATED_DATA; // KM_BYTES | 1000;
     public static final int KM_TAG_NONCE = Tag.NONCE; // KM_BYTES | 1001;
     public static final int KM_TAG_MAC_LENGTH = Tag.MAC_LENGTH; // KM_UINT | 1003;
+    public static final int KM_TAG_RESET_SINCE_ID_ROTATION =
+            Tag.RESET_SINCE_ID_ROTATION;     // KM_BOOL | 1004
+    public static final int KM_TAG_CONFIRMATION_TOKEN = Tag.CONFIRMATION_TOKEN; // KM_BYTES | 1005;
+    public static final int KM_TAG_CERTIFICATE_SERIAL = Tag.CERTIFICATE_SERIAL; // KM_UINT | 1006;
+    public static final int KM_TAG_CERTIFICATE_SUBJECT = Tag.CERTIFICATE_SUBJECT; // KM_UINT | 1007;
+    public static final int KM_TAG_CERTIFICATE_NOT_BEFORE =
+            Tag.CERTIFICATE_NOT_BEFORE; // KM_DATE | 1008;
+    public static final int KM_TAG_CERTIFICATE_NOT_AFTER =
+            Tag.CERTIFICATE_NOT_AFTER; // KM_DATE | 1009;
 
     // Algorithm values.
     public static final int KM_ALGORITHM_RSA = Algorithm.RSA;
@@ -177,6 +183,8 @@ public final class KeymasterDefs {
     public static final int KM_PURPOSE_SIGN = KeyPurpose.SIGN;
     public static final int KM_PURPOSE_VERIFY = KeyPurpose.VERIFY;
     public static final int KM_PURPOSE_WRAP = KeyPurpose.WRAP_KEY;
+    public static final int KM_PURPOSE_AGREE_KEY = KeyPurpose.AGREE_KEY;
+    public static final int KM_PURPOSE_ATTEST_KEY = KeyPurpose.ATTEST_KEY;
 
     // Key formats.
     public static final int KM_KEY_FORMAT_X509 = KeyFormat.X509;
@@ -309,12 +317,35 @@ public final class KeymasterDefs {
             ErrorCode.MISSING_MIN_MAC_LENGTH; // -58;
     public static final int KM_ERROR_UNSUPPORTED_MIN_MAC_LENGTH =
             ErrorCode.UNSUPPORTED_MIN_MAC_LENGTH; // -59;
+    public static final int KM_ERROR_UNSUPPORTED_KDF = ErrorCode.UNSUPPORTED_KDF; // -60
+    public static final int KM_ERROR_UNSUPPORTED_EC_CURVE = ErrorCode.UNSUPPORTED_EC_CURVE; // -61
+    // -62 is KEY_REQUIRES_UPGRADE and is handled by Keystore.
+    public static final int KM_ERROR_ATTESTATION_CHALLENGE_MISSING =
+            ErrorCode.ATTESTATION_CHALLENGE_MISSING; // -63
+    public static final int KM_ERROR_KEYMINT_NOT_CONFIGURED =
+            ErrorCode.KEYMINT_NOT_CONFIGURED; // -64
+    public static final int KM_ERROR_ATTESTATION_APPLICATION_ID_MISSING =
+            ErrorCode.ATTESTATION_APPLICATION_ID_MISSING; // -65;
     public static final int KM_ERROR_CANNOT_ATTEST_IDS =
             ErrorCode.CANNOT_ATTEST_IDS; // -66;
+    public static final int KM_ERROR_ROLLBACK_RESISTANCE_UNAVAILABLE =
+            ErrorCode.ROLLBACK_RESISTANCE_UNAVAILABLE; // -67;
     public static final int KM_ERROR_HARDWARE_TYPE_UNAVAILABLE =
             ErrorCode.HARDWARE_TYPE_UNAVAILABLE; // -68;
     public static final int KM_ERROR_DEVICE_LOCKED =
             ErrorCode.DEVICE_LOCKED; // -72;
+    public static final int KM_ERROR_STORAGE_KEY_UNSUPPORTED =
+            ErrorCode.STORAGE_KEY_UNSUPPORTED; // -77,
+    public static final int KM_ERROR_INCOMPATIBLE_MGF_DIGEST =
+            ErrorCode.INCOMPATIBLE_MGF_DIGEST; // -78,
+    public static final int KM_ERROR_UNSUPPORTED_MGF_DIGEST =
+            ErrorCode.UNSUPPORTED_MGF_DIGEST; // -79,
+    public static final int KM_ERROR_MISSING_NOT_BEFORE =
+            ErrorCode.MISSING_NOT_BEFORE; // -80;
+    public static final int KM_ERROR_MISSING_NOT_AFTER =
+            ErrorCode.MISSING_NOT_AFTER; // -80;
+    public static final int KM_ERROR_HARDWARE_NOT_YET_AVAILABLE =
+            ErrorCode.HARDWARE_NOT_YET_AVAILABLE; // -85
     public static final int KM_ERROR_UNIMPLEMENTED =
             ErrorCode.UNIMPLEMENTED; // -100;
     public static final int KM_ERROR_VERSION_MISMATCH =

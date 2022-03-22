@@ -23,6 +23,7 @@ import android.system.keystore2.KeyDescriptor;
 import android.system.keystore2.KeyMetadata;
 
 import java.security.PublicKey;
+import java.util.Arrays;
 
 /**
  * {@link PublicKey} backed by Android Keystore.
@@ -32,13 +33,15 @@ import java.security.PublicKey;
 public abstract class AndroidKeyStorePublicKey extends AndroidKeyStoreKey implements PublicKey {
     private final byte[] mCertificate;
     private final byte[] mCertificateChain;
+    private final byte[] mEncoded;
 
     public AndroidKeyStorePublicKey(@NonNull KeyDescriptor descriptor,
-            @NonNull KeyMetadata metadata, @NonNull String algorithm,
-            @NonNull KeyStoreSecurityLevel securityLevel) {
+            @NonNull KeyMetadata metadata, @NonNull byte[] x509EncodedForm,
+            @NonNull String algorithm, @NonNull KeyStoreSecurityLevel securityLevel) {
         super(descriptor, metadata.key.nspace, metadata.authorizations, algorithm, securityLevel);
         mCertificate = metadata.certificate;
         mCertificateChain = metadata.certificateChain;
+        mEncoded = x509EncodedForm;
     }
 
     abstract AndroidKeyStorePrivateKey getPrivateKey();
@@ -50,7 +53,7 @@ public abstract class AndroidKeyStorePublicKey extends AndroidKeyStoreKey implem
 
     @Override
     public byte[] getEncoded() {
-        return ArrayUtils.cloneIfNotEmpty(mCertificate);
+        return ArrayUtils.cloneIfNotEmpty(mEncoded);
     }
 
     @Override
@@ -59,8 +62,8 @@ public abstract class AndroidKeyStorePublicKey extends AndroidKeyStoreKey implem
         int result = 1;
 
         result = prime * result + super.hashCode();
-        result = prime * result + ((mCertificate == null) ? 0 : mCertificate.hashCode());
-        result = prime * result + ((mCertificateChain == null) ? 0 : mCertificateChain.hashCode());
+        result = prime * result + Arrays.hashCode(mCertificate);
+        result = prime * result + Arrays.hashCode(mCertificateChain);
 
         return result;
     }
@@ -73,9 +76,14 @@ public abstract class AndroidKeyStorePublicKey extends AndroidKeyStoreKey implem
         if (!super.equals(obj)) {
             return false;
         }
-        if (getClass() != obj.getClass()) {
-            return false;
-        }
-        return true;
+
+        /*
+         * getClass().equals(ojb.getClass()) is implied by the call to super.equals() above. This
+         * means we can cast obj to AndroidKeyStorePublicKey here.
+         */
+        final AndroidKeyStorePublicKey other = (AndroidKeyStorePublicKey) obj;
+
+        return Arrays.equals(mCertificate, other.mCertificate) && Arrays.equals(mCertificateChain,
+                other.mCertificateChain);
     }
 }

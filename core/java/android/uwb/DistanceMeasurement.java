@@ -19,6 +19,7 @@ package android.uwb;
 import android.annotation.FloatRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.SystemApi;
 import android.os.Parcel;
 import android.os.Parcelable;
 
@@ -32,6 +33,7 @@ import java.util.Objects;
  *
  * @hide
  */
+@SystemApi
 public final class DistanceMeasurement implements Parcelable {
     private final double mMeters;
     private final double mErrorMeters;
@@ -58,6 +60,7 @@ public final class DistanceMeasurement implements Parcelable {
      *
      * @return error of distance measurement in meters
      */
+    @FloatRange(from = 0.0)
     public double getErrorMeters() {
         return mErrorMeters;
     }
@@ -160,7 +163,7 @@ public final class DistanceMeasurement implements Parcelable {
          * @throws IllegalArgumentException if error is negative or NaN
          */
         @NonNull
-        public Builder setErrorMeters(double errorMeters) {
+        public Builder setErrorMeters(@FloatRange(from = 0.0) double errorMeters) {
             if (Double.isNaN(errorMeters) || errorMeters < 0.0) {
                 throw new IllegalArgumentException(
                         "errorMeters must be >= 0.0 and not NaN: " + errorMeters);
@@ -176,7 +179,8 @@ public final class DistanceMeasurement implements Parcelable {
          * @throws IllegalArgumentException if confidence level is not in the range of [0.0, 1.0]
          */
         @NonNull
-        public Builder setConfidenceLevel(double confidenceLevel) {
+        public Builder setConfidenceLevel(
+                @FloatRange(from = 0.0, to = 1.0) double confidenceLevel) {
             if (confidenceLevel < 0.0 || confidenceLevel > 1.0) {
                 throw new IllegalArgumentException(
                         "confidenceLevel must be in the range [0.0, 1.0]: " + confidenceLevel);

@@ -31,6 +31,7 @@ import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
 
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -51,7 +52,7 @@ public class Account implements Parcelable {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private final @Nullable String accessId;
 
-    public boolean equals(Object o) {
+    public boolean equals(@Nullable Object o) {
         if (o == this) return true;
         if (!(o instanceof Account)) return false;
         final Account other = (Account)o;
@@ -85,6 +86,12 @@ public class Account implements Parcelable {
         }
         if (TextUtils.isEmpty(type)) {
             throw new IllegalArgumentException("the type must not be empty: " + type);
+        }
+        if (name.length() > 200) {
+            throw new IllegalArgumentException("account name is longer than 200 characters");
+        }
+        if (type.length() > 200) {
+            throw new IllegalArgumentException("account type is longer than 200 characters");
         }
         this.name = name;
         this.type = type;

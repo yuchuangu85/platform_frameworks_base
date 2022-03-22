@@ -20,37 +20,36 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.util.MathUtils;
-import android.view.View;
 
 import com.android.systemui.R;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.statusbar.NotificationShelf;
 import com.android.systemui.statusbar.StatusBarState;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.row.ActivatableNotificationView;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 import com.android.systemui.statusbar.notification.row.ExpandableView;
+import com.android.systemui.statusbar.notification.stack.StackScrollAlgorithm.BypassController;
 import com.android.systemui.statusbar.notification.stack.StackScrollAlgorithm.SectionProvider;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
 
-import java.util.ArrayList;
+import javax.inject.Inject;
 
 /**
  * A global state to track all input states for the algorithm.
  */
+@SysUISingleton
 public class AmbientState {
 
     private static final float MAX_PULSE_HEIGHT = 100000f;
+    private static final boolean NOTIFICATIONS_HAVE_SHADOWS = false;
 
     private final SectionProvider mSectionProvider;
-    private ArrayList<ExpandableView> mDraggedViews = new ArrayList<>();
+    private final BypassController mBypassController;
     private int mScrollY;
-    private int mAnchorViewIndex;
-    private int mAnchorViewY;
     private boolean mDimmed;
     private ActivatableNotificationView mActivatedChild;
     private float mOverScrollTopAmount;
     private float mOverScrollBottomAmount;
-    private int mSpeedBumpIndex = -1;
     private boolean mDozing;
     private boolean mHideSensitive;
     private float mStackTranslation;
@@ -60,10 +59,11 @@ public class AmbientState {
     private float mMaxHeadsUpTranslation;
     private boolean mDismissAllInProgress;
     private int mLayoutMinHeight;
+    private int mLayoutMaxHeight;
     private NotificationShelf mShelf;
     private int mZDistanceBetweenElements;
     private int mBaseZHeight;
-    private int mMaxLayoutHeight;
+    private int mContentHeight;
     private ExpandableView mLastVisibleBackgroundChild;
     private float mCurrentScrollVelocity;
     private int mStatusBarState;
@@ -73,25 +73,96 @@ public class AmbientState {
     private boolean mPanelFullWidth;
     private boolean mPulsing;
     private boolean mUnlockHintRunning;
-    private boolean mQsCustomizerShowing;
-    private int mIntrinsicPadding;
-    private int mExpandAnimationTopChange;
-    private ExpandableNotificationRow mExpandingNotification;
     private float mHideAmount;
     private boolean mAppearing;
     private float mPulseHeight = MAX_PULSE_HEIGHT;
     private float mDozeAmount = 0.0f;
-    private HeadsUpManager mHeadUpManager;
     private Runnable mOnPulseHeightChangedListener;
     private ExpandableNotificationRow mTrackedHeadsUpRow;
     private float mAppearFraction;
+    private boolean mIsShadeOpening;
+    private float mOverExpansion;
+    private int mStackTopMargin;
 
+    /** Distance of top of notifications panel from top of screen. */
+    private float mStackY = 0;
+
+    /** Height of notifications panel. */
+    private float mStackHeight = 0;
+
+    /** Fraction of shade expansion. */
+    private float mExpansionFraction;
+
+    /** Height of the notifications panel without top padding when expansion completes. */
+    private float mStackEndHeight;
+
+    /**
+     * @return Height of the notifications panel without top padding when expansion completes.
+     */
+    public float getStackEndHeight() {
+        return mStackEndHeight;
+    }
+
+    /**
+     * @param stackEndHeight Height of the notifications panel without top padding
+     *                       when expansion completes.
+     */
+    public void setStackEndHeight(float stackEndHeight) {
+        mStackEndHeight = stackEndHeight;
+    }
+
+    /**
+     * @param stackY Distance of top of notifications panel from top of screen.
+     */
+    public void setStackY(float stackY) {
+        mStackY = stackY;
+    }
+
+    /**
+     * @return Distance of top of notifications panel from top of screen.
+     */
+    public float getStackY() {
+        return mStackY;
+    }
+
+    /**
+     * @param expansionFraction Fraction of shade expansion.
+     */
+    public void setExpansionFraction(float expansionFraction) {
+        mExpansionFraction = expansionFraction;
+    }
+
+    /**
+     * @return Fraction of shade expansion.
+     */
+    public float getExpansionFraction() {
+        return mExpansionFraction;
+    }
+
+    /**
+     * @param stackHeight Height of notifications panel.
+     */
+    public void setStackHeight(float stackHeight) {
+        mStackHeight = stackHeight;
+    }
+
+    /**
+     * @return Height of notifications panel.
+     */
+    public float getStackHeight() {
+        return mStackHeight;
+    }
+
+    /** Tracks the state from AlertingNotificationManager#hasNotifications() */
+    private boolean mHasAlertEntries;
+
+    @Inject
     public AmbientState(
             Context context,
             @NonNull SectionProvider sectionProvider,
-            HeadsUpManager headsUpManager) {
+            @NonNull BypassController bypassController) {
         mSectionProvider = sectionProvider;
-        mHeadUpManager = headsUpManager;
+        mBypassController = bypassController;
         reload(context);
     }
 
@@ -103,13 +174,29 @@ public class AmbientState {
         mBaseZHeight = getBaseHeight(mZDistanceBetweenElements);
     }
 
+    public void setIsShadeOpening(boolean isOpening) {
+        mIsShadeOpening = isOpening;
+    }
+
+    public boolean isShadeOpening() {
+        return mIsShadeOpening;
+    }
+
+    void setOverExpansion(float overExpansion) {
+        mOverExpansion = overExpansion;
+    }
+
+    float getOverExpansion() {
+        return mOverExpansion;
+    }
+
     private static int getZDistanceBetweenElements(Context context) {
         return Math.max(1, context.getResources()
                 .getDimensionPixelSize(R.dimen.z_distance_between_notifications));
     }
 
     private static int getBaseHeight(int zdistanceBetweenElements) {
-        return 4 * zdistanceBetweenElements;
+        return NOTIFICATIONS_HAVE_SHADOWS ? 4 * zdistanceBetweenElements : 0;
     }
 
     /**
@@ -117,7 +204,7 @@ public class AmbientState {
      */
     public static int getNotificationLaunchHeight(Context context) {
         int zDistance = getZDistanceBetweenElements(context);
-        return getBaseHeight(zDistance) * 2;
+        return NOTIFICATIONS_HAVE_SHADOWS ? 2 * getBaseHeight(zDistance) : 4 * zDistance;
     }
 
     /**
@@ -138,42 +225,14 @@ public class AmbientState {
         return mScrollY;
     }
 
-    public void setScrollY(int scrollY) {
-        this.mScrollY = scrollY;
-    }
-
     /**
-     * Index of the child view whose Y position on screen is returned by {@link #getAnchorViewY()}.
-     * Other views are laid out outwards from this view in both directions.
+     * Set the new Scroll Y position.
      */
-    public int getAnchorViewIndex() {
-        return mAnchorViewIndex;
-    }
-
-    public void setAnchorViewIndex(int anchorViewIndex) {
-        mAnchorViewIndex = anchorViewIndex;
-    }
-
-    /** Current Y position of the view at {@link #getAnchorViewIndex()}. */
-    public int getAnchorViewY() {
-        return mAnchorViewY;
-    }
-
-    public void setAnchorViewY(int anchorViewY) {
-        mAnchorViewY = anchorViewY;
-    }
-
-    /** Call when dragging begins. */
-    public void onBeginDrag(ExpandableView view) {
-        mDraggedViews.add(view);
-    }
-
-    public void onDragFinished(View view) {
-        mDraggedViews.remove(view);
-    }
-
-    public ArrayList<ExpandableView> getDraggedViews() {
-        return mDraggedViews;
+    public void setScrollY(int scrollY) {
+        // Because we're dealing with an overscroller, scrollY could sometimes become smaller than
+        // 0. However this is only for internal purposes and the scroll position when read
+        // should never be smaller than 0, otherwise it can lead to flickers.
+        this.mScrollY = Math.max(scrollY, 0);
     }
 
     /**
@@ -241,16 +300,15 @@ public class AmbientState {
         }
     }
 
+    /**
+     * Is bypass currently enabled?
+     */
+    public boolean isBypassEnabled() {
+        return mBypassController.isBypassEnabled();
+    }
+
     public float getOverScrollAmount(boolean top) {
         return top ? mOverScrollTopAmount : mOverScrollBottomAmount;
-    }
-
-    public int getSpeedBumpIndex() {
-        return mSpeedBumpIndex;
-    }
-
-    public void setSpeedBumpIndex(int shelfIndex) {
-        mSpeedBumpIndex = shelfIndex;
     }
 
     public SectionProvider getSectionProvider() {
@@ -267,6 +325,14 @@ public class AmbientState {
 
     public void setLayoutHeight(int layoutHeight) {
         mLayoutHeight = layoutHeight;
+    }
+
+    public void setLayoutMaxHeight(int maxLayoutHeight) {
+        mLayoutMaxHeight = maxLayoutHeight;
+    }
+
+    public int getLayoutMaxHeight() {
+        return mLayoutMaxHeight;
     }
 
     public float getTopPadding() {
@@ -289,8 +355,8 @@ public class AmbientState {
         if (mDozeAmount == 1.0f && !isPulseExpanding()) {
             return mShelf.getHeight();
         }
-        int height = Math.max(mLayoutMinHeight,
-                Math.min(mLayoutHeight, mMaxLayoutHeight) - mTopPadding);
+        int height = (int) Math.max(mLayoutMinHeight,
+                Math.min(mLayoutHeight, mContentHeight) - mTopPadding);
         if (ignorePulseHeight) {
             return height;
         }
@@ -339,8 +405,12 @@ public class AmbientState {
         return mShelf;
     }
 
-    public void setLayoutMaxHeight(int maxLayoutHeight) {
-        mMaxLayoutHeight = maxLayoutHeight;
+    public void setContentHeight(int contentHeight) {
+        mContentHeight = contentHeight;
+    }
+
+    public float getContentHeight() {
+        return mContentHeight;
     }
 
     /**
@@ -393,7 +463,7 @@ public class AmbientState {
     }
 
     public boolean hasPulsingNotifications() {
-        return mPulsing && mHeadUpManager != null && mHeadUpManager.hasNotifications();
+        return mPulsing && mHasAlertEntries;
     }
 
     public void setPulsing(boolean hasPulsing) {
@@ -408,10 +478,7 @@ public class AmbientState {
     }
 
     public boolean isPulsing(NotificationEntry entry) {
-        if (!mPulsing || mHeadUpManager == null) {
-            return false;
-        }
-        return mHeadUpManager.isAlerting(entry.getKey());
+        return mPulsing && entry.isAlerting();
     }
 
     public boolean isPanelTracking() {
@@ -434,22 +501,6 @@ public class AmbientState {
         return mUnlockHintRunning;
     }
 
-    public boolean isQsCustomizerShowing() {
-        return mQsCustomizerShowing;
-    }
-
-    public void setQsCustomizerShowing(boolean qsCustomizerShowing) {
-        mQsCustomizerShowing = qsCustomizerShowing;
-    }
-
-    public void setIntrinsicPadding(int intrinsicPadding) {
-        mIntrinsicPadding = intrinsicPadding;
-    }
-
-    public int getIntrinsicPadding() {
-        return mIntrinsicPadding;
-    }
-
     /**
      * @return whether a view is dozing and not pulsing right now
      */
@@ -465,22 +516,6 @@ public class AmbientState {
      */
     public boolean isDozingAndNotPulsing(ExpandableNotificationRow row) {
         return isDozing() && !isPulsing(row.getEntry());
-    }
-
-    public void setExpandAnimationTopChange(int expandAnimationTopChange) {
-        mExpandAnimationTopChange = expandAnimationTopChange;
-    }
-
-    public void setExpandingNotification(ExpandableNotificationRow row) {
-        mExpandingNotification = row;
-    }
-
-    public ExpandableNotificationRow getExpandingNotification() {
-        return mExpandingNotification;
-    }
-
-    public int getExpandAnimationTopChange() {
-        return mExpandAnimationTopChange;
     }
 
     /**
@@ -542,10 +577,6 @@ public class AmbientState {
         mOnPulseHeightChangedListener = onPulseHeightChangedListener;
     }
 
-    public Runnable getOnPulseHeightChangedListener() {
-        return mOnPulseHeightChangedListener;
-    }
-
     public void setTrackedHeadsUpRow(ExpandableNotificationRow row) {
         mTrackedHeadsUpRow = row;
     }
@@ -567,5 +598,17 @@ public class AmbientState {
 
     public float getAppearFraction() {
         return mAppearFraction;
+    }
+
+    public void setHasAlertEntries(boolean hasAlertEntries) {
+        mHasAlertEntries = hasAlertEntries;
+    }
+
+    public void setStackTopMargin(int stackTopMargin) {
+        mStackTopMargin = stackTopMargin;
+    }
+
+    public int getStackTopMargin() {
+        return mStackTopMargin;
     }
 }

@@ -46,14 +46,17 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.XmlUtils;
 
 import libcore.io.IoUtils;
+import libcore.util.EmptyArray;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -71,14 +74,20 @@ public class SystemConfig {
     static SystemConfig sInstance;
 
     // permission flag, determines which types of configuration are allowed to be read
-    private static final int ALLOW_FEATURES = 0x01;
-    private static final int ALLOW_LIBS = 0x02;
-    private static final int ALLOW_PERMISSIONS = 0x04;
-    private static final int ALLOW_APP_CONFIGS = 0x08;
-    private static final int ALLOW_PRIVAPP_PERMISSIONS = 0x10;
-    private static final int ALLOW_OEM_PERMISSIONS = 0x20;
-    private static final int ALLOW_HIDDENAPI_WHITELISTING = 0x40;
-    private static final int ALLOW_ASSOCIATIONS = 0x80;
+    private static final int ALLOW_FEATURES = 0x001;
+    private static final int ALLOW_LIBS = 0x002;
+    private static final int ALLOW_PERMISSIONS = 0x004;
+    private static final int ALLOW_APP_CONFIGS = 0x008;
+    private static final int ALLOW_PRIVAPP_PERMISSIONS = 0x010;
+    private static final int ALLOW_OEM_PERMISSIONS = 0x020;
+    private static final int ALLOW_HIDDENAPI_WHITELISTING = 0x040;
+    private static final int ALLOW_ASSOCIATIONS = 0x080;
+    // ALLOW_OVERRIDE_APP_RESTRICTIONS allows to use "allow-in-power-save-except-idle",
+    // "allow-in-power-save", "allow-in-data-usage-save", "allow-unthrottled-location",
+    // and "allow-ignore-location-settings".
+    private static final int ALLOW_OVERRIDE_APP_RESTRICTIONS = 0x100;
+    private static final int ALLOW_IMPLICIT_BROADCASTS = 0x200;
+    private static final int ALLOW_VENDOR_APEX = 0x400;
     private static final int ALLOW_ALL = ~0;
 
     // property for runtime configuration differentiation
@@ -87,8 +96,11 @@ public class SystemConfig {
     // property for runtime configuration differentiation in vendor
     private static final String VENDOR_SKU_PROPERTY = "ro.boot.product.vendor.sku";
 
+    private static final ArrayMap<String, ArraySet<String>> EMPTY_PERMISSIONS =
+            new ArrayMap<>();
+
     // Group-ids that are given to all packages as read from etc/permissions/*.xml.
-    int[] mGlobalGids;
+    int[] mGlobalGids = EmptyArray.INT;
 
     // These are the built-in uid -> permission mappings that were read from the
     // system configuration files.
@@ -101,10 +113,73 @@ public class SystemConfig {
         public final String filename;
         public final String[] dependencies;
 
-        SharedLibraryEntry(String name, String filename, String[] dependencies) {
+        /**
+         * SDK version this library was added to the BOOTCLASSPATH.
+         *
+         * <p>At the SDK level specified in this field and higher, the apps' uses-library tags for
+         * this library will be ignored, since the library is always available on BOOTCLASSPATH.
+         *
+         * <p>0 means not specified.
+         */
+        public final int onBootclasspathSince;
+
+        /**
+         * SDK version this library was removed from the BOOTCLASSPATH.
+         *
+         * <p>At the SDK level specified in this field and higher, this library needs to be
+         * explicitly added by apps. For compatibility reasons, when an app
+         * targets an SDK less than the value of this attribute, this library is automatically
+         * added.
+         *
+         * <p>0 means not specified.
+         */
+        public final int onBootclasspathBefore;
+
+        /**
+         * Declares whether this library can be safely ignored from <uses-library> tags.
+         *
+         * <p> This can happen if the library initially had to be explicitly depended-on using that
+         * tag but has since been moved to the BOOTCLASSPATH which means now is always available
+         * and the tag is no longer required.
+         */
+        public final boolean canBeSafelyIgnored;
+
+        public final boolean isNative;
+
+
+        @VisibleForTesting
+        public SharedLibraryEntry(String name, String filename, String[] dependencies,
+                boolean isNative) {
+            this(name, filename, dependencies, 0 /* onBootclasspathSince */,
+                    0 /* onBootclasspathBefore */, isNative);
+        }
+
+        @VisibleForTesting
+        public SharedLibraryEntry(String name, String filename, String[] dependencies,
+                int onBootclasspathSince, int onBootclassPathBefore) {
+            this(name, filename, dependencies, onBootclasspathSince, onBootclassPathBefore,
+                    false /* isNative */);
+        }
+
+        SharedLibraryEntry(String name, String filename, String[] dependencies,
+                int onBootclasspathSince, int onBootclasspathBefore, boolean isNative) {
             this.name = name;
             this.filename = filename;
             this.dependencies = dependencies;
+            this.onBootclasspathSince = onBootclasspathSince;
+            this.onBootclasspathBefore = onBootclasspathBefore;
+            this.isNative = isNative;
+
+            canBeSafelyIgnored = this.onBootclasspathSince != 0
+                    && isSdkAtLeast(this.onBootclasspathSince);
+        }
+
+        private static boolean isSdkAtLeast(int level) {
+            if ("REL".equals(Build.VERSION.CODENAME)) {
+                return Build.VERSION.SDK_INT >= level;
+            }
+            return level == Build.VERSION_CODES.CUR_DEVELOPMENT
+                    || Build.VERSION.SDK_INT >= level;
         }
     }
 
@@ -156,21 +231,16 @@ public class SystemConfig {
 
     // These are the packages that are white-listed to be able to retrieve location even when user
     // location settings are off, for emergency purposes, as read from the configuration files.
-    final ArraySet<String> mAllowIgnoreLocationSettings = new ArraySet<>();
+    final ArrayMap<String, ArraySet<String>> mAllowIgnoreLocationSettings = new ArrayMap<>();
 
     // These are the action strings of broadcasts which are whitelisted to
     // be delivered anonymously even to apps which target O+.
     final ArraySet<String> mAllowImplicitBroadcasts = new ArraySet<>();
 
-    // These are the package names of apps which should be in the 'always'
-    // URL-handling state upon factory reset.
+    // These are the package names of apps which should be automatically granted domain verification
+    // for all of their domains. The only way these apps can be overridden by the user is by
+    // explicitly disabling overall link handling support in app info.
     final ArraySet<String> mLinkedApps = new ArraySet<>();
-
-    // These are the packages that are whitelisted to be able to run as system user
-    final ArraySet<String> mSystemUserWhitelistedApps = new ArraySet<>();
-
-    // These are the packages that should not run under system user
-    final ArraySet<String> mSystemUserBlacklistedApps = new ArraySet<>();
 
     // These are the components that are enabled by default as VR mode listener services.
     final ArraySet<ComponentName> mDefaultVrComponents = new ArraySet<>();
@@ -215,6 +285,11 @@ public class SystemConfig {
     final ArrayMap<String, ArraySet<String>> mSystemExtPrivAppPermissions = new ArrayMap<>();
     final ArrayMap<String, ArraySet<String>> mSystemExtPrivAppDenyPermissions = new ArrayMap<>();
 
+    final ArrayMap<String, ArrayMap<String, ArraySet<String>>> mApexPrivAppPermissions =
+            new ArrayMap<>();
+    final ArrayMap<String, ArrayMap<String, ArraySet<String>>> mApexPrivAppDenyPermissions =
+            new ArrayMap<>();
+
     final ArrayMap<String, ArrayMap<String, Boolean>> mOemPermissions = new ArrayMap<>();
 
     // Allowed associations between applications.  If there are any entries
@@ -232,6 +307,11 @@ public class SystemConfig {
 
     private final ArraySet<String> mRollbackWhitelistedPackages = new ArraySet<>();
     private final ArraySet<String> mWhitelistedStagedInstallers = new ArraySet<>();
+    // A map from package name of vendor APEXes that can be updated to an installer package name
+    // allowed to install updates for it.
+    private final ArrayMap<String, String> mAllowedVendorApexes = new ArrayMap<>();
+
+    private String mModulesInstallerPackageName;
 
     /**
      * Map of system pre-defined, uniquely named actors; keys are namespace,
@@ -305,20 +385,12 @@ public class SystemConfig {
         return mAllowUnthrottledLocation;
     }
 
-    public ArraySet<String> getAllowIgnoreLocationSettings() {
+    public ArrayMap<String, ArraySet<String>> getAllowIgnoreLocationSettings() {
         return mAllowIgnoreLocationSettings;
     }
 
     public ArraySet<String> getLinkedApps() {
         return mLinkedApps;
-    }
-
-    public ArraySet<String> getSystemUserWhitelistedApps() {
-        return mSystemUserWhitelistedApps;
-    }
-
-    public ArraySet<String> getSystemUserBlacklistedApps() {
-        return mSystemUserBlacklistedApps;
     }
 
     public ArraySet<String> getHiddenApiWhitelistedApps() {
@@ -352,6 +424,18 @@ public class SystemConfig {
 
     public ArraySet<String> getPrivAppDenyPermissions(String packageName) {
         return mPrivAppDenyPermissions.get(packageName);
+    }
+
+    /** Get privapp permission allowlist for an apk-in-apex. */
+    public ArraySet<String> getApexPrivAppPermissions(String module, String packageName) {
+        return mApexPrivAppPermissions.getOrDefault(module, EMPTY_PERMISSIONS)
+                .get(packageName);
+    }
+
+    /** Get privapp permissions denylist for an apk-in-apex. */
+    public ArraySet<String> getApexPrivAppDenyPermissions(String module, String packageName) {
+        return mApexPrivAppDenyPermissions.getOrDefault(module, EMPTY_PERMISSIONS)
+                .get(packageName);
     }
 
     public ArraySet<String> getVendorPrivAppPermissions(String packageName) {
@@ -408,6 +492,14 @@ public class SystemConfig {
 
     public Set<String> getWhitelistedStagedInstallers() {
         return mWhitelistedStagedInstallers;
+    }
+
+    public Map<String, String> getAllowedVendorApexes() {
+        return mAllowedVendorApexes;
+    }
+
+    public String getModulesInstallerPackageName() {
+        return mModulesInstallerPackageName;
     }
 
     public ArraySet<String> getAppDataIsolationWhitelistedApps() {
@@ -467,39 +559,42 @@ public class SystemConfig {
         log.traceBegin("readAllPermissions");
         try {
             readAllPermissions();
+            readPublicNativeLibrariesList();
         } finally {
             log.traceEnd();
         }
     }
 
     private void readAllPermissions() {
+        final XmlPullParser parser = Xml.newPullParser();
+
         // Read configuration from system
-        readPermissions(Environment.buildPath(
+        readPermissions(parser, Environment.buildPath(
                 Environment.getRootDirectory(), "etc", "sysconfig"), ALLOW_ALL);
 
         // Read configuration from the old permissions dir
-        readPermissions(Environment.buildPath(
+        readPermissions(parser, Environment.buildPath(
                 Environment.getRootDirectory(), "etc", "permissions"), ALLOW_ALL);
 
         // Vendors are only allowed to customize these
         int vendorPermissionFlag = ALLOW_LIBS | ALLOW_FEATURES | ALLOW_PRIVAPP_PERMISSIONS
-                | ALLOW_ASSOCIATIONS;
-        if (Build.VERSION.FIRST_SDK_INT <= Build.VERSION_CODES.O_MR1) {
+                | ALLOW_ASSOCIATIONS | ALLOW_VENDOR_APEX;
+        if (Build.VERSION.DEVICE_INITIAL_SDK_INT <= Build.VERSION_CODES.O_MR1) {
             // For backward compatibility
             vendorPermissionFlag |= (ALLOW_PERMISSIONS | ALLOW_APP_CONFIGS);
         }
-        readPermissions(Environment.buildPath(
+        readPermissions(parser, Environment.buildPath(
                 Environment.getVendorDirectory(), "etc", "sysconfig"), vendorPermissionFlag);
-        readPermissions(Environment.buildPath(
+        readPermissions(parser, Environment.buildPath(
                 Environment.getVendorDirectory(), "etc", "permissions"), vendorPermissionFlag);
 
         String vendorSkuProperty = SystemProperties.get(VENDOR_SKU_PROPERTY, "");
         if (!vendorSkuProperty.isEmpty()) {
             String vendorSkuDir = "sku_" + vendorSkuProperty;
-            readPermissions(Environment.buildPath(
+            readPermissions(parser, Environment.buildPath(
                     Environment.getVendorDirectory(), "etc", "sysconfig", vendorSkuDir),
                     vendorPermissionFlag);
-            readPermissions(Environment.buildPath(
+            readPermissions(parser, Environment.buildPath(
                     Environment.getVendorDirectory(), "etc", "permissions", vendorSkuDir),
                     vendorPermissionFlag);
         }
@@ -507,57 +602,72 @@ public class SystemConfig {
         // Allow ODM to customize system configs as much as Vendor, because /odm is another
         // vendor partition other than /vendor.
         int odmPermissionFlag = vendorPermissionFlag;
-        readPermissions(Environment.buildPath(
+        readPermissions(parser, Environment.buildPath(
                 Environment.getOdmDirectory(), "etc", "sysconfig"), odmPermissionFlag);
-        readPermissions(Environment.buildPath(
+        readPermissions(parser, Environment.buildPath(
                 Environment.getOdmDirectory(), "etc", "permissions"), odmPermissionFlag);
 
         String skuProperty = SystemProperties.get(SKU_PROPERTY, "");
         if (!skuProperty.isEmpty()) {
             String skuDir = "sku_" + skuProperty;
 
-            readPermissions(Environment.buildPath(
+            readPermissions(parser, Environment.buildPath(
                     Environment.getOdmDirectory(), "etc", "sysconfig", skuDir), odmPermissionFlag);
-            readPermissions(Environment.buildPath(
+            readPermissions(parser, Environment.buildPath(
                     Environment.getOdmDirectory(), "etc", "permissions", skuDir),
                     odmPermissionFlag);
         }
 
         // Allow OEM to customize these
-        int oemPermissionFlag = ALLOW_FEATURES | ALLOW_OEM_PERMISSIONS | ALLOW_ASSOCIATIONS;
-        readPermissions(Environment.buildPath(
+        int oemPermissionFlag = ALLOW_FEATURES | ALLOW_OEM_PERMISSIONS | ALLOW_ASSOCIATIONS
+                | ALLOW_VENDOR_APEX;
+        readPermissions(parser, Environment.buildPath(
                 Environment.getOemDirectory(), "etc", "sysconfig"), oemPermissionFlag);
-        readPermissions(Environment.buildPath(
+        readPermissions(parser, Environment.buildPath(
                 Environment.getOemDirectory(), "etc", "permissions"), oemPermissionFlag);
 
-        // Allow Product to customize all system configs
-        readPermissions(Environment.buildPath(
-                Environment.getProductDirectory(), "etc", "sysconfig"), ALLOW_ALL);
-        readPermissions(Environment.buildPath(
-                Environment.getProductDirectory(), "etc", "permissions"), ALLOW_ALL);
+        // Allow Product to customize these configs
+        // TODO(b/157203468): ALLOW_HIDDENAPI_WHITELISTING must be removed because we prohibited
+        // the use of hidden APIs from the product partition.
+        int productPermissionFlag = ALLOW_FEATURES | ALLOW_LIBS | ALLOW_PERMISSIONS
+                | ALLOW_APP_CONFIGS | ALLOW_PRIVAPP_PERMISSIONS | ALLOW_HIDDENAPI_WHITELISTING
+                | ALLOW_ASSOCIATIONS | ALLOW_OVERRIDE_APP_RESTRICTIONS | ALLOW_IMPLICIT_BROADCASTS
+                | ALLOW_VENDOR_APEX;
+        if (Build.VERSION.DEVICE_INITIAL_SDK_INT <= Build.VERSION_CODES.R) {
+            // TODO(b/157393157): This must check product interface enforcement instead of
+            // DEVICE_INITIAL_SDK_INT for the devices without product interface enforcement.
+            productPermissionFlag = ALLOW_ALL;
+        }
+        readPermissions(parser, Environment.buildPath(
+                Environment.getProductDirectory(), "etc", "sysconfig"), productPermissionFlag);
+        readPermissions(parser, Environment.buildPath(
+                Environment.getProductDirectory(), "etc", "permissions"), productPermissionFlag);
 
         // Allow /system_ext to customize all system configs
-        readPermissions(Environment.buildPath(
+        readPermissions(parser, Environment.buildPath(
                 Environment.getSystemExtDirectory(), "etc", "sysconfig"), ALLOW_ALL);
-        readPermissions(Environment.buildPath(
+        readPermissions(parser, Environment.buildPath(
                 Environment.getSystemExtDirectory(), "etc", "permissions"), ALLOW_ALL);
 
         // Skip loading configuration from apex if it is not a system process.
         if (!isSystemProcess()) {
             return;
         }
-        // Read configuration of libs from apex module.
+        // Read configuration of features, libs and priv-app permissions from apex module.
+        int apexPermissionFlag = ALLOW_LIBS | ALLOW_FEATURES | ALLOW_PRIVAPP_PERMISSIONS;
         // TODO: Use a solid way to filter apex module folders?
         for (File f: FileUtils.listFilesOrEmpty(Environment.getApexDirectory())) {
             if (f.isFile() || f.getPath().contains("@")) {
                 continue;
             }
-            readPermissions(Environment.buildPath(f, "etc", "permissions"), ALLOW_LIBS);
+            readPermissions(parser, Environment.buildPath(f, "etc", "permissions"),
+                    apexPermissionFlag);
         }
+        pruneVendorApexPrivappAllowlists();
     }
 
     @VisibleForTesting
-    public void readPermissions(File libraryDir, int permissionFlag) {
+    public void readPermissions(final XmlPullParser parser, File libraryDir, int permissionFlag) {
         // Read permissions from given directory.
         if (!libraryDir.exists() || !libraryDir.isDirectory()) {
             if (permissionFlag == ALLOW_ALL) {
@@ -592,12 +702,12 @@ public class SystemConfig {
                 continue;
             }
 
-            readPermissionsFromXml(f, permissionFlag);
+            readPermissionsFromXml(parser, f, permissionFlag);
         }
 
         // Read platform permissions last so it will take precedence
         if (platformFile != null) {
-            readPermissionsFromXml(platformFile, permissionFlag);
+            readPermissionsFromXml(parser, platformFile, permissionFlag);
         }
     }
 
@@ -606,8 +716,9 @@ public class SystemConfig {
                 + permFile + " at " + parser.getPositionDescription());
     }
 
-    private void readPermissionsFromXml(File permFile, int permissionFlag) {
-        FileReader permReader = null;
+    private void readPermissionsFromXml(final XmlPullParser parser, File permFile,
+            int permissionFlag) {
+        final FileReader permReader;
         try {
             permReader = new FileReader(permFile);
         } catch (FileNotFoundException e) {
@@ -619,7 +730,6 @@ public class SystemConfig {
         final boolean lowRam = ActivityManager.isLowRamDeviceStatic();
 
         try {
-            XmlPullParser parser = Xml.newPullParser();
             parser.setInput(permReader);
 
             int type;
@@ -648,6 +758,11 @@ public class SystemConfig {
             final boolean allowApiWhitelisting = (permissionFlag & ALLOW_HIDDENAPI_WHITELISTING)
                     != 0;
             final boolean allowAssociations = (permissionFlag & ALLOW_ASSOCIATIONS) != 0;
+            final boolean allowOverrideAppRestrictions =
+                    (permissionFlag & ALLOW_OVERRIDE_APP_RESTRICTIONS) != 0;
+            final boolean allowImplicitBroadcasts = (permissionFlag & ALLOW_IMPLICIT_BROADCASTS)
+                    != 0;
+            final boolean allowVendorApex = (permissionFlag & ALLOW_VENDOR_APEX) != 0;
             while (true) {
                 XmlUtils.nextElement(parser);
                 if (parser.getEventType() == XmlPullParser.END_DOCUMENT) {
@@ -735,11 +850,17 @@ public class SystemConfig {
                             XmlUtils.skipCurrentTag(parser);
                         }
                     } break;
+                    case "apex-library":
+                        // "apex-library" is meant to behave exactly like "library"
                     case "library": {
                         if (allowLibs) {
                             String lname = parser.getAttributeValue(null, "name");
                             String lfile = parser.getAttributeValue(null, "file");
                             String ldependency = parser.getAttributeValue(null, "dependency");
+                            int minDeviceSdk = XmlUtils.readIntAttribute(parser, "min-device-sdk",
+                                    0);
+                            int maxDeviceSdk = XmlUtils.readIntAttribute(parser, "max-device-sdk",
+                                    0);
                             if (lname == null) {
                                 Slog.w(TAG, "<" + name + "> without name in " + permFile + " at "
                                         + parser.getPositionDescription());
@@ -747,10 +868,34 @@ public class SystemConfig {
                                 Slog.w(TAG, "<" + name + "> without file in " + permFile + " at "
                                         + parser.getPositionDescription());
                             } else {
-                                //Log.i(TAG, "Got library " + lname + " in " + lfile);
-                                SharedLibraryEntry entry = new SharedLibraryEntry(lname, lfile,
-                                        ldependency == null ? new String[0] : ldependency.split(":"));
-                                mSharedLibraries.put(lname, entry);
+                                boolean allowedMinSdk = minDeviceSdk <= Build.VERSION.SDK_INT;
+                                boolean allowedMaxSdk =
+                                        maxDeviceSdk == 0 || maxDeviceSdk >= Build.VERSION.SDK_INT;
+                                final boolean exists = new File(lfile).exists();
+                                if (allowedMinSdk && allowedMaxSdk && exists) {
+                                    int bcpSince = XmlUtils.readIntAttribute(parser,
+                                            "on-bootclasspath-since", 0);
+                                    int bcpBefore = XmlUtils.readIntAttribute(parser,
+                                            "on-bootclasspath-before", 0);
+                                    SharedLibraryEntry entry = new SharedLibraryEntry(lname, lfile,
+                                            ldependency == null
+                                                    ? new String[0] : ldependency.split(":"),
+                                            bcpSince, bcpBefore);
+                                    mSharedLibraries.put(lname, entry);
+                                } else {
+                                    final StringBuilder msg = new StringBuilder(
+                                            "Ignore shared library ").append(lname).append(":");
+                                    if (!allowedMinSdk) {
+                                        msg.append(" min-device-sdk=").append(minDeviceSdk);
+                                    }
+                                    if (!allowedMaxSdk) {
+                                        msg.append(" max-device-sdk=").append(maxDeviceSdk);
+                                    }
+                                    if (!exists) {
+                                        msg.append(" ").append(lfile).append(" does not exist");
+                                    }
+                                    Slog.i(TAG, msg.toString());
+                                }
                             }
                         } else {
                             logNotAllowedInPartition(name, permFile, parser);
@@ -794,7 +939,7 @@ public class SystemConfig {
                         XmlUtils.skipCurrentTag(parser);
                     } break;
                     case "allow-in-power-save-except-idle": {
-                        if (allowAll) {
+                        if (allowOverrideAppRestrictions) {
                             String pkgname = parser.getAttributeValue(null, "package");
                             if (pkgname == null) {
                                 Slog.w(TAG, "<" + name + "> without package in "
@@ -808,7 +953,7 @@ public class SystemConfig {
                         XmlUtils.skipCurrentTag(parser);
                     } break;
                     case "allow-in-power-save": {
-                        if (allowAll) {
+                        if (allowOverrideAppRestrictions) {
                             String pkgname = parser.getAttributeValue(null, "package");
                             if (pkgname == null) {
                                 Slog.w(TAG, "<" + name + "> without package in "
@@ -822,7 +967,7 @@ public class SystemConfig {
                         XmlUtils.skipCurrentTag(parser);
                     } break;
                     case "allow-in-data-usage-save": {
-                        if (allowAll) {
+                        if (allowOverrideAppRestrictions) {
                             String pkgname = parser.getAttributeValue(null, "package");
                             if (pkgname == null) {
                                 Slog.w(TAG, "<" + name + "> without package in "
@@ -836,7 +981,7 @@ public class SystemConfig {
                         XmlUtils.skipCurrentTag(parser);
                     } break;
                     case "allow-unthrottled-location": {
-                        if (allowAll) {
+                        if (allowOverrideAppRestrictions) {
                             String pkgname = parser.getAttributeValue(null, "package");
                             if (pkgname == null) {
                                 Slog.w(TAG, "<" + name + "> without package in "
@@ -850,13 +995,27 @@ public class SystemConfig {
                         XmlUtils.skipCurrentTag(parser);
                     } break;
                     case "allow-ignore-location-settings": {
-                        if (allowAll) {
+                        if (allowOverrideAppRestrictions) {
                             String pkgname = parser.getAttributeValue(null, "package");
+                            String attributionTag = parser.getAttributeValue(null,
+                                    "attributionTag");
                             if (pkgname == null) {
                                 Slog.w(TAG, "<" + name + "> without package in "
                                         + permFile + " at " + parser.getPositionDescription());
                             } else {
-                                mAllowIgnoreLocationSettings.add(pkgname);
+                                ArraySet<String> tags = mAllowIgnoreLocationSettings.get(pkgname);
+                                if (tags == null || !tags.isEmpty()) {
+                                    if (tags == null) {
+                                        tags = new ArraySet<>(1);
+                                        mAllowIgnoreLocationSettings.put(pkgname, tags);
+                                    }
+                                    if (!"*".equals(attributionTag)) {
+                                        if ("null".equals(attributionTag)) {
+                                            attributionTag = null;
+                                        }
+                                        tags.add(attributionTag);
+                                    }
+                                }
                             }
                         } else {
                             logNotAllowedInPartition(name, permFile, parser);
@@ -864,7 +1023,7 @@ public class SystemConfig {
                         XmlUtils.skipCurrentTag(parser);
                     } break;
                     case "allow-implicit-broadcast": {
-                        if (allowAll) {
+                        if (allowImplicitBroadcasts) {
                             String action = parser.getAttributeValue(null, "action");
                             if (action == null) {
                                 Slog.w(TAG, "<" + name + "> without action in "
@@ -885,34 +1044,6 @@ public class SystemConfig {
                                         + " at " + parser.getPositionDescription());
                             } else {
                                 mLinkedApps.add(pkgname);
-                            }
-                        } else {
-                            logNotAllowedInPartition(name, permFile, parser);
-                        }
-                        XmlUtils.skipCurrentTag(parser);
-                    } break;
-                    case "system-user-whitelisted-app": {
-                        if (allowAppConfigs) {
-                            String pkgname = parser.getAttributeValue(null, "package");
-                            if (pkgname == null) {
-                                Slog.w(TAG, "<" + name + "> without package in "
-                                        + permFile + " at " + parser.getPositionDescription());
-                            } else {
-                                mSystemUserWhitelistedApps.add(pkgname);
-                            }
-                        } else {
-                            logNotAllowedInPartition(name, permFile, parser);
-                        }
-                        XmlUtils.skipCurrentTag(parser);
-                    } break;
-                    case "system-user-blacklisted-app": {
-                        if (allowAppConfigs) {
-                            String pkgname = parser.getAttributeValue(null, "package");
-                            if (pkgname == null) {
-                                Slog.w(TAG, "<" + name + "> without package in "
-                                        + permFile + " at " + parser.getPositionDescription());
-                            } else {
-                                mSystemUserBlacklistedApps.add(pkgname);
                             }
                         } else {
                             logNotAllowedInPartition(name, permFile, parser);
@@ -1021,10 +1152,10 @@ public class SystemConfig {
                     } break;
                     case "privapp-permissions": {
                         if (allowPrivappPermissions) {
-                            // privapp permissions from system, vendor, product and system_ext
-                            // partitions are stored separately. This is to prevent xml files in
-                            // the vendor partition from granting permissions to priv apps in the
-                            // system partition and vice versa.
+                            // privapp permissions from system, apex, vendor, product and
+                            // system_ext partitions are stored separately. This is to
+                            // prevent xml files in the vendor partition from granting
+                            // permissions to priv apps in the system partition and vice versa.
                             boolean vendor = permFile.toPath().startsWith(
                                     Environment.getVendorDirectory().toPath() + "/")
                                     || permFile.toPath().startsWith(
@@ -1033,6 +1164,8 @@ public class SystemConfig {
                                     Environment.getProductDirectory().toPath() + "/");
                             boolean systemExt = permFile.toPath().startsWith(
                                     Environment.getSystemExtDirectory().toPath() + "/");
+                            boolean apex = permFile.toPath().startsWith(
+                                    Environment.getApexDirectory().toPath() + "/");
                             if (vendor) {
                                 readPrivAppPermissions(parser, mVendorPrivAppPermissions,
                                         mVendorPrivAppDenyPermissions);
@@ -1042,6 +1175,9 @@ public class SystemConfig {
                             } else if (systemExt) {
                                 readPrivAppPermissions(parser, mSystemExtPrivAppPermissions,
                                         mSystemExtPrivAppDenyPermissions);
+                            } else if (apex) {
+                                readApexPrivAppPermissions(parser, permFile,
+                                        Environment.getApexDirectory().toPath());
                             } else {
                                 readPrivAppPermissions(parser, mPrivAppPermissions,
                                         mPrivAppDenyPermissions);
@@ -1200,11 +1336,41 @@ public class SystemConfig {
                     case "whitelisted-staged-installer": {
                         if (allowAppConfigs) {
                             String pkgname = parser.getAttributeValue(null, "package");
+                            boolean isModulesInstaller = XmlUtils.readBooleanAttribute(
+                                    parser, "isModulesInstaller", false);
                             if (pkgname == null) {
                                 Slog.w(TAG, "<" + name + "> without package in " + permFile
                                         + " at " + parser.getPositionDescription());
                             } else {
                                 mWhitelistedStagedInstallers.add(pkgname);
+                            }
+                            if (isModulesInstaller) {
+                                if (mModulesInstallerPackageName != null) {
+                                    throw new IllegalStateException(
+                                            "Multiple modules installers");
+                                }
+                                mModulesInstallerPackageName = pkgname;
+                            }
+                        } else {
+                            logNotAllowedInPartition(name, permFile, parser);
+                        }
+                        XmlUtils.skipCurrentTag(parser);
+                    } break;
+                    case "allowed-vendor-apex": {
+                        if (allowVendorApex) {
+                            String pkgName = parser.getAttributeValue(null, "package");
+                            String installerPkgName = parser.getAttributeValue(
+                                    null, "installerPackage");
+                            if (pkgName == null) {
+                                Slog.w(TAG, "<" + name + "> without package in " + permFile
+                                        + " at " + parser.getPositionDescription());
+                            }
+                            if (installerPkgName == null) {
+                                Slog.w(TAG, "<" + name + "> without installerPackage in " + permFile
+                                        + " at " + parser.getPositionDescription());
+                            }
+                            if (pkgName != null && installerPkgName != null) {
+                                mAllowedVendorApexes.put(pkgName, installerPkgName);
                             }
                         } else {
                             logNotAllowedInPartition(name, permFile, parser);
@@ -1244,15 +1410,16 @@ public class SystemConfig {
             addFeature(PackageManager.FEATURE_RAM_NORMAL, 0);
         }
 
-        if (IncrementalManager.isFeatureEnabled()) {
-            addFeature(PackageManager.FEATURE_INCREMENTAL_DELIVERY, 0);
+        final int incrementalVersion = IncrementalManager.getVersion();
+        if (incrementalVersion > 0) {
+            addFeature(PackageManager.FEATURE_INCREMENTAL_DELIVERY, incrementalVersion);
         }
 
         if (PackageManager.APP_ENUMERATION_ENABLED_BY_DEFAULT) {
             addFeature(PackageManager.FEATURE_APP_ENUMERATION, 0);
         }
 
-        if (Build.VERSION.FIRST_SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.DEVICE_INITIAL_SDK_INT >= Build.VERSION_CODES.Q) {
             addFeature(PackageManager.FEATURE_IPSEC_TUNNELS, 0);
         }
 
@@ -1357,6 +1524,21 @@ public class SystemConfig {
         grantMap.put(packageName, permissions);
         if (denyPermissions != null) {
             denyMap.put(packageName, denyPermissions);
+        }
+    }
+
+    /**
+     * Prunes out any privileged permission allowlists bundled in vendor apexes.
+     */
+    @VisibleForTesting
+    public void pruneVendorApexPrivappAllowlists() {
+        for (String moduleName: mAllowedVendorApexes.keySet()) {
+            if (mApexPrivAppPermissions.containsKey(moduleName)
+                    || mApexPrivAppDenyPermissions.containsKey(moduleName)) {
+                Slog.w(TAG, moduleName + " is a vendor apex, ignore its priv-app allowlist");
+                mApexPrivAppPermissions.remove(moduleName);
+                mApexPrivAppDenyPermissions.remove(moduleName);
+            }
         }
     }
 
@@ -1528,6 +1710,83 @@ public class SystemConfig {
                 componentEnabledStates.put(clsname, !"false".equals(enabled));
             }
         }
+    }
+
+    private void readPublicNativeLibrariesList() {
+        readPublicLibrariesListFile(new File("/vendor/etc/public.libraries.txt"));
+        String[] dirs = {"/system/etc", "/system_ext/etc", "/product/etc"};
+        for (String dir : dirs) {
+            File[] files = new File(dir).listFiles();
+            if (files == null) {
+                Slog.w(TAG, "Public libraries file folder missing: " + dir);
+                continue;
+            }
+            for (File f : files) {
+                String name = f.getName();
+                if (name.startsWith("public.libraries-") && name.endsWith(".txt")) {
+                    readPublicLibrariesListFile(f);
+                }
+            }
+        }
+    }
+
+    private void readPublicLibrariesListFile(File listFile) {
+        try (BufferedReader br = new BufferedReader(new FileReader(listFile))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                if (line.isEmpty() || line.startsWith("#")) {
+                    continue;
+                }
+                // Line format is <soname> [abi]. We take the soname part.
+                String soname = line.trim().split(" ")[0];
+                SharedLibraryEntry entry = new SharedLibraryEntry(
+                        soname, soname, new String[0], true);
+                mSharedLibraries.put(entry.name, entry);
+            }
+        } catch (IOException e) {
+            Slog.w(TAG, "Failed to read public libraries file " + listFile, e);
+        }
+    }
+
+
+    /**
+     * Returns the module name for a file in the apex module's partition.
+     */
+    private String getApexModuleNameFromFilePath(Path path, Path apexDirectoryPath) {
+        if (!path.startsWith(apexDirectoryPath)) {
+            throw new IllegalArgumentException("File " + path + " is not part of an APEX.");
+        }
+        // File must be in <apex_directory>/<module_name>/[extra_paths/]<xml_file>
+        if (path.getNameCount() <= (apexDirectoryPath.getNameCount() + 1)) {
+            throw new IllegalArgumentException("File " + path + " is in the APEX partition,"
+                                                + " but not inside a module.");
+        }
+        return path.getName(apexDirectoryPath.getNameCount()).toString();
+    }
+
+    /**
+     * Reads the contents of the privileged permission allowlist stored inside an APEX.
+     */
+    @VisibleForTesting
+    public void readApexPrivAppPermissions(XmlPullParser parser, File permFile,
+            Path apexDirectoryPath) throws IOException, XmlPullParserException {
+        final String moduleName =
+                getApexModuleNameFromFilePath(permFile.toPath(), apexDirectoryPath);
+        final ArrayMap<String, ArraySet<String>> privAppPermissions;
+        if (mApexPrivAppPermissions.containsKey(moduleName)) {
+            privAppPermissions = mApexPrivAppPermissions.get(moduleName);
+        } else {
+            privAppPermissions = new ArrayMap<>();
+            mApexPrivAppPermissions.put(moduleName, privAppPermissions);
+        }
+        final ArrayMap<String, ArraySet<String>> privAppDenyPermissions;
+        if (mApexPrivAppDenyPermissions.containsKey(moduleName)) {
+            privAppDenyPermissions = mApexPrivAppDenyPermissions.get(moduleName);
+        } else {
+            privAppDenyPermissions = new ArrayMap<>();
+            mApexPrivAppDenyPermissions.put(moduleName, privAppDenyPermissions);
+        }
+        readPrivAppPermissions(parser, privAppPermissions, privAppDenyPermissions);
     }
 
     private static boolean isSystemProcess() {

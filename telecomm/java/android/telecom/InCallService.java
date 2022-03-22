@@ -69,7 +69,14 @@ import java.util.List;
  * them know that the app has crashed and that their call was continued using the pre-loaded dialer
  * app.
  * <p>
- * Further, the pre-loaded dialer will ALWAYS be used when the user places an emergency call.
+ * The pre-loaded dialer will ALWAYS be used when the user places an emergency call, even if your
+ * app fills the {@link android.app.role.RoleManager#ROLE_DIALER} role.  To ensure an optimal
+ * experience when placing an emergency call, the default dialer should ALWAYS use
+ * {@link android.telecom.TelecomManager#placeCall(Uri, Bundle)} to place calls (including
+ * emergency calls).  This ensures that the platform is able to verify that the request came from
+ * the default dialer.  If a non-preloaded dialer app uses {@link Intent#ACTION_CALL} to place an
+ * emergency call, it will be raised to the preloaded dialer app using {@link Intent#ACTION_DIAL}
+ * for confirmation; this is a suboptimal user experience.
  * <p>
  * Below is an example manifest registration for an {@code InCallService}. The meta-data
  * {@link TelecomManager#METADATA_IN_CALL_SERVICE_UI} indicates that this particular
@@ -81,7 +88,8 @@ import java.util.List;
  * <pre>
  * {@code
  * <service android:name="your.package.YourInCallServiceImplementation"
- *          android:permission="android.permission.BIND_INCALL_SERVICE">
+ *          android:permission="android.permission.BIND_INCALL_SERVICE"
+ *          android:exported="true">
  *      <meta-data android:name="android.telecom.IN_CALL_SERVICE_UI" android:value="true" />
  *      <meta-data android:name="android.telecom.IN_CALL_SERVICE_RINGING"
  *          android:value="true" />
@@ -91,6 +99,10 @@ import java.util.List;
  * </service>
  * }
  * </pre>
+ *
+ * <em>Note: You should NOT mark your {@link InCallService} with the attribute
+ * {@code android:exported="false"}; doing so can result in a failure to bind to your implementation
+ * during calls.</em>
  * <p>
  * In addition to implementing the {@link InCallService} API, you must also declare an activity in
  * your manifest which handles the {@link Intent#ACTION_DIAL} intent.  The example below illustrates
@@ -138,6 +150,24 @@ import java.util.List;
  *     }
  * }
  * }
+ *
+ * </pre>
+ * <p id="companionInCallService">
+ * <h3>Access to InCallService for Wearable Devices</h3>
+ * <ol>
+ * If your app is a third-party companion app and wants to access InCallService APIs, what your
+ * app could do are:
+ * <p>
+ *   <ol>
+ *     <li> Declare MANAGE_ONGOING_CALLS permission in your manifest
+ *     <li> Associate with a physical wearable device via the
+ *          {@link android.companion.CompanionDeviceManager} API as a companion app. See:
+ *          https://developer.android.com/guide/topics/connectivity/companion-device-pairing
+ *     <li> Implement this InCallService with BIND_INCALL_SERVICE permission
+ *   </ol>
+ * </ol>
+ * <p>
+ *
  * </pre>
  * <p id="incomingCallNotification">
  * <h3>Showing the Incoming Call Notification</h3>
@@ -179,7 +209,7 @@ import java.util.List;
  * Intent intent = new Intent(Intent.ACTION_MAIN, null);
  * intent.setFlags(Intent.FLAG_ACTIVITY_NO_USER_ACTION | Intent.FLAG_ACTIVITY_NEW_TASK);
  * intent.setClass(context, YourIncomingCallActivity.class);
- * PendingIntent pendingIntent = PendingIntent.getActivity(context, 1, intent, 0);
+ * PendingIntent pendingIntent = PendingIntent.getActivity(context, 1, intent, PendingIntent.FLAG_MUTABLE_UNAUDITED);
  *
  * // Build the notification as an ongoing high priority item; this ensures it will show as
  * // a heads up notification which slides down over top of the current content.
@@ -746,11 +776,13 @@ public abstract class InCallService extends Service {
         public abstract void setDeviceOrientation(int rotation);
 
         /**
-         * Sets camera zoom ratio.
+         * Sets the camera zoom ratio.
          * <p>
          * Handled by {@link Connection.VideoProvider#onSetZoom(float)}.
          *
-         * @param value The camera zoom ratio.
+         * @param value The camera zoom ratio; for the current camera, should be a value in the
+         * range defined by
+         * {@link android.hardware.camera2.CameraCharacteristics#CONTROL_ZOOM_RATIO_RANGE}.
          */
         public abstract void setZoom(float value);
 

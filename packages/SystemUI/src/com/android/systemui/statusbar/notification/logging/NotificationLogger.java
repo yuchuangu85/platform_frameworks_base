@@ -20,8 +20,8 @@ import android.os.Handler;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemClock;
+import android.os.Trace;
 import android.service.notification.NotificationListenerService;
-import android.service.notification.NotificationStats;
 import android.service.notification.StatusBarNotification;
 import android.util.ArrayMap;
 import android.util.ArraySet;
@@ -44,7 +44,6 @@ import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.dagger.NotificationsModule;
 import com.android.systemui.statusbar.notification.stack.ExpandableViewState;
 import com.android.systemui.statusbar.notification.stack.NotificationListContainer;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -74,7 +73,6 @@ public class NotificationLogger implements StateListener {
     private final Executor mUiBgExecutor;
     private final NotificationEntryManager mEntryManager;
     private final NotificationPanelLogger mNotificationPanelLogger;
-    private HeadsUpManager mHeadsUpManager;
     private final ExpansionStateLogger mExpansionStateLogger;
 
     protected Handler mHandler = new Handler();
@@ -161,6 +159,9 @@ public class NotificationLogger implements StateListener {
 
             mExpansionStateLogger.onVisibilityChanged(
                     mTmpCurrentlyVisibleNotifications, mTmpCurrentlyVisibleNotifications);
+            Trace.traceCounter(Trace.TRACE_TAG_APP, "Notifications [Active]", N);
+            Trace.traceCounter(Trace.TRACE_TAG_APP, "Notifications [Visible]",
+                    mCurrentlyVisibleNotifications.size());
 
             recycleAllVisibilityObjects(mTmpNoLongerVisibleNotifications);
             mTmpCurrentlyVisibleNotifications.clear();
@@ -226,9 +227,6 @@ public class NotificationLogger implements StateListener {
                     NotificationVisibility visibility,
                     boolean removedByUser,
                     int reason) {
-                if (removedByUser && visibility != null) {
-                    logNotificationClear(entry.getKey(), entry.getSbn(), visibility);
-                }
                 mExpansionStateLogger.onEntryRemoved(entry.getKey());
             }
 
@@ -248,10 +246,6 @@ public class NotificationLogger implements StateListener {
 
     public void setUpWithContainer(NotificationListContainer listContainer) {
         mListContainer = listContainer;
-    }
-
-    public void setHeadsUpManager(HeadsUpManager headsUpManager) {
-        mHeadsUpManager = headsUpManager;
     }
 
     public void stopNotificationLogging() {
@@ -293,30 +287,6 @@ public class NotificationLogger implements StateListener {
         synchronized (mDozingLock) {
             mDozing = dozing;
             maybeUpdateLoggingStatus();
-        }
-    }
-
-    // TODO: This method has side effects, it is NOT just logging that a notification
-    // was cleared, it also actually removes the notification
-    private void logNotificationClear(String key, StatusBarNotification notification,
-            NotificationVisibility nv) {
-        final String pkg = notification.getPackageName();
-        final String tag = notification.getTag();
-        final int id = notification.getId();
-        final int userId = notification.getUserId();
-        try {
-            int dismissalSurface = NotificationStats.DISMISSAL_SHADE;
-            if (mHeadsUpManager.isAlerting(key)) {
-                dismissalSurface = NotificationStats.DISMISSAL_PEEK;
-            } else if (mListContainer.hasPulsingNotifications()) {
-                dismissalSurface = NotificationStats.DISMISSAL_AOD;
-            }
-            int dismissalSentiment = NotificationStats.DISMISS_SENTIMENT_NEUTRAL;
-            mBarService.onNotificationClear(pkg, tag, id, userId, notification.getKey(),
-                    dismissalSurface,
-                    dismissalSentiment, nv);
-        } catch (RemoteException ex) {
-            // system process is dead if we're here.
         }
     }
 

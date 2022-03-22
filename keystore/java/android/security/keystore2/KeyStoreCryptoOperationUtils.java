@@ -18,6 +18,7 @@ package android.security.keystore2;
 
 import android.app.ActivityThread;
 import android.hardware.biometrics.BiometricManager;
+import android.hardware.security.keymint.ErrorCode;
 import android.security.GateKeeper;
 import android.security.KeyStore;
 import android.security.KeyStoreException;
@@ -39,6 +40,7 @@ import java.security.InvalidKeyException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 
 /**
  * Assorted utility methods for implementing crypto operations on top of KeyStore.
@@ -48,6 +50,7 @@ import java.util.List;
 abstract class KeyStoreCryptoOperationUtils {
 
     private static volatile SecureRandom sRng;
+    private static final Random sRandom = new Random();
 
     private KeyStoreCryptoOperationUtils() {}
 
@@ -86,7 +89,7 @@ abstract class KeyStoreCryptoOperationUtils {
         // specific sensor (the one that hasn't changed), and 2) currently the only
         // signal to developers is the UserNotAuthenticatedException, which doesn't
         // indicate a specific sensor.
-        boolean canUnlockViaBiometrics = true;
+        boolean canUnlockViaBiometrics = biometricSids.length > 0;
         for (long sid : biometricSids) {
             if (!keySids.contains(sid)) {
                 canUnlockViaBiometrics = false;
@@ -120,6 +123,7 @@ abstract class KeyStoreCryptoOperationUtils {
                 return new KeyPermanentlyInvalidatedException();
             case ResponseCode.LOCKED:
             case ResponseCode.UNINITIALIZED:
+            case KeymasterDefs.KM_ERROR_KEY_USER_NOT_AUTHENTICATED:
                 // TODO b/173111727 remove response codes LOCKED and UNINITIALIZED
                 return new UserNotAuthenticatedException();
             default:
@@ -182,15 +186,19 @@ abstract class KeyStoreCryptoOperationUtils {
             try {
                 operation.abort();
             } catch (KeyStoreException e) {
-                // We log this error, but we can afford to ignore it. Dropping the reference
-                // to the KeyStoreOperation is enough to clean up all related resources even
-                // in the Keystore daemon. We log it anyway, because it may indicate some
-                // underlying problem that is worth debugging.
-                Log.w(
-                        "KeyStoreCryptoOperationUtils",
-                        "Encountered error trying to abort a keystore operation.",
-                        e
-                );
+                // Invalid operation handle is very common at this point. It occurs every time
+                // an already finalized operation gets aborted.
+                if (e.getErrorCode() != ErrorCode.INVALID_OPERATION_HANDLE) {
+                    // This error gets logged but ignored. Dropping the reference
+                    // to the KeyStoreOperation is enough to clean up all related resources even
+                    // in the Keystore daemon. It gets logged anyway, because it may indicate some
+                    // underlying problem that is worth debugging.
+                    Log.w(
+                            "KeyStoreCryptoOperationUtils",
+                            "Encountered error trying to abort a keystore operation.",
+                            e
+                    );
+                }
             }
         }
     }
@@ -205,7 +213,7 @@ abstract class KeyStoreCryptoOperationUtils {
         } else {
             // Keystore won't give us an operation challenge if the operation doesn't
             // need user authorization. So we make our own.
-            return Math.randomLongInternal();
+            return sRandom.nextLong();
         }
     }
 }

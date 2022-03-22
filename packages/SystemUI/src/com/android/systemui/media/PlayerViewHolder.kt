@@ -35,7 +35,6 @@ class PlayerViewHolder private constructor(itemView: View) {
 
     // Player information
     val appIcon = itemView.requireViewById<ImageView>(R.id.icon)
-    val appName = itemView.requireViewById<TextView>(R.id.app_name)
     val albumView = itemView.requireViewById<ImageView>(R.id.album_art)
     val titleText = itemView.requireViewById<TextView>(R.id.header_title)
     val artistText = itemView.requireViewById<TextView>(R.id.header_artist)
@@ -44,7 +43,7 @@ class PlayerViewHolder private constructor(itemView: View) {
     val seamless = itemView.requireViewById<ViewGroup>(R.id.media_seamless)
     val seamlessIcon = itemView.requireViewById<ImageView>(R.id.media_seamless_image)
     val seamlessText = itemView.requireViewById<TextView>(R.id.media_seamless_text)
-    val seamlessFallback = itemView.requireViewById<ImageView>(R.id.media_seamless_fallback)
+    val seamlessButton = itemView.requireViewById<View>(R.id.media_seamless_button)
 
     // Seek bar
     val seekBar = itemView.requireViewById<SeekBar>(R.id.media_progress_bar)
@@ -60,9 +59,12 @@ class PlayerViewHolder private constructor(itemView: View) {
     val action4 = itemView.requireViewById<ImageButton>(R.id.action4)
 
     // Settings screen
+    val longPressText = itemView.requireViewById<TextView>(R.id.remove_text)
     val cancel = itemView.requireViewById<View>(R.id.cancel)
-    val dismiss = itemView.requireViewById<View>(R.id.dismiss)
+    val dismiss = itemView.requireViewById<ViewGroup>(R.id.dismiss)
+    val dismissLabel = dismiss.getChildAt(0)
     val settings = itemView.requireViewById<View>(R.id.settings)
+    val settingsText = itemView.requireViewById<TextView>(R.id.settings_text)
 
     init {
         (player.background as IlluminationDrawable).let {
@@ -91,6 +93,10 @@ class PlayerViewHolder private constructor(itemView: View) {
         }
     }
 
+    fun marquee(start: Boolean, delay: Long) {
+        longPressText.getHandler().postDelayed({ longPressText.setSelected(start) }, delay)
+    }
+
     companion object {
         /**
          * Creates a PlayerViewHolder.
@@ -100,6 +106,7 @@ class PlayerViewHolder private constructor(itemView: View) {
          */
         @JvmStatic fun create(inflater: LayoutInflater, parent: ViewGroup): PlayerViewHolder {
             val mediaView = inflater.inflate(R.layout.media_view, parent, false)
+            mediaView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
             // Because this media view (a TransitionLayout) is used to measure and layout the views
             // in various states before being attached to its parent, we can't depend on the default
             // LAYOUT_DIRECTION_INHERIT to correctly resolve the ltr direction.
@@ -128,7 +135,6 @@ class PlayerViewHolder private constructor(itemView: View) {
                 R.id.icon
         )
         val gutsIds = setOf(
-                R.id.media_text,
                 R.id.remove_text,
                 R.id.cancel,
                 R.id.dismiss,

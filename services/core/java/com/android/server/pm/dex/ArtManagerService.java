@@ -486,7 +486,7 @@ public class ArtManagerService extends android.content.pm.dex.IArtManager.Stub {
     public boolean compileLayouts(AndroidPackage pkg) {
         try {
             final String packageName = pkg.getPackageName();
-            final String apkPath = pkg.getBaseCodePath();
+            final String apkPath = pkg.getBaseApkPath();
             // TODO(b/143971007): Use a cross-user directory
             File dataDir = PackageInfoWithoutStateUtils.getDataDir(pkg, UserHandle.myUserId());
             final String outDexFile = dataDir.getAbsolutePath() + "/code_cache/compiled_view.dex";
@@ -501,7 +501,7 @@ public class ArtManagerService extends android.content.pm.dex.IArtManager.Stub {
             }
             Log.i("PackageManager", "Compiling layouts in " + packageName + " (" + apkPath +
                     ") to " + outDexFile);
-            long callingId = Binder.clearCallingIdentity();
+            final long callingId = Binder.clearCallingIdentity();
             try {
                 synchronized (mInstallLock) {
                     return mInstaller.compileLayouts(apkPath, packageName, outDexFile,
@@ -524,7 +524,7 @@ public class ArtManagerService extends android.content.pm.dex.IArtManager.Stub {
     private ArrayMap<String, String> getPackageProfileNames(AndroidPackage pkg) {
         ArrayMap<String, String> result = new ArrayMap<>();
         if (pkg.isHasCode()) {
-            result.put(pkg.getBaseCodePath(), ArtManager.getProfileName(null));
+            result.put(pkg.getBaseApkPath(), ArtManager.getProfileName(null));
         }
 
         String[] splitCodePaths = pkg.getSplitCodePaths();
@@ -587,7 +587,7 @@ public class ArtManagerService extends android.content.pm.dex.IArtManager.Stub {
     private static final int TRON_COMPILATION_REASON_ERROR = 0;
     private static final int TRON_COMPILATION_REASON_UNKNOWN = 1;
     private static final int TRON_COMPILATION_REASON_FIRST_BOOT = 2;
-    private static final int TRON_COMPILATION_REASON_BOOT = 3;
+    private static final int TRON_COMPILATION_REASON_BOOT_DEPRECATED_SINCE_S = 3;
     private static final int TRON_COMPILATION_REASON_INSTALL = 4;
     private static final int TRON_COMPILATION_REASON_BG_DEXOPT = 5;
     private static final int TRON_COMPILATION_REASON_AB_OTA = 6;
@@ -605,6 +605,11 @@ public class ArtManagerService extends android.content.pm.dex.IArtManager.Stub {
     private static final int TRON_COMPILATION_REASON_INSTALL_BULK_DOWNGRADED_WITH_DM = 18;
     private static final int
             TRON_COMPILATION_REASON_INSTALL_BULK_SECONDARY_DOWNGRADED_WITH_DM = 19;
+    private static final int TRON_COMPILATION_REASON_BOOT_AFTER_OTA = 20;
+    private static final int TRON_COMPILATION_REASON_POST_BOOT = 21;
+    private static final int TRON_COMPILATION_REASON_CMDLINE = 22;
+    private static final int TRON_COMPILATION_REASON_PREBUILT = 23;
+    private static final int TRON_COMPILATION_REASON_VDEX = 24;
 
     // The annotation to add as a suffix to the compilation reason when dexopt was
     // performed with dex metadata.
@@ -615,15 +620,18 @@ public class ArtManagerService extends android.content.pm.dex.IArtManager.Stub {
      */
     private static int getCompilationReasonTronValue(String compilationReason) {
         switch (compilationReason) {
-            case "unknown" : return TRON_COMPILATION_REASON_UNKNOWN;
+            case "cmdline" : return TRON_COMPILATION_REASON_CMDLINE;
             case "error" : return TRON_COMPILATION_REASON_ERROR;
             case "first-boot" : return TRON_COMPILATION_REASON_FIRST_BOOT;
-            case "boot" : return TRON_COMPILATION_REASON_BOOT;
+            case "boot-after-ota": return TRON_COMPILATION_REASON_BOOT_AFTER_OTA;
+            case "post-boot" : return TRON_COMPILATION_REASON_POST_BOOT;
             case "install" : return TRON_COMPILATION_REASON_INSTALL;
             case "bg-dexopt" : return TRON_COMPILATION_REASON_BG_DEXOPT;
             case "ab-ota" : return TRON_COMPILATION_REASON_AB_OTA;
             case "inactive" : return TRON_COMPILATION_REASON_INACTIVE;
             case "shared" : return TRON_COMPILATION_REASON_SHARED;
+            case "prebuilt" : return TRON_COMPILATION_REASON_PREBUILT;
+            case "vdex" : return TRON_COMPILATION_REASON_VDEX;
             case "install-fast" :
                 return TRON_COMPILATION_REASON_INSTALL_FAST;
             case "install-bulk" :
@@ -760,10 +768,14 @@ public class ArtManagerService extends android.content.pm.dex.IArtManager.Stub {
                                        "compiled_trace.pb");
             try {
                 boolean exists =  Files.exists(tracePath);
-                Log.d(TAG, tracePath.toString() + (exists? " exists" : " doesn't exist"));
+                if (DEBUG) {
+                    Log.d(TAG, tracePath.toString() + (exists? " exists" : " doesn't exist"));
+                }
                 if (exists) {
                     long bytes = Files.size(tracePath);
-                    Log.d(TAG, tracePath.toString() + " size is " + Long.toString(bytes));
+                    if (DEBUG) {
+                        Log.d(TAG, tracePath.toString() + " size is " + Long.toString(bytes));
+                    }
                     return bytes > 0L;
                 }
                 return exists;

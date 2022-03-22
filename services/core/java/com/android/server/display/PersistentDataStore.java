@@ -25,21 +25,18 @@ import android.util.Slog;
 import android.util.SparseArray;
 import android.util.SparseLongArray;
 import android.util.TimeUtils;
+import android.util.TypedXmlPullParser;
+import android.util.TypedXmlSerializer;
 import android.util.Xml;
 import android.view.Display;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.util.FastXmlSerializer;
 import com.android.internal.util.XmlUtils;
 
 import libcore.io.IoUtils;
 
-import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
-import org.xmlpull.v1.XmlSerializer;
 
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -47,7 +44,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintWriter;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
@@ -66,6 +62,16 @@ import java.util.Objects;
  *   &lt;display-states>
  *      &lt;display unique-id="XXXXXXX">
  *          &lt;color-mode>0&lt;/color-mode>
+ *          &lt;brightness-value>0&lt;/brightness-value>
+ *          &lt;brightness-configurations>
+ *              &lt;brightness-configuration user-serial="0" package-name="com.example"
+ *              timestamp="1234">
+ *                  &lt;brightness-curve description="some text">
+ *                      &lt;brightness-point lux="0" nits="13.25"/>
+ *                      &lt;brightness-point lux="20" nits="35.94"/>
+ *                  &lt;/brightness-curve>
+ *              &lt;/brightness-configuration>
+ *          &lt;/brightness-configurations>
  *      &lt;/display>
  *  &lt;/display-states>
  *  &lt;stable-device-values>
@@ -86,7 +92,7 @@ import java.util.Objects;
  * TODO: refactor this to extract common code shared with the input manager's data store
  */
 final class PersistentDataStore {
-    static final String TAG = "DisplayManager";
+    static final String TAG = "DisplayManager.PersistentDataStore";
 
     private static final String TAG_DISPLAY_MANAGER_STATE = "display-manager-state";
 
@@ -99,6 +105,7 @@ final class PersistentDataStore {
     private static final String TAG_DISPLAY_STATES = "display-states";
     private static final String TAG_DISPLAY = "display";
     private static final String TAG_COLOR_MODE = "color-mode";
+    private static final String TAG_BRIGHTNESS_VALUE = "brightness-value";
     private static final String ATTR_UNIQUE_ID = "unique-id";
 
     private static final String TAG_STABLE_DEVICE_VALUES = "stable-device-values";
@@ -122,7 +129,8 @@ final class PersistentDataStore {
     private final StableDeviceValues mStableDeviceValues = new StableDeviceValues();
 
     // Brightness configuration by user
-    private BrightnessConfigurations mBrightnessConfigurations = new BrightnessConfigurations();
+    private BrightnessConfigurations mGlobalBrightnessConfigurations =
+            new BrightnessConfigurations();
 
     // True if the data has been loaded.
     private boolean mLoaded;
@@ -216,7 +224,7 @@ final class PersistentDataStore {
     }
 
     public boolean forgetWifiDisplay(String deviceAddress) {
-		loadIfNeeded();
+        loadIfNeeded();
         int index = findRememberedWifiDisplay(deviceAddress);
         if (index >= 0) {
             mRememberedWifiDisplays.remove(index);
@@ -259,30 +267,80 @@ final class PersistentDataStore {
         return false;
     }
 
-	public Point getStableDisplaySize() {
-		loadIfNeeded();
-		return mStableDeviceValues.getDisplaySize();
-	}
+    public float getBrightness(DisplayDevice device) {
+        if (device == null || !device.hasStableUniqueId()) {
+            return Float.NaN;
+        }
+        final DisplayState state = getDisplayState(device.getUniqueId(), false);
+        if (state == null) {
+            return Float.NaN;
+        }
+        return state.getBrightness();
+    }
 
-	public void setStableDisplaySize(Point size) {
-		loadIfNeeded();
-		if (mStableDeviceValues.setDisplaySize(size)) {
-			setDirty();
-		}
-	}
+    public boolean setBrightness(DisplayDevice displayDevice, float brightness) {
+        final String displayDeviceUniqueId = displayDevice.getUniqueId();
+        if (!displayDevice.hasStableUniqueId() || displayDeviceUniqueId == null) {
+            return false;
+        }
+        final DisplayState state = getDisplayState(displayDeviceUniqueId, true);
+        if (state.setBrightness(brightness)) {
+            setDirty();
+            return true;
+        }
+        return false;
+    }
 
-    public void setBrightnessConfigurationForUser(BrightnessConfiguration c, int userSerial,
-            @Nullable String packageName) {
+    public Point getStableDisplaySize() {
         loadIfNeeded();
-        if (mBrightnessConfigurations.setBrightnessConfigurationForUser(c, userSerial,
-                packageName)) {
+        return mStableDeviceValues.getDisplaySize();
+    }
+
+    public void setStableDisplaySize(Point size) {
+        loadIfNeeded();
+        if (mStableDeviceValues.setDisplaySize(size)) {
             setDirty();
         }
     }
 
+    // Used for testing & reset
+    public void setBrightnessConfigurationForUser(BrightnessConfiguration c, int userSerial,
+            @Nullable String packageName) {
+        loadIfNeeded();
+        if (mGlobalBrightnessConfigurations.setBrightnessConfigurationForUser(c, userSerial,
+                packageName)) {
+
+            setDirty();
+        }
+    }
+
+    public boolean setBrightnessConfigurationForDisplayLocked(BrightnessConfiguration configuration,
+            DisplayDevice device, int userSerial, String packageName) {
+        if (device == null || !device.hasStableUniqueId()) {
+            return false;
+        }
+        DisplayState state = getDisplayState(device.getUniqueId(), /*createIfAbsent*/ true);
+        if (state.setBrightnessConfiguration(configuration, userSerial, packageName)) {
+            setDirty();
+            return true;
+        }
+        return false;
+    }
+
+
+    public BrightnessConfiguration getBrightnessConfigurationForDisplayLocked(
+            String uniqueDisplayId, int userSerial) {
+        loadIfNeeded();
+        DisplayState state = mDisplayStates.get(uniqueDisplayId);
+        if (state != null) {
+            return state.getBrightnessConfiguration(userSerial);
+        }
+        return null;
+    }
+
     public BrightnessConfiguration getBrightnessConfiguration(int userSerial) {
         loadIfNeeded();
-        return mBrightnessConfigurations.getBrightnessConfiguration(userSerial);
+        return mGlobalBrightnessConfigurations.getBrightnessConfiguration(userSerial);
     }
 
     private DisplayState getDisplayState(String uniqueId, boolean createIfAbsent) {
@@ -321,10 +379,9 @@ final class PersistentDataStore {
             return;
         }
 
-        XmlPullParser parser;
+        TypedXmlPullParser parser;
         try {
-            parser = Xml.newPullParser();
-            parser.setInput(new BufferedInputStream(is), StandardCharsets.UTF_8.name());
+            parser = Xml.resolvePullParser(is);
             loadFromXml(parser);
         } catch (IOException ex) {
             Slog.w(TAG, "Failed to load display manager persistent store data.", ex);
@@ -343,8 +400,7 @@ final class PersistentDataStore {
             os = mInjector.startWrite();
             boolean success = false;
             try {
-                XmlSerializer serializer = new FastXmlSerializer();
-                serializer.setOutput(new BufferedOutputStream(os), StandardCharsets.UTF_8.name());
+                TypedXmlSerializer serializer = Xml.resolveSerializer(os);
                 saveToXml(serializer);
                 serializer.flush();
                 success = true;
@@ -356,7 +412,7 @@ final class PersistentDataStore {
         }
     }
 
-    private void loadFromXml(XmlPullParser parser)
+    private void loadFromXml(TypedXmlPullParser parser)
             throws IOException, XmlPullParserException {
         XmlUtils.beginDocument(parser, TAG_DISPLAY_MANAGER_STATE);
         final int outerDepth = parser.getDepth();
@@ -371,12 +427,12 @@ final class PersistentDataStore {
                 mStableDeviceValues.loadFromXml(parser);
             }
             if (parser.getName().equals(TAG_BRIGHTNESS_CONFIGURATIONS)) {
-                mBrightnessConfigurations.loadFromXml(parser);
+                mGlobalBrightnessConfigurations.loadFromXml(parser);
             }
         }
     }
 
-    private void loadRememberedWifiDisplaysFromXml(XmlPullParser parser)
+    private void loadRememberedWifiDisplaysFromXml(TypedXmlPullParser parser)
             throws IOException, XmlPullParserException {
         final int outerDepth = parser.getDepth();
         while (XmlUtils.nextElementWithin(parser, outerDepth)) {
@@ -400,7 +456,7 @@ final class PersistentDataStore {
         }
     }
 
-    private void loadDisplaysFromXml(XmlPullParser parser)
+    private void loadDisplaysFromXml(TypedXmlPullParser parser)
             throws IOException, XmlPullParserException {
         final int outerDepth = parser.getDepth();
         while (XmlUtils.nextElementWithin(parser, outerDepth)) {
@@ -421,7 +477,7 @@ final class PersistentDataStore {
         }
     }
 
-    private void saveToXml(XmlSerializer serializer) throws IOException {
+    private void saveToXml(TypedXmlSerializer serializer) throws IOException {
         serializer.startDocument(null, true);
         serializer.setFeature("http://xmlpull.org/v1/doc/features.html#indent-output", true);
         serializer.startTag(null, TAG_DISPLAY_MANAGER_STATE);
@@ -450,7 +506,7 @@ final class PersistentDataStore {
         mStableDeviceValues.saveToXml(serializer);
         serializer.endTag(null, TAG_STABLE_DEVICE_VALUES);
         serializer.startTag(null, TAG_BRIGHTNESS_CONFIGURATIONS);
-        mBrightnessConfigurations.saveToXml(serializer);
+        mGlobalBrightnessConfigurations.saveToXml(serializer);
         serializer.endTag(null, TAG_BRIGHTNESS_CONFIGURATIONS);
         serializer.endTag(null, TAG_DISPLAY_MANAGER_STATE);
         serializer.endDocument();
@@ -473,12 +529,17 @@ final class PersistentDataStore {
         }
         pw.println("  StableDeviceValues:");
         mStableDeviceValues.dump(pw, "      ");
-        pw.println("  BrightnessConfigurations:");
-        mBrightnessConfigurations.dump(pw, "      ");
+        pw.println("  GlobalBrightnessConfigurations:");
+        mGlobalBrightnessConfigurations.dump(pw, "      ");
     }
 
     private static final class DisplayState {
         private int mColorMode;
+        private float mBrightness;
+
+        // Brightness configuration by user
+        private BrightnessConfigurations mDisplayBrightnessConfigurations =
+                new BrightnessConfigurations();
 
         public boolean setColorMode(int colorMode) {
             if (colorMode == mColorMode) {
@@ -492,26 +553,69 @@ final class PersistentDataStore {
             return mColorMode;
         }
 
-        public void loadFromXml(XmlPullParser parser)
+        public boolean setBrightness(float brightness) {
+            if (brightness == mBrightness) {
+                return false;
+            }
+            mBrightness = brightness;
+            return true;
+        }
+
+        public float getBrightness() {
+            return mBrightness;
+        }
+
+        public boolean setBrightnessConfiguration(BrightnessConfiguration configuration,
+                int userSerial, String packageName) {
+            mDisplayBrightnessConfigurations.setBrightnessConfigurationForUser(
+                    configuration, userSerial, packageName);
+            return true;
+        }
+
+        public BrightnessConfiguration getBrightnessConfiguration(int userSerial) {
+            return mDisplayBrightnessConfigurations.mConfigurations.get(userSerial);
+        }
+
+        public void loadFromXml(TypedXmlPullParser parser)
                 throws IOException, XmlPullParserException {
             final int outerDepth = parser.getDepth();
 
             while (XmlUtils.nextElementWithin(parser, outerDepth)) {
-                if (parser.getName().equals(TAG_COLOR_MODE)) {
-                    String value = parser.nextText();
-                    mColorMode = Integer.parseInt(value);
+                switch (parser.getName()) {
+                    case TAG_COLOR_MODE:
+                        String value = parser.nextText();
+                        mColorMode = Integer.parseInt(value);
+                        break;
+                    case TAG_BRIGHTNESS_VALUE:
+                        String brightness = parser.nextText();
+                        mBrightness = Float.parseFloat(brightness);
+                        break;
+                    case TAG_BRIGHTNESS_CONFIGURATIONS:
+                        mDisplayBrightnessConfigurations.loadFromXml(parser);
+                        break;
                 }
             }
         }
 
-        public void saveToXml(XmlSerializer serializer) throws IOException {
+        public void saveToXml(TypedXmlSerializer serializer) throws IOException {
             serializer.startTag(null, TAG_COLOR_MODE);
             serializer.text(Integer.toString(mColorMode));
             serializer.endTag(null, TAG_COLOR_MODE);
+
+            serializer.startTag(null, TAG_BRIGHTNESS_VALUE);
+            serializer.text(Float.toString(mBrightness));
+            serializer.endTag(null, TAG_BRIGHTNESS_VALUE);
+
+            serializer.startTag(null, TAG_BRIGHTNESS_CONFIGURATIONS);
+            mDisplayBrightnessConfigurations.saveToXml(serializer);
+            serializer.endTag(null, TAG_BRIGHTNESS_CONFIGURATIONS);
         }
 
         public void dump(final PrintWriter pw, final String prefix) {
             pw.println(prefix + "ColorMode=" + mColorMode);
+            pw.println(prefix + "BrightnessValue=" + mBrightness);
+            pw.println(prefix + "DisplayBrightnessConfigurations: ");
+            mDisplayBrightnessConfigurations.dump(pw, prefix);
         }
     }
 
@@ -532,7 +636,8 @@ final class PersistentDataStore {
             return false;
         }
 
-        public void loadFromXml(XmlPullParser parser) throws IOException, XmlPullParserException {
+        public void loadFromXml(TypedXmlPullParser parser)
+                throws IOException, XmlPullParserException {
             final int outerDepth = parser.getDepth();
             while (XmlUtils.nextElementWithin(parser, outerDepth)) {
                 switch (parser.getName()) {
@@ -546,7 +651,7 @@ final class PersistentDataStore {
             }
         }
 
-        private static int loadIntValue(XmlPullParser parser)
+        private static int loadIntValue(TypedXmlPullParser parser)
             throws IOException, XmlPullParserException {
             try {
                 String value = parser.nextText();
@@ -556,7 +661,7 @@ final class PersistentDataStore {
             }
         }
 
-        public void saveToXml(XmlSerializer serializer) throws IOException {
+        public void saveToXml(TypedXmlSerializer serializer) throws IOException {
             if (mWidth > 0 && mHeight > 0) {
                 serializer.startTag(null, TAG_STABLE_DISPLAY_WIDTH);
                 serializer.text(Integer.toString(mWidth));
@@ -575,11 +680,11 @@ final class PersistentDataStore {
 
     private static final class BrightnessConfigurations {
         // Maps from a user ID to the users' given brightness configuration
-        private SparseArray<BrightnessConfiguration> mConfigurations;
+        private final SparseArray<BrightnessConfiguration> mConfigurations;
         // Timestamp of time the configuration was set.
-        private SparseLongArray mTimeStamps;
+        private final SparseLongArray mTimeStamps;
         // Package that set the configuration.
-        private SparseArray<String> mPackageNames;
+        private final SparseArray<String> mPackageNames;
 
         public BrightnessConfigurations() {
             mConfigurations = new SparseArray<>();
@@ -613,29 +718,21 @@ final class PersistentDataStore {
             return mConfigurations.get(userSerial);
         }
 
-        public void loadFromXml(XmlPullParser parser) throws IOException, XmlPullParserException {
+        public void loadFromXml(TypedXmlPullParser parser)
+                throws IOException, XmlPullParserException {
             final int outerDepth = parser.getDepth();
             while (XmlUtils.nextElementWithin(parser, outerDepth)) {
                 if (TAG_BRIGHTNESS_CONFIGURATION.equals(parser.getName())) {
                     int userSerial;
                     try {
-                        userSerial = Integer.parseInt(
-                                parser.getAttributeValue(null, ATTR_USER_SERIAL));
+                        userSerial = parser.getAttributeInt(null, ATTR_USER_SERIAL);
                     } catch (NumberFormatException nfe) {
                         userSerial = -1;
                         Slog.e(TAG, "Failed to read in brightness configuration", nfe);
                     }
 
                     String packageName = parser.getAttributeValue(null, ATTR_PACKAGE_NAME);
-                    String timeStampString = parser.getAttributeValue(null, ATTR_TIME_STAMP);
-                    long timeStamp = -1;
-                    if (timeStampString != null) {
-                        try {
-                            timeStamp = Long.parseLong(timeStampString);
-                        } catch (NumberFormatException nfe) {
-                            // Ignore we will just not restore the timestamp.
-                        }
-                    }
+                    long timeStamp = parser.getAttributeLong(null, ATTR_TIME_STAMP, -1);
 
                     try {
                         BrightnessConfiguration config =
@@ -656,20 +753,20 @@ final class PersistentDataStore {
             }
         }
 
-        public void saveToXml(XmlSerializer serializer) throws IOException {
+        public void saveToXml(TypedXmlSerializer serializer) throws IOException {
             for (int i = 0; i < mConfigurations.size(); i++) {
                 final int userSerial = mConfigurations.keyAt(i);
                 final BrightnessConfiguration config = mConfigurations.valueAt(i);
 
                 serializer.startTag(null, TAG_BRIGHTNESS_CONFIGURATION);
-                serializer.attribute(null, ATTR_USER_SERIAL, Integer.toString(userSerial));
+                serializer.attributeInt(null, ATTR_USER_SERIAL, userSerial);
                 String packageName = mPackageNames.get(userSerial);
                 if (packageName != null) {
                     serializer.attribute(null, ATTR_PACKAGE_NAME, packageName);
                 }
                 long timestamp = mTimeStamps.get(userSerial, -1);
                 if (timestamp != -1) {
-                    serializer.attribute(null, ATTR_TIME_STAMP, Long.toString(timestamp));
+                    serializer.attributeLong(null, ATTR_TIME_STAMP, timestamp);
                 }
                 config.saveToXml(serializer);
                 serializer.endTag(null, TAG_BRIGHTNESS_CONFIGURATION);

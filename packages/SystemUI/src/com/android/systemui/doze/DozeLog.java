@@ -24,7 +24,9 @@ import androidx.annotation.NonNull;
 import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.keyguard.KeyguardUpdateMonitorCallback;
 import com.android.systemui.Dumpable;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dump.DumpManager;
+import com.android.systemui.statusbar.policy.DevicePostureController;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -32,14 +34,13 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * Logs doze events for debugging and triaging purposes. Logs are dumped in bugreports or on demand:
  *      adb shell dumpsys activity service com.android.systemui/.SystemUIService \
  *      dependency DumpController DozeLog,DozeStats
  */
-@Singleton
+@SysUISingleton
 public class DozeLog implements Dumpable {
     private final DozeLogger mLogger;
 
@@ -114,12 +115,28 @@ public class DozeLog implements Dumpable {
     }
 
     /**
-     * Appends dozing event to the logs
+     * Appends dozing event to the logs. Logs current dozing state when entering/exiting AOD.
      * @param dozing true if dozing, else false
      */
     public void traceDozing(boolean dozing) {
         mLogger.logDozing(dozing);
         mPulsing = false;
+    }
+
+    /**
+     * Appends dozing event to the logs when dozing has changed in AOD.
+     * @param dozing true if we're now dozing, else false
+     */
+    public void traceDozingChanged(boolean dozing) {
+        mLogger.logDozingChanged(dozing);
+    }
+
+    /**
+     * Appends dozing event to the logs
+     * @param suppressed true if dozing is suppressed
+     */
+    public void traceDozingSuppressed(boolean suppressed) {
+        mLogger.logDozingSuppressed(suppressed);
     }
 
     /**
@@ -198,11 +215,35 @@ public class DozeLog implements Dumpable {
     }
 
     /**
+     * Appends doze state changed sent to all DozeMachine parts event to the logs
+     * @param state new DozeMachine state
+     */
+    public void traceDozeStateSendComplete(DozeMachine.State state) {
+        mLogger.logStateChangedSent(state);
+    }
+
+    /**
+     * Appends display state delayed by UDFPS event to the logs
+     * @param delayedDisplayState the display screen state that was delayed
+     */
+    public void traceDisplayStateDelayedByUdfps(int delayedDisplayState) {
+        mLogger.logDisplayStateDelayedByUdfps(delayedDisplayState);
+    }
+
+    /**
+     * Appends display state changed event to the logs
+     * @param displayState new DozeMachine state
+     */
+    public void traceDisplayState(int displayState) {
+        mLogger.logDisplayStateChanged(displayState);
+    }
+
+    /**
      * Appends wake-display event to the logs.
      * @param wake if we're waking up or sleeping.
      */
-    public void traceWakeDisplay(boolean wake) {
-        mLogger.logWakeDisplay(wake);
+    public void traceWakeDisplay(boolean wake, @Reason int reason) {
+        mLogger.logWakeDisplay(wake, reason);
     }
 
     /**
@@ -236,10 +277,27 @@ public class DozeLog implements Dumpable {
     }
 
     /**
+     * Appends doze updates due to a posture change.
+     */
+    public void tracePostureChanged(
+            @DevicePostureController.DevicePostureInt int posture,
+            String partUpdated
+    ) {
+        mLogger.logPostureChanged(posture, partUpdated);
+    }
+
+    /**
      * Appends pulse dropped event to logs
      */
     public void tracePulseDropped(boolean pulsePending, DozeMachine.State state, boolean blocked) {
         mLogger.logPulseDropped(pulsePending, state, blocked);
+    }
+
+    /**
+     * Appends sensor event dropped event to logs
+     */
+    public void traceSensorEventDropped(int sensorEvent, String reason) {
+        mLogger.logSensorEventDropped(sensorEvent, reason);
     }
 
     /**
@@ -272,6 +330,22 @@ public class DozeLog implements Dumpable {
      */
     public void traceDozeSuppressed(DozeMachine.State suppressedState) {
         mLogger.logDozeSuppressed(suppressedState);
+    }
+
+    /**
+     * Appends new AOD sreen brightness to logs
+     * @param brightness display brightness setting
+     */
+    public void traceDozeScreenBrightness(int brightness) {
+        mLogger.logDozeScreenBrightness(brightness);
+    }
+
+    /**
+    * Appends new AOD dimming scrim opacity to logs
+    * @param scrimOpacity
+     */
+    public void traceSetAodDimmingScrim(float scrimOpacity) {
+        mLogger.logSetAodDimmingScrim((long) scrimOpacity);
     }
 
     private class SummaryStats {
@@ -336,9 +410,11 @@ public class DozeLog implements Dumpable {
             case REASON_SENSOR_DOUBLE_TAP: return "doubletap";
             case PULSE_REASON_SENSOR_LONG_PRESS: return "longpress";
             case PULSE_REASON_DOCKING: return "docking";
-            case PULSE_REASON_SENSOR_WAKE_LOCK_SCREEN: return "wakelockscreen";
-            case REASON_SENSOR_WAKE_UP: return "wakeup";
+            case PULSE_REASON_SENSOR_WAKE_REACH: return "reach-wakelockscreen";
+            case REASON_SENSOR_WAKE_UP_PRESENCE: return "presence-wakeup";
             case REASON_SENSOR_TAP: return "tap";
+            case REASON_SENSOR_UDFPS_LONG_PRESS: return "udfps";
+            case REASON_SENSOR_QUICK_PICKUP: return "quickPickup";
             default: throw new IllegalArgumentException("invalid reason: " + pulseReason);
         }
     }
@@ -346,8 +422,9 @@ public class DozeLog implements Dumpable {
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({PULSE_REASON_NONE, PULSE_REASON_INTENT, PULSE_REASON_NOTIFICATION,
             PULSE_REASON_SENSOR_SIGMOTION, REASON_SENSOR_PICKUP, REASON_SENSOR_DOUBLE_TAP,
-            PULSE_REASON_SENSOR_LONG_PRESS, PULSE_REASON_DOCKING, REASON_SENSOR_WAKE_UP,
-            PULSE_REASON_SENSOR_WAKE_LOCK_SCREEN, REASON_SENSOR_TAP})
+            PULSE_REASON_SENSOR_LONG_PRESS, PULSE_REASON_DOCKING, REASON_SENSOR_WAKE_UP_PRESENCE,
+            PULSE_REASON_SENSOR_WAKE_REACH, REASON_SENSOR_TAP,
+            REASON_SENSOR_UDFPS_LONG_PRESS, REASON_SENSOR_QUICK_PICKUP})
     public @interface Reason {}
     public static final int PULSE_REASON_NONE = -1;
     public static final int PULSE_REASON_INTENT = 0;
@@ -357,9 +434,11 @@ public class DozeLog implements Dumpable {
     public static final int REASON_SENSOR_DOUBLE_TAP = 4;
     public static final int PULSE_REASON_SENSOR_LONG_PRESS = 5;
     public static final int PULSE_REASON_DOCKING = 6;
-    public static final int REASON_SENSOR_WAKE_UP = 7;
-    public static final int PULSE_REASON_SENSOR_WAKE_LOCK_SCREEN = 8;
+    public static final int REASON_SENSOR_WAKE_UP_PRESENCE = 7;
+    public static final int PULSE_REASON_SENSOR_WAKE_REACH = 8;
     public static final int REASON_SENSOR_TAP = 9;
+    public static final int REASON_SENSOR_UDFPS_LONG_PRESS = 10;
+    public static final int REASON_SENSOR_QUICK_PICKUP = 11;
 
-    public static final int TOTAL_REASONS = 10;
+    public static final int TOTAL_REASONS = 12;
 }

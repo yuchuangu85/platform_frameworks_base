@@ -99,11 +99,30 @@ public final class TelephonyUtils {
      */
     public static void runWithCleanCallingIdentity(
             @NonNull Runnable action) {
-        long callingIdentity = Binder.clearCallingIdentity();
+        final long callingIdentity = Binder.clearCallingIdentity();
         try {
             action.run();
         } finally {
             Binder.restoreCallingIdentity(callingIdentity);
+        }
+    }
+
+    /**
+     * Convenience method for running the provided action in the provided
+     * executor enclosed in
+     * {@link Binder#clearCallingIdentity}/{@link Binder#restoreCallingIdentity}
+     *
+     * Any exception thrown by the given action will need to be handled by caller.
+     *
+     */
+    public static void runWithCleanCallingIdentity(
+            @NonNull Runnable action, @NonNull Executor executor) {
+        if (action != null) {
+            if (executor != null) {
+                executor.execute(() -> runWithCleanCallingIdentity(action));
+            } else {
+                runWithCleanCallingIdentity(action);
+            }
         }
     }
 
@@ -118,7 +137,7 @@ public final class TelephonyUtils {
      */
     public static <T> T runWithCleanCallingIdentity(
             @NonNull Supplier<T> action) {
-        long callingIdentity = Binder.clearCallingIdentity();
+        final long callingIdentity = Binder.clearCallingIdentity();
         try {
             return action.get();
         } finally {

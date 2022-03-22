@@ -18,11 +18,11 @@ package com.android.server.devicepolicy;
 import android.annotation.UserIdInt;
 import android.app.admin.DevicePolicyCache;
 import android.app.admin.DevicePolicyManager;
+import android.util.IndentingPrintWriter;
 import android.util.SparseBooleanArray;
 import android.util.SparseIntArray;
 
 import com.android.internal.annotations.GuardedBy;
-import com.android.internal.util.IndentingPrintWriter;
 
 /**
  * Implementation of {@link DevicePolicyCache}, to which {@link DevicePolicyManagerService} pushes
@@ -43,10 +43,24 @@ public class DevicePolicyCacheImpl extends DevicePolicyCache {
     @GuardedBy("mLock")
     private final SparseIntArray mPasswordQuality = new SparseIntArray();
 
+    @GuardedBy("mLock")
+    private final SparseIntArray mPermissionPolicy = new SparseIntArray();
+
+    /** Maps to {@code ActiveAdmin.mAdminCanGrantSensorsPermissions}.
+     *
+     * <p>For users affiliated with the device, they inherit the policy from {@code DO} so
+     * it will map to the {@code DO}'s policy. Otherwise it will map to the admin of the requesting
+     * user.
+     */
+    @GuardedBy("mLock")
+    private final SparseBooleanArray mCanGrantSensorsPermissions = new SparseBooleanArray();
+
     public void onUserRemoved(int userHandle) {
         synchronized (mLock) {
             mScreenCaptureDisabled.delete(userHandle);
             mPasswordQuality.delete(userHandle);
+            mPermissionPolicy.delete(userHandle);
+            mCanGrantSensorsPermissions.delete(userHandle);
         }
     }
 
@@ -78,12 +92,44 @@ public class DevicePolicyCacheImpl extends DevicePolicyCache {
         }
     }
 
+    @Override
+    public int getPermissionPolicy(@UserIdInt int userHandle) {
+        synchronized (mLock) {
+            return mPermissionPolicy.get(userHandle,
+                    DevicePolicyManager.PERMISSION_POLICY_PROMPT);
+        }
+    }
+
+    /** Update the permission policy for the given user. */
+    public void setPermissionPolicy(@UserIdInt int userHandle, int policy) {
+        synchronized (mLock) {
+            mPermissionPolicy.put(userHandle, policy);
+        }
+    }
+
+    @Override
+    public boolean canAdminGrantSensorsPermissionsForUser(@UserIdInt int userId) {
+        synchronized (mLock) {
+            return mCanGrantSensorsPermissions.get(userId, false);
+        }
+    }
+
+    /** Sets ahmin control over permission grants for user. */
+    public void setAdminCanGrantSensorsPermissions(@UserIdInt int userId, boolean canGrant) {
+        synchronized (mLock) {
+            mCanGrantSensorsPermissions.put(userId, canGrant);
+        }
+    }
+
     /** Dump content */
     public void dump(IndentingPrintWriter pw) {
         pw.println("Device policy cache:");
         pw.increaseIndent();
         pw.println("Screen capture disabled: " + mScreenCaptureDisabled.toString());
         pw.println("Password quality: " + mPasswordQuality.toString());
+        pw.println("Permission policy: " + mPermissionPolicy.toString());
+        pw.println("Admin can grant sensors permission: "
+                + mCanGrantSensorsPermissions.toString());
         pw.decreaseIndent();
     }
 }

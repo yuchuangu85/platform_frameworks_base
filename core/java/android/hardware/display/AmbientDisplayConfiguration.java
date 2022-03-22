@@ -24,6 +24,7 @@ import android.provider.Settings;
 import android.text.TextUtils;
 
 import com.android.internal.R;
+import com.android.internal.util.ArrayUtils;
 
 /**
  * AmbientDisplayConfiguration encapsulates reading access to the configuration of ambient display.
@@ -32,7 +33,7 @@ import com.android.internal.R;
  */
 @TestApi
 public class AmbientDisplayConfiguration {
-
+    private static final String TAG = "AmbientDisplayConfig";
     private final Context mContext;
     private final boolean mAlwaysOnByDefault;
 
@@ -52,7 +53,9 @@ public class AmbientDisplayConfiguration {
                 || wakeDisplayGestureEnabled(user)
                 || pickupGestureEnabled(user)
                 || tapGestureEnabled(user)
-                || doubleTapGestureEnabled(user);
+                || doubleTapGestureEnabled(user)
+                || quickPickupSensorEnabled(user)
+                || screenOffUdfpsEnabled(user);
     }
 
     /** {@hide} */
@@ -85,7 +88,12 @@ public class AmbientDisplayConfiguration {
 
     /** {@hide} */
     public boolean tapSensorAvailable() {
-        return !TextUtils.isEmpty(tapSensorType());
+        for (String tapType : tapSensorTypeMapping()) {
+            if (!TextUtils.isEmpty(tapType)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** {@hide} */
@@ -97,6 +105,20 @@ public class AmbientDisplayConfiguration {
     /** {@hide} */
     public boolean doubleTapSensorAvailable() {
         return !TextUtils.isEmpty(doubleTapSensorType());
+    }
+
+    /** {@hide} */
+    public boolean quickPickupSensorEnabled(int user) {
+        return boolSettingDefaultOn(Settings.Secure.DOZE_QUICK_PICKUP_GESTURE, user)
+                && !TextUtils.isEmpty(quickPickupSensorType())
+                && pickupGestureEnabled(user)
+                && !alwaysOnEnabled(user);
+    }
+
+    /** {@hide} */
+    public boolean screenOffUdfpsEnabled(int user) {
+        return !TextUtils.isEmpty(udfpsLongPressSensorType())
+            && boolSettingDefaultOff("screen_off_udfps_enabled", user);
     }
 
     /** {@hide} */
@@ -127,14 +149,33 @@ public class AmbientDisplayConfiguration {
         return mContext.getResources().getString(R.string.config_dozeDoubleTapSensorType);
     }
 
-    /** {@hide} */
-    public String tapSensorType() {
-        return mContext.getResources().getString(R.string.config_dozeTapSensorType);
+    /** {@hide}
+     * May support multiple postures.
+     */
+    public String[] tapSensorTypeMapping() {
+        String[] postureMapping =
+                mContext.getResources().getStringArray(R.array.config_dozeTapSensorPostureMapping);
+        if (ArrayUtils.isEmpty(postureMapping)) {
+            return new String[] {
+                    mContext.getResources().getString(R.string.config_dozeTapSensorType)
+            };
+        }
+        return postureMapping;
     }
 
     /** {@hide} */
     public String longPressSensorType() {
         return mContext.getResources().getString(R.string.config_dozeLongPressSensorType);
+    }
+
+    /** {@hide} */
+    public String udfpsLongPressSensorType() {
+        return mContext.getResources().getString(R.string.config_dozeUdfpsLongPressSensorType);
+    }
+
+    /** {@hide} */
+    public String quickPickupSensorType() {
+        return mContext.getResources().getString(R.string.config_quickPickupSensorType);
     }
 
     /** {@hide} */

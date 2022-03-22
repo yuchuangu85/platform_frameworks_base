@@ -23,10 +23,12 @@ import com.android.internal.infra.AndroidFuture;
 
 
 /** @hide */
-interface ICompanionDeviceDiscoveryService {
+oneway interface ICompanionDeviceDiscoveryService {
     void startDiscovery(
         in AssociationRequest request,
         in String callingPackage,
         in IFindDeviceCallback findCallback,
         in AndroidFuture<Association> serviceCallback);
+
+    void onAssociationCreated();
 }

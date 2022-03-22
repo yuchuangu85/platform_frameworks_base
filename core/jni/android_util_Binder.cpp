@@ -39,6 +39,7 @@
 #include <binder/Stability.h>
 #include <binderthreadstate/CallerUtils.h>
 #include <cutils/atomic.h>
+#include <cutils/threads.h>
 #include <log/log.h>
 #include <utils/KeyedVector.h>
 #include <utils/List.h>
@@ -485,7 +486,13 @@ public:
     }
 
     void markVintf() {
+        AutoMutex _l(mLock);
         mVintf = true;
+    }
+
+    void forceDowngradeToSystemStability() {
+        AutoMutex _l(mLock);
+        mVintf = false;
     }
 
     sp<IBinder> getExtension() {
@@ -866,7 +873,7 @@ void signalExceptionForError(JNIEnv* env, jobject obj, status_t err,
             const char* exceptionToThrow;
             char msg[128];
             // TransactionTooLargeException is a checked exception, only throw from certain methods.
-            // FIXME: Transaction too large is the most common reason for FAILED_TRANSACTION
+            // TODO(b/28321379): Transaction size is the most common cause for FAILED_TRANSACTION
             //        but it is not the only one.  The Binder driver can return BR_FAILED_REPLY
             //        for other reasons also, such as if the transaction is malformed or
             //        refers to an FD that has been closed.  We should change the driver
@@ -883,8 +890,9 @@ void signalExceptionForError(JNIEnv* env, jobject obj, status_t err,
                 exceptionToThrow = (canThrowRemoteException)
                         ? "android/os/DeadObjectException"
                         : "java/lang/RuntimeException";
-                snprintf(msg, sizeof(msg)-1,
-                        "Transaction failed on small parcel; remote process probably died");
+                snprintf(msg, sizeof(msg) - 1,
+                         "Transaction failed on small parcel; remote process probably died, but "
+                         "this could also be caused by running out of binder buffer space");
             }
             jniThrowException(env, exceptionToThrow, msg);
         } break;
@@ -952,8 +960,7 @@ static jint android_os_Binder_getCallingUid()
     return IPCThreadState::self()->getCallingUid();
 }
 
-static jboolean android_os_Binder_isHandlingTransaction()
-{
+static jboolean android_os_Binder_isDirectlyHandlingTransaction() {
     return getCurrentServingCall() == BinderCallType::BINDER;
 }
 
@@ -962,17 +969,8 @@ static jlong android_os_Binder_clearCallingIdentity()
     return IPCThreadState::self()->clearCallingIdentity();
 }
 
-static void android_os_Binder_restoreCallingIdentity(JNIEnv* env, jobject clazz, jlong token)
+static void android_os_Binder_restoreCallingIdentity(jlong token)
 {
-    // XXX temporary validation check to debug crashes.
-    int uid = (int)(token>>32);
-    if (uid > 0 && uid < 999) {
-        // In Android currently there are no uids in this range.
-        char buf[128];
-        sprintf(buf, "Restoring bad calling ident: 0x%" PRIx64, token);
-        jniThrowException(env, "java/lang/IllegalStateException", buf);
-        return;
-    }
     IPCThreadState::self()->restoreCallingIdentity(token);
 }
 
@@ -1010,6 +1008,12 @@ static void android_os_Binder_markVintfStability(JNIEnv* env, jobject clazz) {
     JavaBBinderHolder* jbh =
         (JavaBBinderHolder*) env->GetLongField(clazz, gBinderOffsets.mObject);
     jbh->markVintf();
+}
+
+static void android_os_Binder_forceDowngradeToSystemStability(JNIEnv* env, jobject clazz) {
+    JavaBBinderHolder* jbh =
+        (JavaBBinderHolder*) env->GetLongField(clazz, gBinderOffsets.mObject);
+    jbh->forceDowngradeToSystemStability();
 }
 
 static void android_os_Binder_flushPendingCommands(JNIEnv* env, jobject clazz)
@@ -1052,6 +1056,7 @@ static void android_os_Binder_setExtension(JNIEnv* env, jobject obj, jobject ext
 
 // ----------------------------------------------------------------------------
 
+// clang-format off
 static const JNINativeMethod gBinderMethods[] = {
      /* name, signature, funcPtr */
     // @CriticalNative
@@ -1059,9 +1064,10 @@ static const JNINativeMethod gBinderMethods[] = {
     // @CriticalNative
     { "getCallingUid", "()I", (void*)android_os_Binder_getCallingUid },
     // @CriticalNative
-    { "isHandlingTransaction", "()Z", (void*)android_os_Binder_isHandlingTransaction },
+    { "isDirectlyHandlingTransaction", "()Z", (void*)android_os_Binder_isDirectlyHandlingTransaction },
     // @CriticalNative
     { "clearCallingIdentity", "()J", (void*)android_os_Binder_clearCallingIdentity },
+    // @CriticalNative
     { "restoreCallingIdentity", "(J)V", (void*)android_os_Binder_restoreCallingIdentity },
     // @CriticalNative
     { "setThreadStrictModePolicy", "(I)V", (void*)android_os_Binder_setThreadStrictModePolicy },
@@ -1075,6 +1081,7 @@ static const JNINativeMethod gBinderMethods[] = {
     { "clearCallingWorkSource", "()J", (void*)android_os_Binder_clearCallingWorkSource },
     { "restoreCallingWorkSource", "(J)V", (void*)android_os_Binder_restoreCallingWorkSource },
     { "markVintfStability", "()V", (void*)android_os_Binder_markVintfStability},
+    { "forceDowngradeToSystemStability", "()V", (void*)android_os_Binder_forceDowngradeToSystemStability},
     { "flushPendingCommands", "()V", (void*)android_os_Binder_flushPendingCommands },
     { "getNativeBBinderHolder", "()J", (void*)android_os_Binder_getNativeBBinderHolder },
     { "getNativeFinalizer", "()J", (void*)android_os_Binder_getNativeFinalizer },
@@ -1082,6 +1089,7 @@ static const JNINativeMethod gBinderMethods[] = {
     { "getExtension", "()Landroid/os/IBinder;", (void*)android_os_Binder_getExtension },
     { "setExtension", "(Landroid/os/IBinder;)V", (void*)android_os_Binder_setExtension },
 };
+// clang-format on
 
 const char* const kBinderPathName = "android/os/Binder";
 
@@ -1499,7 +1507,9 @@ static jboolean android_os_BinderProxy_unlinkToDeath(JNIEnv* env, jobject obj,
             res = JNI_TRUE;
         } else {
             jniThrowException(env, "java/util/NoSuchElementException",
-                              "Death link does not exist");
+                              base::StringPrintf("Death link does not exist (%s)",
+                                                 statusToString(err).c_str())
+                                      .c_str());
         }
     }
 

@@ -22,6 +22,8 @@ import static android.system.OsConstants.AF_INET6;
 import android.annotation.NonNull;
 import android.system.Os;
 
+import java.io.FileDescriptor;
+
 /** @hide */
 public class NetworkUtilsInternal {
 
@@ -34,6 +36,20 @@ public class NetworkUtilsInternal {
      *                        and DNS lookups.
      */
     public static native void setAllowNetworkingForProcess(boolean allowNetworking);
+
+    /**
+     * Protect {@code fd} from VPN connections.  After protecting, data sent through
+     * this socket will go directly to the underlying network, so its traffic will not be
+     * forwarded through the VPN.
+     */
+    public static native boolean protectFromVpn(FileDescriptor fd);
+
+    /**
+     * Protect {@code socketfd} from VPN connections.  After protecting, data sent through
+     * this socket will go directly to the underlying network, so its traffic will not be
+     * forwarded through the VPN.
+     */
+    public static native boolean protectFromVpn(int socketfd);
 
     /**
      * Returns true if the hostname is weakly validated.
@@ -57,36 +73,5 @@ public class NetworkUtilsInternal {
         }
 
         return true;
-    }
-
-    /**
-     * Safely multiple a value by a rational.
-     * <p>
-     * Internally it uses integer-based math whenever possible, but switches
-     * over to double-based math if values would overflow.
-     * @hide
-     */
-    public static long multiplySafeByRational(long value, long num, long den) {
-        if (den == 0) {
-            throw new ArithmeticException("Invalid Denominator");
-        }
-        long x = value;
-        long y = num;
-
-        // Logic shamelessly borrowed from Math.multiplyExact()
-        long r = x * y;
-        long ax = Math.abs(x);
-        long ay = Math.abs(y);
-        if (((ax | ay) >>> 31 != 0)) {
-            // Some bits greater than 2^31 that might cause overflow
-            // Check the result using the divide operator
-            // and check for the special case of Long.MIN_VALUE * -1
-            if (((y != 0) && (r / y != x))
-                    || (x == Long.MIN_VALUE && y == -1)) {
-                // Use double math to avoid overflowing
-                return (long) (((double) num / den) * value);
-            }
-        }
-        return r / den;
     }
 }

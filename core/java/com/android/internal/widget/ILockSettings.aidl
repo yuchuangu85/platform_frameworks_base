@@ -47,9 +47,10 @@ interface ILockSettings {
     void resetKeyStore(int userId);
     VerifyCredentialResponse checkCredential(in LockscreenCredential credential, int userId,
             in ICheckCredentialProgressCallback progressCallback);
-    VerifyCredentialResponse verifyCredential(in LockscreenCredential credential, long challenge, int userId);
-    VerifyCredentialResponse verifyTiedProfileChallenge(in LockscreenCredential credential, long challenge, int userId);
-    boolean checkVoldPassword(int userId);
+    VerifyCredentialResponse verifyCredential(in LockscreenCredential credential, int userId, int flags);
+    VerifyCredentialResponse verifyTiedProfileChallenge(in LockscreenCredential credential, int userId, int flags);
+    VerifyCredentialResponse verifyGatekeeperPasswordHandle(long gatekeeperPasswordHandle, long challenge, int userId);
+    void removeGatekeeperPasswordHandle(long gatekeeperPasswordHandle);
     int getCredentialType(int userId);
     byte[] getHashFactor(in LockscreenCredential currentCredential, int userId);
     void setSeparateProfileChallengeEnabled(int userId, boolean enabled, in LockscreenCredential managedUserPassword);

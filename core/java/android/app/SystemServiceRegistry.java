@@ -24,14 +24,18 @@ import android.annotation.SystemApi;
 import android.app.ContextImpl.ServiceInitializationState;
 import android.app.admin.DevicePolicyManager;
 import android.app.admin.IDevicePolicyManager;
+import android.app.appsearch.AppSearchManagerFrameworkInitializer;
 import android.app.blob.BlobStoreManagerFrameworkInitializer;
 import android.app.contentsuggestions.ContentSuggestionsManager;
 import android.app.contentsuggestions.IContentSuggestionsManager;
 import android.app.job.JobSchedulerFrameworkInitializer;
+import android.app.people.PeopleManager;
 import android.app.prediction.AppPredictionManager;
-import android.app.role.RoleControllerManager;
-import android.app.role.RoleManager;
+import android.app.role.RoleFrameworkInitializer;
+import android.app.search.SearchUiManager;
 import android.app.slice.SliceManager;
+import android.app.smartspace.SmartspaceManager;
+import android.app.time.TimeManager;
 import android.app.timedetector.TimeDetector;
 import android.app.timedetector.TimeDetectorImpl;
 import android.app.timezone.RulesManager;
@@ -40,9 +44,9 @@ import android.app.timezonedetector.TimeZoneDetectorImpl;
 import android.app.trust.TrustManager;
 import android.app.usage.IStorageStatsManager;
 import android.app.usage.IUsageStatsManager;
-import android.app.usage.NetworkStatsManager;
 import android.app.usage.StorageStatsManager;
 import android.app.usage.UsageStatsManager;
+import android.apphibernation.AppHibernationManager;
 import android.appwidget.AppWidgetManager;
 import android.bluetooth.BluetoothManager;
 import android.companion.CompanionDeviceManager;
@@ -61,16 +65,17 @@ import android.content.pm.CrossProfileApps;
 import android.content.pm.DataLoaderManager;
 import android.content.pm.ICrossProfileApps;
 import android.content.pm.IDataLoaderManager;
-import android.content.pm.IPackageManager;
 import android.content.pm.IShortcutService;
 import android.content.pm.LauncherApps;
 import android.content.pm.PackageManager;
 import android.content.pm.ShortcutManager;
+import android.content.pm.verify.domain.DomainVerificationManager;
+import android.content.pm.verify.domain.IDomainVerificationManager;
 import android.content.res.Resources;
-import android.content.rollback.IRollbackManager;
-import android.content.rollback.RollbackManager;
+import android.content.rollback.RollbackManagerFrameworkInitializer;
 import android.debug.AdbManager;
 import android.debug.IAdbManager;
+import android.graphics.fonts.FontManager;
 import android.hardware.ConsumerIrManager;
 import android.hardware.ISerialManager;
 import android.hardware.SensorManager;
@@ -80,6 +85,7 @@ import android.hardware.SystemSensorManager;
 import android.hardware.biometrics.BiometricManager;
 import android.hardware.biometrics.IAuthService;
 import android.hardware.camera2.CameraManager;
+import android.hardware.devicestate.DeviceStateManager;
 import android.hardware.display.ColorDisplayManager;
 import android.hardware.display.DisplayManager;
 import android.hardware.face.FaceManager;
@@ -92,6 +98,7 @@ import android.hardware.input.InputManager;
 import android.hardware.iris.IIrisService;
 import android.hardware.iris.IrisManager;
 import android.hardware.lights.LightsManager;
+import android.hardware.lights.SystemLightsManager;
 import android.hardware.location.ContextHubManager;
 import android.hardware.radio.RadioManager;
 import android.hardware.usb.IUsbManager;
@@ -101,35 +108,34 @@ import android.location.ICountryDetector;
 import android.location.ILocationManager;
 import android.location.LocationManager;
 import android.media.AudioManager;
+import android.media.MediaFrameworkInitializer;
+import android.media.MediaFrameworkPlatformInitializer;
 import android.media.MediaRouter;
+import android.media.metrics.IMediaMetricsManager;
+import android.media.metrics.MediaMetricsManager;
 import android.media.midi.IMidiManager;
 import android.media.midi.MidiManager;
+import android.media.musicrecognition.IMusicRecognitionManager;
+import android.media.musicrecognition.MusicRecognitionManager;
 import android.media.projection.MediaProjectionManager;
-import android.media.session.MediaSessionManager;
 import android.media.soundtrigger.SoundTriggerManager;
 import android.media.tv.ITvInputManager;
 import android.media.tv.TvInputManager;
 import android.media.tv.tunerresourcemanager.ITunerResourceManager;
 import android.media.tv.tunerresourcemanager.TunerResourceManager;
-import android.net.ConnectivityDiagnosticsManager;
-import android.net.ConnectivityManager;
-import android.net.EthernetManager;
-import android.net.IConnectivityManager;
-import android.net.IEthernetManager;
-import android.net.IIpSecService;
+import android.net.ConnectivityFrameworkInitializer;
+import android.net.ConnectivityFrameworkInitializerTiramisu;
 import android.net.INetworkPolicyManager;
-import android.net.ITestNetworkManager;
-import android.net.IpSecManager;
+import android.net.IPacProxyManager;
+import android.net.IVpnManager;
 import android.net.NetworkPolicyManager;
 import android.net.NetworkScoreManager;
 import android.net.NetworkWatchlistManager;
-import android.net.TestNetworkManager;
+import android.net.PacProxyManager;
 import android.net.TetheringManager;
 import android.net.VpnManager;
 import android.net.lowpan.ILowpanManager;
 import android.net.lowpan.LowpanManager;
-import android.net.nsd.INsdManager;
-import android.net.nsd.NsdManager;
 import android.net.vcn.IVcnManagementService;
 import android.net.vcn.VcnManager;
 import android.net.wifi.WifiFrameworkInitializer;
@@ -152,28 +158,33 @@ import android.os.ISystemUpdateManager;
 import android.os.IThermalService;
 import android.os.IUserManager;
 import android.os.IncidentManager;
+import android.os.PerformanceHintManager;
 import android.os.PowerManager;
 import android.os.RecoverySystem;
-import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.ServiceManager.ServiceNotFoundException;
 import android.os.StatsFrameworkInitializer;
 import android.os.SystemConfigManager;
 import android.os.SystemUpdateManager;
 import android.os.SystemVibrator;
+import android.os.SystemVibratorManager;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.os.health.SystemHealthManager;
 import android.os.image.DynamicSystemManager;
 import android.os.image.IDynamicSystemService;
 import android.os.incremental.IIncrementalService;
 import android.os.incremental.IncrementalManager;
 import android.os.storage.StorageManager;
+import android.permission.LegacyPermissionManager;
+import android.permission.PermissionCheckerManager;
 import android.permission.PermissionControllerManager;
 import android.permission.PermissionManager;
 import android.print.IPrintManager;
 import android.print.PrintManager;
+import android.scheduling.SchedulingFrameworkInitializer;
 import android.security.FileIntegrityManager;
 import android.security.IFileIntegrityService;
 import android.service.oemlock.IOemLockService;
@@ -199,14 +210,19 @@ import android.view.autofill.AutofillManager;
 import android.view.autofill.IAutoFillManager;
 import android.view.contentcapture.ContentCaptureManager;
 import android.view.contentcapture.IContentCaptureManager;
+import android.view.displayhash.DisplayHashManager;
 import android.view.inputmethod.InputMethodManager;
 import android.view.textclassifier.TextClassificationManager;
 import android.view.textservice.TextServicesManager;
+import android.view.translation.ITranslationManager;
+import android.view.translation.TranslationManager;
+import android.view.translation.UiTranslationManager;
 
 import com.android.internal.app.IAppOpsService;
 import com.android.internal.app.IBatteryStats;
 import com.android.internal.app.ISoundTriggerService;
 import com.android.internal.appwidget.IAppWidgetService;
+import com.android.internal.graphics.fonts.IFontManager;
 import com.android.internal.net.INetworkWatchlistManager;
 import com.android.internal.os.IDropBoxManagerService;
 import com.android.internal.policy.PhoneLayoutInflater;
@@ -279,8 +295,7 @@ public final class SystemServiceRegistry {
                 new CachedServiceFetcher<ActivityTaskManager>() {
             @Override
             public ActivityTaskManager createService(ContextImpl ctx) {
-                return new ActivityTaskManager(
-                        ctx.getOuterContext(), ctx.mMainThread.getHandler());
+                return ActivityTaskManager.getInstance();
             }});
 
         registerService(Context.URI_GRANTS_SERVICE, UriGrantsManager.class,
@@ -336,6 +351,14 @@ public final class SystemServiceRegistry {
                 return new TextClassificationManager(ctx);
             }});
 
+        registerService(Context.FONT_SERVICE, FontManager.class,
+                new CachedServiceFetcher<FontManager>() {
+            @Override
+            public FontManager createService(ContextImpl ctx) throws ServiceNotFoundException {
+                IBinder b = ServiceManager.getServiceOrThrow(Context.FONT_SERVICE);
+                return FontManager.create(IFontManager.Stub.asInterface(b));
+            }});
+
         registerService(Context.CLIPBOARD_SERVICE, ClipboardManager.class,
                 new CachedServiceFetcher<ClipboardManager>() {
             @Override
@@ -349,13 +372,13 @@ public final class SystemServiceRegistry {
         // (which extends it).
         SYSTEM_SERVICE_NAMES.put(android.text.ClipboardManager.class, Context.CLIPBOARD_SERVICE);
 
-        registerService(Context.CONNECTIVITY_SERVICE, ConnectivityManager.class,
-                new StaticApplicationContextServiceFetcher<ConnectivityManager>() {
+        registerService(Context.PAC_PROXY_SERVICE, PacProxyManager.class,
+                new CachedServiceFetcher<PacProxyManager>() {
             @Override
-            public ConnectivityManager createService(Context context) throws ServiceNotFoundException {
-                IBinder b = ServiceManager.getServiceOrThrow(Context.CONNECTIVITY_SERVICE);
-                IConnectivityManager service = IConnectivityManager.Stub.asInterface(b);
-                return new ConnectivityManager(context, service);
+            public PacProxyManager createService(ContextImpl ctx) throws ServiceNotFoundException {
+                IBinder b = ServiceManager.getServiceOrThrow(Context.PAC_PROXY_SERVICE);
+                IPacProxyManager service = IPacProxyManager.Stub.asInterface(b);
+                return new PacProxyManager(ctx.getOuterContext(), service);
             }});
 
         registerService(Context.NETD_SERVICE, IBinder.class, new StaticServiceFetcher<IBinder>() {
@@ -373,6 +396,15 @@ public final class SystemServiceRegistry {
                         ctx, () -> ServiceManager.getService(Context.TETHERING_SERVICE));
             }});
 
+        registerService(Context.VPN_MANAGEMENT_SERVICE, VpnManager.class,
+                new CachedServiceFetcher<VpnManager>() {
+            @Override
+            public VpnManager createService(ContextImpl ctx) throws ServiceNotFoundException {
+                IBinder b = ServiceManager.getService(Context.VPN_MANAGEMENT_SERVICE);
+                IVpnManager service = IVpnManager.Stub.asInterface(b);
+                return new VpnManager(ctx, service);
+            }});
+
         registerService(Context.VCN_MANAGEMENT_SERVICE, VcnManager.class,
                 new CachedServiceFetcher<VcnManager>() {
             @Override
@@ -381,59 +413,6 @@ public final class SystemServiceRegistry {
                 IVcnManagementService service = IVcnManagementService.Stub.asInterface(b);
                 return new VcnManager(ctx, service);
             }});
-
-        registerService(Context.IPSEC_SERVICE, IpSecManager.class,
-                new CachedServiceFetcher<IpSecManager>() {
-            @Override
-            public IpSecManager createService(ContextImpl ctx) throws ServiceNotFoundException {
-                IBinder b = ServiceManager.getService(Context.IPSEC_SERVICE);
-                IIpSecService service = IIpSecService.Stub.asInterface(b);
-                return new IpSecManager(ctx, service);
-            }});
-
-        registerService(Context.VPN_MANAGEMENT_SERVICE, VpnManager.class,
-                new CachedServiceFetcher<VpnManager>() {
-            @Override
-            public VpnManager createService(ContextImpl ctx) throws ServiceNotFoundException {
-                IBinder b = ServiceManager.getService(Context.CONNECTIVITY_SERVICE);
-                IConnectivityManager service = IConnectivityManager.Stub.asInterface(b);
-                return new VpnManager(ctx, service);
-            }});
-
-        registerService(Context.CONNECTIVITY_DIAGNOSTICS_SERVICE,
-                ConnectivityDiagnosticsManager.class,
-                new CachedServiceFetcher<ConnectivityDiagnosticsManager>() {
-            @Override
-            public ConnectivityDiagnosticsManager createService(ContextImpl ctx)
-                    throws ServiceNotFoundException {
-                // ConnectivityDiagnosticsManager is backed by ConnectivityService
-                IBinder b = ServiceManager.getServiceOrThrow(Context.CONNECTIVITY_SERVICE);
-                IConnectivityManager service = IConnectivityManager.Stub.asInterface(b);
-                return new ConnectivityDiagnosticsManager(ctx, service);
-            }});
-
-        registerService(
-                Context.TEST_NETWORK_SERVICE,
-                TestNetworkManager.class,
-                new StaticApplicationContextServiceFetcher<TestNetworkManager>() {
-                    @Override
-                    public TestNetworkManager createService(Context context)
-                            throws ServiceNotFoundException {
-                        IBinder csBinder =
-                                ServiceManager.getServiceOrThrow(Context.CONNECTIVITY_SERVICE);
-                        IConnectivityManager csMgr =
-                                IConnectivityManager.Stub.asInterface(csBinder);
-
-                        final IBinder tnBinder;
-                        try {
-                            tnBinder = csMgr.startOrGetTestNetworkService();
-                        } catch (RemoteException e) {
-                            throw new ServiceNotFoundException(Context.TEST_NETWORK_SERVICE);
-                        }
-                        ITestNetworkManager tnMgr = ITestNetworkManager.Stub.asInterface(tnBinder);
-                        return new TestNetworkManager(tnMgr);
-                    }
-                });
 
         registerService(Context.COUNTRY_DETECTOR, CountryDetector.class,
                 new StaticServiceFetcher<CountryDetector>() {
@@ -572,13 +551,11 @@ public final class SystemServiceRegistry {
                     ctx.mMainThread.getHandler());
             }});
 
-        registerService(Context.NSD_SERVICE, NsdManager.class,
-                new CachedServiceFetcher<NsdManager>() {
+        registerService(Context.PEOPLE_SERVICE, PeopleManager.class,
+                new CachedServiceFetcher<PeopleManager>() {
             @Override
-            public NsdManager createService(ContextImpl ctx) throws ServiceNotFoundException {
-                IBinder b = ServiceManager.getServiceOrThrow(Context.NSD_SERVICE);
-                INsdManager service = INsdManager.Stub.asInterface(b);
-                return new NsdManager(ctx.getOuterContext(), service);
+            public PeopleManager createService(ContextImpl ctx) throws ServiceNotFoundException {
+                return new PeopleManager(ctx);
             }});
 
         registerService(Context.POWER_SERVICE, PowerManager.class,
@@ -591,6 +568,14 @@ public final class SystemServiceRegistry {
                 IThermalService thermalService = IThermalService.Stub.asInterface(thermalBinder);
                 return new PowerManager(ctx.getOuterContext(), powerService, thermalService,
                         ctx.mMainThread.getHandler());
+            }});
+
+        registerService(Context.PERFORMANCE_HINT_SERVICE, PerformanceHintManager.class,
+                new CachedServiceFetcher<PerformanceHintManager>() {
+            @Override
+            public PerformanceHintManager createService(ContextImpl ctx)
+                    throws ServiceNotFoundException {
+                return PerformanceHintManager.create();
             }});
 
         registerService(Context.RECOVERY_SERVICE, RecoverySystem.class,
@@ -723,9 +708,16 @@ public final class SystemServiceRegistry {
                 new CachedServiceFetcher<UwbManager>() {
                     @Override
                     public UwbManager createService(ContextImpl ctx) {
-                        return UwbManager.getInstance();
+                        return UwbManager.getInstance(ctx);
                     }
                 });
+
+        registerService(Context.VIBRATOR_MANAGER_SERVICE, VibratorManager.class,
+                new CachedServiceFetcher<VibratorManager>() {
+                    @Override
+                    public VibratorManager createService(ContextImpl ctx) {
+                        return new SystemVibratorManager(ctx);
+                    }});
 
         registerService(Context.VIBRATOR_SERVICE, Vibrator.class,
                 new CachedServiceFetcher<Vibrator>() {
@@ -768,15 +760,6 @@ public final class SystemServiceRegistry {
                 IBinder b = ServiceManager.getServiceOrThrow(Context.LOWPAN_SERVICE);
                 ILowpanManager service = ILowpanManager.Stub.asInterface(b);
                 return new LowpanManager(ctx.getOuterContext(), service);
-            }});
-
-        registerService(Context.ETHERNET_SERVICE, EthernetManager.class,
-                new CachedServiceFetcher<EthernetManager>() {
-            @Override
-            public EthernetManager createService(ContextImpl ctx) throws ServiceNotFoundException {
-                IBinder b = ServiceManager.getServiceOrThrow(Context.ETHERNET_SERVICE);
-                IEthernetManager service = IEthernetManager.Stub.asInterface(b);
-                return new EthernetManager(ctx.getOuterContext(), service);
             }});
 
         registerService(Context.WIFI_NL80211_SERVICE, WifiNl80211Manager.class,
@@ -870,13 +853,6 @@ public final class SystemServiceRegistry {
             @Override
             public ConsumerIrManager createService(ContextImpl ctx) throws ServiceNotFoundException {
                 return new ConsumerIrManager(ctx);
-            }});
-
-        registerService(Context.MEDIA_SESSION_SERVICE, MediaSessionManager.class,
-                new CachedServiceFetcher<MediaSessionManager>() {
-            @Override
-            public MediaSessionManager createService(ContextImpl ctx) {
-                return new MediaSessionManager(ctx);
             }});
 
         registerService(Context.TRUST_SERVICE, TrustManager.class,
@@ -976,13 +952,6 @@ public final class SystemServiceRegistry {
                 IBinder iBinder = ServiceManager.getServiceOrThrow(Context.USAGE_STATS_SERVICE);
                 IUsageStatsManager service = IUsageStatsManager.Stub.asInterface(iBinder);
                 return new UsageStatsManager(ctx.getOuterContext(), service);
-            }});
-
-        registerService(Context.NETWORK_STATS_SERVICE, NetworkStatsManager.class,
-                new CachedServiceFetcher<NetworkStatsManager>() {
-            @Override
-            public NetworkStatsManager createService(ContextImpl ctx) throws ServiceNotFoundException {
-                return new NetworkStatsManager(ctx.getOuterContext());
             }});
 
         registerService(Context.PERSISTENT_DATA_BLOCK_SERVICE, PersistentDataBlockManager.class,
@@ -1132,6 +1101,17 @@ public final class SystemServiceRegistry {
                 return new AutofillManager(ctx.getOuterContext(), service);
             }});
 
+        registerService(Context.MUSIC_RECOGNITION_SERVICE, MusicRecognitionManager.class,
+                new CachedServiceFetcher<MusicRecognitionManager>() {
+                    @Override
+                    public MusicRecognitionManager createService(ContextImpl ctx) {
+                        IBinder b = ServiceManager.getService(
+                                Context.MUSIC_RECOGNITION_SERVICE);
+                        return new MusicRecognitionManager(
+                                IMusicRecognitionManager.Stub.asInterface(b));
+                    }
+                });
+
         registerService(Context.CONTENT_CAPTURE_MANAGER_SERVICE, ContentCaptureManager.class,
                 new CachedServiceFetcher<ContentCaptureManager>() {
             @Override
@@ -1154,6 +1134,53 @@ public final class SystemServiceRegistry {
                 // manager to apps so the performance impact is practically zero
                 return null;
             }});
+
+        registerService(Context.TRANSLATION_MANAGER_SERVICE, TranslationManager.class,
+                new CachedServiceFetcher<TranslationManager>() {
+                    @Override
+                    public TranslationManager createService(ContextImpl ctx)
+                            throws ServiceNotFoundException {
+                        IBinder b = ServiceManager.getService(Context.TRANSLATION_MANAGER_SERVICE);
+                        ITranslationManager service = ITranslationManager.Stub.asInterface(b);
+                        // Service is null when not provided by OEM.
+                        if (service != null) {
+                            return new TranslationManager(ctx.getOuterContext(), service);
+                        }
+                        return null;
+                    }});
+
+        registerService(Context.UI_TRANSLATION_SERVICE, UiTranslationManager.class,
+                new CachedServiceFetcher<UiTranslationManager>() {
+                    @Override
+                    public UiTranslationManager createService(ContextImpl ctx)
+                            throws ServiceNotFoundException {
+                        IBinder b = ServiceManager.getService(Context.TRANSLATION_MANAGER_SERVICE);
+                        ITranslationManager service = ITranslationManager.Stub.asInterface(b);
+                        if (service != null) {
+                            return new UiTranslationManager(ctx.getOuterContext(), service);
+                        }
+                        return null;
+                    }});
+
+        registerService(Context.SEARCH_UI_SERVICE, SearchUiManager.class,
+            new CachedServiceFetcher<SearchUiManager>() {
+                @Override
+                public SearchUiManager createService(ContextImpl ctx)
+                    throws ServiceNotFoundException {
+                    IBinder b = ServiceManager.getService(Context.SEARCH_UI_SERVICE);
+                    return b == null ? null : new SearchUiManager(ctx);
+                }
+            });
+
+        registerService(Context.SMARTSPACE_SERVICE, SmartspaceManager.class,
+            new CachedServiceFetcher<SmartspaceManager>() {
+                @Override
+                public SmartspaceManager createService(ContextImpl ctx)
+                    throws ServiceNotFoundException {
+                    IBinder b = ServiceManager.getService(Context.SMARTSPACE_SERVICE);
+                    return b == null ? null : new SmartspaceManager(ctx);
+                }
+            });
 
         registerService(Context.APP_PREDICTION_SERVICE, AppPredictionManager.class,
                 new CachedServiceFetcher<AppPredictionManager>() {
@@ -1232,13 +1259,28 @@ public final class SystemServiceRegistry {
                         return new TimeZoneDetectorImpl();
                     }});
 
+        registerService(Context.TIME_MANAGER, TimeManager.class,
+                new CachedServiceFetcher<TimeManager>() {
+                    @Override
+                    public TimeManager createService(ContextImpl ctx)
+                            throws ServiceNotFoundException {
+                        return new TimeManager();
+                    }});
+
         registerService(Context.PERMISSION_SERVICE, PermissionManager.class,
                 new CachedServiceFetcher<PermissionManager>() {
                     @Override
                     public PermissionManager createService(ContextImpl ctx)
                             throws ServiceNotFoundException {
-                        IPackageManager packageManager = AppGlobals.getPackageManager();
-                        return new PermissionManager(ctx.getOuterContext(), packageManager);
+                        return new PermissionManager(ctx.getOuterContext());
+                    }});
+
+        registerService(Context.LEGACY_PERMISSION_SERVICE, LegacyPermissionManager.class,
+                new CachedServiceFetcher<LegacyPermissionManager>() {
+                    @Override
+                    public LegacyPermissionManager createService(ContextImpl ctx)
+                            throws ServiceNotFoundException {
+                        return new LegacyPermissionManager();
                     }});
 
         registerService(Context.PERMISSION_CONTROLLER_SERVICE, PermissionControllerManager.class,
@@ -1249,30 +1291,12 @@ public final class SystemServiceRegistry {
                                 ctx.getMainThreadHandler());
                     }});
 
-        registerService(Context.ROLE_SERVICE, RoleManager.class,
-                new CachedServiceFetcher<RoleManager>() {
+        registerService(Context.PERMISSION_CHECKER_SERVICE, PermissionCheckerManager.class,
+                new CachedServiceFetcher<PermissionCheckerManager>() {
                     @Override
-                    public RoleManager createService(ContextImpl ctx)
+                    public PermissionCheckerManager createService(ContextImpl ctx)
                             throws ServiceNotFoundException {
-                        return new RoleManager(ctx.getOuterContext());
-                    }});
-
-        registerService(Context.ROLE_CONTROLLER_SERVICE, RoleControllerManager.class,
-                new CachedServiceFetcher<RoleControllerManager>() {
-                    @Override
-                    public RoleControllerManager createService(ContextImpl ctx)
-                            throws ServiceNotFoundException {
-                        return new RoleControllerManager(ctx.getOuterContext());
-                    }});
-
-        registerService(Context.ROLLBACK_SERVICE, RollbackManager.class,
-                new CachedServiceFetcher<RollbackManager>() {
-                    @Override
-                    public RollbackManager createService(ContextImpl ctx)
-                            throws ServiceNotFoundException {
-                        IBinder b = ServiceManager.getServiceOrThrow(Context.ROLLBACK_SERVICE);
-                        return new RollbackManager(ctx.getOuterContext(),
-                                IRollbackManager.Stub.asInterface(b));
+                        return new PermissionCheckerManager(ctx.getOuterContext());
                     }});
 
         registerService(Context.DYNAMIC_SYSTEM_SERVICE, DynamicSystemManager.class,
@@ -1310,7 +1334,7 @@ public final class SystemServiceRegistry {
                 @Override
                 public LightsManager createService(ContextImpl ctx)
                     throws ServiceNotFoundException {
-                    return new LightsManager(ctx);
+                    return new SystemLightsManager(ctx);
                 }});
         registerService(Context.INCREMENTAL_SERVICE, IncrementalManager.class,
                 new CachedServiceFetcher<IncrementalManager>() {
@@ -1343,6 +1367,13 @@ public final class SystemServiceRegistry {
                         IBinder b = ServiceManager.getServiceOrThrow(Context.APP_INTEGRITY_SERVICE);
                         return new AppIntegrityManager(IAppIntegrityManager.Stub.asInterface(b));
                     }});
+        registerService(Context.APP_HIBERNATION_SERVICE, AppHibernationManager.class,
+                new CachedServiceFetcher<AppHibernationManager>() {
+                    @Override
+                    public AppHibernationManager createService(ContextImpl ctx) {
+                        IBinder b = ServiceManager.getService(Context.APP_HIBERNATION_SERVICE);
+                        return b == null ? null : new AppHibernationManager(ctx);
+                    }});
         registerService(Context.DREAM_SERVICE, DreamManager.class,
                 new CachedServiceFetcher<DreamManager>() {
                     @Override
@@ -1350,16 +1381,72 @@ public final class SystemServiceRegistry {
                             throws ServiceNotFoundException {
                         return new DreamManager(ctx);
                     }});
+        registerService(Context.DEVICE_STATE_SERVICE, DeviceStateManager.class,
+                new CachedServiceFetcher<DeviceStateManager>() {
+                    @Override
+                    public DeviceStateManager createService(ContextImpl ctx) {
+                        return new DeviceStateManager();
+                    }});
+
+        registerService(Context.MEDIA_METRICS_SERVICE, MediaMetricsManager.class,
+                new CachedServiceFetcher<MediaMetricsManager>() {
+                    @Override
+                    public MediaMetricsManager createService(ContextImpl ctx)
+                            throws ServiceNotFoundException {
+                        IBinder iBinder =
+                                ServiceManager.getServiceOrThrow(Context.MEDIA_METRICS_SERVICE);
+                        IMediaMetricsManager service =
+                                IMediaMetricsManager.Stub.asInterface(iBinder);
+                        return new MediaMetricsManager(service, ctx.getUserId());
+                    }});
+
+        registerService(Context.GAME_SERVICE, GameManager.class,
+                new CachedServiceFetcher<GameManager>() {
+                    @Override
+                    public GameManager createService(ContextImpl ctx)
+                            throws ServiceNotFoundException {
+                        return new GameManager(ctx.getOuterContext(),
+                                ctx.mMainThread.getHandler());
+                    }
+                });
+
+        registerService(Context.DOMAIN_VERIFICATION_SERVICE, DomainVerificationManager.class,
+                new CachedServiceFetcher<DomainVerificationManager>() {
+                    @Override
+                    public DomainVerificationManager createService(ContextImpl context)
+                            throws ServiceNotFoundException {
+                        IBinder binder = ServiceManager.getServiceOrThrow(
+                                Context.DOMAIN_VERIFICATION_SERVICE);
+                        IDomainVerificationManager service =
+                                IDomainVerificationManager.Stub.asInterface(binder);
+                        return new DomainVerificationManager(context, service);
+                    }
+                });
+
+        registerService(Context.DISPLAY_HASH_SERVICE, DisplayHashManager.class,
+                new CachedServiceFetcher<DisplayHashManager>() {
+                    @Override
+                    public DisplayHashManager createService(ContextImpl ctx) {
+                        return new DisplayHashManager();
+                    }});
 
         sInitializing = true;
         try {
             // Note: the following functions need to be @SystemApis, once they become mainline
             // modules.
+            ConnectivityFrameworkInitializer.registerServiceWrappers();
             JobSchedulerFrameworkInitializer.registerServiceWrappers();
             BlobStoreManagerFrameworkInitializer.initialize();
             TelephonyFrameworkInitializer.registerServiceWrappers();
+            AppSearchManagerFrameworkInitializer.initialize();
             WifiFrameworkInitializer.registerServiceWrappers();
             StatsFrameworkInitializer.registerServiceWrappers();
+            RollbackManagerFrameworkInitializer.initialize();
+            MediaFrameworkPlatformInitializer.registerServiceWrappers();
+            MediaFrameworkInitializer.registerServiceWrappers();
+            RoleFrameworkInitializer.registerServiceWrappers();
+            SchedulingFrameworkInitializer.registerServiceWrappers();
+            ConnectivityFrameworkInitializerTiramisu.registerServiceWrappers();
         } finally {
             // If any of the above code throws, we're in a pretty bad shape and the process
             // will likely crash, but we'll reset it just in case there's an exception handler...
@@ -1369,8 +1456,8 @@ public final class SystemServiceRegistry {
 
     /** Throws {@link IllegalStateException} if not during a static initialization. */
     private static void ensureInitializing(String methodName) {
-        Preconditions.checkState(sInitializing, "Internal error: " + methodName
-                + " can only be called during class initialization.");
+        Preconditions.checkState(sInitializing, "Internal error: %s"
+                + " can only be called during class initialization.", methodName);
     }
     /**
      * Creates an array which is used to cache per-Context service instances.
@@ -1685,7 +1772,7 @@ public final class SystemServiceRegistry {
                 synchronized (cache) {
                     // Return it if we already have a cached instance.
                     T service = (T) cache[mCacheIndex];
-                    if (service != null || gates[mCacheIndex] == ContextImpl.STATE_NOT_FOUND) {
+                    if (service != null) {
                         ret = service;
                         break; // exit the for (;;)
                     }
@@ -1695,7 +1782,9 @@ public final class SystemServiceRegistry {
                     // Grr... if gate is STATE_READY, then this means we initialized the service
                     // once but someone cleared it.
                     // We start over from STATE_UNINITIALIZED.
-                    if (gates[mCacheIndex] == ContextImpl.STATE_READY) {
+                    // Similarly, if the previous attempt returned null, we'll retry again.
+                    if (gates[mCacheIndex] == ContextImpl.STATE_READY
+                            || gates[mCacheIndex] == ContextImpl.STATE_NOT_FOUND) {
                         gates[mCacheIndex] = ContextImpl.STATE_UNINITIALIZED;
                     }
 
@@ -1784,39 +1873,6 @@ public final class SystemServiceRegistry {
         }
 
         public abstract T createService() throws ServiceNotFoundException;
-    }
-
-    /**
-     * Like StaticServiceFetcher, creates only one instance of the service per application, but when
-     * creating the service for the first time, passes it the application context of the creating
-     * application.
-     *
-     * TODO: Delete this once its only user (ConnectivityManager) is known to work well in the
-     * case where multiple application components each have their own ConnectivityManager object.
-     */
-    static abstract class StaticApplicationContextServiceFetcher<T> implements ServiceFetcher<T> {
-        private T mCachedInstance;
-
-        @Override
-        public final T getService(ContextImpl ctx) {
-            synchronized (StaticApplicationContextServiceFetcher.this) {
-                if (mCachedInstance == null) {
-                    Context appContext = ctx.getApplicationContext();
-                    // If the application context is null, we're either in the system process or
-                    // it's the application context very early in app initialization. In both these
-                    // cases, the passed-in ContextImpl will not be freed, so it's safe to pass it
-                    // to the service. http://b/27532714 .
-                    try {
-                        mCachedInstance = createService(appContext != null ? appContext : ctx);
-                    } catch (ServiceNotFoundException e) {
-                        onServiceNotFound(e);
-                    }
-                }
-                return mCachedInstance;
-            }
-        }
-
-        public abstract T createService(Context applicationContext) throws ServiceNotFoundException;
     }
 
     /** @hide */

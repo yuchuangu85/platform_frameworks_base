@@ -17,6 +17,8 @@
 package com.android.server.trust;
 
 import android.Manifest;
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.app.ActivityManager;
 import android.app.AlarmManager;
@@ -39,6 +41,7 @@ import android.content.res.TypedArray;
 import android.content.res.XmlResourceParser;
 import android.database.ContentObserver;
 import android.graphics.drawable.Drawable;
+import android.hardware.biometrics.BiometricManager;
 import android.hardware.biometrics.BiometricSourceType;
 import android.net.Uri;
 import android.os.Binder;
@@ -53,7 +56,7 @@ import android.os.SystemClock;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
-import android.security.KeyStore;
+import android.security.Authorization;
 import android.service.trust.TrustAgentService;
 import android.text.TextUtils;
 import android.util.ArrayMap;
@@ -71,6 +74,7 @@ import com.android.internal.content.PackageMonitor;
 import com.android.internal.util.DumpUtils;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.server.SystemService;
+import com.android.server.SystemService.TargetUser;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
@@ -378,7 +382,7 @@ public class TrustManagerService extends SystemService {
     }
 
     private void updateTrustAll() {
-        List<UserInfo> userInfos = mUserManager.getUsers(true /* excludeDying */);
+        List<UserInfo> userInfos = mUserManager.getAliveUsers();
         for (UserInfo userInfo : userInfos) {
             updateTrust(userInfo.id, 0);
         }
@@ -484,7 +488,7 @@ public class TrustManagerService extends SystemService {
 
         List<UserInfo> userInfos;
         if (userIdOrAll == UserHandle.USER_ALL) {
-            userInfos = mUserManager.getUsers(true /* excludeDying */);
+            userInfos = mUserManager.getAliveUsers();
         } else {
             userInfos = new ArrayList<>();
             userInfos.add(mUserManager.getUserInfo(userIdOrAll));
@@ -643,7 +647,7 @@ public class TrustManagerService extends SystemService {
         }
         List<UserInfo> userInfos;
         if (userId == UserHandle.USER_ALL) {
-            userInfos = mUserManager.getUsers(true /* excludeDying */);
+            userInfos = mUserManager.getAliveUsers();
         } else {
             userInfos = new ArrayList<>();
             userInfos.add(mUserManager.getUserInfo(userId));
@@ -695,13 +699,14 @@ public class TrustManagerService extends SystemService {
         }
         if (changed) {
             dispatchDeviceLocked(userId, locked);
-
-            KeyStore.getInstance().onUserLockedStateChanged(userId, locked);
+            Authorization.onLockScreenEvent(locked, userId, null,
+                    getBiometricSids(userId));
             // Also update the user's profiles who have unified challenge, since they
             // share the same unlocked state (see {@link #isDeviceLocked(int)})
             for (int profileHandle : mUserManager.getEnabledProfileIds(userId)) {
                 if (mLockPatternUtils.isManagedProfileWithUnifiedChallenge(profileHandle)) {
-                    KeyStore.getInstance().onUserLockedStateChanged(profileHandle, locked);
+                    Authorization.onLockScreenEvent(locked, profileHandle, null,
+                            getBiometricSids(profileHandle));
                 }
             }
         }
@@ -1041,31 +1046,39 @@ public class TrustManagerService extends SystemService {
         }
     }
 
+    private long[] getBiometricSids(int userId) {
+        BiometricManager biometricManager = mContext.getSystemService(BiometricManager.class);
+        if (biometricManager == null) {
+            return null;
+        }
+        return biometricManager.getAuthenticatorIds(userId);
+    }
+
     // User lifecycle
 
     @Override
-    public void onStartUser(int userId) {
-        mHandler.obtainMessage(MSG_START_USER, userId, 0, null).sendToTarget();
+    public void onUserStarting(@NonNull TargetUser user) {
+        mHandler.obtainMessage(MSG_START_USER, user.getUserIdentifier(), 0, null).sendToTarget();
     }
 
     @Override
-    public void onCleanupUser(int userId) {
-        mHandler.obtainMessage(MSG_CLEANUP_USER, userId, 0, null).sendToTarget();
+    public void onUserStopped(@NonNull TargetUser user) {
+        mHandler.obtainMessage(MSG_CLEANUP_USER, user.getUserIdentifier(), 0, null).sendToTarget();
     }
 
     @Override
-    public void onSwitchUser(int userId) {
-        mHandler.obtainMessage(MSG_SWITCH_USER, userId, 0, null).sendToTarget();
+    public void onUserSwitching(@Nullable TargetUser from, @NonNull TargetUser to) {
+        mHandler.obtainMessage(MSG_SWITCH_USER, to.getUserIdentifier(), 0, null).sendToTarget();
     }
 
     @Override
-    public void onUnlockUser(int userId) {
-        mHandler.obtainMessage(MSG_UNLOCK_USER, userId, 0, null).sendToTarget();
+    public void onUserUnlocking(@NonNull TargetUser user) {
+        mHandler.obtainMessage(MSG_UNLOCK_USER, user.getUserIdentifier(), 0, null).sendToTarget();
     }
 
     @Override
-    public void onStopUser(@UserIdInt int userId) {
-        mHandler.obtainMessage(MSG_STOP_USER, userId, 0, null).sendToTarget();
+    public void onUserStopping(@NonNull TargetUser user) {
+        mHandler.obtainMessage(MSG_STOP_USER, user.getUserIdentifier(), 0, null).sendToTarget();
     }
 
     // Plumbing
@@ -1122,7 +1135,7 @@ public class TrustManagerService extends SystemService {
             userId = ActivityManager.handleIncomingUser(getCallingPid(), getCallingUid(), userId,
                     false /* allowAll */, true /* requireFull */, "isDeviceLocked", null);
 
-            long token = Binder.clearCallingIdentity();
+            final long token = Binder.clearCallingIdentity();
             try {
                 if (!mLockPatternUtils.isSeparateProfileChallengeEnabled(userId)) {
                     userId = resolveProfileParent(userId);
@@ -1138,7 +1151,7 @@ public class TrustManagerService extends SystemService {
             userId = ActivityManager.handleIncomingUser(getCallingPid(), getCallingUid(), userId,
                     false /* allowAll */, true /* requireFull */, "isDeviceSecure", null);
 
-            long token = Binder.clearCallingIdentity();
+            final long token = Binder.clearCallingIdentity();
             try {
                 if (!mLockPatternUtils.isSeparateProfileChallengeEnabled(userId)) {
                     userId = resolveProfileParent(userId);
@@ -1155,7 +1168,7 @@ public class TrustManagerService extends SystemService {
         }
 
         private void enforceListenerPermission() {
-            mContext.enforceCallingPermission(Manifest.permission.TRUST_LISTENER,
+            mContext.enforceCallingOrSelfPermission(Manifest.permission.TRUST_LISTENER,
                     "register trust listener");
         }
 
@@ -1170,7 +1183,7 @@ public class TrustManagerService extends SystemService {
                 fout.println("disabled because the third-party apps can't run yet.");
                 return;
             }
-            final List<UserInfo> userInfos = mUserManager.getUsers(true /* excludeDying */);
+            final List<UserInfo> userInfos = mUserManager.getAliveUsers();
             mHandler.runWithScissors(new Runnable() {
                 @Override
                 public void run() {
@@ -1252,7 +1265,8 @@ public class TrustManagerService extends SystemService {
                         mDeviceLockedForUser.put(userId, locked);
                     }
 
-                    KeyStore.getInstance().onUserLockedStateChanged(userId, locked);
+                    Authorization.onLockScreenEvent(locked, userId, null,
+                            getBiometricSids(userId));
 
                     if (locked) {
                         try {
@@ -1325,7 +1339,7 @@ public class TrustManagerService extends SystemService {
     }
 
     private int resolveProfileParent(int userId) {
-        long identity = Binder.clearCallingIdentity();
+        final long identity = Binder.clearCallingIdentity();
         try {
             UserInfo parent = mUserManager.getProfileParent(userId);
             if (parent != null) {

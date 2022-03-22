@@ -22,11 +22,13 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.media.RoutingSessionInfo;
+import android.os.Build;
 import android.text.TextUtils;
 import android.util.Log;
 
 import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.settingslib.bluetooth.A2dpProfile;
@@ -36,6 +38,7 @@ import com.android.settingslib.bluetooth.CachedBluetoothDeviceManager;
 import com.android.settingslib.bluetooth.HearingAidProfile;
 import com.android.settingslib.bluetooth.LocalBluetoothManager;
 import com.android.settingslib.bluetooth.LocalBluetoothProfile;
+import com.android.settingslib.bluetooth.LeAudioProfile;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -49,6 +52,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * LocalMediaManager provide interface to get MediaDevice list and transfer media to MediaDevice.
  */
+@RequiresApi(Build.VERSION_CODES.R)
 public class LocalMediaManager implements BluetoothCallback {
     private static final Comparator<MediaDevice> COMPARATOR = Comparator.naturalOrder();
     private static final String TAG = "LocalMediaManager";
@@ -205,7 +209,6 @@ public class LocalMediaManager implements BluetoothCallback {
 
     void dispatchDeviceListUpdate() {
         final List<MediaDevice> mediaDevices = new ArrayList<>(mMediaDevices);
-        Collections.sort(mediaDevices, COMPARATOR);
         for (DeviceCallback callback : getCallbacks()) {
             callback.onDeviceListUpdate(mediaDevices);
         }
@@ -402,6 +405,20 @@ public class LocalMediaManager implements BluetoothCallback {
         return mPackageName;
     }
 
+    /**
+     * Returns {@code true} if needed to disable media output, otherwise returns {@code false}.
+     */
+    public boolean shouldDisableMediaOutput(String packageName) {
+        return mInfoMediaManager.shouldDisableMediaOutput(packageName);
+    }
+
+    /**
+     * Returns {@code true} if needed to enable volume seekbar, otherwise returns {@code false}.
+     */
+    public boolean shouldEnableVolumeSeekBar(RoutingSessionInfo sessionInfo) {
+        return mInfoMediaManager.shouldEnableVolumeSeekBar(sessionInfo);
+    }
+
     @VisibleForTesting
     MediaDevice updateCurrentConnectedDevice() {
         MediaDevice connectedDevice = null;
@@ -424,6 +441,7 @@ public class LocalMediaManager implements BluetoothCallback {
     private boolean isActiveDevice(CachedBluetoothDevice device) {
         boolean isActiveDeviceA2dp = false;
         boolean isActiveDeviceHearingAid = false;
+        boolean isActiveLeAudio = false;
         final A2dpProfile a2dpProfile = mLocalBluetoothManager.getProfileManager().getA2dpProfile();
         if (a2dpProfile != null) {
             isActiveDeviceA2dp = device.getDevice().equals(a2dpProfile.getActiveDevice());
@@ -437,7 +455,15 @@ public class LocalMediaManager implements BluetoothCallback {
             }
         }
 
-        return isActiveDeviceA2dp || isActiveDeviceHearingAid;
+        if (!isActiveDeviceA2dp && !isActiveDeviceHearingAid) {
+            final LeAudioProfile leAudioProfile = mLocalBluetoothManager.getProfileManager()
+                    .getLeAudioProfile();
+            if (leAudioProfile != null) {
+                isActiveLeAudio = leAudioProfile.getActiveDevices().contains(device.getDevice());
+            }
+        }
+
+        return isActiveDeviceA2dp || isActiveDeviceHearingAid || isActiveLeAudio;
     }
 
     private Collection<DeviceCallback> getCallbacks() {
@@ -463,6 +489,7 @@ public class LocalMediaManager implements BluetoothCallback {
         @Override
         public void onDeviceListAdded(List<MediaDevice> devices) {
             synchronized (mMediaDevicesLock) {
+                Collections.sort(devices, COMPARATOR);
                 mMediaDevices.clear();
                 mMediaDevices.addAll(devices);
                 // Add disconnected bluetooth devices only when phone output device is available.
@@ -509,7 +536,7 @@ public class LocalMediaManager implements BluetoothCallback {
                 if (cachedDevice != null) {
                     if (cachedDevice.getBondState() == BluetoothDevice.BOND_BONDED
                             && !cachedDevice.isConnected()
-                            && isA2dpOrHearingAidDevice(cachedDevice)) {
+                            && isMediaDevice(cachedDevice)) {
                         deviceCount++;
                         cachedBluetoothDeviceList.add(cachedDevice);
                         if (deviceCount >= MAX_DISCONNECTED_DEVICE_NUM) {
@@ -533,9 +560,10 @@ public class LocalMediaManager implements BluetoothCallback {
             return new ArrayList<>(mDisconnectedMediaDevices);
         }
 
-        private boolean isA2dpOrHearingAidDevice(CachedBluetoothDevice device) {
+        private boolean isMediaDevice(CachedBluetoothDevice device) {
             for (LocalBluetoothProfile profile : device.getConnectableProfiles()) {
-                if (profile instanceof A2dpProfile || profile instanceof HearingAidProfile) {
+                if (profile instanceof A2dpProfile || profile instanceof HearingAidProfile ||
+                        profile instanceof LeAudioProfile) {
                     return true;
                 }
             }

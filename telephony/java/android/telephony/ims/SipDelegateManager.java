@@ -24,20 +24,24 @@ import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.telephony.BinderCacheManager;
-import android.telephony.CarrierConfigManager;
 import android.telephony.ims.aidl.IImsRcsController;
 import android.telephony.ims.aidl.SipDelegateConnectionAidlWrapper;
+import android.telephony.ims.feature.ImsFeature;
 import android.telephony.ims.stub.DelegateConnectionMessageCallback;
 import android.telephony.ims.stub.DelegateConnectionStateCallback;
 import android.telephony.ims.stub.SipDelegate;
+import android.util.ArrayMap;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.telephony.ITelephony;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 
 /**
@@ -47,6 +51,9 @@ import java.util.concurrent.Executor;
  * This allows multiple IMS applications to forward SIP messages to/from their application for the
  * purposes of providing a single IMS registration to the carrier's IMS network from potentially
  * many IMS stacks implementing a subset of the supported MMTEL/RCS features.
+ * <p>
+ * This API is only supported if the device supports the
+ * {@link PackageManager#FEATURE_TELEPHONY_IMS_SINGLE_REGISTRATION} feature.
  * @hide
  */
 @SystemApi
@@ -75,13 +82,18 @@ public class SipDelegateManager {
     public static final int MESSAGE_FAILURE_REASON_DELEGATE_CLOSED = 2;
 
     /**
-     * The SIP message has an invalid start line and the message can not be sent.
+     * The SIP message has an invalid start line and the message can not be sent or the start line
+     * failed validation due to the request containing a restricted SIP request method.
+     * {@link SipDelegateConnection}s can not send SIP requests for the methods: REGISTER, PUBLISH,
+     * or OPTIONS.
      */
     public static final int MESSAGE_FAILURE_REASON_INVALID_START_LINE = 3;
 
     /**
      * One or more of the header fields in the header section of the outgoing SIP message is invalid
-     * and the SIP message can not be sent.
+     * or contains a restricted header value and the SIP message can not be sent.
+     * {@link SipDelegateConnection}s can not send SIP SUBSCRIBE requests for the "Event" header
+     * value of "presence".
      */
     public static final int MESSAGE_FAILURE_REASON_INVALID_HEADER_FIELDS = 4;
 
@@ -92,7 +104,7 @@ public class SipDelegateManager {
 
     /**
      * The feature tag associated with the outgoing message does not match any known feature tags
-     * and this message can not be sent.
+     * or it matches a denied tag and this message can not be sent.
      */
     public static final int MESSAGE_FAILURE_REASON_INVALID_FEATURE_TAG = 6;
 
@@ -121,12 +133,12 @@ public class SipDelegateManager {
     public static final int MESSAGE_FAILURE_REASON_NOT_REGISTERED = 9;
 
     /**
-     * The outgoing SIP message has not been sent because the {@link SipDelegateImsConfiguration}
+     * The outgoing SIP message has not been sent because the {@link SipDelegateConfiguration}
      * version associated with the outgoing {@link SipMessage} is now stale and has failed
      * validation checks.
      * <p>
      * The @link SipMessage} should be recreated using the newest
-     * {@link SipDelegateImsConfiguration} and sent again.
+     * {@link SipDelegateConfiguration} and sent again.
      */
     public static final int MESSAGE_FAILURE_REASON_STALE_IMS_CONFIGURATION = 10;
 
@@ -158,6 +170,35 @@ public class SipDelegateManager {
     })
     public @interface MessageFailureReason {}
 
+    /**@hide*/
+    public static final ArrayMap<Integer, String> MESSAGE_FAILURE_REASON_STRING_MAP =
+            new ArrayMap<>(11);
+    static {
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(MESSAGE_FAILURE_REASON_UNKNOWN,
+                "MESSAGE_FAILURE_REASON_UNKNOWN");
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(MESSAGE_FAILURE_REASON_DELEGATE_DEAD,
+                "MESSAGE_FAILURE_REASON_DELEGATE_DEAD");
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(MESSAGE_FAILURE_REASON_DELEGATE_CLOSED,
+                "MESSAGE_FAILURE_REASON_DELEGATE_CLOSED");
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(MESSAGE_FAILURE_REASON_INVALID_HEADER_FIELDS,
+                "MESSAGE_FAILURE_REASON_INVALID_HEADER_FIELDS");
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(MESSAGE_FAILURE_REASON_INVALID_BODY_CONTENT,
+                "MESSAGE_FAILURE_REASON_INVALID_BODY_CONTENT");
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(MESSAGE_FAILURE_REASON_INVALID_FEATURE_TAG,
+                "MESSAGE_FAILURE_REASON_INVALID_FEATURE_TAG");
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(
+                MESSAGE_FAILURE_REASON_TAG_NOT_ENABLED_FOR_DELEGATE,
+                "MESSAGE_FAILURE_REASON_TAG_NOT_ENABLED_FOR_DELEGATE");
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(MESSAGE_FAILURE_REASON_NETWORK_NOT_AVAILABLE,
+                "MESSAGE_FAILURE_REASON_NETWORK_NOT_AVAILABLE");
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(MESSAGE_FAILURE_REASON_NOT_REGISTERED,
+                "MESSAGE_FAILURE_REASON_NOT_REGISTERED");
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(MESSAGE_FAILURE_REASON_STALE_IMS_CONFIGURATION,
+                "MESSAGE_FAILURE_REASON_STALE_IMS_CONFIGURATION");
+        MESSAGE_FAILURE_REASON_STRING_MAP.append(
+                MESSAGE_FAILURE_REASON_INTERNAL_DELEGATE_STATE_TRANSITION,
+                "MESSAGE_FAILURE_REASON_INTERNAL_DELEGATE_STATE_TRANSITION");
+    }
 
     /**
      * Access to use this feature tag has been denied for an unknown reason.
@@ -242,6 +283,7 @@ public class SipDelegateManager {
     private final Context mContext;
     private final int mSubId;
     private final BinderCacheManager<IImsRcsController> mBinderCache;
+    private final BinderCacheManager<ITelephony> mTelephonyBinderCache;
 
     /**
      * Only visible for testing. To instantiate an instance of this class, please use
@@ -250,10 +292,12 @@ public class SipDelegateManager {
      */
     @VisibleForTesting
     public SipDelegateManager(Context context, int subId,
-            BinderCacheManager<IImsRcsController> binderCache) {
+            BinderCacheManager<IImsRcsController> binderCache,
+            BinderCacheManager<ITelephony> telephonyBinderCache) {
         mContext = context;
         mSubId = subId;
         mBinderCache = binderCache;
+        mTelephonyBinderCache = telephonyBinderCache;
     }
 
     /**
@@ -269,8 +313,10 @@ public class SipDelegateManager {
      * {@link ImsException#getCode()} for more information.
      *
      * @see CarrierConfigManager.Ims#KEY_IMS_SINGLE_REGISTRATION_REQUIRED_BOOL
+     * @see PackageManager#FEATURE_TELEPHONY_IMS_SINGLE_REGISTRATION
      */
-    @RequiresPermission(Manifest.permission.READ_PRIVILEGED_PHONE_STATE)
+    @RequiresPermission(anyOf = {Manifest.permission.READ_PRIVILEGED_PHONE_STATE,
+            Manifest.permission.PERFORM_IMS_SINGLE_REGISTRATION})
     public boolean isSupported() throws ImsException {
         try {
             IImsRcsController controller = mBinderCache.getBinder();
@@ -312,13 +358,14 @@ public class SipDelegateManager {
      * @throws ImsException Thrown if there was a problem communicating with the ImsService
      * associated with this SipDelegateManager. See {@link ImsException#getCode()}.
      */
-    @RequiresPermission(Manifest.permission.MODIFY_PHONE_STATE)
+    @RequiresPermission(Manifest.permission.PERFORM_IMS_SINGLE_REGISTRATION)
     public void createSipDelegate(@NonNull DelegateRequest request, @NonNull Executor executor,
             @NonNull DelegateConnectionStateCallback dc,
             @NonNull DelegateConnectionMessageCallback mc) throws ImsException {
-        if (request == null || executor == null || dc == null || mc == null) {
-            throw new IllegalArgumentException("Invalid arguments passed into createSipDelegate");
-        }
+        Objects.requireNonNull(request, "The DelegateRequest must not be null.");
+        Objects.requireNonNull(executor, "The Executor must not be null.");
+        Objects.requireNonNull(dc, "The DelegateConnectionStateCallback must not be null.");
+        Objects.requireNonNull(mc, "The DelegateConnectionMessageCallback must not be null.");
         try {
             SipDelegateConnectionAidlWrapper wrapper =
                     new SipDelegateConnectionAidlWrapper(executor, dc, mc);
@@ -346,13 +393,10 @@ public class SipDelegateManager {
      * @param delegateConnection The SipDelegateConnection to destroy.
      * @param reason The reason for why this SipDelegateConnection was destroyed.
      */
-    @RequiresPermission(Manifest.permission.MODIFY_PHONE_STATE)
+    @RequiresPermission(Manifest.permission.PERFORM_IMS_SINGLE_REGISTRATION)
     public void destroySipDelegate(@NonNull SipDelegateConnection delegateConnection,
             @SipDelegateDestroyReason int reason) {
-
-        if (delegateConnection == null) {
-            throw new IllegalArgumentException("invalid argument passed into destroySipDelegate");
-        }
+        Objects.requireNonNull(delegateConnection, "SipDelegateConnection can not be null.");
         if (delegateConnection instanceof SipDelegateConnectionAidlWrapper) {
             SipDelegateConnectionAidlWrapper w =
                     (SipDelegateConnectionAidlWrapper) delegateConnection;
@@ -387,11 +431,10 @@ public class SipDelegateManager {
      *         this condition. May be {@code null} if there was no reason String provided from the
      *         network.
      */
+    @RequiresPermission(Manifest.permission.PERFORM_IMS_SINGLE_REGISTRATION)
     public void triggerFullNetworkRegistration(@NonNull SipDelegateConnection connection,
             @IntRange(from = 100, to = 699) int sipCode, @Nullable String sipReason) {
-        if (connection == null) {
-            throw new IllegalArgumentException("invalid connection.");
-        }
+        Objects.requireNonNull(connection, "SipDelegateConnection can not be null.");
         if (connection instanceof SipDelegateConnectionAidlWrapper) {
             SipDelegateConnectionAidlWrapper w = (SipDelegateConnectionAidlWrapper) connection;
             try {
@@ -405,6 +448,67 @@ public class SipDelegateManager {
         } else {
             throw new IllegalArgumentException("Unknown SipDelegateConnection implementation passed"
                     + " into this method");
+        }
+    }
+
+    /**
+     * Register a new callback, which is used to notify the registrant of changes to
+     * the state of the underlying  IMS service that is attached to telephony to
+     * implement IMS functionality. If the manager is created for
+     * the {@link android.telephony.SubscriptionManager#DEFAULT_SUBSCRIPTION_ID},
+     * this throws an {@link ImsException}.
+     *
+     * <p>Requires Permission:
+     * {@link android.Manifest.permission#READ_PRECISE_PHONE_STATE READ_PRECISE_PHONE_STATE}
+     * or that the calling app has carrier privileges
+     * (see {@link android.telephony.TelephonyManager#hasCarrierPrivileges}).
+     *
+     * @param executor the Executor that will be used to call the {@link ImsStateCallback}.
+     * @param callback The callback instance being registered.
+     * @throws ImsException in the case that the callback can not be registered.
+     * See {@link ImsException#getCode} for more information on when this is called.
+     */
+    @RequiresPermission(anyOf = {Manifest.permission.READ_PRIVILEGED_PHONE_STATE,
+            Manifest.permission.PERFORM_IMS_SINGLE_REGISTRATION})
+    public void registerImsStateCallback(@NonNull Executor executor,
+            @NonNull ImsStateCallback callback) throws ImsException {
+        Objects.requireNonNull(callback, "Must include a non-null ImsStateCallback.");
+        Objects.requireNonNull(executor, "Must include a non-null Executor.");
+
+        callback.init(executor);
+        ITelephony telephony = mTelephonyBinderCache.listenOnBinder(callback, callback::binderDied);
+        if (telephony == null) {
+            throw new ImsException("Telephony server is down",
+                    ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        }
+
+        try {
+            telephony.registerImsStateCallback(
+                    mSubId, ImsFeature.FEATURE_RCS,
+                    callback.getCallbackBinder(), mContext.getOpPackageName());
+        } catch (ServiceSpecificException e) {
+            throw new ImsException(e.getMessage(), e.errorCode);
+        } catch (RemoteException | IllegalStateException e) {
+            throw new ImsException(e.getMessage(), ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        }
+    }
+
+    /**
+     * Unregisters a previously registered callback.
+     *
+     * @param callback The callback instance to be unregistered.
+     */
+    public void unregisterImsStateCallback(@NonNull ImsStateCallback callback) {
+        Objects.requireNonNull(callback, "Must include a non-null ImsStateCallback.");
+
+        ITelephony telephony = mTelephonyBinderCache.removeRunnable(callback);
+
+        try {
+            if (telephony != null) {
+                telephony.unregisterImsStateCallback(callback.getCallbackBinder());
+            }
+        } catch (RemoteException ignore) {
+            // ignore it
         }
     }
 }

@@ -84,8 +84,9 @@ bool checkLoop(int32_t *loop)
 
 } // namespace
 
-SoundPool::SoundPool(int32_t maxStreams, const audio_attributes_t* attributes)
-    : mStreamManager(maxStreams, kStreamManagerThreads, attributes)
+SoundPool::SoundPool(
+        int32_t maxStreams, const audio_attributes_t* attributes, const std::string& opPackageName)
+    : mStreamManager(maxStreams, kStreamManagerThreads, attributes, opPackageName)
 {
     ALOGV("%s(maxStreams=%d, attr={ content_type=%d, usage=%d, flags=0x%x, tags=%s })",
             __func__, maxStreams,
@@ -184,7 +185,7 @@ void SoundPool::stop(int32_t streamID)
     auto apiLock = kUseApiLock ? std::make_unique<std::lock_guard<std::mutex>>(mApiLock) : nullptr;
     soundpool::Stream* stream = mStreamManager.findStream(streamID);
     if (stream != nullptr && stream->requestStop(streamID)) {
-        mStreamManager.moveToRestartQueue(stream);
+        mStreamManager.moveToRestartQueue(stream, streamID);
     }
 }
 

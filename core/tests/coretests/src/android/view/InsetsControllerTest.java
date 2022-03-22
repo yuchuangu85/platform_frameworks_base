@@ -16,20 +16,25 @@
 
 package android.view;
 
+import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
 import static android.view.InsetsController.ANIMATION_TYPE_HIDE;
 import static android.view.InsetsController.ANIMATION_TYPE_NONE;
+import static android.view.InsetsController.ANIMATION_TYPE_RESIZE;
 import static android.view.InsetsController.ANIMATION_TYPE_SHOW;
+import static android.view.InsetsController.AnimationType;
 import static android.view.InsetsSourceConsumer.ShowResult.IME_SHOW_DELAYED;
 import static android.view.InsetsSourceConsumer.ShowResult.SHOW_IMMEDIATELY;
+import static android.view.InsetsState.FIRST_TYPE;
 import static android.view.InsetsState.ITYPE_CAPTION_BAR;
 import static android.view.InsetsState.ITYPE_IME;
 import static android.view.InsetsState.ITYPE_NAVIGATION_BAR;
 import static android.view.InsetsState.ITYPE_STATUS_BAR;
-import static android.view.ViewRootImpl.NEW_INSETS_MODE_FULL;
+import static android.view.InsetsState.LAST_TYPE;
 import static android.view.WindowInsets.Type.ime;
 import static android.view.WindowInsets.Type.navigationBars;
 import static android.view.WindowInsets.Type.statusBars;
 import static android.view.WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
+import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -44,6 +49,7 @@ import static org.mockito.ArgumentMatchers.notNull;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -61,7 +67,6 @@ import android.view.WindowInsetsController.OnControllableInsetsChangedListener;
 import android.view.WindowManager.BadTokenException;
 import android.view.WindowManager.LayoutParams;
 import android.view.animation.LinearInterpolator;
-import android.view.test.InsetsModeSession;
 import android.widget.TextView;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -70,9 +75,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import com.android.server.testutils.OffsettableClock;
 import com.android.server.testutils.TestHandler;
 
-import org.junit.AfterClass;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
@@ -100,17 +103,6 @@ public class InsetsControllerTest {
     private TestHost mTestHost;
     private TestHandler mTestHandler;
     private OffsettableClock mTestClock;
-    private static InsetsModeSession sInsetsModeSession;
-
-    @BeforeClass
-    public static void setupOnce() {
-        sInsetsModeSession = new InsetsModeSession(NEW_INSETS_MODE_FULL);
-    }
-
-    @AfterClass
-    public static void tearDownOnce() {
-        sInsetsModeSession.close();
-    }
 
     @Before
     public void setup() {
@@ -164,11 +156,12 @@ public class InsetsControllerTest {
                     new Rect(0, 90, 100, 100));
             mController.getState().getSource(ITYPE_IME).setFrame(new Rect(0, 50, 100, 100));
             mController.getState().setDisplayFrame(new Rect(0, 0, 100, 100));
+            mController.getState().setDisplayCutout(new DisplayCutout(
+                    Insets.of(10, 10, 10, 10), rect, rect, rect, rect));
             mController.calculateInsets(
                     false,
                     false,
-                    new DisplayCutout(
-                            Insets.of(10, 10, 10, 10), rect, rect, rect, rect),
+                    TYPE_APPLICATION, WINDOWING_MODE_UNDEFINED,
                     SOFT_INPUT_ADJUST_RESIZE, 0, 0);
             mController.onFrameChanged(new Rect(0, 0, 100, 100));
         });
@@ -224,7 +217,8 @@ public class InsetsControllerTest {
         mController.onFrameChanged(new Rect(0, 0, 100, 100));
         mController.getState().setDisplayFrame(new Rect(0, 0, 200, 200));
         InsetsSourceControl control =
-                new InsetsSourceControl(ITYPE_STATUS_BAR, mLeash, new Point());
+                new InsetsSourceControl(
+                        ITYPE_STATUS_BAR, mLeash, new Point(), Insets.of(0, 10, 0, 0));
         mController.onControlsChanged(new InsetsSourceControl[] { control });
         WindowInsetsAnimationControlListener controlListener =
                 mock(WindowInsetsAnimationControlListener.class);
@@ -244,9 +238,9 @@ public class InsetsControllerTest {
         InsetsSourceControl ime = controls[2];
 
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            mController.getSourceConsumer(ITYPE_IME).onWindowFocusGained();
+            mController.getSourceConsumer(ITYPE_IME).onWindowFocusGained(true);
             // since there is no focused view, forcefully make IME visible.
-            mController.applyImeVisibility(true /* setVisible */);
+            mController.show(Type.ime(), true /* fromIme */);
             mController.show(Type.all());
             // quickly jump to final state by cancelling it.
             mController.cancelExistingAnimations();
@@ -254,7 +248,7 @@ public class InsetsControllerTest {
             assertTrue(mController.getSourceConsumer(statusBar.getType()).isRequestedVisible());
             assertTrue(mController.getSourceConsumer(ime.getType()).isRequestedVisible());
 
-            mController.applyImeVisibility(false /* setVisible */);
+            mController.hide(Type.ime(), true /* fromIme */);
             mController.hide(Type.all());
             mController.cancelExistingAnimations();
             assertFalse(mController.getSourceConsumer(navBar.getType()).isRequestedVisible());
@@ -270,11 +264,11 @@ public class InsetsControllerTest {
         InsetsSourceControl ime = createControl(ITYPE_IME);
         mController.onControlsChanged(new InsetsSourceControl[] { ime });
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
-            mController.getSourceConsumer(ITYPE_IME).onWindowFocusGained();
-            mController.applyImeVisibility(true);
+            mController.getSourceConsumer(ITYPE_IME).onWindowFocusGained(true);
+            mController.show(Type.ime(), true /* fromIme */);
             mController.cancelExistingAnimations();
             assertTrue(mController.getSourceConsumer(ime.getType()).isRequestedVisible());
-            mController.applyImeVisibility(false);
+            mController.hide(Type.ime(), true /* fromIme */);
             mController.cancelExistingAnimations();
             assertFalse(mController.getSourceConsumer(ime.getType()).isRequestedVisible());
             mController.getSourceConsumer(ITYPE_IME).onWindowFocusLost();
@@ -672,6 +666,97 @@ public class InsetsControllerTest {
     }
 
     @Test
+    public void testResizeAnimation_insetsTypes() {
+        for (@InternalInsetsType int type = FIRST_TYPE; type <= LAST_TYPE; type++) {
+            final @AnimationType int expectedAnimationType =
+                    (InsetsState.toPublicType(type) & Type.systemBars()) != 0
+                            ? ANIMATION_TYPE_RESIZE
+                            : ANIMATION_TYPE_NONE;
+            doTestResizeAnimation_insetsTypes(type, expectedAnimationType);
+        }
+    }
+
+    private void doTestResizeAnimation_insetsTypes(@InternalInsetsType int type,
+            @AnimationType int expectedAnimationType) {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            final InsetsState state1 = new InsetsState();
+            state1.getSource(type).setVisible(true);
+            state1.getSource(type).setFrame(0, 0, 500, 50);
+            final InsetsState state2 = new InsetsState(state1, true /* copySources */);
+            state2.getSource(type).setFrame(0, 0, 500, 60);
+            final String message = "Animation type of " + InsetsState.typeToString(type) + ":";
+
+            // New insets source won't cause the resize animation.
+            mController.onStateChanged(state1);
+            assertEquals(message, ANIMATION_TYPE_NONE, mController.getAnimationType(type));
+
+            // Changing frame might cause the resize animation. This depends on the insets type.
+            mController.onStateChanged(state2);
+            assertEquals(message, expectedAnimationType, mController.getAnimationType(type));
+
+            // Cancel the existing animations for the next iteration.
+            mController.cancelExistingAnimations();
+            assertEquals(message, ANIMATION_TYPE_NONE, mController.getAnimationType(type));
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+    }
+
+    @Test
+    public void testResizeAnimation_displayFrame() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            final @InternalInsetsType int type = ITYPE_STATUS_BAR;
+            final InsetsState state1 = new InsetsState();
+            state1.setDisplayFrame(new Rect(0, 0, 500, 1000));
+            state1.getSource(type).setFrame(0, 0, 500, 50);
+            final InsetsState state2 = new InsetsState(state1, true /* copySources */);
+            state2.setDisplayFrame(new Rect(0, 0, 500, 1010));
+            state2.getSource(type).setFrame(0, 0, 500, 60);
+            final String message = "There must not be resize animation.";
+
+            // New insets source won't cause the resize animation.
+            mController.onStateChanged(state1);
+            assertEquals(message, ANIMATION_TYPE_NONE, mController.getAnimationType(type));
+
+            // Changing frame won't cause the resize animation if the display frame is also changed.
+            mController.onStateChanged(state2);
+            assertEquals(message, ANIMATION_TYPE_NONE, mController.getAnimationType(type));
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+    }
+
+    @Test
+    public void testResizeAnimation_visibility() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            final @InternalInsetsType int type = ITYPE_STATUS_BAR;
+            final InsetsState state1 = new InsetsState();
+            state1.getSource(type).setVisible(true);
+            state1.getSource(type).setFrame(0, 0, 500, 50);
+            final InsetsState state2 = new InsetsState(state1, true /* copySources */);
+            state2.getSource(type).setVisible(false);
+            state2.getSource(type).setFrame(0, 0, 500, 60);
+            final InsetsState state3 = new InsetsState(state2, true /* copySources */);
+            state3.getSource(type).setVisible(true);
+            state3.getSource(type).setFrame(0, 0, 500, 70);
+            final String message = "There must not be resize animation.";
+
+            // New insets source won't cause the resize animation.
+            mController.onStateChanged(state1);
+            assertEquals(message, ANIMATION_TYPE_NONE, mController.getAnimationType(type));
+
+            // Changing source visibility (visible --> invisible) won't cause the resize animation.
+            // The previous source and the current one must be both visible.
+            mController.onStateChanged(state2);
+            assertEquals(message, ANIMATION_TYPE_NONE, mController.getAnimationType(type));
+
+            // Changing source visibility (invisible --> visible) won't cause the resize animation.
+            // The previous source and the current one must be both visible.
+            mController.onStateChanged(state3);
+            assertEquals(message, ANIMATION_TYPE_NONE, mController.getAnimationType(type));
+        });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+    }
+
+    @Test
     public void testCaptionInsetsStateAssemble() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             mController.onFrameChanged(new Rect(0, 0, 100, 300));
@@ -693,73 +778,30 @@ public class InsetsControllerTest {
     }
 
     @Test
+    public void testNotifyCaptionInsetsOnlyChange() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            final InsetsState state = new InsetsState(mController.getState(), true);
+            reset(mTestHost);
+            mController.setCaptionInsetsHeight(100);
+            verify(mTestHost).notifyInsetsChanged();
+            reset(mTestHost);
+            mController.setCaptionInsetsHeight(0);
+            verify(mTestHost).notifyInsetsChanged();
+        });
+    }
+
+    @Test
     public void testRequestedState() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            final InsetsVisibilities request = mTestHost.getRequestedVisibilities();
 
-            // The modified state can be controlled when we have control.
-            mController.onControlsChanged(createSingletonControl(ITYPE_STATUS_BAR));
-            mController.hide(statusBars());
-            assertFalse(mTestHost.getModifiedState().peekSource(ITYPE_STATUS_BAR).isVisible());
+            mController.hide(statusBars() | navigationBars());
+            assertFalse(request.getVisibility(ITYPE_STATUS_BAR));
+            assertFalse(request.getVisibility(ITYPE_NAVIGATION_BAR));
 
-            // The modified state won't be changed while losing control.
-            mController.onControlsChanged(null /* activeControls */);
-            assertFalse(mTestHost.getModifiedState().peekSource(ITYPE_STATUS_BAR).isVisible());
-
-            // The modified state won't be changed while state changed while we don't have control.
-            InsetsState newState = new InsetsState(mController.getState(), true /* copySource */);
-            mController.onStateChanged(newState);
-            assertFalse(mTestHost.getModifiedState().peekSource(ITYPE_STATUS_BAR).isVisible());
-
-            // The modified state won't be changed while controlling an insets without having the
-            // control.
-            mController.show(statusBars());
-            assertFalse(mTestHost.getModifiedState().peekSource(ITYPE_STATUS_BAR).isVisible());
-
-            // The modified state can be updated while gaining control.
-            mController.onControlsChanged(createSingletonControl(ITYPE_STATUS_BAR));
-            assertTrue(mTestHost.getModifiedState().peekSource(ITYPE_STATUS_BAR).isVisible());
-
-            // The modified state can still be updated if the local state and the requested state
-            // are the same.
-            mController.onControlsChanged(null /* activeControls */);
-            mController.hide(statusBars());
-            newState = new InsetsState(mController.getState(), true /* copySource */);
-            newState.getSource(ITYPE_STATUS_BAR).setVisible(false);
-            mController.onStateChanged(newState);
-            mController.onControlsChanged(createSingletonControl(ITYPE_STATUS_BAR));
-            assertFalse(mTestHost.getModifiedState().peekSource(ITYPE_STATUS_BAR).isVisible());
-
-            // The modified state will always be updated while receiving IME control if IME is
-            // requested visible.
-            mController.getSourceConsumer(ITYPE_IME).show(false /* fromIme */);
-            newState = new InsetsState(mController.getState(), true /* copySource */);
-            newState.getSource(ITYPE_IME).setVisible(true);
-            newState.getSource(ITYPE_IME).setFrame(1, 2, 3, 4);
-            mController.onStateChanged(newState);
-            mController.onControlsChanged(createSingletonControl(ITYPE_IME));
-            assertEquals(newState.getSource(ITYPE_IME),
-                    mTestHost.getModifiedState().peekSource(ITYPE_IME));
-            newState = new InsetsState(mController.getState(), true /* copySource */);
-            newState.getSource(ITYPE_IME).setVisible(true);
-            newState.getSource(ITYPE_IME).setFrame(5, 6, 7, 8);
-            mController.onStateChanged(newState);
-            mController.onControlsChanged(createSingletonControl(ITYPE_IME));
-            assertEquals(newState.getSource(ITYPE_IME),
-                    mTestHost.getModifiedState().peekSource(ITYPE_IME));
-
-            // The modified frames cannot be updated if there is an animation.
-            mController.onControlsChanged(createSingletonControl(ITYPE_NAVIGATION_BAR));
-            mController.hide(navigationBars());
-            newState = new InsetsState(mController.getState(), true /* copySource */);
-            newState.getSource(ITYPE_NAVIGATION_BAR).getFrame().top--;
-            mController.onStateChanged(newState);
-            assertNotEquals(newState.getSource(ITYPE_NAVIGATION_BAR),
-                    mTestHost.getModifiedState().peekSource(ITYPE_NAVIGATION_BAR));
-
-            // The modified frames can be updated while the animation is done.
-            mController.cancelExistingAnimations();
-            assertEquals(newState.getSource(ITYPE_NAVIGATION_BAR),
-                    mTestHost.getModifiedState().peekSource(ITYPE_NAVIGATION_BAR));
+            mController.show(statusBars() | navigationBars());
+            assertTrue(request.getVisibility(ITYPE_STATUS_BAR));
+            assertTrue(request.getVisibility(ITYPE_NAVIGATION_BAR));
         });
     }
 
@@ -868,7 +910,7 @@ public class InsetsControllerTest {
         // Simulate binder behavior by copying SurfaceControl. Otherwise, InsetsController will
         // attempt to release mLeash directly.
         SurfaceControl copy = new SurfaceControl(mLeash, "InsetsControllerTest.createControl");
-        return new InsetsSourceControl(type, copy, new Point());
+        return new InsetsSourceControl(type, copy, new Point(), Insets.NONE);
     }
 
     private InsetsSourceControl[] createSingletonControl(@InternalInsetsType int type) {
@@ -890,20 +932,20 @@ public class InsetsControllerTest {
 
     public static class TestHost extends ViewRootInsetsControllerHost {
 
-        private InsetsState mModifiedState = new InsetsState();
+        private final InsetsVisibilities mRequestedVisibilities = new InsetsVisibilities();
 
         TestHost(ViewRootImpl viewRoot) {
             super(viewRoot);
         }
 
         @Override
-        public void onInsetsModified(InsetsState insetsState) {
-            mModifiedState = new InsetsState(insetsState, true /* copySource */);
-            super.onInsetsModified(insetsState);
+        public void updateRequestedVisibilities(InsetsVisibilities visibilities) {
+            mRequestedVisibilities.set(visibilities);
+            super.updateRequestedVisibilities(visibilities);
         }
 
-        public InsetsState getModifiedState() {
-            return mModifiedState;
+        public InsetsVisibilities getRequestedVisibilities() {
+            return mRequestedVisibilities;
         }
     }
 }

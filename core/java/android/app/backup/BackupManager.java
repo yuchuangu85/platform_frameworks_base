@@ -16,14 +16,19 @@
 
 package android.app.backup;
 
+import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
+import android.app.compat.CompatChanges;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.EnabledAfter;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
@@ -33,6 +38,8 @@ import android.os.UserHandle;
 import android.util.Log;
 import android.util.Pair;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.List;
 
 /**
@@ -194,6 +201,22 @@ public class BackupManager {
     @SystemApi
     public static final int ERROR_TRANSPORT_INVALID = -2;
 
+    /** @hide */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef({
+        OperationType.BACKUP,
+        OperationType.MIGRATION,
+        OperationType.ADB_BACKUP,
+    })
+    public @interface OperationType {
+        // A backup / restore to / from an off-device location, e.g. cloud.
+        int BACKUP = 0;
+        // A direct transfer to another device.
+        int MIGRATION = 1;
+        // Backup via adb, data saved on the host machine.
+        int ADB_BACKUP = 3;
+    }
+
     private Context mContext;
     @UnsupportedAppUsage
     private static IBackupManager sService;
@@ -253,6 +276,32 @@ public class BackupManager {
                 sService.dataChanged(packageName);
             } catch (RemoteException e) {
                 Log.e(TAG, "dataChanged(pkg) couldn't connect");
+            }
+        }
+    }
+
+    /**
+     * Convenience method for callers who need to indicate that some other package or
+     * some other user needs a backup pass. This can be useful in the case of groups of
+     * packages that share a uid and/or have user-specific data.
+     * <p>
+     * This method requires that the application hold the "android.permission.BACKUP"
+     * permission if the package named in the package argument does not run under the
+     * same uid as the caller. This method also requires that the application hold the
+     * "android.permission.INTERACT_ACROSS_USERS_FULL" if the user argument is not the
+     * same as the user the caller is running under.
+     * @param userId The user to back up
+     * @param packageName The package name identifying the application to back up.
+     *
+     * @hide
+     */
+    public static void dataChangedForUser(int userId, String packageName) {
+        checkServiceBinder();
+        if (sService != null) {
+            try {
+                sService.dataChangedForUser(userId, packageName);
+            } catch (RemoteException e) {
+                Log.e(TAG, "dataChanged(userId,pkg) couldn't connect");
             }
         }
     }
@@ -390,6 +439,17 @@ public class BackupManager {
         return false;
     }
 
+
+    /**
+     * If this change is enabled, the {@code BACKUP} permission needed for
+     * {@code isBackupServiceActive()} will be enforced on the service end
+     * rather than client-side in {@link BackupManager}.
+     * @hide
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.R)
+    public static final long IS_BACKUP_SERVICE_ACTIVE_ENFORCE_PERMISSION_IN_SERVICE = 158482162;
+
     /**
      * Report whether the backup mechanism is currently active.
      * When it is inactive, the device will not perform any backup operations, nor will it
@@ -400,8 +460,11 @@ public class BackupManager {
     @SystemApi
     @RequiresPermission(android.Manifest.permission.BACKUP)
     public boolean isBackupServiceActive(UserHandle user) {
-        mContext.enforceCallingOrSelfPermission(android.Manifest.permission.BACKUP,
-                "isBackupServiceActive");
+        if (!CompatChanges.isChangeEnabled(
+                IS_BACKUP_SERVICE_ACTIVE_ENFORCE_PERMISSION_IN_SERVICE)) {
+            mContext.enforceCallingOrSelfPermission(android.Manifest.permission.BACKUP,
+                    "isBackupServiceActive");
+        }
         checkServiceBinder();
         if (sService != null) {
             try {

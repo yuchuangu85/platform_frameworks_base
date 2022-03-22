@@ -28,8 +28,8 @@ import android.widget.SeekBar
 import androidx.annotation.AnyThread
 import androidx.annotation.WorkerThread
 import androidx.core.view.GestureDetectorCompat
-import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.util.concurrency.RepeatableExecutor
 import javax.inject.Inject
@@ -70,7 +70,9 @@ private fun PlaybackState.computePosition(duration: Long): Long {
 }
 
 /** ViewModel for seek bar in QS media player. */
-class SeekBarViewModel @Inject constructor(@Background private val bgExecutor: RepeatableExecutor) {
+class SeekBarViewModel @Inject constructor(
+    @Background private val bgExecutor: RepeatableExecutor
+) {
     private var _data = Progress(false, false, null, 0)
         set(value) {
             field = value
@@ -91,9 +93,9 @@ class SeekBarViewModel @Inject constructor(@Background private val bgExecutor: R
         }
     private var playbackState: PlaybackState? = null
     private var callback = object : MediaController.Callback() {
-        override fun onPlaybackStateChanged(state: PlaybackState) {
+        override fun onPlaybackStateChanged(state: PlaybackState?) {
             playbackState = state
-            if (PlaybackState.STATE_NONE.equals(playbackState)) {
+            if (playbackState == null || PlaybackState.STATE_NONE.equals(playbackState)) {
                 clearController()
             } else {
                 checkIfPollingNeeded()
@@ -126,6 +128,8 @@ class SeekBarViewModel @Inject constructor(@Background private val bgExecutor: R
                 checkIfPollingNeeded()
             }
         }
+
+    lateinit var logSmartspaceClick: () -> Unit
 
     /**
      * Event indicating that the user has started interacting with the seek bar.
@@ -167,6 +171,7 @@ class SeekBarViewModel @Inject constructor(@Background private val bgExecutor: R
             scrubbing = false
             checkPlaybackPosition()
         } else {
+            logSmartspaceClick()
             controller?.transportControls?.seekTo(position)
             // Invalidate the cached playbackState to avoid the thumb jumping back to the previous
             // position.

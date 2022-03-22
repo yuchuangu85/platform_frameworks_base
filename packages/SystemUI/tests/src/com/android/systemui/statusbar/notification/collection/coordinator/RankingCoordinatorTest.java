@@ -21,21 +21,30 @@ import static android.app.NotificationManager.Policy.SUPPRESSED_EFFECT_NOTIFICAT
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.app.Notification;
+import android.service.notification.StatusBarNotification;
 import android.testing.AndroidTestingRunner;
 
+import androidx.annotation.Nullable;
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.statusbar.RankingBuilder;
+import com.android.systemui.statusbar.notification.collection.ListEntry;
 import com.android.systemui.statusbar.notification.collection.NotifPipeline;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.NotificationEntryBuilder;
 import com.android.systemui.statusbar.notification.collection.listbuilder.pluggable.NotifFilter;
+import com.android.systemui.statusbar.notification.collection.listbuilder.pluggable.NotifSectioner;
+import com.android.systemui.statusbar.notification.collection.provider.HighPriorityProvider;
+import com.android.systemui.statusbar.notification.collection.render.NodeController;
+import com.android.systemui.statusbar.notification.collection.render.SectionHeaderController;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -43,14 +52,21 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
+
+import java.util.Arrays;
 
 @SmallTest
 @RunWith(AndroidTestingRunner.class)
 public class RankingCoordinatorTest extends SysuiTestCase {
 
     @Mock private StatusBarStateController mStatusBarStateController;
+    @Mock private HighPriorityProvider mHighPriorityProvider;
     @Mock private NotifPipeline mNotifPipeline;
+    @Mock private NodeController mAlertingHeaderController;
+    @Mock private NodeController mSilentNodeController;
+    @Mock private SectionHeaderController mSilentHeaderController;
 
     @Captor private ArgumentCaptor<NotifFilter> mNotifFilterCaptor;
 
@@ -58,16 +74,46 @@ public class RankingCoordinatorTest extends SysuiTestCase {
     private NotifFilter mCapturedSuspendedFilter;
     private NotifFilter mCapturedDozingFilter;
 
+    private NotifSectioner mAlertingSectioner;
+    private NotifSectioner mSilentSectioner;
+
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
-        RankingCoordinator rankingCoordinator = new RankingCoordinator(mStatusBarStateController);
+        RankingCoordinator rankingCoordinator = new RankingCoordinator(
+                mStatusBarStateController, mHighPriorityProvider, mAlertingHeaderController,
+                mSilentHeaderController, mSilentNodeController);
         mEntry = new NotificationEntryBuilder().build();
 
         rankingCoordinator.attach(mNotifPipeline);
         verify(mNotifPipeline, times(2)).addPreGroupFilter(mNotifFilterCaptor.capture());
         mCapturedSuspendedFilter = mNotifFilterCaptor.getAllValues().get(0);
         mCapturedDozingFilter = mNotifFilterCaptor.getAllValues().get(1);
+
+        mAlertingSectioner = rankingCoordinator.getAlertingSectioner();
+        mSilentSectioner = rankingCoordinator.getSilentSectioner();
+    }
+
+    @Test
+    public void testSilentHeaderClearableChildrenUpdate() {
+        StatusBarNotification sbn = Mockito.mock(StatusBarNotification.class);
+        Mockito.doReturn("key").when(sbn).getKey();
+        Mockito.doReturn(Mockito.mock(Notification.class)).when(sbn).getNotification();
+        NotificationEntry entry = new NotificationEntryBuilder().setSbn(sbn).build();
+        ListEntry listEntry = new ListEntry("key", 0L) {
+            @Nullable
+            @Override
+            public NotificationEntry getRepresentativeEntry() {
+                return entry;
+            }
+        };
+        Mockito.doReturn(true).when(sbn).isClearable();
+        mSilentSectioner.onEntriesUpdated(Arrays.asList(listEntry));
+        verify(mSilentHeaderController).setClearSectionEnabled(eq(true));
+
+        Mockito.doReturn(false).when(sbn).isClearable();
+        mSilentSectioner.onEntriesUpdated(Arrays.asList(listEntry));
+        verify(mSilentHeaderController).setClearSectionEnabled(eq(false));
     }
 
     @Test
@@ -128,6 +174,26 @@ public class RankingCoordinatorTest extends SysuiTestCase {
 
         // THEN filter out the notification
         assertTrue(mCapturedDozingFilter.shouldFilterOut(mEntry, 0));
+    }
+
+    @Test
+    public void testIncludeInSectionAlerting() {
+        // GIVEN the entry is high priority
+        when(mHighPriorityProvider.isHighPriority(mEntry)).thenReturn(true);
+
+        // THEN entry is in the alerting section
+        assertTrue(mAlertingSectioner.isInSection(mEntry));
+        assertFalse(mSilentSectioner.isInSection(mEntry));
+    }
+
+    @Test
+    public void testIncludeInSectionSilent() {
+        // GIVEN the entry isn't high priority
+        when(mHighPriorityProvider.isHighPriority(mEntry)).thenReturn(false);
+
+        // THEN entry is in the silent section
+        assertFalse(mAlertingSectioner.isInSection(mEntry));
+        assertTrue(mSilentSectioner.isInSection(mEntry));
     }
 
     private RankingBuilder getRankingForUnfilteredNotif() {

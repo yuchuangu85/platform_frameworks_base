@@ -16,18 +16,29 @@
 
 package com.android.systemui.qs.tiles;
 
-import android.annotation.Nullable;
 import android.content.Intent;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.UserManager;
 import android.provider.Settings;
 import android.service.quicksettings.Tile;
 import android.util.Log;
+import android.view.View;
 import android.widget.Switch;
 
+import androidx.annotation.Nullable;
+
+import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 import com.android.systemui.R;
+import com.android.systemui.dagger.qualifiers.Background;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.QSTile.BooleanState;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 import com.android.systemui.statusbar.policy.DataSaverController;
 import com.android.systemui.statusbar.policy.HotspotController;
@@ -36,6 +47,7 @@ import javax.inject.Inject;
 
 /** Quick settings tile: Hotspot **/
 public class HotspotTile extends QSTileImpl<BooleanState> {
+
     private final Icon mEnabledStatic = ResourceIcon.get(R.drawable.ic_hotspot);
 
     private final HotspotController mHotspotController;
@@ -45,9 +57,20 @@ public class HotspotTile extends QSTileImpl<BooleanState> {
     private boolean mListening;
 
     @Inject
-    public HotspotTile(QSHost host, HotspotController hotspotController,
-            DataSaverController dataSaverController) {
-        super(host);
+    public HotspotTile(
+            QSHost host,
+            @Background Looper backgroundLooper,
+            @Main Handler mainHandler,
+            FalsingManager falsingManager,
+            MetricsLogger metricsLogger,
+            StatusBarStateController statusBarStateController,
+            ActivityStarter activityStarter,
+            QSLogger qsLogger,
+            HotspotController hotspotController,
+            DataSaverController dataSaverController
+    ) {
+        super(host, backgroundLooper, mainHandler, falsingManager, metricsLogger,
+                statusBarStateController, activityStarter, qsLogger);
         mHotspotController = hotspotController;
         mDataSaverController = dataSaverController;
         mHotspotController.observe(this, mCallbacks);
@@ -76,7 +99,7 @@ public class HotspotTile extends QSTileImpl<BooleanState> {
 
     @Override
     public Intent getLongClickIntent() {
-        return new Intent(Settings.ACTION_TETHER_SETTINGS);
+        return new Intent(Settings.ACTION_WIFI_TETHER_SETTING);
     }
 
     @Override
@@ -85,7 +108,7 @@ public class HotspotTile extends QSTileImpl<BooleanState> {
     }
 
     @Override
-    protected void handleClick() {
+    protected void handleClick(@Nullable View view) {
         final boolean isEnabled = mState.value;
         if (!isEnabled && mDataSaverController.isDataSaverEnabled()) {
             return;

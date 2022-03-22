@@ -58,6 +58,11 @@ public class KeyguardUpdateMonitorCallback {
     public void onTimeZoneChanged(TimeZone timeZone) { }
 
     /**
+     * Called when time format changes.
+     */
+    public void onTimeFormatChanged(String timeFormat) { }
+
+    /**
      * Called when the carrier PLMN or SPN changes.
      */
     public void onRefreshCarrierInfo() { }
@@ -83,6 +88,12 @@ public class KeyguardUpdateMonitorCallback {
      */
     public void onKeyguardVisibilityChanged(boolean showing) { }
 
+    /**
+     * Called when the keyguard occluded state changes.
+     * @param occluded Indicates if the keyguard is now occluded.
+     */
+    public void onKeyguardOccludedChanged(boolean occluded) { }
+
     public void onKeyguardVisibilityChangedRaw(boolean showing) {
         final long now = SystemClock.elapsedRealtime();
         if (showing == mShowing
@@ -94,7 +105,8 @@ public class KeyguardUpdateMonitorCallback {
 
     /**
      * Called when the keyguard enters or leaves bouncer mode.
-     * @param bouncer if true, keyguard is now in bouncer mode.
+     * @param bouncer if true, keyguard is showing the bouncer or transitioning from/to bouncer
+     *                mode.
      */
     public void onKeyguardBouncerChanged(boolean bouncer) { }
 
@@ -280,9 +292,9 @@ public class KeyguardUpdateMonitorCallback {
     public void onStrongAuthStateChanged(int userId) { }
 
     /**
-     * Called when the state whether we have a lockscreen wallpaper has changed.
+     * When the current user's locked out state changed.
      */
-    public void onHasLockscreenWallpaperChanged(boolean hasLockscreenWallpaper) { }
+    public void onLockedOutStateChanged(BiometricSourceType biometricSourceType) { }
 
     /**
      * Called when the dream's window state is changed.
@@ -317,4 +329,13 @@ public class KeyguardUpdateMonitorCallback {
      */
     public void onSecondaryLockscreenRequirementChanged(int userId) { }
 
+    /**
+     * Called when notifying user to unlock in order to use NFC.
+     */
+    public void onRequireUnlockForNfc() { }
+
+    /**
+     * Called when the notification shade is expanded or collapsed.
+     */
+    public void onShadeExpandedChanged(boolean expanded) { }
 }

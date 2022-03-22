@@ -16,6 +16,7 @@
 
 package com.android.systemui.statusbar.phone;
 
+import static android.view.Display.DEFAULT_DISPLAY;
 import static android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
 import static android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS;
 
@@ -32,20 +33,21 @@ import com.android.internal.colorextraction.ColorExtractor.GradientColors;
 import com.android.internal.view.AppearanceRegion;
 import com.android.systemui.Dumpable;
 import com.android.systemui.R;
+import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dump.DumpManager;
+import com.android.systemui.navigationbar.NavigationModeController;
 import com.android.systemui.plugins.DarkIconDispatcher;
-import com.android.systemui.shared.system.QuickStepContract;
 import com.android.systemui.statusbar.policy.BatteryController;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * Controls how light status bar flag applies to the icons.
  */
-@Singleton
+@SysUISingleton
 public class LightBarController implements BatteryController.BatteryStateChangeCallback, Dumpable {
 
     private static final float NAV_BAR_INVERSION_SCRIM_ALPHA_THRESHOLD = 0.1f;
@@ -85,8 +87,12 @@ public class LightBarController implements BatteryController.BatteryStateChangeC
     private boolean mNavbarColorManagedByIme;
 
     @Inject
-    public LightBarController(Context ctx, DarkIconDispatcher darkIconDispatcher,
-            BatteryController batteryController, NavigationModeController navModeController) {
+    public LightBarController(
+            Context ctx,
+            DarkIconDispatcher darkIconDispatcher,
+            BatteryController batteryController,
+            NavigationModeController navModeController,
+            DumpManager dumpManager) {
         mDarkModeColor = Color.valueOf(ctx.getColor(R.color.dark_mode_icon_color_single_tone));
         mStatusBarIconController = (SysuiDarkIconDispatcher) darkIconDispatcher;
         mBatteryController = batteryController;
@@ -94,6 +100,10 @@ public class LightBarController implements BatteryController.BatteryStateChangeC
         mNavigationMode = navModeController.addListener((mode) -> {
             mNavigationMode = mode;
         });
+
+        if (ctx.getDisplayId() == DEFAULT_DISPLAY) {
+            dumpManager.registerDumpable(getClass().getSimpleName(), this);
+        }
     }
 
     public void setNavigationBar(LightBarTransitionsController navigationBar) {
@@ -125,7 +135,7 @@ public class LightBarController implements BatteryController.BatteryStateChangeC
         updateStatus();
     }
 
-    void onNavigationBarAppearanceChanged(@Appearance int appearance, boolean nbModeChanged,
+    public void onNavigationBarAppearanceChanged(@Appearance int appearance, boolean nbModeChanged,
             int navigationBarMode, boolean navbarColorManagedByIme) {
         int diff = appearance ^ mAppearance;
         if ((diff & APPEARANCE_LIGHT_NAVIGATION_BARS) != 0 || nbModeChanged) {
@@ -144,7 +154,7 @@ public class LightBarController implements BatteryController.BatteryStateChangeC
         mNavbarColorManagedByIme = navbarColorManagedByIme;
     }
 
-    void onNavigationBarModeChanged(int newBarMode) {
+    public void onNavigationBarModeChanged(int newBarMode) {
         mHasLightNavigationBar = isLight(mAppearance, newBarMode, APPEARANCE_LIGHT_NAVIGATION_BARS);
     }
 
@@ -217,17 +227,17 @@ public class LightBarController implements BatteryController.BatteryStateChangeC
             }
         }
 
+        // If no one is light, all icons become white.
+        if (numLightStacks == 0) {
+            mStatusBarIconController.getTransitionsController().setIconsDark(
+                    false, animateChange());
+        }
+
         // If all stacks are light, all icons get dark.
-        if (numLightStacks == numStacks) {
+        else if (numLightStacks == numStacks) {
             mStatusBarIconController.setIconsDarkArea(null);
             mStatusBarIconController.getTransitionsController().setIconsDark(true, animateChange());
 
-        }
-
-        // If no one is light, all icons become white.
-        else if (numLightStacks == 0) {
-            mStatusBarIconController.getTransitionsController().setIconsDark(
-                    false, animateChange());
         }
 
         // Not the same for every stack, magic!
@@ -240,7 +250,7 @@ public class LightBarController implements BatteryController.BatteryStateChangeC
 
     private void updateNavigation() {
         if (mNavigationBarController != null
-                && !QuickStepContract.isGesturalMode(mNavigationMode)) {
+                && mNavigationBarController.supportsIconTintForNavMode(mNavigationMode)) {
             mNavigationBarController.setIconsDark(mNavigationLight, animateChange());
         }
     }
@@ -288,6 +298,35 @@ public class LightBarController implements BatteryController.BatteryStateChangeC
             pw.println(" NavigationBarTransitionsController:");
             mNavigationBarController.dump(fd, pw, args);
             pw.println();
+        }
+    }
+
+    /**
+     * Injectable factory for creating a {@link LightBarController}.
+     */
+    public static class Factory {
+        private final DarkIconDispatcher mDarkIconDispatcher;
+        private final BatteryController mBatteryController;
+        private final NavigationModeController mNavModeController;
+        private final DumpManager mDumpManager;
+
+        @Inject
+        public Factory(
+                DarkIconDispatcher darkIconDispatcher,
+                BatteryController batteryController,
+                NavigationModeController navModeController,
+                DumpManager dumpManager) {
+
+            mDarkIconDispatcher = darkIconDispatcher;
+            mBatteryController = batteryController;
+            mNavModeController = navModeController;
+            mDumpManager = dumpManager;
+        }
+
+        /** Create an {@link LightBarController} */
+        public LightBarController create(Context context) {
+            return new LightBarController(context, mDarkIconDispatcher, mBatteryController,
+                    mNavModeController, mDumpManager);
         }
     }
 }

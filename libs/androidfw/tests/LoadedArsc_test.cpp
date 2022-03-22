@@ -65,10 +65,10 @@ TEST(LoadedArscTest, LoadSinglePackageArsc) {
 
   const TypeSpec* type_spec = package->GetTypeSpecByTypeIndex(type_index);
   ASSERT_THAT(type_spec, NotNull());
-  ASSERT_THAT(type_spec->type_count, Ge(1u));
+  ASSERT_THAT(type_spec->type_entries.size(), Ge(1u));
 
-  auto type = type_spec->types[0];
-  ASSERT_TRUE(LoadedPackage::GetEntry(type, entry_index).has_value());
+  auto type = type_spec->type_entries[0];
+  ASSERT_TRUE(LoadedPackage::GetEntry(type.type, entry_index).has_value());
 }
 
 TEST(LoadedArscTest, LoadSparseEntryApp) {
@@ -89,10 +89,42 @@ TEST(LoadedArscTest, LoadSparseEntryApp) {
 
   const TypeSpec* type_spec = package->GetTypeSpecByTypeIndex(type_index);
   ASSERT_THAT(type_spec, NotNull());
-  ASSERT_THAT(type_spec->type_count, Ge(1u));
+  ASSERT_THAT(type_spec->type_entries.size(), Ge(1u));
 
-  auto type = type_spec->types[0];
-  ASSERT_TRUE(LoadedPackage::GetEntry(type, entry_index).has_value());
+  auto type = type_spec->type_entries[0];
+  ASSERT_TRUE(LoadedPackage::GetEntry(type.type, entry_index).has_value());
+}
+
+TEST(LoadedArscTest, FindSparseEntryApp) {
+  std::string contents;
+  ASSERT_TRUE(ReadFileFromZipToString(GetTestDataPath() + "/sparse/sparse.apk", "resources.arsc",
+                                      &contents));
+
+  std::unique_ptr<const LoadedArsc> loaded_arsc = LoadedArsc::Load(contents.data(),
+                                                                   contents.length());
+  ASSERT_THAT(loaded_arsc, NotNull());
+
+  const LoadedPackage* package =
+      loaded_arsc->GetPackageById(get_package_id(sparse::R::string::only_v26));
+  ASSERT_THAT(package, NotNull());
+
+  const uint8_t type_index = get_type_id(sparse::R::string::only_v26) - 1;
+  const uint16_t entry_index = get_entry_id(sparse::R::string::only_v26);
+
+  const TypeSpec* type_spec = package->GetTypeSpecByTypeIndex(type_index);
+  ASSERT_THAT(type_spec, NotNull());
+  ASSERT_THAT(type_spec->type_entries.size(), Ge(1u));
+
+  // Ensure that AAPT2 sparsely encoded the v26 config as expected.
+  auto type_entry = std::find_if(
+    type_spec->type_entries.begin(), type_spec->type_entries.end(),
+    [](const TypeSpec::TypeEntry& x) { return x.config.sdkVersion == 26; });
+  ASSERT_NE(type_entry, type_spec->type_entries.end());
+  ASSERT_NE(type_entry->type->flags & ResTable_type::FLAG_SPARSE, 0);
+
+  // Test fetching a resource with only sparsely encoded configs by name.
+  auto id = package->FindEntryByName(u"string", u"only_v26");
+  ASSERT_EQ(id.value(), fix_package_id(sparse::R::string::only_v26, 0));
 }
 
 TEST(LoadedArscTest, LoadSharedLibrary) {
@@ -176,13 +208,13 @@ TEST(LoadedArscTest, LoadFeatureSplit) {
 
   const TypeSpec* type_spec = package->GetTypeSpecByTypeIndex(type_index);
   ASSERT_THAT(type_spec, NotNull());
-  ASSERT_THAT(type_spec->type_count, Ge(1u));
+  ASSERT_THAT(type_spec->type_entries.size(), Ge(1u));
 
   auto type_name16 = package->GetTypeStringPool()->stringAt(type_spec->type_spec->id - 1);
   ASSERT_TRUE(type_name16.has_value());
   EXPECT_THAT(util::Utf16ToUtf8(*type_name16), StrEq("string"));
 
-  ASSERT_TRUE(LoadedPackage::GetEntry(type_spec->types[0], entry_index).has_value());
+  ASSERT_TRUE(LoadedPackage::GetEntry(type_spec->type_entries[0].type, entry_index).has_value());
 }
 
 // AAPT(2) generates resource tables with chunks in a certain order. The rule is that
@@ -217,11 +249,11 @@ TEST(LoadedArscTest, LoadOutOfOrderTypeSpecs) {
 
   const TypeSpec* type_spec = package->GetTypeSpecByTypeIndex(0);
   ASSERT_THAT(type_spec, NotNull());
-  ASSERT_THAT(type_spec->type_count, Ge(1u));
+  ASSERT_THAT(type_spec->type_entries.size(), Ge(1u));
 
   type_spec = package->GetTypeSpecByTypeIndex(1);
   ASSERT_THAT(type_spec, NotNull());
-  ASSERT_THAT(type_spec->type_count, Ge(1u));
+  ASSERT_THAT(type_spec->type_entries.size(), Ge(1u));
 }
 
 TEST(LoadedArscTest, LoadOverlayable) {
@@ -339,10 +371,8 @@ TEST(LoadedArscTest, GetOverlayableMap) {
 }
 
 TEST(LoadedArscTest, LoadCustomLoader) {
-  std::string contents;
-
-  std::unique_ptr<Asset>
-      asset = ApkAssets::CreateAssetFromFile(GetTestDataPath() + "/loader/resources.arsc");
+  auto asset = AssetsProvider::CreateAssetFromFile(GetTestDataPath() + "/loader/resources.arsc");
+  ASSERT_THAT(asset, NotNull());
 
   const StringPiece data(
       reinterpret_cast<const char*>(asset->getBuffer(true /*wordAligned*/)),
@@ -363,10 +393,10 @@ TEST(LoadedArscTest, LoadCustomLoader) {
 
   const TypeSpec* type_spec = package->GetTypeSpecByTypeIndex(type_index);
   ASSERT_THAT(type_spec, NotNull());
-  ASSERT_THAT(type_spec->type_count, Ge(1u));
+  ASSERT_THAT(type_spec->type_entries.size(), Ge(1u));
 
-  auto type = type_spec->types[0];
-  ASSERT_TRUE(LoadedPackage::GetEntry(type, entry_index).has_value());
+  auto type = type_spec->type_entries[0];
+  ASSERT_TRUE(LoadedPackage::GetEntry(type.type, entry_index).has_value());
 }
 
 // structs with size fields (like Res_value, ResTable_entry) should be

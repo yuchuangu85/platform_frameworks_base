@@ -521,12 +521,12 @@ public class RingtoneManager {
     public int getRingtonePosition(Uri ringtoneUri) {
         try {
             if (ringtoneUri == null) return -1;
-            final long ringtoneId = ContentUris.parseId(ringtoneUri);
 
             final Cursor cursor = getCursor();
             cursor.moveToPosition(-1);
             while (cursor.moveToNext()) {
-                if (ringtoneId == cursor.getLong(ID_COLUMN_INDEX)) {
+                Uri uriFromCursor = getUriFromCursor(mContext, cursor);
+                if (ringtoneUri.equals(uriFromCursor)) {
                     return cursor.getPosition();
                 }
             }
@@ -1082,18 +1082,21 @@ public class RingtoneManager {
      * @return true if the ringtone contains haptic channels.
      */
     public boolean hasHapticChannels(int position) {
-        return hasHapticChannels(getRingtoneUri(position));
+        return AudioManager.hasHapticChannels(mContext, getRingtoneUri(position));
     }
 
     /**
      * Returns if the {@link Ringtone} from a given sound URI contains
-     * haptic channels or not.
+     * haptic channels or not. As this function doesn't has a context
+     * to resolve the uri, the result may be wrong if the uri cannot be
+     * resolved correctly.
+     * Use {@link #hasHapticChannels(int)} instead when possible.
      *
      * @param ringtoneUri The {@link Uri} of a sound or ringtone.
      * @return true if the ringtone contains haptic channels.
      */
     public static boolean hasHapticChannels(@NonNull Uri ringtoneUri) {
-        return AudioManager.hasHapticChannels(ringtoneUri);
+        return AudioManager.hasHapticChannels(null, ringtoneUri);
     }
 
     /**

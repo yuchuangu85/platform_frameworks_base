@@ -25,11 +25,13 @@
 #include <string.h>
 
 #include <algorithm>
+#include <fstream>
 #include <limits>
 #include <map>
 #include <memory>
 #include <set>
 #include <type_traits>
+#include <vector>
 
 #include <android-base/macros.h>
 #include <androidfw/ByteBucketArray.h>
@@ -43,6 +45,7 @@
 
 #ifdef __ANDROID__
 #include <binder/TextOutput.h>
+
 #endif
 
 #ifndef INT32_MAX
@@ -230,6 +233,15 @@ void Res_png_9patch::serialize(const Res_png_9patch& patch, const int32_t* xDivs
     memcpy(data, colors, patch.numColors * sizeof(uint32_t));
 
     fill9patchOffsets(reinterpret_cast<Res_png_9patch*>(outData));
+}
+
+bool IsFabricatedOverlay(const std::string& path) {
+  std::ifstream fin(path);
+  uint32_t magic;
+  if (fin.read(reinterpret_cast<char*>(&magic), sizeof(uint32_t))) {
+    return magic == kFabricatedOverlayMagic;
+  }
+  return false;
 }
 
 static bool assertIdmapHeader(const void* idmap, size_t size) {
@@ -1029,7 +1041,7 @@ base::expected<size_t, NullOrIOError> ResStringPool::indexOfString(const char16_
             // But we don't want to hit the cache, so instead we will have a
             // local temporary allocation for the conversions.
             size_t convBufferLen = strLen + 4;
-            char16_t* convBuffer = (char16_t*)calloc(convBufferLen, sizeof(char16_t));
+            std::vector<char16_t> convBuffer(convBufferLen);
             ssize_t l = 0;
             ssize_t h = mHeader->stringCount-1;
 
@@ -1043,8 +1055,8 @@ base::expected<size_t, NullOrIOError> ResStringPool::indexOfString(const char16_
                 }
                 if (s.has_value()) {
                     char16_t* end = utf8_to_utf16(reinterpret_cast<const uint8_t*>(s->data()),
-                                                  s->size(), convBuffer, convBufferLen);
-                    c = strzcmp16(convBuffer, end-convBuffer, str, strLen);
+                                                  s->size(), convBuffer.data(), convBufferLen);
+                    c = strzcmp16(convBuffer.data(), end-convBuffer.data(), str, strLen);
                 }
                 if (kDebugStringPoolNoisy) {
                     ALOGI("Looking at %s, cmp=%d, l/mid/h=%d/%d/%d\n",
@@ -1054,7 +1066,6 @@ base::expected<size_t, NullOrIOError> ResStringPool::indexOfString(const char16_
                     if (kDebugStringPoolNoisy) {
                         ALOGI("MATCH!");
                     }
-                    free(convBuffer);
                     return mid;
                 } else if (c < 0) {
                     l = mid + 1;
@@ -1062,7 +1073,6 @@ base::expected<size_t, NullOrIOError> ResStringPool::indexOfString(const char16_
                     h = mid - 1;
                 }
             }
-            free(convBuffer);
         } else {
             // It is unusual to get the ID from an unsorted string block...
             // most often this happens because we want to get IDs for style
@@ -7069,6 +7079,10 @@ void DynamicRefTable::addMapping(uint8_t buildPackageId, uint8_t runtimePackageI
     mLookupTable[buildPackageId] = runtimePackageId;
 }
 
+void DynamicRefTable::addAlias(uint32_t stagedId, uint32_t finalizedId) {
+  mAliasId[stagedId] = finalizedId;
+}
+
 status_t DynamicRefTable::lookupResourceId(uint32_t* resId) const {
     uint32_t res = *resId;
     size_t packageId = Res_GETPACKAGE(res) + 1;
@@ -7078,8 +7092,16 @@ status_t DynamicRefTable::lookupResourceId(uint32_t* resId) const {
         return NO_ERROR;
     }
 
-    if (packageId == APP_PACKAGE_ID && !mAppAsLib) {
-        // No lookup needs to be done, app package IDs are absolute.
+    auto alias_id = mAliasId.find(res);
+    if (alias_id != mAliasId.end()) {
+      // Rewrite the resource id to its alias resource id. Since the alias resource id is a
+      // compile-time id, it still needs to be resolved further.
+      res = alias_id->second;
+    }
+
+    if (packageId == SYS_PACKAGE_ID || (packageId == APP_PACKAGE_ID && !mAppAsLib)) {
+        // No lookup needs to be done, app and framework package IDs are absolute.
+        *resId = res;
         return NO_ERROR;
     }
 

@@ -204,7 +204,7 @@ public class HdmiCecMessageValidator {
         addValidationInfo(
                 Constants.MESSAGE_REPORT_POWER_STATUS,
                 new OneByteRangeValidator(0x00, 0x03),
-                DEST_DIRECT);
+                DEST_DIRECT | DEST_BROADCAST);
 
         // Messages for the General Protocol.
         addValidationInfo(Constants.MESSAGE_FEATURE_ABORT,
@@ -231,6 +231,18 @@ public class HdmiCecMessageValidator {
                 new OneByteRangeValidator(0x00, 0x06),
                 DEST_DIRECT);
 
+        // Messages for Feature Discovery.
+        addValidationInfo(Constants.MESSAGE_GIVE_FEATURES, noneValidator,
+                DEST_DIRECT | SRC_UNREGISTERED);
+        addValidationInfo(Constants.MESSAGE_REPORT_FEATURES, new VariableLengthValidator(4, 14),
+                DEST_BROADCAST);
+
+        // Messages for Dynamic Auto Lipsync
+        addValidationInfo(Constants.MESSAGE_REQUEST_CURRENT_LATENCY, physicalAddressValidator,
+                DEST_BROADCAST);
+        addValidationInfo(Constants.MESSAGE_REPORT_CURRENT_LATENCY,
+                new VariableLengthValidator(4, 14), DEST_BROADCAST);
+
         // All Messages for the ARC have no parameters.
 
         // Messages for the Capability Discovery and Control.
@@ -242,7 +254,7 @@ public class HdmiCecMessageValidator {
         mValidationInfo.append(opcode, new ValidationInfo(validator, addrType));
     }
 
-    int isValid(HdmiCecMessage message) {
+    int isValid(HdmiCecMessage message, boolean isMessageReceived) {
         int opcode = message.getOpcode();
         ValidationInfo info = mValidationInfo.get(opcode);
         if (info == null) {
@@ -256,6 +268,22 @@ public class HdmiCecMessageValidator {
             HdmiLogger.warning("Unexpected source: " + message);
             return ERROR_SOURCE;
         }
+
+        if (isMessageReceived) {
+            // Check if the source's logical address and local device's logical
+            // address are the same.
+            for (HdmiCecLocalDevice device : mService.getAllLocalDevices()) {
+                synchronized (device.mLock) {
+                    if (message.getSource() == device.getDeviceInfo().getLogicalAddress()
+                            && message.getSource() != Constants.ADDR_UNREGISTERED) {
+                        HdmiLogger.warning(
+                                "Unexpected source: message sent from device itself, " + message);
+                        return ERROR_SOURCE;
+                    }
+                }
+            }
+        }
+
         // Check the destination field.
         if (message.getDestination() == Constants.ADDR_BROADCAST) {
             if ((info.addressType & DEST_BROADCAST) == 0) {

@@ -31,6 +31,7 @@ import android.telecom.DefaultDialerManager;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
 import android.telephony.CarrierConfigManager;
+import android.telephony.SubscriptionManager;
 import android.util.IntArray;
 import android.util.Slog;
 
@@ -42,7 +43,10 @@ import com.android.server.DeviceIdleInternal;
 import com.android.server.LocalServices;
 import com.android.server.SystemService;
 import com.android.server.pm.UserManagerService;
-import com.android.server.pm.permission.PermissionManagerServiceInternal;
+import com.android.server.pm.permission.LegacyPermissionManagerInternal;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Starts the telecom component by binding to its ITelecomService implementation. Telecom is setup
@@ -65,8 +69,8 @@ public class TelecomLoaderService extends SystemService {
                 ServiceManager.addService(Context.TELECOM_SERVICE, telecomService.asBinder());
 
                 synchronized (mLock) {
-                    final PermissionManagerServiceInternal permissionManager =
-                            LocalServices.getService(PermissionManagerServiceInternal.class);
+                    final LegacyPermissionManagerInternal permissionManager =
+                            LocalServices.getService(LegacyPermissionManagerInternal.class);
                     if (mDefaultSimCallManagerRequests != null) {
                         if (mDefaultSimCallManagerRequests != null) {
                             TelecomManager telecomManager =
@@ -165,8 +169,8 @@ public class TelecomLoaderService extends SystemService {
 
 
     private void registerDefaultAppProviders() {
-        final PermissionManagerServiceInternal permissionManager =
-                LocalServices.getService(PermissionManagerServiceInternal.class);
+        final LegacyPermissionManagerInternal permissionManager =
+                LocalServices.getService(LegacyPermissionManagerInternal.class);
 
         // Set a callback for the permission grant policy to query the default sms app.
         permissionManager.setSmsAppPackagesProvider(userId -> {
@@ -208,13 +212,23 @@ public class TelecomLoaderService extends SystemService {
                     return null;
                 }
             }
+            SubscriptionManager subscriptionManager =
+                    mContext.getSystemService(SubscriptionManager.class);
+            if (subscriptionManager == null) {
+                return null;
+            }
             TelecomManager telecomManager =
                     (TelecomManager) mContext.getSystemService(Context.TELECOM_SERVICE);
-            PhoneAccountHandle phoneAccount = telecomManager.getSimCallManager(userId);
-            if (phoneAccount != null) {
-                return new String[]{phoneAccount.getComponentName().getPackageName()};
+            List<String> packages = new ArrayList<>();
+            int[] subIds = subscriptionManager.getActiveSubscriptionIdList();
+            for (int subId : subIds) {
+                PhoneAccountHandle phoneAccount =
+                        telecomManager.getSimCallManagerForSubscription(subId);
+                if (phoneAccount != null) {
+                    packages.add(phoneAccount.getComponentName().getPackageName());
+                }
             }
-            return null;
+            return packages.toArray(new String[] {});
         });
     }
 
@@ -244,15 +258,16 @@ public class TelecomLoaderService extends SystemService {
     }
 
     private void updateSimCallManagerPermissions(int userId) {
-        final PermissionManagerServiceInternal permissionManager =
-                LocalServices.getService(PermissionManagerServiceInternal.class);
+        final LegacyPermissionManagerInternal permissionManager =
+                LocalServices.getService(LegacyPermissionManagerInternal.class);
         TelecomManager telecomManager =
             (TelecomManager) mContext.getSystemService(Context.TELECOM_SERVICE);
         PhoneAccountHandle phoneAccount = telecomManager.getSimCallManager(userId);
         if (phoneAccount != null) {
             Slog.i(TAG, "updating sim call manager permissions for userId:" + userId);
             String packageName = phoneAccount.getComponentName().getPackageName();
-            permissionManager.grantDefaultPermissionsToDefaultSimCallManager(packageName, userId);
+            permissionManager.grantDefaultPermissionsToDefaultSimCallManager(packageName,
+                    userId);
         }
     }
 }

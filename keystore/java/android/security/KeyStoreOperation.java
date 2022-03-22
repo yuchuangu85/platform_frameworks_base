@@ -18,6 +18,7 @@ package android.security;
 
 import android.annotation.NonNull;
 import android.hardware.security.keymint.KeyParameter;
+import android.os.Binder;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.security.keymaster.KeymasterDefs;
@@ -39,6 +40,7 @@ public class KeyStoreOperation {
             Long challenge,
             KeyParameter[] parameters
     ) {
+        Binder.allowBlocking(operation.asBinder());
         this.mOperation = operation;
         this.mChallenge = challenge;
         this.mParameters = parameters;
@@ -73,8 +75,7 @@ public class KeyStoreOperation {
                     );
                 }
                 default:
-                    // TODO Human readable string. Use something like KeyStore.getKeyStoreException
-                    throw new KeyStoreException(e.errorCode, "");
+                    throw KeyStore2.getKeyStoreException(e.errorCode, e.getMessage());
             }
         } catch (RemoteException e) {
             // Log exception and report invalid operation handle.
@@ -84,7 +85,8 @@ public class KeyStoreOperation {
                     "Remote exception while advancing a KeyStoreOperation.",
                     e
             );
-            throw new KeyStoreException(KeymasterDefs.KM_ERROR_INVALID_OPERATION_HANDLE, "");
+            throw new KeyStoreException(KeymasterDefs.KM_ERROR_INVALID_OPERATION_HANDLE, "",
+                    e.getMessage());
         }
     }
 

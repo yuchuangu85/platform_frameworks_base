@@ -16,6 +16,7 @@
 
 package com.android.settingslib.fuelgauge;
 
+import static android.os.BatteryManager.BATTERY_HEALTH_OVERHEAT;
 import static android.os.BatteryManager.BATTERY_HEALTH_UNKNOWN;
 import static android.os.BatteryManager.BATTERY_STATUS_FULL;
 import static android.os.BatteryManager.BATTERY_STATUS_UNKNOWN;
@@ -24,6 +25,7 @@ import static android.os.BatteryManager.EXTRA_LEVEL;
 import static android.os.BatteryManager.EXTRA_MAX_CHARGING_CURRENT;
 import static android.os.BatteryManager.EXTRA_MAX_CHARGING_VOLTAGE;
 import static android.os.BatteryManager.EXTRA_PLUGGED;
+import static android.os.BatteryManager.EXTRA_PRESENT;
 import static android.os.BatteryManager.EXTRA_STATUS;
 
 import android.content.Context;
@@ -49,14 +51,16 @@ public class BatteryStatus {
     public final int plugged;
     public final int health;
     public final int maxChargingWattage;
+    public final boolean present;
 
     public BatteryStatus(int status, int level, int plugged, int health,
-            int maxChargingWattage) {
+            int maxChargingWattage, boolean present) {
         this.status = status;
         this.level = level;
         this.plugged = plugged;
         this.health = health;
         this.maxChargingWattage = maxChargingWattage;
+        this.present = present;
     }
 
     public BatteryStatus(Intent batteryChangedIntent) {
@@ -64,6 +68,7 @@ public class BatteryStatus {
         plugged = batteryChangedIntent.getIntExtra(EXTRA_PLUGGED, 0);
         level = batteryChangedIntent.getIntExtra(EXTRA_LEVEL, 0);
         health = batteryChangedIntent.getIntExtra(EXTRA_HEALTH, BATTERY_HEALTH_UNKNOWN);
+        present = batteryChangedIntent.getBooleanExtra(EXTRA_PRESENT, true);
 
         final int maxChargingMicroAmp = batteryChangedIntent.getIntExtra(EXTRA_MAX_CHARGING_CURRENT,
                 -1);
@@ -104,6 +109,15 @@ public class BatteryStatus {
     }
 
     /**
+     * Determine whether the device is plugged in wireless.
+     *
+     * @return true if the device is plugged in wireless
+     */
+    public boolean isPluggedInWireless() {
+        return plugged == BatteryManager.BATTERY_PLUGGED_WIRELESS;
+    }
+
+    /**
      * Whether or not the device is charged. Note that some devices never return 100% for
      * battery level, so this allows either battery level or status to determine if the
      * battery is charged.
@@ -121,6 +135,15 @@ public class BatteryStatus {
      */
     public boolean isBatteryLow() {
         return level < LOW_BATTERY_THRESHOLD;
+    }
+
+    /**
+     * Whether battery is overheated.
+     *
+     * @return true if battery is overheated
+     */
+    public boolean isOverheated() {
+        return health == BATTERY_HEALTH_OVERHEAT;
     }
 
     /**

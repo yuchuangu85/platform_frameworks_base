@@ -19,9 +19,9 @@ package android.security;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 
-import com.android.org.bouncycastle.util.io.pem.PemObject;
-import com.android.org.bouncycastle.util.io.pem.PemReader;
-import com.android.org.bouncycastle.util.io.pem.PemWriter;
+import com.android.internal.org.bouncycastle.util.io.pem.PemObject;
+import com.android.internal.org.bouncycastle.util.io.pem.PemReader;
+import com.android.internal.org.bouncycastle.util.io.pem.PemWriter;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -48,6 +48,8 @@ public class Credentials {
     public static final String INSTALL_ACTION = "android.credentials.INSTALL";
 
     public static final String INSTALL_AS_USER_ACTION = "android.credentials.INSTALL_AS_USER";
+
+    public static final String ACTION_MANAGE_CREDENTIALS = "android.security.MANAGE_CREDENTIALS";
 
     /**
      * Key prefix for CA certificates.
@@ -205,79 +207,5 @@ public class Credentials {
         } finally {
             pr.close();
         }
-    }
-
-    /**
-     * Delete all types (private key, user certificate, CA certificate) for a
-     * particular {@code alias}. All three can exist for any given alias.
-     * Returns {@code true} if the alias no longer contains any types.
-     */
-    public static boolean deleteAllTypesForAlias(KeyStore keystore, String alias) {
-        return deleteAllTypesForAlias(keystore, alias, KeyStore.UID_SELF);
-    }
-
-    /**
-     * Delete all types (private key, user certificate, CA certificate) for a
-     * particular {@code alias}. All three can exist for any given alias.
-     * Returns {@code true} if the alias no longer contains any types.
-     */
-    public static boolean deleteAllTypesForAlias(KeyStore keystore, String alias, int uid) {
-        /*
-         * Make sure every type is deleted. There can be all three types, so
-         * don't use a conditional here.
-         */
-        return deleteUserKeyTypeForAlias(keystore, alias, uid)
-                & deleteCertificateTypesForAlias(keystore, alias, uid);
-    }
-
-    /**
-     * Delete certificate types (user certificate, CA certificate) for a
-     * particular {@code alias}. Both can exist for any given alias.
-     * Returns {@code true} if the alias no longer contains either type.
-     */
-    public static boolean deleteCertificateTypesForAlias(KeyStore keystore, String alias) {
-        return deleteCertificateTypesForAlias(keystore, alias, KeyStore.UID_SELF);
-    }
-
-    /**
-     * Delete certificate types (user certificate, CA certificate) for a
-     * particular {@code alias}. Both can exist for any given alias.
-     * Returns {@code true} if the alias no longer contains either type.
-     */
-    public static boolean deleteCertificateTypesForAlias(KeyStore keystore, String alias, int uid) {
-        /*
-         * Make sure every certificate type is deleted. There can be two types,
-         * so don't use a conditional here.
-         */
-        return keystore.delete(Credentials.USER_CERTIFICATE + alias, uid)
-                & keystore.delete(Credentials.CA_CERTIFICATE + alias, uid);
-    }
-
-    /**
-     * Delete user key for a particular {@code alias}.
-     * Returns {@code true} if the entry no longer exists.
-     */
-    public static boolean deleteUserKeyTypeForAlias(KeyStore keystore, String alias) {
-        return deleteUserKeyTypeForAlias(keystore, alias, KeyStore.UID_SELF);
-    }
-
-    /**
-     * Delete user key for a particular {@code alias}.
-     * Returns {@code true} if the entry no longer exists.
-     */
-    public static boolean deleteUserKeyTypeForAlias(KeyStore keystore, String alias, int uid) {
-        int ret = keystore.delete2(Credentials.USER_PRIVATE_KEY + alias, uid);
-        if (ret == KeyStore.KEY_NOT_FOUND) {
-            return keystore.delete(Credentials.USER_SECRET_KEY + alias, uid);
-        }
-        return ret == KeyStore.NO_ERROR;
-    }
-
-    /**
-     * Delete legacy prefixed entry for a particular {@code alias}
-     * Returns {@code true} if the entry no longer exists.
-     */
-    public static boolean deleteLegacyKeyForAlias(KeyStore keystore, String alias, int uid) {
-        return keystore.delete(Credentials.USER_SECRET_KEY + alias, uid);
     }
 }

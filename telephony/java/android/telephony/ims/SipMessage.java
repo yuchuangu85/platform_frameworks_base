@@ -16,11 +16,17 @@
 
 package android.telephony.ims;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.text.TextUtils;
+
+import com.android.internal.telephony.SipMessageParsingUtils;
 
 import java.util.Arrays;
 import java.util.Objects;
@@ -37,13 +43,13 @@ import java.util.Objects;
 public final class SipMessage implements Parcelable {
     // Should not be set to true for production!
     private static final boolean IS_DEBUGGING = Build.IS_ENG;
-
-    private static final String[] SIP_REQUEST_METHODS = new String[] {"INVITE", "ACK", "OPTIONS",
-            "BYE", "CANCEL", "REGISTER"};
+    private static final String CRLF = "\r\n";
 
     private final String mStartLine;
     private final String mHeaderSection;
     private final byte[] mContent;
+    private final String mViaBranchParam;
+    private final String mCallIdParam;
 
     /**
      * Represents a partially encoded SIP message.
@@ -55,12 +61,20 @@ public final class SipMessage implements Parcelable {
      */
     public SipMessage(@NonNull String startLine, @NonNull String headerSection,
             @NonNull byte[] content) {
-        if (startLine == null || headerSection == null || content == null) {
-            throw new IllegalArgumentException("One or more null parameters entered");
-        }
+        Objects.requireNonNull(startLine, "Required parameter is null: startLine");
+        Objects.requireNonNull(headerSection, "Required parameter is null: headerSection");
+        Objects.requireNonNull(content, "Required parameter is null: content");
+
         mStartLine = startLine;
         mHeaderSection = headerSection;
         mContent = content;
+
+        mViaBranchParam = SipMessageParsingUtils.getTransactionId(mHeaderSection);
+        if (TextUtils.isEmpty(mViaBranchParam)) {
+            throw new IllegalArgumentException("header section MUST contain a branch parameter "
+                    + "inside of the Via header.");
+        }
+        mCallIdParam = SipMessageParsingUtils.getCallId(mHeaderSection);
     }
 
     /**
@@ -71,7 +85,10 @@ public final class SipMessage implements Parcelable {
         mHeaderSection = source.readString();
         mContent = new byte[source.readInt()];
         source.readByteArray(mContent);
+        mViaBranchParam = source.readString();
+        mCallIdParam = source.readString();
     }
+
     /**
      * @return The start line of the SIP message, which contains either the request-line or
      * status-line.
@@ -94,6 +111,23 @@ public final class SipMessage implements Parcelable {
         return mContent;
     }
 
+    /**
+     * @return the branch parameter enclosed in the Via header key's value. See RFC 3261 section
+     * 20.42 for more information on the Via header.
+     */
+    public @NonNull String getViaBranchParameter() {
+        return mViaBranchParam;
+    }
+
+    /**
+     * @return the value associated with the call-id header of this SIP message. See RFC 3261
+     * section 20.8 for more information on the call-id header. If {@code null}, then there was no
+     * call-id header found in this SIP message's headers.
+     */
+    public @Nullable String getCallIdParameter() {
+        return mCallIdParam;
+    }
+
     @Override
     public int describeContents() {
         return 0;
@@ -105,6 +139,8 @@ public final class SipMessage implements Parcelable {
         dest.writeString(mHeaderSection);
         dest.writeInt(mContent.length);
         dest.writeByteArray(mContent);
+        dest.writeString(mViaBranchParam);
+        dest.writeString(mCallIdParam);
     }
 
     public static final @NonNull Creator<SipMessage> CREATOR = new Creator<SipMessage>() {
@@ -128,34 +164,25 @@ public final class SipMessage implements Parcelable {
         } else {
             b.append(sanitizeStartLineRequest(mStartLine));
         }
-        b.append("], [");
-        b.append("Header: [");
+        b.append("], Header: [");
         if (IS_DEBUGGING) {
             b.append(mHeaderSection);
         } else {
             // only identify transaction id/call ID when it is available.
             b.append("***");
         }
-        b.append("], ");
-        b.append("Content: [NOT SHOWN]");
+        b.append("], Content: ");
+        b.append(getContent().length == 0 ? "[NONE]" : "[NOT SHOWN]");
         return b.toString();
     }
 
     /**
-     * Start lines containing requests are formatted: METHOD SP Request-URI SP SIP-Version CRLF.
      * Detect if this is a REQUEST and redact Request-URI portion here, as it contains PII.
      */
     private String sanitizeStartLineRequest(String startLine) {
+        if (!SipMessageParsingUtils.isSipRequest(startLine)) return startLine;
         String[] splitLine = startLine.split(" ");
-        if (splitLine == null || splitLine.length == 0)  {
-            return "(INVALID STARTLINE)";
-        }
-        for (String method : SIP_REQUEST_METHODS) {
-            if (splitLine[0].contains(method)) {
-                return splitLine[0] + " <Request-URI> " + splitLine[2];
-            }
-        }
-        return startLine;
+        return splitLine[0] + " <Request-URI> " + splitLine[2];
     }
 
     @Override
@@ -173,5 +200,27 @@ public final class SipMessage implements Parcelable {
         int result = Objects.hash(mStartLine, mHeaderSection);
         result = 31 * result + Arrays.hashCode(mContent);
         return result;
+    }
+
+    /**
+     * According RFC-3261 section 7, SIP is a text protocol and uses the UTF-8 charset. Its format
+     * consists of a start-line, one or more header fields, an empty line indicating the end of the
+     * header fields, and an optional message-body.
+     *
+     * <p>
+     * Returns a byte array with UTF-8 format representation of the encoded SipMessage.
+     *
+     * @return byte array with UTF-8 format representation of the encoded SipMessage.
+     */
+    public @NonNull byte[] toEncodedMessage() {
+        byte[] header = new StringBuilder()
+                .append(mStartLine)
+                .append(mHeaderSection)
+                .append(CRLF)
+                .toString().getBytes(UTF_8);
+        byte[] sipMessage = new byte[header.length + mContent.length];
+        System.arraycopy(header, 0, sipMessage, 0, header.length);
+        System.arraycopy(mContent, 0, sipMessage, header.length, mContent.length);
+        return sipMessage;
     }
 }

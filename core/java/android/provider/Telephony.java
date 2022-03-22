@@ -362,6 +362,18 @@ public final class Telephony {
 
         /**
          * Used to determine the currently configured default SMS package.
+         * <p>
+         * As of Android 11 apps will need specific permission to query other packages. To use
+         * this method an app must include in their AndroidManifest:
+         * <queries>
+         *   <intent>
+         *     <action android:name="android.provider.Telephony.SMS_DELIVER"/>
+         *   </intent>
+         * </queries>
+         * Which will allow them to query packages which declare intent filters that include
+         * the {@link android.provider.Telephony.Sms.Intents#SMS_DELIVER_ACTION} intent.
+         * </p>
+         *
          * @param context context of the requesting application
          * @return package name for the default SMS package or null
          */
@@ -1413,25 +1425,6 @@ public final class Telephony {
         public static final String KEY_TYPE = "key_type";
 
         /**
-         * MVNO type:
-         * {@code SPN (Service Provider Name), IMSI, GID (Group Identifier Level 1)}.
-         * <P> Type: TEXT </P>
-         */
-        public static final String MVNO_TYPE = "mvno_type";
-
-        /**
-         * MVNO data.
-         * Use the following examples.
-         * <ul>
-         *     <li>SPN: A MOBILE, BEN NL, ...</li>
-         *     <li>IMSI: 302720x94, 2060188, ...</li>
-         *     <li>GID: 4E, 33, ...</li>
-         * </ul>
-         * <P> Type: TEXT </P>
-         */
-        public static final String MVNO_MATCH_DATA = "mvno_match_data";
-
-        /**
          * The carrier public key that is used for the IMSI encryption.
          * <P> Type: TEXT </P>
          */
@@ -1457,6 +1450,11 @@ public final class Telephony {
          */
         public static final String LAST_MODIFIED = "last_modified";
 
+        /**
+         * Carrier ID of the operetor.
+         * <P> Type: TEXT </P>
+         */
+        public static final String CARRIER_ID = "carrier_id";
         /**
          * The {@code content://} style URL for this table.
          */
@@ -3572,6 +3570,30 @@ public final class Telephony {
                 "content://telephony/carriers/enforce_managed");
 
         /**
+         * The {@code content://} style URL for the perferred APN used for internet.
+         *
+         * @hide
+         */
+        public static final Uri PREFERRED_APN_URI = Uri.parse(
+                "content://telephony/carriers/preferapn/subId");
+
+        /**
+         * The {@code content://} style URL for the perferred APN set id.
+         *
+         * @hide
+         */
+        public static final Uri PREFERRED_APN_SET_URI = Uri.parse(
+                "content://telephony/carriers/preferapnset/subId");
+
+        /**
+         * The id of preferred APN.
+         *
+         * @see #PREFERRED_APN_URI
+         * @hide
+         */
+        public static final String APN_ID = "apn_id";
+
+        /**
          * The column name for ENFORCE_MANAGED_URI, indicates whether DPC-owned APNs are enforced.
          * @hide
          */
@@ -3746,6 +3768,25 @@ public final class Telephony {
         public static final String NETWORK_TYPE_BITMASK = "network_type_bitmask";
 
         /**
+         * Lingering radio technology (network type) bitmask.
+         * To check what values can be contained, refer to the NETWORK_TYPE_ constants in
+         * {@link android.telephony.TelephonyManager}.
+         * Bitmask for a radio tech R is (1 << (R - 1))
+         * <P>Type: INTEGER (long)</P>
+         * @hide
+         */
+        public static final String LINGERING_NETWORK_TYPE_BITMASK =
+                "lingering_network_type_bitmask";
+
+        /**
+         * Sets whether the PDU session brought up by this APN should always be on.
+         * See 3GPP TS 23.501 section 5.6.13
+         * <P>Type: INTEGER</P>
+         * @hide
+         */
+        public static final String ALWAYS_ON = "always_on";
+
+        /**
          * MVNO type:
          * {@code SPN (Service Provider Name), IMSI, GID (Group Identifier Level 1)}.
          * <P>Type: TEXT</P>
@@ -3823,9 +3864,29 @@ public final class Telephony {
          * connected, in bytes.
          * <p>Type: INTEGER </p>
          * @hide
+         * @deprecated use {@link #MTU_V4} or {@link #MTU_V6} instead
          */
         @SystemApi
+        @Deprecated
         public static final String MTU = "mtu";
+
+        /**
+         * The MTU (maximum transmit unit) size of the mobile interface for IPv4 to which the APN is
+         * connected, in bytes.
+         * <p>Type: INTEGER </p>
+         * @hide
+         */
+        @SystemApi
+        public static final String MTU_V4 = "mtu_v4";
+
+        /**
+         * The MTU (maximum transmit unit) size of the mobile interface for IPv6 to which the APN is
+         * connected, in bytes.
+         * <p>Type: INTEGER </p>
+         * @hide
+         */
+        @SystemApi
+        public static final String MTU_V6 = "mtu_v6";
 
         /**
          * APN edit status. APN could be added/edited/deleted by a user or carrier.
@@ -4333,11 +4394,13 @@ public final class Telephony {
         public static final String ETWS_WARNING_TYPE = "etws_warning_type";
 
         /**
-         * ETWS (Earthquake and Tsunami Warning System) primary message or not (ETWS alerts only).
+         * ETWS (Earthquake and Tsunami Warning System, Japan only) primary message or not. The
+         * primary message is sent as soon as the emergency occurs. It does not provide any
+         * information except the emergency type (e.g. earthquake, tsunami). The ETWS secondary
+         * message is sent afterwards and provides the details of the emergency.
+         *
          * <p>See {@link android.telephony.SmsCbEtwsInfo}</p>
          * <P>Type: BOOLEAN</P>
-         *
-         * @hide        // TODO: Unhide this for S.
          */
         public static final String ETWS_IS_PRIMARY = "etws_is_primary";
 
@@ -4557,6 +4620,15 @@ public final class Telephony {
         public static final String VOICE_REG_STATE = "voice_reg_state";
 
         /**
+         * An integer value indicating the current data service state.
+         * <p>
+         * Valid values: {@link ServiceState#STATE_IN_SERVICE},
+         * {@link ServiceState#STATE_OUT_OF_SERVICE}, {@link ServiceState#STATE_EMERGENCY_ONLY},
+         * {@link ServiceState#STATE_POWER_OFF}.
+         */
+        public static final String DATA_REG_STATE = "data_reg_state";
+
+        /**
          * The current registered operator numeric id.
          * <p>
          * In GSM/UMTS, numeric format is 3 digit country code plus 2 or 3 digit
@@ -4572,6 +4644,24 @@ public final class Telephony {
          * This is the same as {@link ServiceState#getIsManualSelection()}.
          */
         public static final String IS_MANUAL_NETWORK_SELECTION = "is_manual_network_selection";
+
+        /**
+         * The current data network type.
+         * <p>
+         * This is the same as {@link TelephonyManager#getDataNetworkType()}.
+         */
+        public static final String DATA_NETWORK_TYPE = "data_network_type";
+
+        /**
+         * An integer value indicating the current duplex mode if the radio technology is LTE,
+         * LTE-CA or NR.
+         * <p>
+         * Valid values: {@link ServiceState#DUPLEX_MODE_UNKNOWN},
+         * {@link ServiceState#DUPLEX_MODE_FDD}, {@link ServiceState#DUPLEX_MODE_TDD}.
+         * <p>
+         * This is the same as {@link ServiceState#getDuplexMode()}.
+         */
+        public static final String DUPLEX_MODE = "duplex_mode";
     }
 
     /**
@@ -5280,11 +5370,74 @@ public final class Telephony {
         public static final String COLUMN_ALLOWED_NETWORK_TYPES = "allowed_network_types";
 
         /**
+         * TelephonyProvider column name for allowed network types with all of reasons. Indicate
+         * which network types are allowed for
+         * {@link TelephonyManager#ALLOWED_NETWORK_TYPES_REASON_USER},
+         * {@link TelephonyManager#ALLOWED_NETWORK_TYPES_REASON_POWER},
+         * {@link TelephonyManager#ALLOWED_NETWORK_TYPES_REASON_CARRIER},
+         * {@link TelephonyManager#ALLOWED_NETWORK_TYPES_REASON_ENABLE_2G}.
+         * <P>Type: TEXT </P>
+         *
+         * @hide
+         */
+        public static final String COLUMN_ALLOWED_NETWORK_TYPES_FOR_REASONS =
+                "allowed_network_types_for_reasons";
+
+        /**
          * TelephonyProvider column name for RCS configuration.
          * <p>TYPE: BLOB
          *
          * @hide
          */
         public static final String COLUMN_RCS_CONFIG = "rcs_config";
+
+        /**
+         * TelephonyProvider column name for VoIMS provisioning. Default is 0.
+         * <P>Type: INTEGER </P>
+         *
+         * @hide
+         */
+        public static final String COLUMN_VOIMS_OPT_IN_STATUS = "voims_opt_in_status";
+
+        /**
+         * TelephonyProvider column name for device to device sharing status.
+         *
+         * @hide
+         */
+        public static final String COLUMN_D2D_STATUS_SHARING = "d2d_sharing_status";
+
+        /**
+         * TelephonyProvider column name for information selected contacts that allow device to
+         * device sharing.
+         *
+         * @hide
+         */
+        public static final String COLUMN_D2D_STATUS_SHARING_SELECTED_CONTACTS =
+                "d2d_sharing_contacts";
+
+        /**
+        * TelephonyProvider column name for NR Advanced calling
+        * Determines if the user has enabled VoNR settings for this subscription.
+        *
+        * @hide
+        */
+        public static final String COLUMN_NR_ADVANCED_CALLING_ENABLED =
+                "nr_advanced_calling_enabled";
+
+        /**
+         * TelephonyProvider column name for the phone number from source CARRIER
+         *
+         * @hide
+         */
+        public static final String COLUMN_PHONE_NUMBER_SOURCE_CARRIER =
+                "phone_number_source_carrier";
+
+        /**
+         * TelephonyProvider column name for the phone number from source IMS
+         *
+         * @hide
+         */
+        public static final String COLUMN_PHONE_NUMBER_SOURCE_IMS =
+                "phone_number_source_ims";
     }
 }

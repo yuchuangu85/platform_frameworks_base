@@ -20,8 +20,6 @@ import android.annotation.NonNull;
 import android.content.Context;
 import android.os.Looper;
 
-import com.android.server.VcnManagementService.VcnNetworkProvider;
-
 import java.util.Objects;
 
 /**
@@ -33,14 +31,17 @@ public class VcnContext {
     @NonNull private final Context mContext;
     @NonNull private final Looper mLooper;
     @NonNull private final VcnNetworkProvider mVcnNetworkProvider;
+    private final boolean mIsInTestMode;
 
     public VcnContext(
             @NonNull Context context,
             @NonNull Looper looper,
-            @NonNull VcnNetworkProvider vcnNetworkProvider) {
+            @NonNull VcnNetworkProvider vcnNetworkProvider,
+            boolean isInTestMode) {
         mContext = Objects.requireNonNull(context, "Missing context");
         mLooper = Objects.requireNonNull(looper, "Missing looper");
         mVcnNetworkProvider = Objects.requireNonNull(vcnNetworkProvider, "Missing networkProvider");
+        mIsInTestMode = isInTestMode;
     }
 
     @NonNull
@@ -56,5 +57,20 @@ public class VcnContext {
     @NonNull
     public VcnNetworkProvider getVcnNetworkProvider() {
         return mVcnNetworkProvider;
+    }
+
+    public boolean isInTestMode() {
+        return mIsInTestMode;
+    }
+
+    /**
+     * Verifies that the caller is running on the VcnContext Thread.
+     *
+     * @throwsIllegalStateException if the caller is not running on the VcnContext Thread.
+     */
+    public void ensureRunningOnLooperThread() {
+        if (getLooper().getThread() != Thread.currentThread()) {
+            throw new IllegalStateException("Not running on VcnMgmtSvc thread");
+        }
     }
 }

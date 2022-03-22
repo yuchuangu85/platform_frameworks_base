@@ -19,6 +19,7 @@ package com.android.server.display;
 import static android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR;
 import static android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_CAN_SHOW_WITH_INSECURE_KEYGUARD;
 import static android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_DESTROY_CONTENT_ON_REMOVAL;
+import static android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP;
 import static android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION;
 import static android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC;
 import static android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_ROTATES_WITH_CONTENT;
@@ -27,9 +28,12 @@ import static android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_SHOUL
 import static android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_SUPPORTS_TOUCH;
 import static android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_TRUSTED;
 
+import static com.android.server.display.DisplayDeviceInfo.FLAG_OWN_DISPLAY_GROUP;
 import static com.android.server.display.DisplayDeviceInfo.FLAG_TRUSTED;
 
+import android.annotation.Nullable;
 import android.content.Context;
+import android.graphics.Point;
 import android.hardware.display.IVirtualDisplayCallback;
 import android.hardware.display.VirtualDisplayConfig;
 import android.media.projection.IMediaProjection;
@@ -229,12 +233,13 @@ public class VirtualDisplayAdapter extends DisplayAdapter {
         private Display.Mode mMode;
         private boolean mIsDisplayOn;
         private int mDisplayIdToMirror;
+        private IBinder mWindowTokenClientToMirror;
 
         public VirtualDisplayDevice(IBinder displayToken, IBinder appToken,
                 int ownerUid, String ownerPackageName, Surface surface, int flags,
                 Callback callback, String uniqueId, int uniqueIndex,
                 VirtualDisplayConfig virtualDisplayConfig) {
-            super(VirtualDisplayAdapter.this, displayToken, uniqueId);
+            super(VirtualDisplayAdapter.this, displayToken, uniqueId, getContext());
             mAppToken = appToken;
             mOwnerUid = ownerUid;
             mOwnerPackageName = ownerPackageName;
@@ -251,6 +256,7 @@ public class VirtualDisplayAdapter extends DisplayAdapter {
             mUniqueIndex = uniqueIndex;
             mIsDisplayOn = surface != null;
             mDisplayIdToMirror = virtualDisplayConfig.getDisplayIdToMirror();
+            mWindowTokenClientToMirror = virtualDisplayConfig.getWindowTokenClientToMirror();
         }
 
         @Override
@@ -280,6 +286,29 @@ public class VirtualDisplayAdapter extends DisplayAdapter {
             return mDisplayIdToMirror;
         }
 
+        @Override
+        @Nullable
+        public IBinder getWindowTokenClientToMirrorLocked() {
+            return mWindowTokenClientToMirror;
+        }
+
+        @Override
+        public void setWindowTokenClientToMirrorLocked(IBinder windowToken) {
+            if (mWindowTokenClientToMirror != windowToken) {
+                mWindowTokenClientToMirror = windowToken;
+                sendDisplayDeviceEventLocked(this, DISPLAY_DEVICE_EVENT_CHANGED);
+                sendTraversalRequestLocked();
+            }
+        }
+
+        @Override
+        public Point getDisplaySurfaceDefaultSize() {
+            if (mSurface == null) {
+                return null;
+            }
+            return mSurface.getDefaultSize();
+        }
+
         @VisibleForTesting
         Surface getSurfaceLocked() {
             return mSurface;
@@ -291,7 +320,8 @@ public class VirtualDisplayAdapter extends DisplayAdapter {
         }
 
         @Override
-        public Runnable requestDisplayStateLocked(int state, float brightnessState) {
+        public Runnable requestDisplayStateLocked(int state, float brightnessState,
+                float sdrBrightnessState) {
             if (state != mDisplayState) {
                 mDisplayState = state;
                 if (state == Display.STATE_OFF) {
@@ -359,6 +389,7 @@ public class VirtualDisplayAdapter extends DisplayAdapter {
             pw.println("mDisplayState=" + Display.stateToString(mDisplayState));
             pw.println("mStopped=" + mStopped);
             pw.println("mDisplayIdToMirror=" + mDisplayIdToMirror);
+            pw.println("mWindowTokenClientToMirror=" + mWindowTokenClientToMirror);
         }
 
 
@@ -386,6 +417,10 @@ public class VirtualDisplayAdapter extends DisplayAdapter {
                     mInfo.flags &= ~DisplayDeviceInfo.FLAG_NEVER_BLANK;
                 } else {
                     mInfo.flags |= DisplayDeviceInfo.FLAG_OWN_CONTENT_ONLY;
+
+                    if ((mFlags & VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP) != 0) {
+                        mInfo.flags |= FLAG_OWN_DISPLAY_GROUP;
+                    }
                 }
 
                 if ((mFlags & VIRTUAL_DISPLAY_FLAG_SECURE) != 0) {

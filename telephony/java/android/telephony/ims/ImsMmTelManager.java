@@ -25,6 +25,7 @@ import android.annotation.RequiresPermission;
 import android.annotation.SuppressAutoDoc;
 import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
+import android.content.Context;
 import android.os.Binder;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
@@ -37,6 +38,7 @@ import android.telephony.ims.aidl.IImsCapabilityCallback;
 import android.telephony.ims.feature.ImsFeature;
 import android.telephony.ims.feature.MmTelFeature;
 import android.telephony.ims.stub.ImsRegistrationImplBase;
+import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telephony.IIntegerConsumer;
@@ -44,6 +46,7 @@ import com.android.internal.telephony.ITelephony;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 
@@ -161,7 +164,7 @@ public class ImsMmTelManager implements RegistrationManager {
             public void onCapabilitiesStatusChanged(int config) {
                 if (mLocalCallback == null) return;
 
-                long callingIdentity = Binder.clearCallingIdentity();
+                final long callingIdentity = Binder.clearCallingIdentity();
                 try {
                     mExecutor.execute(() -> mLocalCallback.onCapabilitiesStatusChanged(
                             new MmTelFeature.MmTelCapabilities(config)));
@@ -213,6 +216,7 @@ public class ImsMmTelManager implements RegistrationManager {
         }
     }
 
+    private final Context mContext;
     private final int mSubId;
     private final BinderCacheManager<ITelephony> mBinderCache;
 
@@ -254,6 +258,16 @@ public class ImsMmTelManager implements RegistrationManager {
      */
     @VisibleForTesting
     public ImsMmTelManager(int subId, BinderCacheManager<ITelephony> binderCache) {
+        this(null, subId, binderCache);
+    }
+
+    /**
+     * Only visible for testing, use {@link ImsManager#getImsMmTelManager(int)} instead.
+     * @hide
+     */
+    @VisibleForTesting
+    public ImsMmTelManager(Context context, int subId, BinderCacheManager<ITelephony> binderCache) {
+        mContext = context;
         mSubId = subId;
         mBinderCache = binderCache;
     }
@@ -444,11 +458,17 @@ public class ImsMmTelManager implements RegistrationManager {
             iTelephony.getImsMmTelRegistrationState(mSubId, new IIntegerConsumer.Stub() {
                 @Override
                 public void accept(int result) {
-                    executor.execute(() -> stateCallback.accept(result));
+                    final long identity = Binder.clearCallingIdentity();
+                    try {
+                        executor.execute(() -> stateCallback.accept(result));
+                    } finally {
+                        Binder.restoreCallingIdentity(identity);
+                    }
                 }
             });
-        } catch (RemoteException e) {
-            throw e.rethrowAsRuntimeException();
+        } catch (ServiceSpecificException | RemoteException e) {
+            Log.w("ImsMmTelManager", "Error getting registration state: " + e);
+            executor.execute(() -> stateCallback.accept(REGISTRATION_STATE_NOT_REGISTERED));
         }
     }
 
@@ -485,11 +505,18 @@ public class ImsMmTelManager implements RegistrationManager {
                     new IIntegerConsumer.Stub() {
                         @Override
                         public void accept(int result) {
-                            executor.execute(() -> transportTypeCallback.accept(result));
+                            final long identity = Binder.clearCallingIdentity();
+                            try {
+                                executor.execute(() -> transportTypeCallback.accept(result));
+                            } finally {
+                                Binder.restoreCallingIdentity(identity);
+                            }
                         }
                     });
-        } catch (RemoteException e) {
-            throw e.rethrowAsRuntimeException();
+        } catch (ServiceSpecificException | RemoteException e) {
+            Log.w("ImsMmTelManager", "Error getting transport type: " + e);
+            executor.execute(() -> transportTypeCallback.accept(
+                    AccessNetworkConstants.TRANSPORT_TYPE_INVALID));
         }
     }
 
@@ -591,9 +618,9 @@ public class ImsMmTelManager implements RegistrationManager {
 
         ITelephony iTelephony = getITelephony();
         if (iTelephony == null) {
-            throw new RuntimeException("Could not find Telephony Service.");
+            Log.w("ImsMmTelManager", "Could not find Telephony Service.");
+            return;
         }
-
         try {
             iTelephony.unregisterMmTelCapabilityCallback(mSubId, c.getBinder());
         } catch (RemoteException e) {
@@ -714,14 +741,8 @@ public class ImsMmTelManager implements RegistrationManager {
      * @see android.telephony.CarrierConfigManager#KEY_CARRIER_IMS_GBA_REQUIRED_BOOL
      * @see #isAvailable(int, int)
      *
-     * @param imsRegTech The IMS registration technology, can be one of the following:
-     *         {@link ImsRegistrationImplBase#REGISTRATION_TECH_LTE},
-     *         {@link ImsRegistrationImplBase#REGISTRATION_TECH_IWLAN}
-     * @param capability The IMS MmTel capability to query, can be one of the following:
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_VOICE},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_VIDEO},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_UT},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_SMS}
+     * @param imsRegTech The IMS registration technology.
+     * @param capability The IMS MmTel capability to query.
      * @return {@code true} if the MmTel IMS capability is capable for this subscription, false
      *         otherwise.
      * @hide
@@ -748,14 +769,8 @@ public class ImsMmTelManager implements RegistrationManager {
      *
      * @see #isCapable(int, int)
      *
-     * @param imsRegTech The IMS registration technology, can be one of the following:
-     *         {@link ImsRegistrationImplBase#REGISTRATION_TECH_LTE},
-     *         {@link ImsRegistrationImplBase#REGISTRATION_TECH_IWLAN}
-     * @param capability The IMS MmTel capability to query, can be one of the following:
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_VOICE},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_VIDEO},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_UT},
-     *         {@link MmTelFeature.MmTelCapabilities#CAPABILITY_TYPE_SMS}
+     * @param imsRegTech The IMS registration technology.
+     * @param capability The IMS MmTel capability to query.
      * @return {@code true} if the MmTel IMS capability is available for this subscription, false
      *         otherwise.
      * @hide
@@ -815,7 +830,12 @@ public class ImsMmTelManager implements RegistrationManager {
             iTelephony.isMmTelCapabilitySupported(mSubId, new IIntegerConsumer.Stub() {
                 @Override
                 public void accept(int result) {
-                    executor.execute(() -> callback.accept(result == 1));
+                    final long identity = Binder.clearCallingIdentity();
+                    try {
+                        executor.execute(() -> callback.accept(result == 1));
+                    } finally {
+                        Binder.restoreCallingIdentity(identity);
+                    }
                 }
             }, capability, transportType);
         } catch (ServiceSpecificException sse) {
@@ -975,6 +995,105 @@ public class ImsMmTelManager implements RegistrationManager {
             }
         } catch (RemoteException e) {
             throw e.rethrowAsRuntimeException();
+        }
+    }
+
+    /**
+     * This configuration is meaningful only on dual sim device.
+     * If enabled, this will result in the device setting up IMS of all other
+     * active subscriptions over the INTERNET APN of the primary default data subscription
+     * when any of those subscriptions are roaming or out of service and if wifi is not available
+     * for VoWifi. This feature will be disabled if
+     * {@link CarrierConfigManager#KEY_CARRIER_CROSS_SIM_IMS_AVAILABLE_BOOL} is set to false.
+     * <p>Following are the conditions in which system will try to register IMS over
+     * cross sim
+     * <ul>
+     *     <li>Wifi is not available, one SIM is roaming and the default data
+     *     SIM is in home network. Then roaming SIM IMS will be registered over INTERNET APN of the
+     *     default data subscription </li>
+     *     <li>Wifi is not available, one SIM is out of service and the default data
+     *     SIM is in home network. Then out of service SIM IMS will be registered over INTERNET
+     *     APN of the default data subscription </li>
+     * </ul>
+     * <p>This API requires one of the following:
+     * <ul>
+     *     <li>The caller holds the READ_PRECISE_PHONE_STATE permission.</li>
+     *     <li>If the caller is the device or profile owner, the caller holds the
+     *     {@link Manifest.permission#READ_PRECISE_PHONE_STATE} permission.</li>
+     *     <li>The caller has carrier privileges (see
+     *     {@link android.telephony.TelephonyManager#hasCarrierPrivileges}) on any
+     *     active subscription.</li>
+     * </ul>
+     * <p>The profile owner is an app that owns a managed profile on the device; for more details
+     * see <a href="https://developer.android.com/work/managed-profiles">Work profiles</a>.
+     * Access by profile owners is deprecated and will be removed in a future release.
+     *
+     * @throws ImsException if the IMS service associated with this subscription is not available or
+     * the IMS service is not available.
+     * @return true if the user's setting for Voice over Cross SIM is enabled and false if it is not
+     */
+    @SuppressAutoDoc // No support for device / profile owner or carrier privileges (b/72967236).
+    @RequiresPermission(anyOf = {
+            android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE,
+            android.Manifest.permission.READ_PRECISE_PHONE_STATE})
+    public boolean isCrossSimCallingEnabled() throws ImsException {
+        ITelephony iTelephony = getITelephony();
+        if (iTelephony == null) {
+            throw new ImsException("Could not find Telephony Service.",
+                    ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        }
+
+        try {
+            return iTelephony.isCrossSimCallingEnabledByUser(mSubId);
+        } catch (ServiceSpecificException sse) {
+            throw new ImsException(sse.getMessage(), sse.errorCode);
+        } catch (RemoteException e) {
+            e.rethrowAsRuntimeException();
+        }
+        // Not reachable. Adding return to make compiler happy.
+        return false;
+    }
+
+    /**
+     * Sets the user's setting for whether or not Voice over Cross SIM is enabled.
+     * If enabled, this will result in the device setting up IMS of all other
+     * active subscriptions over the INTERNET APN of the primary default data subscription
+     * when any of those subscriptions are roaming or out of service and if wifi is not available
+     * for VoWifi. This feature will be disabled if
+     * {@link CarrierConfigManager#KEY_CARRIER_CROSS_SIM_IMS_AVAILABLE_BOOL} is set to false.
+     *
+     * <p>Following are the conditions in which system will try to register IMS over
+     * cross sim
+     * <ul>
+     *     <li>Wifi is not available, one SIM is roaming and the default data
+     *     SIM is in home network. Then roaming SIM IMS will be registered over INTERNET APN of the
+     *     default data subscription </li>
+     *     <li>Wifi is not available, one SIM is out of service and the default data
+     *     SIM is in home network. Then out of service SIM IMS will be registered over INTERNET
+     *     APN of the default data subscription </li>
+     * </ul>
+     * @throws ImsException if the IMS service associated with this subscription is not available or
+     * the IMS service is not available.
+     * @param isEnabled true if the user's setting for Voice over Cross SIM is enabled,
+     *                 false otherwise
+     * @see #isCrossSimCallingEnabled()
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.MODIFY_PHONE_STATE)
+    public void setCrossSimCallingEnabled(boolean isEnabled) throws ImsException {
+        ITelephony iTelephony = getITelephony();
+        if (iTelephony == null) {
+            throw new ImsException("Could not find Telephony Service.",
+                    ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        }
+
+        try {
+            iTelephony.setCrossSimCallingEnabled(mSubId, isEnabled);
+        } catch (ServiceSpecificException sse) {
+            throw new ImsException(sse.getMessage(), sse.errorCode);
+        } catch (RemoteException e) {
+            e.rethrowAsRuntimeException();
         }
     }
 
@@ -1361,13 +1480,86 @@ public class ImsMmTelManager implements RegistrationManager {
             iTelephony.getImsMmTelFeatureState(mSubId, new IIntegerConsumer.Stub() {
                 @Override
                 public void accept(int result) {
-                    executor.execute(() -> callback.accept(result));
+                    final long identity = Binder.clearCallingIdentity();
+                    try {
+                        executor.execute(() -> callback.accept(result));
+                    } finally {
+                        Binder.restoreCallingIdentity(identity);
+                    }
                 }
             });
         } catch (ServiceSpecificException sse) {
             throw new ImsException(sse.getMessage(), sse.errorCode);
         } catch (RemoteException e) {
             e.rethrowAsRuntimeException();
+        }
+    }
+
+    /**
+     * Register a new callback, which is used to notify the registrant of changes to
+     * the state of the underlying IMS service that is attached to telephony to
+     * implement IMS functionality. If the manager is created for
+     * the {@link SubscriptionManager#DEFAULT_SUBSCRIPTION_ID},
+     * this throws an {@link ImsException}.
+     *
+     * <p>Requires Permission:
+     * {@link android.Manifest.permission#READ_PRECISE_PHONE_STATE READ_PRECISE_PHONE_STATE}
+     * or that the calling app has carrier privileges
+     * (see {@link android.telephony.TelephonyManager#hasCarrierPrivileges}).
+     *
+     * @param executor the Executor that will be used to call the {@link ImsStateCallback}.
+     * @param callback The callback instance being registered.
+     * @throws ImsException in the case that the callback can not be registered.
+     * See {@link ImsException#getCode} for more information on when this is called.
+     */
+    @RequiresPermission(anyOf = {Manifest.permission.READ_PRECISE_PHONE_STATE,
+            Manifest.permission.READ_PRIVILEGED_PHONE_STATE})
+    public void registerImsStateCallback(@NonNull Executor executor,
+            @NonNull ImsStateCallback callback) throws ImsException {
+        Objects.requireNonNull(callback, "Must include a non-null ImsStateCallback.");
+        Objects.requireNonNull(executor, "Must include a non-null Executor.");
+
+        callback.init(executor);
+        ITelephony telephony = mBinderCache.listenOnBinder(callback, callback::binderDied);
+        if (telephony == null) {
+            throw new ImsException("Telephony server is down",
+                    ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        }
+
+        try {
+            telephony.registerImsStateCallback(
+                    mSubId, ImsFeature.FEATURE_MMTEL,
+                    callback.getCallbackBinder(), getOpPackageName());
+        } catch (ServiceSpecificException e) {
+            throw new ImsException(e.getMessage(), e.errorCode);
+        } catch (RemoteException | IllegalStateException e) {
+            throw new ImsException(e.getMessage(), ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        }
+    }
+
+    /**
+     * Unregisters a previously registered callback.
+     *
+     * @param callback The callback instance to be unregistered.
+     */
+    public void unregisterImsStateCallback(@NonNull ImsStateCallback callback) {
+        Objects.requireNonNull(callback, "Must include a non-null ImsStateCallback.");
+
+        ITelephony telephony = mBinderCache.removeRunnable(callback);
+        try {
+            if (telephony != null) {
+                telephony.unregisterImsStateCallback(callback.getCallbackBinder());
+            }
+        } catch (RemoteException ignore) {
+            // ignore it
+        }
+    }
+
+    private String getOpPackageName() {
+        if (mContext != null) {
+            return mContext.getOpPackageName();
+        } else {
+            return null;
         }
     }
 

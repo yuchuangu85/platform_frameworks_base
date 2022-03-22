@@ -63,6 +63,11 @@ public class DataServiceCallback {
     public static final int RESULT_ERROR_BUSY           = 3;
     /** Request sent in illegal state */
     public static final int RESULT_ERROR_ILLEGAL_STATE  = 4;
+    /**
+     * Service is temporarily unavailable. Frameworks should retry the request again.
+     * @hide
+     */
+    public static final int RESULT_ERROR_TEMPORARILY_UNAVAILABLE = 5;
 
     private final IDataServiceCallback mCallback;
 
@@ -191,6 +196,8 @@ public class DataServiceCallback {
      * Called to indicate result for the request {@link DataService#startHandover}.
      *
      * @param result The result code. Must be one of the {@link ResultCode}
+     *
+     * @hide
      */
     public void onHandoverStarted(@ResultCode int result) {
         if (mCallback != null) {
@@ -209,6 +216,8 @@ public class DataServiceCallback {
      * Called to indicate result for the request {@link DataService#cancelHandover}.
      *
      * @param result The result code. Must be one of the {@link ResultCode}
+     *
+     * @hide
      */
     public void onHandoverCancelled(@ResultCode int result) {
         if (mCallback != null) {
@@ -233,7 +242,7 @@ public class DataServiceCallback {
      */
     @NonNull
     public static String resultCodeToString(@DataServiceCallback.ResultCode int resultCode) {
-        switch(resultCode) {
+        switch (resultCode) {
             case RESULT_SUCCESS:
                 return "RESULT_SUCCESS";
             case RESULT_ERROR_UNSUPPORTED:
@@ -244,8 +253,56 @@ public class DataServiceCallback {
                 return "RESULT_ERROR_BUSY";
             case RESULT_ERROR_ILLEGAL_STATE:
                 return "RESULT_ERROR_ILLEGAL_STATE";
+            case RESULT_ERROR_TEMPORARILY_UNAVAILABLE:
+                return "RESULT_ERROR_TEMPORARILY_UNAVAILABLE";
             default:
-                return "Missing case for result code=" + resultCode;
+                return "Unknown(" + resultCode + ")";
+        }
+    }
+
+    /**
+     * Unthrottles the APN on the current transport.
+     * The APN is throttled when {@link IDataService#setupDataCall} fails within
+     * the time specified by {@link DataCallResponse#getRetryDurationMillis} and will remain
+     * throttled until this method is called.
+     * <p/>
+     * see: {@link DataCallResponse#getRetryDurationMillis}
+     *
+     * @param apn Access Point Name defined by the carrier.
+     */
+    public void onApnUnthrottled(final @NonNull String apn) {
+        if (mCallback != null) {
+            try {
+                if (DBG) Rlog.d(TAG, "onApnUnthrottled");
+                mCallback.onApnUnthrottled(apn);
+            } catch (RemoteException e) {
+                Rlog.e(TAG, "onApnUnthrottled: remote exception", e);
+            }
+        } else {
+            Rlog.e(TAG, "onApnUnthrottled: callback is null!");
+        }
+    }
+
+    /**
+     * Unthrottles the DataProfile on the current transport.
+     * The DataProfile is throttled when {@link IDataService#setupDataCall} fails within
+     * the time specified by {@link DataCallResponse#getRetryDurationMillis} and will remain
+     * throttled until this method is called.
+     * <p/>
+     * see: {@link DataCallResponse#getRetryDurationMillis}
+     *
+     * @param dataProfile DataProfile containing the APN to be throttled
+     */
+    public void onDataProfileUnthrottled(final @NonNull DataProfile dataProfile) {
+        if (mCallback != null) {
+            try {
+                if (DBG) Rlog.d(TAG, "onDataProfileUnthrottled");
+                mCallback.onDataProfileUnthrottled(dataProfile);
+            } catch (RemoteException e) {
+                Rlog.e(TAG, "onDataProfileUnthrottled: remote exception", e);
+            }
+        } else {
+            Rlog.e(TAG, "onDataProfileUnthrottled: callback is null!");
         }
     }
 }

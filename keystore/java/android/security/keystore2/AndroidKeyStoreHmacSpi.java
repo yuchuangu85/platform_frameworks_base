@@ -21,7 +21,6 @@ import android.security.KeyStoreException;
 import android.security.KeyStoreOperation;
 import android.security.keymaster.KeymasterDefs;
 import android.security.keystore.KeyStoreCryptoOperation;
-import android.security.keystore.KeymasterUtils;
 
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
@@ -163,6 +162,9 @@ public abstract class AndroidKeyStoreHmacSpi extends MacSpi implements KeyStoreC
         }
 
         List<KeyParameter> parameters = new ArrayList<>();
+        parameters.add(KeyStore2ParameterUtils.makeEnum(
+                KeymasterDefs.KM_TAG_PURPOSE, KeymasterDefs.KM_PURPOSE_SIGN
+        ));
         parameters.add(KeyStore2ParameterUtils.makeEnum(
                 KeymasterDefs.KM_TAG_ALGORITHM, KeymasterDefs.KM_ALGORITHM_HMAC
         ));

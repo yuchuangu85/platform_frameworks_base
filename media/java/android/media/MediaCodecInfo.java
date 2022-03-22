@@ -19,6 +19,7 @@ package android.media;
 import static android.media.Utils.intersectSortedDistinctRanges;
 import static android.media.Utils.sortDistinctRanges;
 
+import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SuppressLint;
@@ -27,6 +28,7 @@ import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 import android.os.Process;
 import android.os.SystemProperties;
+import android.sysprop.MediaProperties;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Range;
@@ -180,10 +182,15 @@ public final class MediaCodecInfo {
         public String mName;
         public int mValue;
         public boolean mDefault;
+        public boolean mInternal;
         public Feature(String name, int value, boolean def) {
+            this(name, value, def, false /* internal */);
+        }
+        public Feature(String name, int value, boolean def, boolean internal) {
             mName = name;
             mValue = value;
             mDefault = def;
+            mInternal = internal;
         }
     }
 
@@ -195,12 +202,19 @@ public final class MediaCodecInfo {
     private static final Range<Rational> POSITIVE_RATIONALS =
             Range.create(new Rational(1, Integer.MAX_VALUE),
                          new Rational(Integer.MAX_VALUE, 1));
-    private static final Range<Integer> SIZE_RANGE =
-            Process.is64Bit() ? Range.create(1, 32768) : Range.create(1, 4096);
     private static final Range<Integer> FRAME_RATE_RANGE = Range.create(0, 960);
     private static final Range<Integer> BITRATE_RANGE = Range.create(0, 500000000);
     private static final int DEFAULT_MAX_SUPPORTED_INSTANCES = 32;
     private static final int MAX_SUPPORTED_INSTANCES_LIMIT = 256;
+
+    private static final class LazyHolder {
+        private static final Range<Integer> SIZE_RANGE = Process.is64Bit()
+                ? Range.create(1, 32768)
+                : Range.create(1, MediaProperties.resolution_limit_32bit().orElse(4096));
+    }
+    private static Range<Integer> getSizeRange() {
+        return LazyHolder.SIZE_RANGE;
+    }
 
     // found stuff that is not supported by framework (=> this should not happen)
     private static final int ERROR_UNRECOGNIZED   = (1 << 0);
@@ -412,11 +426,56 @@ public final class MediaCodecInfo {
         /** @deprecated Use {@link #COLOR_Format32bitABGR8888}. */
         public static final int COLOR_Format24BitABGR6666           = 43;
 
+        /**
+         * P010 is 10-bit-per component 4:2:0 YCbCr semiplanar format.
+         * <p>
+         * This format uses 24 allocated bits per pixel with 15 bits of
+         * data per pixel. Chroma planes are subsampled by 2 both
+         * horizontally and vertically. Each chroma and luma component
+         * has 16 allocated bits in little-endian configuration with 10
+         * MSB of actual data.
+         *
+         * <pre>
+         *            byte                   byte
+         *  <--------- i --------> | <------ i + 1 ------>
+         * +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+         * |     UNUSED      |      Y/Cb/Cr                |
+         * +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+         *  0               5 6   7 0                    7
+         * bit
+         * </pre>
+         *
+         * Use this format with {@link Image}. This format corresponds
+         * to {@link android.graphics.ImageFormat#YCBCR_P010}.
+         * <p>
+         */
+        @SuppressLint("AllUpper")
+        public static final int COLOR_FormatYUVP010                 = 54;
+
         /** @deprecated Use {@link #COLOR_FormatYUV420Flexible}. */
         public static final int COLOR_TI_FormatYUV420PackedSemiPlanar = 0x7f000100;
         // COLOR_FormatSurface indicates that the data will be a GraphicBuffer metadata reference.
         // Note: in OMX this is called OMX_COLOR_FormatAndroidOpaque.
         public static final int COLOR_FormatSurface                   = 0x7F000789;
+
+        /**
+         * 64 bits per pixel RGBA color format, with 16-bit signed
+         * floating point red, green, blue, and alpha components.
+         * <p>
+         *
+         * <pre>
+         *         byte              byte             byte              byte
+         *  <-- i -->|<- i+1 ->|<- i+2 ->|<- i+3 ->|<- i+4 ->|<- i+5 ->|<- i+6 ->|<- i+7 ->
+         * +---------+---------+-------------------+---------+---------+---------+---------+
+         * |        RED        |       GREEN       |       BLUE        |       ALPHA       |
+         * +---------+---------+-------------------+---------+---------+---------+---------+
+         *  0       7 0       7 0       7 0       7 0       7 0       7 0       7 0       7
+         * </pre>
+         *
+         * This corresponds to {@link android.graphics.PixelFormat#RGBA_F16}.
+         */
+        @SuppressLint("AllUpper")
+        public static final int COLOR_Format64bitABGRFloat            = 0x7F000F16;
 
         /**
          * 32 bits per pixel RGBA color format, with 8-bit red, green, blue, and alpha components.
@@ -434,6 +493,26 @@ public final class MediaCodecInfo {
          * This corresponds to {@link android.graphics.PixelFormat#RGBA_8888}.
          */
         public static final int COLOR_Format32bitABGR8888             = 0x7F00A000;
+
+        /**
+         * 32 bits per pixel RGBA color format, with 10-bit red, green,
+         * blue, and 2-bit alpha components.
+         * <p>
+         * Using 32-bit little-endian representation, colors stored as
+         * Red 9:0, Green 19:10, Blue 29:20, and Alpha 31:30.
+         * <pre>
+         *         byte              byte             byte              byte
+         *  <------ i -----> | <---- i+1 ----> | <---- i+2 ----> | <---- i+3 ----->
+         * +-----------------+---+-------------+-------+---------+-----------+-----+
+         * |       RED           |      GREEN          |       BLUE          |ALPHA|
+         * +-----------------+---+-------------+-------+---------+-----------+-----+
+         *  0               7 0 1 2           7 0     3 4       7 0         5 6   7
+         * </pre>
+         *
+         * This corresponds to {@link android.graphics.PixelFormat#RGBA_1010102}.
+         */
+        @SuppressLint("AllUpper")
+        public static final int COLOR_Format32bitABGR2101010          = 0x7F00AAA2;
 
         /**
          * Flexible 12 bits per pixel, subsampled YUV color format with 8-bit chroma and luma
@@ -570,6 +649,31 @@ public final class MediaCodecInfo {
         public static final String FEATURE_LowLatency = "low-latency";
 
         /**
+         * Do not include in REGULAR_CODECS list in MediaCodecList.
+         */
+        private static final String FEATURE_SpecialCodec = "special-codec";
+
+        /**
+         * <b>video encoder only</b>: codec supports quantization parameter bounds.
+         * @see MediaFormat#KEY_VIDEO_QP_MAX
+         * @see MediaFormat#KEY_VIDEO_QP_MIN
+         */
+        @SuppressLint("AllUpper")
+        public static final String FEATURE_QpBounds = "qp-bounds";
+
+        /**
+         * <b>video encoder only</b>: codec supports exporting encoding statistics.
+         * Encoders with this feature can provide the App clients with the encoding statistics
+         * information about the frame.
+         * The scope of encoding statistics is controlled by
+         * {@link MediaFormat#KEY_VIDEO_ENCODING_STATISTICS_LEVEL}.
+         *
+         * @see MediaFormat#KEY_VIDEO_ENCODING_STATISTICS_LEVEL
+         */
+        @SuppressLint("AllUpper") // for consistency with other FEATURE_* constants
+        public static final String FEATURE_EncodingStatistics = "encoding-statistics";
+
+        /**
          * Query codec feature capabilities.
          * <p>
          * These features are supported to be used by the codec.  These
@@ -599,12 +703,18 @@ public final class MediaCodecInfo {
             new Feature(FEATURE_MultipleFrames,   (1 << 5), false),
             new Feature(FEATURE_DynamicTimestamp, (1 << 6), false),
             new Feature(FEATURE_LowLatency,       (1 << 7), true),
+            // feature to exclude codec from REGULAR codec list
+            new Feature(FEATURE_SpecialCodec,     (1 << 30), false, true),
         };
 
         private static final Feature[] encoderFeatures = {
             new Feature(FEATURE_IntraRefresh, (1 << 0), false),
             new Feature(FEATURE_MultipleFrames, (1 << 1), false),
             new Feature(FEATURE_DynamicTimestamp, (1 << 2), false),
+            new Feature(FEATURE_QpBounds, (1 << 3), false),
+            new Feature(FEATURE_EncodingStatistics, (1 << 4), false),
+            // feature to exclude codec from REGULAR codec list
+            new Feature(FEATURE_SpecialCodec,     (1 << 30), false, true),
         };
 
         /** @hide */
@@ -612,7 +722,9 @@ public final class MediaCodecInfo {
             Feature[] features = getValidFeatures();
             String[] res = new String[features.length];
             for (int i = 0; i < res.length; i++) {
-                res[i] = features[i].mName;
+                if (!features[i].mInternal) {
+                    res[i] = features[i].mName;
+                }
             }
             return res;
         }
@@ -760,6 +872,10 @@ public final class MediaCodecInfo {
 
             // check feature support
             for (Feature feat: getValidFeatures()) {
+                if (feat.mInternal) {
+                    continue;
+                }
+
                 Integer yesNo = (Integer)map.get(MediaFormat.KEY_FEATURE_ + feat.mName);
                 if (yesNo == null) {
                     continue;
@@ -1073,7 +1189,9 @@ public final class MediaCodecInfo {
                     mFlagsRequired |= feat.mValue;
                 }
                 mFlagsSupported |= feat.mValue;
-                mDefaultFormat.setInteger(key, 1);
+                if (!feat.mInternal) {
+                    mDefaultFormat.setInteger(key, 1);
+                }
                 // TODO restrict features by mFlagsVerified once all codecs reliably verify them
             }
         }
@@ -1089,7 +1207,7 @@ public final class MediaCodecInfo {
 
         private int[] mSampleRates;
         private Range<Integer>[] mSampleRateRanges;
-        private int mMaxInputChannelCount;
+        private Range<Integer>[] mInputChannelRanges;
 
         private static final int MAX_INPUT_CHANNEL_COUNT = 30;
 
@@ -1119,11 +1237,63 @@ public final class MediaCodecInfo {
         }
 
         /**
-         * Returns the maximum number of input channels supported.  The codec
-         * supports any number of channels between 1 and this maximum value.
+         * Returns the maximum number of input channels supported.
+         *
+         * Through {@link android.os.Build.VERSION_CODES#R}, this method indicated support
+         * for any number of input channels between 1 and this maximum value.
+         *
+         * As of {@link android.os.Build.VERSION_CODES#S},
+         * the implied lower limit of 1 channel is no longer valid.
+         * As of {@link android.os.Build.VERSION_CODES#S}, {@link #getMaxInputChannelCount} is
+         * superseded by {@link #getInputChannelCountRanges},
+         * which returns an array of ranges of channels.
+         * The {@link #getMaxInputChannelCount} method will return the highest value
+         * in the ranges returned by {@link #getInputChannelCountRanges}
+         *
          */
+        @IntRange(from = 1, to = 255)
         public int getMaxInputChannelCount() {
-            return mMaxInputChannelCount;
+            int overall_max = 0;
+            for (int i = mInputChannelRanges.length - 1; i >= 0; i--) {
+                int lmax = mInputChannelRanges[i].getUpper();
+                if (lmax > overall_max) {
+                    overall_max = lmax;
+                }
+            }
+            return overall_max;
+        }
+
+        /**
+         * Returns the minimum number of input channels supported.
+         * This is often 1, but does vary for certain mime types.
+         *
+         * This returns the lowest channel count in the ranges returned by
+         * {@link #getInputChannelCountRanges}.
+         */
+        @IntRange(from = 1, to = 255)
+        public int getMinInputChannelCount() {
+            int overall_min = MAX_INPUT_CHANNEL_COUNT;
+            for (int i = mInputChannelRanges.length - 1; i >= 0; i--) {
+                int lmin = mInputChannelRanges[i].getLower();
+                if (lmin < overall_min) {
+                    overall_min = lmin;
+                }
+            }
+            return overall_min;
+        }
+
+        /*
+         * Returns an array of ranges representing the number of input channels supported.
+         * The codec supports any number of input channels within this range.
+         *
+         * This supersedes the {@link #getMaxInputChannelCount} method.
+         *
+         * For many codecs, this will be a single range [1..N], for some N.
+         */
+        @SuppressLint("ArrayReturn")
+        @NonNull
+        public Range<Integer>[] getInputChannelCountRanges() {
+            return Arrays.copyOf(mInputChannelRanges, mInputChannelRanges.length);
         }
 
         /* no public constructor */
@@ -1146,7 +1316,7 @@ public final class MediaCodecInfo {
 
         private void initWithPlatformLimits() {
             mBitrateRange = Range.create(0, Integer.MAX_VALUE);
-            mMaxInputChannelCount = MAX_INPUT_CHANNEL_COUNT;
+            mInputChannelRanges = new Range[] {Range.create(1, MAX_INPUT_CHANNEL_COUNT)};
             // mBitrateRange = Range.create(1, 320000);
             final int minSampleRate = SystemProperties.
                 getInt("ro.mediacodec.min_sample_rate", 7350);
@@ -1158,9 +1328,12 @@ public final class MediaCodecInfo {
 
         private boolean supports(Integer sampleRate, Integer inputChannels) {
             // channels and sample rates are checked orthogonally
-            if (inputChannels != null &&
-                    (inputChannels < 1 || inputChannels > mMaxInputChannelCount)) {
-                return false;
+            if (inputChannels != null) {
+                int ix = Utils.binarySearchDistinctRanges(
+                        mInputChannelRanges, inputChannels);
+                if (ix < 0) {
+                    return false;
+                }
             }
             if (sampleRate != null) {
                 int ix = Utils.binarySearchDistinctRanges(
@@ -1292,12 +1465,28 @@ public final class MediaCodecInfo {
             } else if (sampleRateRange != null) {
                 limitSampleRates(new Range[] { sampleRateRange });
             }
-            applyLimits(maxChannels, bitRates);
+
+            Range<Integer> channelRange = Range.create(1, maxChannels);
+
+            applyLimits(new Range[] { channelRange }, bitRates);
         }
 
-        private void applyLimits(int maxInputChannels, Range<Integer> bitRates) {
-            mMaxInputChannelCount = Range.create(1, mMaxInputChannelCount)
-                    .clamp(maxInputChannels);
+        private void applyLimits(Range<Integer>[] inputChannels, Range<Integer> bitRates) {
+
+            // clamp & make a local copy
+            Range<Integer>[] myInputChannels = new Range[inputChannels.length];
+            for (int i = 0; i < inputChannels.length; i++) {
+                int lower = inputChannels[i].clamp(1);
+                int upper = inputChannels[i].clamp(MAX_INPUT_CHANNEL_COUNT);
+                myInputChannels[i] = Range.create(lower, upper);
+            }
+
+            // sort, intersect with existing, & save channel list
+            sortDistinctRanges(myInputChannels);
+            Range<Integer>[] joinedChannelList =
+                            intersectSortedDistinctRanges(myInputChannels, mInputChannelRanges);
+            mInputChannelRanges = joinedChannelList;
+
             if (bitRates != null) {
                 mBitrateRange = mBitrateRange.intersect(bitRates);
             }
@@ -1305,6 +1494,7 @@ public final class MediaCodecInfo {
 
         private void parseFromInfo(MediaFormat info) {
             int maxInputChannels = MAX_INPUT_CHANNEL_COUNT;
+            Range<Integer>[] channels = new Range[] { Range.create(1, maxInputChannels)};
             Range<Integer> bitRates = POSITIVE_INTEGERS;
 
             if (info.containsKey("sample-rate-ranges")) {
@@ -1315,17 +1505,38 @@ public final class MediaCodecInfo {
                 }
                 limitSampleRates(rateRanges);
             }
-            if (info.containsKey("max-channel-count")) {
+
+            // we will prefer channel-ranges over max-channel-count
+            if (info.containsKey("channel-ranges")) {
+                String[] channelStrings = info.getString("channel-ranges").split(",");
+                Range<Integer>[] channelRanges = new Range[channelStrings.length];
+                for (int i = 0; i < channelStrings.length; i++) {
+                    channelRanges[i] = Utils.parseIntRange(channelStrings[i], null);
+                }
+                channels = channelRanges;
+            } else if (info.containsKey("channel-range")) {
+                Range<Integer> oneRange = Utils.parseIntRange(info.getString("channel-range"),
+                                                              null);
+                channels = new Range[] { oneRange };
+            } else if (info.containsKey("max-channel-count")) {
                 maxInputChannels = Utils.parseIntSafely(
                         info.getString("max-channel-count"), maxInputChannels);
+                if (maxInputChannels == 0) {
+                    channels = new Range[] {Range.create(0, 0)};
+                } else {
+                    channels = new Range[] {Range.create(1, maxInputChannels)};
+                }
             } else if ((mParent.mError & ERROR_UNSUPPORTED) != 0) {
                 maxInputChannels = 0;
+                channels = new Range[] {Range.create(0, 0)};
             }
+
             if (info.containsKey("bitrate-range")) {
                 bitRates = bitRates.intersect(
                         Utils.parseIntRange(info.getString("bitrate-range"), bitRates));
             }
-            applyLimits(maxInputChannels, bitRates);
+
+            applyLimits(channels, bitRates);
         }
 
         /** @hide */
@@ -1334,7 +1545,7 @@ public final class MediaCodecInfo {
             if (mBitrateRange.getLower().equals(mBitrateRange.getUpper())) {
                 format.setInteger(MediaFormat.KEY_BIT_RATE, mBitrateRange.getLower());
             }
-            if (mMaxInputChannelCount == 1) {
+            if (getMaxInputChannelCount() == 1) {
                 // mono-only format
                 format.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
             }
@@ -2131,12 +2342,12 @@ public final class MediaCodecInfo {
         private void initWithPlatformLimits() {
             mBitrateRange = BITRATE_RANGE;
 
-            mWidthRange  = SIZE_RANGE;
-            mHeightRange = SIZE_RANGE;
+            mWidthRange  = getSizeRange();
+            mHeightRange = getSizeRange();
             mFrameRateRange = FRAME_RATE_RANGE;
 
-            mHorizontalBlockRange = SIZE_RANGE;
-            mVerticalBlockRange   = SIZE_RANGE;
+            mHorizontalBlockRange = getSizeRange();
+            mVerticalBlockRange   = getSizeRange();
 
             // full positive ranges are supported as these get calculated
             mBlockCountRange      = POSITIVE_INTEGERS;
@@ -2150,7 +2361,7 @@ public final class MediaCodecInfo {
             mHeightAlignment = 2;
             mBlockWidth = 2;
             mBlockHeight = 2;
-            mSmallerDimensionUpperLimit = SIZE_RANGE.getUpper();
+            mSmallerDimensionUpperLimit = getSizeRange().getUpper();
         }
 
         private @Nullable List<PerformancePoint> getPerformancePoints(Map<String, Object> map) {
@@ -2177,12 +2388,6 @@ public final class MediaCodecInfo {
                 Size size = Utils.parseSize(sizeStr, null);
                 if (size == null || size.getWidth() * size.getHeight() <= 0) {
                     continue;
-                }
-                if (size.getWidth() > SIZE_RANGE.getUpper()
-                        || size.getHeight() > SIZE_RANGE.getUpper()) {
-                    size = new Size(
-                            Math.min(size.getWidth(), SIZE_RANGE.getUpper()),
-                            Math.min(size.getHeight(), SIZE_RANGE.getUpper()));
                 }
                 Range<Long> range = Utils.parseLongRange(map.get(key), null);
                 if (range == null || range.getLower() < 0 || range.getUpper() < 0) {
@@ -2397,10 +2602,10 @@ public final class MediaCodecInfo {
                 // codec supports profiles that we don't know.
                 // Use supplied values clipped to platform limits
                 if (widths != null) {
-                    mWidthRange = SIZE_RANGE.intersect(widths);
+                    mWidthRange = getSizeRange().intersect(widths);
                 }
                 if (heights != null) {
-                    mHeightRange = SIZE_RANGE.intersect(heights);
+                    mHeightRange = getSizeRange().intersect(heights);
                 }
                 if (counts != null) {
                     mBlockCountRange = POSITIVE_INTEGERS.intersect(
@@ -3340,11 +3545,14 @@ public final class MediaCodecInfo {
         public static final int BITRATE_MODE_VBR = 1;
         /** Constant bitrate mode */
         public static final int BITRATE_MODE_CBR = 2;
+        /** Constant bitrate mode with frame drops */
+        public static final int BITRATE_MODE_CBR_FD =  3;
 
         private static final Feature[] bitrates = new Feature[] {
             new Feature("VBR", BITRATE_MODE_VBR, true),
             new Feature("CBR", BITRATE_MODE_CBR, false),
-            new Feature("CQ",  BITRATE_MODE_CQ,  false)
+            new Feature("CQ",  BITRATE_MODE_CQ,  false),
+            new Feature("CBR-FD", BITRATE_MODE_CBR_FD, false)
         };
 
         private static int parseBitrateMode(String mode) {
@@ -3817,6 +4025,12 @@ public final class MediaCodecInfo {
         public static final int DolbyVisionLevelUhd30   = 0x40;
         public static final int DolbyVisionLevelUhd48   = 0x80;
         public static final int DolbyVisionLevelUhd60   = 0x100;
+        @SuppressLint("AllUpper")
+        public static final int DolbyVisionLevelUhd120  = 0x200;
+        @SuppressLint("AllUpper")
+        public static final int DolbyVisionLevel8k30    = 0x400;
+        @SuppressLint("AllUpper")
+        public static final int DolbyVisionLevel8k60    = 0x800;
 
         // Profiles and levels for AV1 Codec, corresponding to the definitions in
         // "AV1 Bitstream & Decoding Process Specification", Annex A

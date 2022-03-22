@@ -19,6 +19,7 @@ package com.android.server.wm;
 import static com.android.server.wm.AnimationAdapterProto.LOCAL;
 import static com.android.server.wm.LocalAnimationAdapterProto.ANIMATION_SPEC;
 
+import android.annotation.NonNull;
 import android.os.SystemClock;
 import android.util.proto.ProtoOutputStream;
 import android.view.SurfaceControl;
@@ -51,7 +52,7 @@ class LocalAnimationAdapter implements AnimationAdapter {
 
     @Override
     public void startAnimation(SurfaceControl animationLeash, Transaction t,
-            @AnimationType int type, OnAnimationFinishedCallback finishCallback) {
+            @AnimationType int type, @NonNull OnAnimationFinishedCallback finishCallback) {
         mAnimator.startAnimation(mSpec, animationLeash, t,
                 () -> finishCallback.onAnimationFinished(type, this));
     }
@@ -126,7 +127,7 @@ class LocalAnimationAdapter implements AnimationAdapter {
         /**
          * @return {@code true} if we need to wake-up SurfaceFlinger earlier during this animation.
          *
-         * @see Transaction#setEarlyWakeup
+         * @see Transaction#setEarlyWakeupStart and Transaction#setEarlyWakeupEnd
          */
         default boolean needsEarlyWakeup() { return false; }
 

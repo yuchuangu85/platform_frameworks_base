@@ -50,9 +50,6 @@ public class GpsNetInitiatedHandler {
 
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
 
-    // NI verify activity for bringing up UI (not used yet)
-    public static final String ACTION_NI_VERIFY = "android.intent.action.NETWORK_INITIATED_VERIFY";
-
     // string constants for defining data fields in NI Intent
     public static final String NI_INTENT_KEY_NOTIF_ID = "notif_id";
     public static final String NI_INTENT_KEY_TITLE = "title";
@@ -250,10 +247,23 @@ public class GpsNetInitiatedHandler {
      * @return true if is considered in user initiated emergency mode for NI purposes
      */
     public boolean getInEmergency() {
+        return getInEmergency(mEmergencyExtensionMillis);
+    }
+
+    /**
+     * Determines whether device is in user-initiated emergency session with the given extension
+     * time.
+     *
+     * @return true if is considered in user initiated emergency mode for NI purposes within the
+     * given extension time.
+     *
+     * @see {@link #getInEmergency()}
+     */
+    public boolean getInEmergency(long emergencyExtensionMillis) {
         boolean isInEmergencyExtension =
                 (mCallEndElapsedRealtimeMillis > 0)
-                && ((SystemClock.elapsedRealtime() - mCallEndElapsedRealtimeMillis)
-                        < mEmergencyExtensionMillis);
+                        && ((SystemClock.elapsedRealtime() - mCallEndElapsedRealtimeMillis)
+                        < emergencyExtensionMillis);
         boolean isInEmergencyCallback = mTelephonyManager.getEmergencyCallbackMode();
         boolean isInEmergencySmsMode = mTelephonyManager.isInEmergencySmsMode();
         return mIsInEmergencyCall || isInEmergencyCallback || isInEmergencyExtension

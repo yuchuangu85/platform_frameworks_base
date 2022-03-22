@@ -21,6 +21,7 @@ import android.os.IBinder;
 import android.os.RemoteException;
 import android.telephony.ims.DelegateRegistrationState;
 import android.telephony.ims.FeatureTagState;
+import android.telephony.ims.SipDelegateConfiguration;
 import android.telephony.ims.SipDelegateConnection;
 import android.telephony.ims.SipDelegateImsConfiguration;
 import android.telephony.ims.SipDelegateManager;
@@ -84,6 +85,17 @@ public class SipDelegateConnectionAidlWrapper implements SipDelegateConnection,
             try {
                 mExecutor.execute(() ->
                         mStateCallback.onImsConfigurationChanged(registeredSipConfig));
+            } finally {
+                Binder.restoreCallingIdentity(token);
+            }
+        }
+
+        @Override
+        public void onConfigurationChanged(SipDelegateConfiguration registeredSipConfig) {
+            final long token = Binder.clearCallingIdentity();
+            try {
+                mExecutor.execute(() ->
+                        mStateCallback.onConfigurationChanged(registeredSipConfig));
             } finally {
                 Binder.restoreCallingIdentity(token);
             }
@@ -200,13 +212,13 @@ public class SipDelegateConnectionAidlWrapper implements SipDelegateConnection,
     }
 
     @Override
-    public void closeDialog(String callId) {
+    public void cleanupSession(String callId) {
         try {
             ISipDelegate conn = getSipDelegateBinder();
             if (conn == null) {
                 return;
             }
-            conn.closeDialog(callId);
+            conn.cleanupSession(callId);
         } catch (RemoteException e) {
             // Nothing to do here, app will eventually get remote death callback.
         }
@@ -265,9 +277,7 @@ public class SipDelegateConnectionAidlWrapper implements SipDelegateConnection,
     }
 
     private void notifyLocalMessageFailedToSend(SipMessage m, int reason) {
-        //TODO: parse transaction ID or throw IllegalArgumentException if the SipMessage
-        // transaction ID can not be parsed.
-        mExecutor.execute(() ->
-                mMessageCallback.onMessageSendFailure(null, reason));
+        String transactionId = m.getViaBranchParameter();
+        mExecutor.execute(() -> mMessageCallback.onMessageSendFailure(transactionId, reason));
     }
 }

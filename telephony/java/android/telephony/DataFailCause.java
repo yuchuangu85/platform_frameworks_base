@@ -915,6 +915,12 @@ public final class DataFailCause {
     public static final int IPV6_PREFIX_UNAVAILABLE = 0x8CA;
     /** System preference change back to SRAT during handoff */
     public static final int HANDOFF_PREFERENCE_CHANGED = 0x8CB;
+    /** Data call fail due to the slice not being allowed for the data call. */
+    public static final int SLICE_REJECTED = 0x8CC;
+    /** No matching rule available for the request, and match-all rule is not allowed for it. */
+    public static final int MATCH_ALL_RULE_NOT_ALLOWED = 0x8CD;
+    /** If connection failed for all matching URSP rules. */
+    public static final int ALL_MATCHING_RULES_FAILED = 0x8CE;
 
     //IKE error notifications message as specified in 3GPP TS 24.302 (Section 8.1.2.2).
 
@@ -985,7 +991,7 @@ public final class DataFailCause {
      * the authentication failed.
      */
     public static final int IWLAN_IKEV2_AUTH_FAILURE = 0x4001;
-    /** IKE message timeout, tunnel setup failed due to no response from EPDG  */
+    /** IKE message timeout, tunnel setup failed due to no response from EPDG */
     public static final int IWLAN_IKEV2_MSG_TIMEOUT = 0x4002;
     /** IKE Certification validation failure  */
     public static final int IWLAN_IKEV2_CERT_INVALID = 0x4003;
@@ -1048,6 +1054,41 @@ public final class DataFailCause {
      * @hide
      */
     public static final int HANDOVER_FAILED = 0x10006;
+
+    /**
+     * Enterprise setup failure: duplicate CID in DataCallResponse.
+     *
+     * @hide
+     */
+    public static final int DUPLICATE_CID = 0x10007;
+
+    /**
+     * Enterprise setup failure: no default data connection set up yet.
+     *
+     * @hide
+     */
+    public static final int NO_DEFAULT_DATA = 0x10008;
+
+    /**
+     * Data service is temporarily unavailable.
+     *
+     * @hide
+     */
+    public static final int SERVICE_TEMPORARILY_UNAVAILABLE = 0x10009;
+
+    /**
+     * The request is not supported by the vendor.
+     *
+     * @hide
+     */
+    public static final int REQUEST_NOT_SUPPORTED = 0x1000A;
+
+    /**
+     * An internal setup data error initiated by telephony that no retry should be performed.
+     *
+     * @hide
+     */
+    public static final int NO_RETRY_FAILURE = 0x1000B;
 
     private static final Map<Integer, String> sFailCauseMap;
     static {
@@ -1419,6 +1460,9 @@ public final class DataFailCause {
         sFailCauseMap.put(VSNCP_RECONNECT_NOT_ALLOWED, "VSNCP_RECONNECT_NOT_ALLOWED");
         sFailCauseMap.put(IPV6_PREFIX_UNAVAILABLE, "IPV6_PREFIX_UNAVAILABLE");
         sFailCauseMap.put(HANDOFF_PREFERENCE_CHANGED, "HANDOFF_PREFERENCE_CHANGED");
+        sFailCauseMap.put(SLICE_REJECTED, "SLICE_REJECTED");
+        sFailCauseMap.put(MATCH_ALL_RULE_NOT_ALLOWED, "MATCH_ALL_RULE_NOT_ALLOWED");
+        sFailCauseMap.put(ALL_MATCHING_RULES_FAILED, "ALL_MATCHING_RULES_FAILED");
         sFailCauseMap.put(IWLAN_PDN_CONNECTION_REJECTION, "IWLAN_PDN_CONNECTION_REJECTION");
         sFailCauseMap.put(IWLAN_MAX_CONNECTION_REACHED, "IWLAN_MAX_CONNECTION_REACHED");
         sFailCauseMap.put(IWLAN_SEMANTIC_ERROR_IN_THE_TFT_OPERATION,
@@ -1474,6 +1518,12 @@ public final class DataFailCause {
         sFailCauseMap.put(UNACCEPTABLE_NETWORK_PARAMETER,
                 "UNACCEPTABLE_NETWORK_PARAMETER");
         sFailCauseMap.put(LOST_CONNECTION, "LOST_CONNECTION");
+        sFailCauseMap.put(HANDOVER_FAILED, "HANDOVER_FAILED");
+        sFailCauseMap.put(DUPLICATE_CID, "DUPLICATE_CID");
+        sFailCauseMap.put(NO_DEFAULT_DATA, "NO_DEFAULT_DATA");
+        sFailCauseMap.put(SERVICE_TEMPORARILY_UNAVAILABLE, "SERVICE_TEMPORARILY_UNAVAILABLE");
+        sFailCauseMap.put(REQUEST_NOT_SUPPORTED, "REQUEST_NOT_SUPPORTED");
+        sFailCauseMap.put(NO_RETRY_FAILURE, "NO_RETRY_FAILURE");
     }
 
     private DataFailCause() {
@@ -1524,6 +1574,7 @@ public final class DataFailCause {
     }
 
     /** @hide */
+    // TODO: Migrated to DataConfigManager
     public static boolean isPermanentFailure(@NonNull Context context,
                                              @DataFailureCause int failCause,
                                              int subId) {
@@ -1573,10 +1624,14 @@ public final class DataFailCause {
                             add(RADIO_NOT_AVAILABLE);
                             add(UNACCEPTABLE_NETWORK_PARAMETER);
                             add(SIGNAL_LOST);
+                            add(DUPLICATE_CID);
+                            add(MATCH_ALL_RULE_NOT_ALLOWED);
+                            add(ALL_MATCHING_RULES_FAILED);
                         }
                     };
                 }
 
+                permanentFailureSet.add(NO_RETRY_FAILURE);
                 sPermanentFailureCache.put(subId, permanentFailureSet);
             }
 

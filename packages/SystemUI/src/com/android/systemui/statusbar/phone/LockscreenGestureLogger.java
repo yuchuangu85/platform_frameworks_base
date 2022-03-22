@@ -24,18 +24,17 @@ import com.android.internal.logging.UiEvent;
 import com.android.internal.logging.UiEventLogger;
 import com.android.internal.logging.UiEventLoggerImpl;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
-import com.android.systemui.Dependency;
 import com.android.systemui.EventLogConstants;
 import com.android.systemui.EventLogTags;
+import com.android.systemui.dagger.SysUISingleton;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * Wrapper that emits both new- and old-style gesture logs.
  * TODO: delete this once the old logs are no longer needed.
  */
-@Singleton
+@SysUISingleton
 public class LockscreenGestureLogger {
 
     /**
@@ -88,10 +87,11 @@ public class LockscreenGestureLogger {
     }
 
     private ArrayMap<Integer, Integer> mLegacyMap;
-    private final MetricsLogger mMetricsLogger = Dependency.get(MetricsLogger.class);
+    private final MetricsLogger mMetricsLogger;
 
     @Inject
-    public LockscreenGestureLogger() {
+    public LockscreenGestureLogger(MetricsLogger metricsLogger) {
+        mMetricsLogger = metricsLogger;
         mLegacyMap = new ArrayMap<>(EventLogConstants.METRICS_GESTURE_TYPE_MAP.length);
         for (int i = 0; i < EventLogConstants.METRICS_GESTURE_TYPE_MAP.length ; i++) {
             mLegacyMap.put(EventLogConstants.METRICS_GESTURE_TYPE_MAP[i], i);

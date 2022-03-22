@@ -29,6 +29,7 @@ import android.app.ActivityManager;
 import android.app.IActivityManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
+import android.app.Person;
 import android.content.ContentProvider;
 import android.content.ContentResolver;
 import android.content.Context;
@@ -46,6 +47,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.UserHandle;
+import android.os.VibrationEffect;
 import android.provider.Settings;
 import android.service.notification.Adjustment;
 import android.service.notification.NotificationListenerService;
@@ -157,7 +159,7 @@ public final class NotificationRecord {
     private String mUserExplanation;
     private boolean mPreChannelsNotification = true;
     private Uri mSound;
-    private long[] mVibration;
+    private VibrationEffect mVibration;
     private AudioAttributes mAttributes;
     private NotificationChannel mChannel;
     private ArrayList<String> mPeopleOverride;
@@ -197,6 +199,10 @@ public final class NotificationRecord {
      */
     private boolean mIsAppImportanceLocked;
     private ArraySet<Uri> mGrantableUris;
+
+    // Whether this notification record should have an update logged the next time notifications
+    // are sorted.
+    private boolean mPendingLogUpdate = false;
 
     public NotificationRecord(Context context, StatusBarNotification sbn,
             NotificationChannel channel) {
@@ -286,29 +292,28 @@ public final class NotificationRecord {
         return light;
     }
 
-    private long[] calculateVibration() {
-        long[] vibration;
-        final long[] defaultVibration =  NotificationManagerService.getLongArray(
-                mContext.getResources(),
-                com.android.internal.R.array.config_defaultNotificationVibePattern,
-                NotificationManagerService.VIBRATE_PATTERN_MAXLEN,
-                NotificationManagerService.DEFAULT_VIBRATE_PATTERN);
+    private VibrationEffect calculateVibration() {
+        VibratorHelper helper = new VibratorHelper(mContext);
+        final Notification notification = getSbn().getNotification();
+        final boolean insistent = (notification.flags & Notification.FLAG_INSISTENT) != 0;
+        VibrationEffect defaultVibration = helper.createDefaultVibration(insistent);
+        VibrationEffect vibration;
         if (getChannel().shouldVibrate()) {
             vibration = getChannel().getVibrationPattern() == null
-                    ? defaultVibration : getChannel().getVibrationPattern();
+                    ? defaultVibration
+                    : helper.createWaveformVibration(getChannel().getVibrationPattern(), insistent);
         } else {
             vibration = null;
         }
         if (mPreChannelsNotification
                 && (getChannel().getUserLockedFields()
                 & NotificationChannel.USER_LOCKED_VIBRATION) == 0) {
-            final Notification notification = getSbn().getNotification();
             final boolean useDefaultVibrate =
                     (notification.defaults & Notification.DEFAULT_VIBRATE) != 0;
             if (useDefaultVibrate) {
                 vibration = defaultVibration;
             } else {
-                vibration = notification.vibrate;
+                vibration = helper.createWaveformVibration(notification.vibrate, insistent);
             }
         }
         return vibration;
@@ -469,82 +474,10 @@ public final class NotificationRecord {
         pw.println(prefix + "key=" + getSbn().getKey());
         pw.println(prefix + "seen=" + mStats.hasSeen());
         pw.println(prefix + "groupKey=" + getGroupKey());
-        pw.println(prefix + "fullscreenIntent=" + notification.fullScreenIntent);
-        pw.println(prefix + "contentIntent=" + notification.contentIntent);
-        pw.println(prefix + "deleteIntent=" + notification.deleteIntent);
-        pw.println(prefix + "number=" + notification.number);
-        pw.println(prefix + "groupAlertBehavior=" + notification.getGroupAlertBehavior());
-        pw.println(prefix + "when=" + notification.when);
-
-        pw.print(prefix + "tickerText=");
-        if (!TextUtils.isEmpty(notification.tickerText)) {
-            final String ticker = notification.tickerText.toString();
-            if (redact) {
-                // if the string is long enough, we allow ourselves a few bytes for debugging
-                pw.print(ticker.length() > 16 ? ticker.substring(0,8) : "");
-                pw.println("...");
-            } else {
-                pw.println(ticker);
-            }
-        } else {
-            pw.println("null");
-        }
-        pw.println(prefix + "contentView=" + formatRemoteViews(notification.contentView));
-        pw.println(prefix + "bigContentView=" + formatRemoteViews(notification.bigContentView));
-        pw.println(prefix + "headsUpContentView="
-                + formatRemoteViews(notification.headsUpContentView));
-        pw.print(prefix + String.format("color=0x%08x", notification.color));
-        pw.println(prefix + "timeout="
-                + TimeUtils.formatForLogging(notification.getTimeoutAfter()));
-        if (notification.actions != null && notification.actions.length > 0) {
-            pw.println(prefix + "actions={");
-            final int N = notification.actions.length;
-            for (int i = 0; i < N; i++) {
-                final Notification.Action action = notification.actions[i];
-                if (action != null) {
-                    pw.println(String.format("%s    [%d] \"%s\" -> %s",
-                            prefix,
-                            i,
-                            action.title,
-                            action.actionIntent == null ? "null" : action.actionIntent.toString()
-                    ));
-                }
-            }
-            pw.println(prefix + "  }");
-        }
-        if (notification.extras != null && notification.extras.size() > 0) {
-            pw.println(prefix + "extras={");
-            for (String key : notification.extras.keySet()) {
-                pw.print(prefix + "    " + key + "=");
-                Object val = notification.extras.get(key);
-                if (val == null) {
-                    pw.println("null");
-                } else {
-                    pw.print(val.getClass().getSimpleName());
-                    if (redact && (val instanceof CharSequence || val instanceof String)) {
-                        // redact contents from bugreports
-                    } else if (val instanceof Bitmap) {
-                        pw.print(String.format(" (%dx%d)",
-                                ((Bitmap) val).getWidth(),
-                                ((Bitmap) val).getHeight()));
-                    } else if (val.getClass().isArray()) {
-                        final int N = Array.getLength(val);
-                        pw.print(" (" + N + ")");
-                        if (!redact) {
-                            for (int j = 0; j < N; j++) {
-                                pw.println();
-                                pw.print(String.format("%s      [%d] %s",
-                                        prefix, j, String.valueOf(Array.get(val, j))));
-                            }
-                        }
-                    } else {
-                        pw.print(" (" + String.valueOf(val) + ")");
-                    }
-                    pw.println();
-                }
-            }
-            pw.println(prefix + "}");
-        }
+        pw.println(prefix + "notification=");
+        dumpNotification(pw, prefix + prefix, notification, redact);
+        pw.println(prefix + "publicNotification=");
+        dumpNotification(pw, prefix + prefix, notification.publicVersion, redact);
         pw.println(prefix + "stats=" + stats.toString());
         pw.println(prefix + "mContactAffinity=" + mContactAffinity);
         pw.println(prefix + "mRecentlyIntrusive=" + mRecentlyIntrusive);
@@ -598,6 +531,90 @@ public final class NotificationRecord {
                 + " found valid? " + (mShortcutInfo != null));
     }
 
+    private void dumpNotification(PrintWriter pw, String prefix, Notification notification,
+            boolean redact) {
+        if (notification == null) {
+            pw.println(prefix + "None");
+            return;
+        }
+        pw.println(prefix + "fullscreenIntent=" + notification.fullScreenIntent);
+        pw.println(prefix + "contentIntent=" + notification.contentIntent);
+        pw.println(prefix + "deleteIntent=" + notification.deleteIntent);
+        pw.println(prefix + "number=" + notification.number);
+        pw.println(prefix + "groupAlertBehavior=" + notification.getGroupAlertBehavior());
+        pw.println(prefix + "when=" + notification.when);
+
+        pw.print(prefix + "tickerText=");
+        if (!TextUtils.isEmpty(notification.tickerText)) {
+            final String ticker = notification.tickerText.toString();
+            if (redact) {
+                // if the string is long enough, we allow ourselves a few bytes for debugging
+                pw.print(ticker.length() > 16 ? ticker.substring(0,8) : "");
+                pw.println("...");
+            } else {
+                pw.println(ticker);
+            }
+        } else {
+            pw.println("null");
+        }
+        pw.println(prefix + "contentView=" + formatRemoteViews(notification.contentView));
+        pw.println(prefix + "bigContentView=" + formatRemoteViews(notification.bigContentView));
+        pw.println(prefix + "headsUpContentView="
+                + formatRemoteViews(notification.headsUpContentView));
+        pw.println(prefix + String.format("color=0x%08x", notification.color));
+        pw.println(prefix + "timeout="
+                + TimeUtils.formatForLogging(notification.getTimeoutAfter()));
+        if (notification.actions != null && notification.actions.length > 0) {
+            pw.println(prefix + "actions={");
+            final int N = notification.actions.length;
+            for (int i = 0; i < N; i++) {
+                final Notification.Action action = notification.actions[i];
+                if (action != null) {
+                    pw.println(String.format("%s    [%d] \"%s\" -> %s",
+                            prefix,
+                            i,
+                            action.title,
+                            action.actionIntent == null ? "null" : action.actionIntent.toString()
+                    ));
+                }
+            }
+            pw.println(prefix + "  }");
+        }
+        if (notification.extras != null && notification.extras.size() > 0) {
+            pw.println(prefix + "extras={");
+            for (String key : notification.extras.keySet()) {
+                pw.print(prefix + "    " + key + "=");
+                Object val = notification.extras.get(key);
+                if (val == null) {
+                    pw.println("null");
+                } else {
+                    pw.print(val.getClass().getSimpleName());
+                    if (redact && (val instanceof CharSequence || val instanceof String)) {
+                        // redact contents from bugreports
+                    } else if (val instanceof Bitmap) {
+                        pw.print(String.format(" (%dx%d)",
+                                ((Bitmap) val).getWidth(),
+                                ((Bitmap) val).getHeight()));
+                    } else if (val.getClass().isArray()) {
+                        final int N = Array.getLength(val);
+                        pw.print(" (" + N + ")");
+                        if (!redact) {
+                            for (int j = 0; j < N; j++) {
+                                pw.println();
+                                pw.print(String.format("%s      [%d] %s",
+                                        prefix, j, String.valueOf(Array.get(val, j))));
+                            }
+                        }
+                    } else {
+                        pw.print(" (" + String.valueOf(val) + ")");
+                    }
+                    pw.println();
+                }
+            }
+            pw.println(prefix + "}");
+        }
+    }
+
     @Override
     public final String toString() {
         return String.format(
@@ -635,17 +652,23 @@ public final class NotificationRecord {
                     final ArrayList<String> people =
                             adjustment.getSignals().getStringArrayList(Adjustment.KEY_PEOPLE);
                     setPeopleOverride(people);
+                    EventLogTags.writeNotificationAdjusted(
+                            getKey(), Adjustment.KEY_PEOPLE, people.toString());
                 }
                 if (signals.containsKey(Adjustment.KEY_SNOOZE_CRITERIA)) {
                     final ArrayList<SnoozeCriterion> snoozeCriterionList =
                             adjustment.getSignals().getParcelableArrayList(
                                     Adjustment.KEY_SNOOZE_CRITERIA);
                     setSnoozeCriteria(snoozeCriterionList);
+                    EventLogTags.writeNotificationAdjusted(getKey(), Adjustment.KEY_SNOOZE_CRITERIA,
+                            snoozeCriterionList.toString());
                 }
                 if (signals.containsKey(Adjustment.KEY_GROUP_KEY)) {
                     final String groupOverrideKey =
                             adjustment.getSignals().getString(Adjustment.KEY_GROUP_KEY);
                     setOverrideGroupKey(groupOverrideKey);
+                    EventLogTags.writeNotificationAdjusted(getKey(), Adjustment.KEY_GROUP_KEY,
+                            groupOverrideKey);
                 }
                 if (signals.containsKey(Adjustment.KEY_USER_SENTIMENT)) {
                     // Only allow user sentiment update from assistant if user hasn't already
@@ -654,27 +677,42 @@ public final class NotificationRecord {
                             && (getChannel().getUserLockedFields() & USER_LOCKED_IMPORTANCE) == 0) {
                         setUserSentiment(adjustment.getSignals().getInt(
                                 Adjustment.KEY_USER_SENTIMENT, USER_SENTIMENT_NEUTRAL));
+                        EventLogTags.writeNotificationAdjusted(getKey(),
+                                Adjustment.KEY_USER_SENTIMENT,
+                                Integer.toString(getUserSentiment()));
                     }
                 }
                 if (signals.containsKey(Adjustment.KEY_CONTEXTUAL_ACTIONS)) {
                     setSystemGeneratedSmartActions(
                             signals.getParcelableArrayList(Adjustment.KEY_CONTEXTUAL_ACTIONS));
+                    EventLogTags.writeNotificationAdjusted(getKey(),
+                            Adjustment.KEY_CONTEXTUAL_ACTIONS,
+                            getSystemGeneratedSmartActions().toString());
                 }
                 if (signals.containsKey(Adjustment.KEY_TEXT_REPLIES)) {
                     setSmartReplies(signals.getCharSequenceArrayList(Adjustment.KEY_TEXT_REPLIES));
+                    EventLogTags.writeNotificationAdjusted(getKey(), Adjustment.KEY_TEXT_REPLIES,
+                            getSmartReplies().toString());
                 }
                 if (signals.containsKey(Adjustment.KEY_IMPORTANCE)) {
                     int importance = signals.getInt(Adjustment.KEY_IMPORTANCE);
                     importance = Math.max(IMPORTANCE_UNSPECIFIED, importance);
                     importance = Math.min(IMPORTANCE_HIGH, importance);
                     setAssistantImportance(importance);
+                    EventLogTags.writeNotificationAdjusted(getKey(), Adjustment.KEY_IMPORTANCE,
+                            Integer.toString(importance));
                 }
                 if (signals.containsKey(Adjustment.KEY_RANKING_SCORE)) {
                     mRankingScore = signals.getFloat(Adjustment.KEY_RANKING_SCORE);
+                    EventLogTags.writeNotificationAdjusted(getKey(), Adjustment.KEY_RANKING_SCORE,
+                            Float.toString(mRankingScore));
                 }
                 if (signals.containsKey(Adjustment.KEY_NOT_CONVERSATION)) {
                     mIsNotConversationOverride = signals.getBoolean(
                             Adjustment.KEY_NOT_CONVERSATION);
+                    EventLogTags.writeNotificationAdjusted(getKey(),
+                            Adjustment.KEY_NOT_CONVERSATION,
+                            Boolean.toString(mIsNotConversationOverride));
                 }
                 if (!signals.isEmpty() && adjustment.getIssuer() != null) {
                     mAdjustmentIssuer = adjustment.getIssuer();
@@ -862,6 +900,10 @@ public final class NotificationRecord {
 
     public boolean isHidden() {
         return mHidden;
+    }
+
+    public boolean isForegroundService() {
+        return 0 != (getFlags() & Notification.FLAG_FOREGROUND_SERVICE);
     }
 
     /**
@@ -1054,7 +1096,7 @@ public final class NotificationRecord {
         return mSound;
     }
 
-    public long[] getVibration() {
+    public VibrationEffect getVibration() {
         return mVibration;
     }
 
@@ -1099,6 +1141,10 @@ public final class NotificationRecord {
 
     public boolean isInterruptive() {
         return mIsInterruptive;
+    }
+
+    public boolean isTextChanged() {
+        return mTextChanged;
     }
 
     /** Returns the time the notification audibly alerted the user. */
@@ -1245,6 +1291,16 @@ public final class NotificationRecord {
         return !Objects.equals(getSbn().getPackageName(), getSbn().getOpPkg());
     }
 
+    public int getNotificationType() {
+        if (isConversation()) {
+            return NotificationListenerService.FLAG_FILTER_TYPE_CONVERSATIONS;
+        } else if (getImportance() >= IMPORTANCE_DEFAULT) {
+            return NotificationListenerService.FLAG_FILTER_TYPE_ALERTING;
+        } else {
+            return NotificationListenerService.FLAG_FILTER_TYPE_SILENT;
+        }
+    }
+
     /**
      * @return all {@link Uri} that should have permission granted to whoever
      *         will be rendering it. This list has already been vetted to only
@@ -1362,10 +1418,9 @@ public final class NotificationRecord {
 
     public boolean hasUndecoratedRemoteView() {
         Notification notification = getNotification();
-        Class<? extends Notification.Style> style = notification.getNotificationStyle();
-        boolean hasDecoratedStyle = style != null
-                && (Notification.DecoratedCustomViewStyle.class.equals(style)
-                || Notification.DecoratedMediaCustomViewStyle.class.equals(style));
+        boolean hasDecoratedStyle =
+                notification.isStyle(Notification.DecoratedCustomViewStyle.class)
+                || notification.isStyle(Notification.DecoratedMediaCustomViewStyle.class);
         boolean hasCustomRemoteView = notification.contentView != null
                 || notification.bigContentView != null
                 || notification.headsUpContentView != null;
@@ -1405,7 +1460,7 @@ public final class NotificationRecord {
         if (mIsNotConversationOverride) {
             return false;
         }
-        if (!Notification.MessagingStyle.class.equals(notification.getNotificationStyle())) {
+        if (!notification.isStyle(Notification.MessagingStyle.class)) {
             // some non-msgStyle notifs can temporarily appear in the conversation space if category
             // is right
             if (mPkgAllowedAsConvo && mTargetSdkVersion < Build.VERSION_CODES.R
@@ -1416,8 +1471,8 @@ public final class NotificationRecord {
         }
 
         if (mTargetSdkVersion >= Build.VERSION_CODES.R
-            && Notification.MessagingStyle.class.equals(notification.getNotificationStyle())
-            && mShortcutInfo == null) {
+                && notification.isStyle(Notification.MessagingStyle.class)
+                && (mShortcutInfo == null || isOnlyBots(mShortcutInfo.getPersons()))) {
             return false;
         }
         if (mHasSentValidMsg && mShortcutInfo == null) {
@@ -1426,8 +1481,48 @@ public final class NotificationRecord {
         return true;
     }
 
+    /**
+     * Determines if the {@link ShortcutInfo#getPersons()} array includes only bots, for the purpose
+     * of excluding that shortcut from the "conversations" section of the notification shade.  If
+     * the shortcut has no people, this returns false to allow the conversation into the shade, and
+     * if there is any non-bot person we allow it as well.  Otherwise, this is only bots and will
+     * not count as a conversation.
+     */
+    private boolean isOnlyBots(Person[] persons) {
+        // Return false if there are no persons at all
+        if (persons == null || persons.length == 0) {
+            return false;
+        }
+        // Return false if there are any non-bot persons
+        for (Person person : persons) {
+            if (!person.isBot()) {
+                return false;
+            }
+        }
+        // Return true otherwise
+        return true;
+    }
+
     StatusBarNotification getSbn() {
         return sbn;
+    }
+
+    /**
+     * Returns whether this record's ranking score is approximately equal to otherScore
+     * (the difference must be within 0.0001).
+     */
+    public boolean rankingScoreMatches(float otherScore) {
+        return Math.abs(mRankingScore - otherScore) < 0.0001;
+    }
+
+    protected void setPendingLogUpdate(boolean pendingLogUpdate) {
+        mPendingLogUpdate = pendingLogUpdate;
+    }
+
+    // If a caller of this function subsequently logs the update, they should also call
+    // setPendingLogUpdate to false to make sure other callers don't also do so.
+    protected boolean hasPendingLogUpdate() {
+        return mPendingLogUpdate;
     }
 
     @VisibleForTesting

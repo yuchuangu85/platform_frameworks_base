@@ -39,6 +39,7 @@ interface IMediaRouterService {
     MediaRouterClientState getState(IMediaRouterClient client);
     boolean isPlaybackActive(IMediaRouterClient client);
 
+    void setBluetoothA2dpOn(IMediaRouterClient client, boolean on);
     void setDiscoveryRequest(IMediaRouterClient client, int routeTypes, boolean activeScan);
     void setSelectedRoute(IMediaRouterClient client, String routeId, boolean explicit);
     void requestSetVolume(IMediaRouterClient client, String routeId, int volume);
@@ -48,6 +49,7 @@ interface IMediaRouterService {
     // MediaRouterService.java for readability.
 
     // Methods for MediaRouter2
+    void enforceMediaContentControlPermission();
     List<MediaRoute2Info> getSystemRoutes();
     RoutingSessionInfo getSystemSessionInfo();
 
@@ -73,6 +75,8 @@ interface IMediaRouterService {
     void unregisterManager(IMediaRouter2Manager manager);
     void setRouteVolumeWithManager(IMediaRouter2Manager manager, int requestId,
             in MediaRoute2Info route, int volume);
+    void startScan(IMediaRouter2Manager manager);
+    void stopScan(IMediaRouter2Manager manager);
 
     void requestCreateSessionWithManager(IMediaRouter2Manager manager, int requestId,
             in RoutingSessionInfo oldSession, in @nullable MediaRoute2Info route);

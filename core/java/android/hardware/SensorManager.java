@@ -46,6 +46,13 @@ import java.util.List;
  * at {@link TriggerEventListener}. {@link Sensor#TYPE_SIGNIFICANT_MOTION}
  * is an example of a trigger sensor.
  * </p>
+ * <p>
+ * In order to access sensor data at high sampling rates (i.e. greater than 200 Hz
+ * for {@link SensorEventListener} and greater than {@link SensorDirectChannel#RATE_NORMAL}
+ * for {@link SensorDirectChannel}), apps must declare
+ * the {@link android.Manifest.permission#HIGH_SAMPLING_RATE_SENSORS} permission
+ * in their AndroidManifest.xml file.
+ * </p>
  * <pre class="prettyprint">
  * public class SensorActivity extends Activity implements SensorEventListener {
  *     private final SensorManager mSensorManager;
@@ -399,7 +406,9 @@ public abstract class SensorManager {
      * Use this method to get the list of available sensors of a certain type.
      * Make multiple calls to get sensors of different types or use
      * {@link android.hardware.Sensor#TYPE_ALL Sensor.TYPE_ALL} to get all the
-     * sensors.
+     * sensors. Note that the {@link android.hardware.Sensor#getName()} is
+     * expected to yield a value that is unique across any sensors that return
+     * the same value for {@link android.hardware.Sensor#getType()}.
      *
      * <p class="note">
      * NOTE: Both wake-up and non wake-up sensors matching the given type are
@@ -629,7 +638,7 @@ public abstract class SensorManager {
     /**
      * Unregisters a listener for the sensors with which it is registered.
      *
-     * <p class="note"></p>
+     * <p class="note">
      * Note: Don't use this method with a one shot trigger sensor such as
      * {@link Sensor#TYPE_SIGNIFICANT_MOTION}.
      * Use {@link #cancelTriggerSensor(TriggerEventListener, Sensor)} instead.
@@ -1440,14 +1449,14 @@ public abstract class SensorManager {
      *                Assuming that the bottom edge of the device faces the
      *                user and that the screen is face-up, tilting the top edge
      *                of the device toward the ground creates a positive pitch
-     *                angle. The range of values is -&pi; to &pi;.</li>
+     *                angle. The range of values is -&pi;/2 to &pi;/2.</li>
      * <li>values[2]: <i>Roll</i>, angle of rotation about the y axis. This
      *                value represents the angle between a plane perpendicular
      *                to the device's screen and a plane perpendicular to the
      *                ground. Assuming that the bottom edge of the device faces
      *                the user and that the screen is face-up, tilting the left
      *                edge of the device toward the ground creates a positive
-     *                roll angle. The range of values is -&pi;/2 to &pi;/2.</li>
+     *                roll angle. The range of values is -&pi; to &pi;.</li>
      * </ul>
      * <p>
      * Applying these three rotations in the azimuth, pitch, roll order

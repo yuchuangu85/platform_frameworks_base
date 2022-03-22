@@ -293,11 +293,12 @@ public final class NetworkRegistrationInfo implements Parcelable {
                                    @Nullable CellIdentity cellIdentity, @Nullable String rplmn,
                                    int maxDataCalls, boolean isDcNrRestricted,
                                    boolean isNrAvailable, boolean isEndcAvailable,
-                                   LteVopsSupportInfo lteVopsSupportInfo) {
+                                   @Nullable VopsSupportInfo vopsSupportInfo) {
         this(domain, transportType, registrationState, accessNetworkTechnology, rejectCause,
                 emergencyOnly, availableServices, cellIdentity, rplmn);
         mDataSpecificInfo = new DataSpecificRegistrationInfo(
-                maxDataCalls, isDcNrRestricted, isNrAvailable, isEndcAvailable, lteVopsSupportInfo);
+                maxDataCalls, isDcNrRestricted, isNrAvailable,
+                isEndcAvailable, vopsSupportInfo);
         updateNrState();
     }
 
@@ -344,6 +345,7 @@ public final class NetworkRegistrationInfo implements Parcelable {
             // TODO: Instead of doing this, we should create a formal way for cloning cell identity.
             // Cell identity is not an immutable object so we have to deep copy it.
             mCellIdentity = CellIdentity.CREATOR.createFromParcel(p);
+            p.recycle();
         }
 
         if (nri.mVoiceSpecificInfo != null) {
@@ -370,6 +372,7 @@ public final class NetworkRegistrationInfo implements Parcelable {
      * Get the 5G NR connection state.
      *
      * @return the 5G NR connection state.
+     * @hide
      */
     public @NRState int getNrState() {
         return mNrState;
@@ -503,6 +506,8 @@ public final class NetworkRegistrationInfo implements Parcelable {
     }
 
     /**
+     * Require {@link android.Manifest.permission#ACCESS_FINE_LOCATION}, otherwise return null.
+     *
      * @return The cell information.
      */
     @Nullable

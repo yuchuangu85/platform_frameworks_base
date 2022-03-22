@@ -24,6 +24,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.StringRes;
 import android.annotation.StyleRes;
+import android.annotation.UiContext;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.ComponentName;
 import android.content.Context;
@@ -101,6 +102,7 @@ public class Dialog implements DialogInterface, Window.Callback,
     private final WindowManager mWindowManager;
 
     @UnsupportedAppUsage
+    @UiContext
     final Context mContext;
     @UnsupportedAppUsage
     final Window mWindow;
@@ -149,6 +151,9 @@ public class Dialog implements DialogInterface, Window.Callback,
 
     private final Runnable mDismissAction = this::dismissDialog;
 
+    /** A {@link Runnable} to run instead of dismissing when {@link #dismiss()} is called. */
+    private Runnable mDismissOverride;
+
     /**
      * Creates a dialog window that uses the default dialog theme.
      * <p>
@@ -158,7 +163,7 @@ public class Dialog implements DialogInterface, Window.Callback,
      * @param context the context in which the dialog should run
      * @see android.R.styleable#Theme_dialogTheme
      */
-    public Dialog(@NonNull Context context) {
+    public Dialog(@UiContext @NonNull Context context) {
         this(context, 0, true);
     }
 
@@ -177,11 +182,12 @@ public class Dialog implements DialogInterface, Window.Callback,
      * @param themeResId a style resource describing the theme to use for the
      *              window, or {@code 0} to use the default dialog theme
      */
-    public Dialog(@NonNull Context context, @StyleRes int themeResId) {
+    public Dialog(@UiContext @NonNull Context context, @StyleRes int themeResId) {
         this(context, themeResId, true);
     }
 
-    Dialog(@NonNull Context context, @StyleRes int themeResId, boolean createContextThemeWrapper) {
+    Dialog(@UiContext @NonNull Context context, @StyleRes int themeResId,
+            boolean createContextThemeWrapper) {
         if (createContextThemeWrapper) {
             if (themeResId == Resources.ID_NULL) {
                 final TypedValue outValue = new TypedValue();
@@ -222,7 +228,7 @@ public class Dialog implements DialogInterface, Window.Callback,
         mCancelMessage = cancelCallback;
     }
 
-    protected Dialog(@NonNull Context context, boolean cancelable,
+    protected Dialog(@UiContext @NonNull Context context, boolean cancelable,
             @Nullable OnCancelListener cancelListener) {
         this(context);
         mCancelable = cancelable;
@@ -234,7 +240,9 @@ public class Dialog implements DialogInterface, Window.Callback,
      * 
      * @return Context The Context used by the Dialog.
      */
-    public final @NonNull Context getContext() {
+    @UiContext
+    @NonNull
+    public final Context getContext() {
         return mContext;
     }
 
@@ -365,6 +373,11 @@ public class Dialog implements DialogInterface, Window.Callback,
      */
     @Override
     public void dismiss() {
+        if (mDismissOverride != null) {
+            mDismissOverride.run();
+            return;
+        }
+
         if (Looper.myLooper() == mHandler.getLooper()) {
             dismissDialog();
         } else {
@@ -1347,6 +1360,21 @@ public class Dialog implements DialogInterface, Window.Callback,
      */
     public void setDismissMessage(@Nullable Message msg) {
         mDismissMessage = msg;
+    }
+
+    /**
+     * Set a {@link Runnable} to run when this dialog is dismissed instead of directly dismissing
+     * it. This allows to animate the dialog in its window before dismissing it.
+     *
+     * Note that {@code override} should always end up calling this method with {@code null}
+     * followed by a call to {@link #dismiss() dismiss} to actually dismiss the dialog.
+     *
+     * @see #dismiss()
+     *
+     * @hide
+     */
+    public void setDismissOverride(@Nullable Runnable override) {
+        mDismissOverride = override;
     }
 
     /** @hide */

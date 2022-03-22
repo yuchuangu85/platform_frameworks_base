@@ -20,10 +20,13 @@ import static android.net.wifi.WifiConfiguration.NetworkSelectionStatus.NETWORK_
 import static android.net.wifi.WifiConfiguration.NetworkSelectionStatus.getMaxNetworkSelectionDisableReason;
 
 import android.content.Context;
+import android.content.Intent;
+import android.graphics.drawable.Drawable;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiConfiguration.NetworkSelectionStatus;
 import android.net.wifi.WifiInfo;
+import android.os.Bundle;
 import android.os.SystemClock;
 
 import androidx.annotation.VisibleForTesting;
@@ -35,6 +38,39 @@ import java.util.Map;
 public class WifiUtils {
 
     private static final int INVALID_RSSI = -127;
+
+    /**
+     * The intent action shows network details settings to allow configuration of Wi-Fi.
+     * <p>
+     * In some cases, a matching Activity may not exist, so ensure you
+     * safeguard against this.
+     * <p>
+     * Input: The calling package should put the chosen
+     * com.android.wifitrackerlib.WifiEntry#getKey() to a string extra in the request bundle into
+     * the {@link #KEY_CHOSEN_WIFIENTRY_KEY}.
+     * <p>
+     * Output: Nothing.
+     */
+    public static final String ACTION_WIFI_DETAILS_SETTINGS =
+            "android.settings.WIFI_DETAILS_SETTINGS";
+    public static final String KEY_CHOSEN_WIFIENTRY_KEY = "key_chosen_wifientry_key";
+    public static final String EXTRA_SHOW_FRAGMENT_ARGUMENTS = ":settings:show_fragment_args";
+
+    static final int[] WIFI_PIE = {
+            com.android.internal.R.drawable.ic_wifi_signal_0,
+            com.android.internal.R.drawable.ic_wifi_signal_1,
+            com.android.internal.R.drawable.ic_wifi_signal_2,
+            com.android.internal.R.drawable.ic_wifi_signal_3,
+            com.android.internal.R.drawable.ic_wifi_signal_4
+    };
+
+    static final int[] NO_INTERNET_WIFI_PIE = {
+            R.drawable.ic_no_internet_wifi_signal_0,
+            R.drawable.ic_no_internet_wifi_signal_1,
+            R.drawable.ic_no_internet_wifi_signal_2,
+            R.drawable.ic_no_internet_wifi_signal_3,
+            R.drawable.ic_no_internet_wifi_signal_4
+    };
 
     public static String buildLoggingSummary(AccessPoint accessPoint, WifiConfiguration config) {
         final StringBuilder summary = new StringBuilder();
@@ -93,6 +129,7 @@ public class WifiUtils {
         StringBuilder visibility = new StringBuilder();
         StringBuilder scans24GHz = new StringBuilder();
         StringBuilder scans5GHz = new StringBuilder();
+        StringBuilder scans60GHz = new StringBuilder();
         String bssid = null;
 
         if (accessPoint.isActive() && info != null) {
@@ -115,10 +152,12 @@ public class WifiUtils {
 
         int maxRssi5 = INVALID_RSSI;
         int maxRssi24 = INVALID_RSSI;
+        int maxRssi60 = INVALID_RSSI;
         final int maxDisplayedScans = 4;
         int num5 = 0; // number of scanned BSSID on 5GHz band
         int num24 = 0; // number of scanned BSSID on 2.4Ghz band
-        int numBlackListed = 0;
+        int num60 = 0; // number of scanned BSSID on 60Ghz band
+        int numBlockListed = 0;
 
         // TODO: sort list by RSSI or age
         long nowMs = SystemClock.elapsedRealtime();
@@ -152,6 +191,19 @@ public class WifiUtils {
                             verboseScanResultSummary(accessPoint, result, bssid,
                                     nowMs));
                 }
+            } else if (result.frequency >= AccessPoint.LOWER_FREQ_60GHZ
+                    && result.frequency <= AccessPoint.HIGHER_FREQ_60GHZ) {
+                // Strictly speaking: [60000, 61000]
+                num60++;
+
+                if (result.level > maxRssi60) {
+                    maxRssi60 = result.level;
+                }
+                if (num60 <= maxDisplayedScans) {
+                    scans60GHz.append(
+                            verboseScanResultSummary(accessPoint, result, bssid,
+                                    nowMs));
+                }
             }
         }
         visibility.append(" [");
@@ -170,8 +222,16 @@ public class WifiUtils {
             }
             visibility.append(scans5GHz.toString());
         }
-        if (numBlackListed > 0) {
-            visibility.append("!").append(numBlackListed);
+        visibility.append(";");
+        if (num60 > 0) {
+            visibility.append("(").append(num60).append(")");
+            if (num60 > maxDisplayedScans) {
+                visibility.append("max=").append(maxRssi60).append(",");
+            }
+            visibility.append(scans60GHz.toString());
+        }
+        if (numBlockListed > 0) {
+            visibility.append("!").append(numBlockListed);
         }
         visibility.append("]");
 
@@ -221,7 +281,56 @@ public class WifiUtils {
         return context.getString(R.string.wifi_unmetered_label);
     }
 
+    /**
+     * Returns the Internet icon resource for a given RSSI level.
+     *
+     * @param level The number of bars to show (0-4)
+     * @param noInternet True if a connected Wi-Fi network cannot access the Internet
+     * @throws IllegalArgumentException if an invalid RSSI level is given.
+     */
+    public static int getInternetIconResource(int level, boolean noInternet) {
+        if (level < 0 || level >= WIFI_PIE.length) {
+            throw new IllegalArgumentException("No Wifi icon found for level: " + level);
+        }
+        return noInternet ? NO_INTERNET_WIFI_PIE[level] : WIFI_PIE[level];
+    }
+
+    /**
+     * Wrapper the {@link #getInternetIconResource} for testing compatibility.
+     */
+    public static class InternetIconInjector {
+
+        protected final Context mContext;
+
+        public InternetIconInjector(Context context) {
+            mContext = context;
+        }
+
+        /**
+         * Returns the Internet icon for a given RSSI level.
+         *
+         * @param noInternet True if a connected Wi-Fi network cannot access the Internet
+         * @param level The number of bars to show (0-4)
+         */
+        public Drawable getIcon(boolean noInternet, int level) {
+            return mContext.getDrawable(WifiUtils.getInternetIconResource(level, noInternet));
+        }
+    }
+
     public static boolean isMeteredOverridden(WifiConfiguration config) {
         return config.meteredOverride != WifiConfiguration.METERED_OVERRIDE_NONE;
+    }
+
+    /**
+     * Returns the Intent for Wi-Fi network details settings.
+     *
+     * @param key The Wi-Fi entry key
+     */
+    public static Intent getWifiDetailsSettingsIntent(String key) {
+        final Intent intent = new Intent(ACTION_WIFI_DETAILS_SETTINGS);
+        final Bundle bundle = new Bundle();
+        bundle.putString(KEY_CHOSEN_WIFIENTRY_KEY, key);
+        intent.putExtra(EXTRA_SHOW_FRAGMENT_ARGUMENTS, bundle);
+        return intent;
     }
 }

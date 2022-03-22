@@ -30,7 +30,10 @@ import android.text.TextUtils;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.net.module.util.ProxyUtils;
 
+import java.io.UnsupportedEncodingException;
 import java.net.InetAddress;
+import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -73,6 +76,9 @@ public final class VpnProfile implements Cloneable, Parcelable {
     public static final int PROXY_MANUAL = 1;
 
     private static final String ENCODED_NULL_PROXY_INFO = "\0\0\0\0";
+
+    /** Default URL encoding. */
+    private static final String DEFAULT_ENCODING = StandardCharsets.UTF_8.name();
 
     // Entity fields.
     @UnsupportedAppUsage
@@ -129,9 +135,6 @@ public final class VpnProfile implements Cloneable, Parcelable {
 
     /**
      * The list of allowable algorithms.
-     *
-     * <p>This list is validated in the setter to ensure that encoding characters (list, value
-     * delimiters) are not present in the algorithm names. See {@link #validateAllowedAlgorithms()}
      */
     private List<String> mAllowedAlgorithms = new ArrayList<>(); // 19
     public boolean isBypassable = false;                         // 20
@@ -140,17 +143,27 @@ public final class VpnProfile implements Cloneable, Parcelable {
     public boolean areAuthParamsInline = false;                  // 23
     public final boolean isRestrictedToTestNetworks;             // 24
 
+    public final boolean excludeLocalRoutes;                     // 25
+    public final boolean requiresInternetValidation;             // 26
+
     // Helper fields.
     @UnsupportedAppUsage
     public transient boolean saveLogin = false;
 
     public VpnProfile(String key) {
-        this(key, false);
+        this(key, false, false, false);
     }
 
     public VpnProfile(String key, boolean isRestrictedToTestNetworks) {
+        this(key, isRestrictedToTestNetworks, false, false);
+    }
+
+    public VpnProfile(String key, boolean isRestrictedToTestNetworks, boolean excludeLocalRoutes,
+            boolean requiresInternetValidation) {
         this.key = key;
         this.isRestrictedToTestNetworks = isRestrictedToTestNetworks;
+        this.excludeLocalRoutes = excludeLocalRoutes;
+        this.requiresInternetValidation = requiresInternetValidation;
     }
 
     @UnsupportedAppUsage
@@ -180,6 +193,8 @@ public final class VpnProfile implements Cloneable, Parcelable {
         maxMtu = in.readInt();
         areAuthParamsInline = in.readBoolean();
         isRestrictedToTestNetworks = in.readBoolean();
+        excludeLocalRoutes = in.readBoolean();
+        requiresInternetValidation = in.readBoolean();
     }
 
     /**
@@ -196,11 +211,8 @@ public final class VpnProfile implements Cloneable, Parcelable {
      *
      * @param allowedAlgorithms the list of allowable algorithms, as listed in {@link
      *     IpSecAlgorithm}.
-     * @throws IllegalArgumentException if any delimiters are used in algorithm names. See {@link
-     *     #VALUE_DELIMITER} and {@link LIST_DELIMITER}.
      */
     public void setAllowedAlgorithms(List<String> allowedAlgorithms) {
-        validateAllowedAlgorithms(allowedAlgorithms);
         mAllowedAlgorithms = allowedAlgorithms;
     }
 
@@ -230,6 +242,8 @@ public final class VpnProfile implements Cloneable, Parcelable {
         out.writeInt(maxMtu);
         out.writeBoolean(areAuthParamsInline);
         out.writeBoolean(isRestrictedToTestNetworks);
+        out.writeBoolean(excludeLocalRoutes);
+        out.writeBoolean(requiresInternetValidation);
     }
 
     /**
@@ -249,8 +263,11 @@ public final class VpnProfile implements Cloneable, Parcelable {
             // 14-19: Standard profile, with option for serverCert, proxy
             // 24: Standard profile with serverCert, proxy and platform-VPN parameters
             // 25: Standard profile with platform-VPN parameters and isRestrictedToTestNetworks
-            if ((values.length < 14 || values.length > 19)
-                    && values.length != 24 && values.length != 25) {
+            // 26:                                            ...and excludeLocalRoutes
+            //     (26 can only be found on dogfood devices)
+            // 27:                                            ...and requiresInternetValidation
+            if ((values.length < 14 || (values.length > 19 && values.length < 24)
+                    || values.length > 27)) {
                 return null;
             }
 
@@ -261,7 +278,22 @@ public final class VpnProfile implements Cloneable, Parcelable {
                 isRestrictedToTestNetworks = false;
             }
 
-            VpnProfile profile = new VpnProfile(key, isRestrictedToTestNetworks);
+            final boolean excludeLocalRoutes;
+            if (values.length >= 26) {
+                excludeLocalRoutes = Boolean.parseBoolean(values[25]);
+            } else {
+                excludeLocalRoutes = false;
+            }
+
+            final boolean requiresInternetValidation;
+            if (values.length >= 27) {
+                requiresInternetValidation = Boolean.parseBoolean(values[26]);
+            } else {
+                requiresInternetValidation = false;
+            }
+
+            VpnProfile profile = new VpnProfile(key, isRestrictedToTestNetworks,
+                    excludeLocalRoutes, requiresInternetValidation);
             profile.name = values[0];
             profile.type = Integer.parseInt(values[1]);
             if (profile.type < 0 || profile.type > TYPE_MAX) {
@@ -297,7 +329,11 @@ public final class VpnProfile implements Cloneable, Parcelable {
 
             // Either all must be present, or none must be.
             if (values.length >= 24) {
-                profile.mAllowedAlgorithms = Arrays.asList(values[19].split(LIST_DELIMITER));
+                profile.mAllowedAlgorithms = new ArrayList<>();
+                for (String algo : Arrays.asList(values[19].split(LIST_DELIMITER))) {
+                    profile.mAllowedAlgorithms.add(URLDecoder.decode(algo, DEFAULT_ENCODING));
+                }
+
                 profile.isBypassable = Boolean.parseBoolean(values[20]);
                 profile.isMetered = Boolean.parseBoolean(values[21]);
                 profile.maxMtu = Integer.parseInt(values[22]);
@@ -348,12 +384,27 @@ public final class VpnProfile implements Cloneable, Parcelable {
             builder.append(ENCODED_NULL_PROXY_INFO);
         }
 
-        builder.append(VALUE_DELIMITER).append(String.join(LIST_DELIMITER, mAllowedAlgorithms));
+        final List<String> encodedAlgoNames = new ArrayList<>();
+
+        try {
+            for (String algo : mAllowedAlgorithms) {
+                encodedAlgoNames.add(URLEncoder.encode(algo, DEFAULT_ENCODING));
+            }
+        } catch (UnsupportedEncodingException e) {
+            // Unexpected error
+            throw new IllegalStateException("Failed to encode algorithms.", e);
+        }
+
+        builder.append(VALUE_DELIMITER).append(String.join(LIST_DELIMITER, encodedAlgoNames));
+
         builder.append(VALUE_DELIMITER).append(isBypassable);
         builder.append(VALUE_DELIMITER).append(isMetered);
         builder.append(VALUE_DELIMITER).append(maxMtu);
         builder.append(VALUE_DELIMITER).append(areAuthParamsInline);
         builder.append(VALUE_DELIMITER).append(isRestrictedToTestNetworks);
+
+        builder.append(VALUE_DELIMITER).append(excludeLocalRoutes);
+        builder.append(VALUE_DELIMITER).append(requiresInternetValidation);
 
         return builder.toString().getBytes(StandardCharsets.UTF_8);
     }
@@ -361,12 +412,15 @@ public final class VpnProfile implements Cloneable, Parcelable {
     /** Checks if this profile specifies a LegacyVpn type. */
     public static boolean isLegacyType(int type) {
         switch (type) {
-            case VpnProfile.TYPE_IKEV2_IPSEC_USER_PASS: // fall through
-            case VpnProfile.TYPE_IKEV2_IPSEC_RSA: // fall through
-            case VpnProfile.TYPE_IKEV2_IPSEC_PSK:
-                return false;
-            default:
+            case VpnProfile.TYPE_PPTP:
+            case VpnProfile.TYPE_L2TP_IPSEC_PSK:
+            case VpnProfile.TYPE_L2TP_IPSEC_RSA:
+            case VpnProfile.TYPE_IPSEC_XAUTH_PSK:
+            case VpnProfile.TYPE_IPSEC_XAUTH_RSA:
+            case VpnProfile.TYPE_IPSEC_HYBRID_RSA:
                 return true;
+            default:
+                return false;
         }
     }
 
@@ -425,20 +479,6 @@ public final class VpnProfile implements Cloneable, Parcelable {
         return true;
     }
 
-    /**
-     * Validates that the provided list of algorithms does not contain illegal characters.
-     *
-     * @param allowedAlgorithms The list to be validated
-     */
-    public static void validateAllowedAlgorithms(List<String> allowedAlgorithms) {
-        for (final String alg : allowedAlgorithms) {
-            if (alg.contains(VALUE_DELIMITER) || alg.contains(LIST_DELIMITER)) {
-                throw new IllegalArgumentException(
-                        "Algorithm contained illegal ('\0' or ',') character");
-            }
-        }
-    }
-
     /** Generates a hashcode over the VpnProfile. */
     @Override
     public int hashCode() {
@@ -446,7 +486,7 @@ public final class VpnProfile implements Cloneable, Parcelable {
             key, type, server, username, password, dnsServers, searchDomains, routes, mppe,
             l2tpSecret, ipsecIdentifier, ipsecSecret, ipsecUserCert, ipsecCaCert, ipsecServerCert,
             proxy, mAllowedAlgorithms, isBypassable, isMetered, maxMtu, areAuthParamsInline,
-            isRestrictedToTestNetworks);
+            isRestrictedToTestNetworks, excludeLocalRoutes, requiresInternetValidation);
     }
 
     /** Checks VPN profiles for interior equality. */
@@ -479,11 +519,13 @@ public final class VpnProfile implements Cloneable, Parcelable {
                 && isMetered == other.isMetered
                 && maxMtu == other.maxMtu
                 && areAuthParamsInline == other.areAuthParamsInline
-                && isRestrictedToTestNetworks == other.isRestrictedToTestNetworks;
+                && isRestrictedToTestNetworks == other.isRestrictedToTestNetworks
+                && excludeLocalRoutes == other.excludeLocalRoutes
+                && requiresInternetValidation == other.requiresInternetValidation;
     }
 
     @NonNull
-    public static final Creator<VpnProfile> CREATOR = new Creator<VpnProfile>() {
+    public static final Creator<VpnProfile> CREATOR = new Creator<>() {
         @Override
         public VpnProfile createFromParcel(Parcel in) {
             return new VpnProfile(in);

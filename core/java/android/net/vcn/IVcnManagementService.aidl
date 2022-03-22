@@ -16,13 +16,28 @@
 
 package android.net.vcn;
 
+import android.net.LinkProperties;
+import android.net.NetworkCapabilities;
+import android.net.vcn.IVcnStatusCallback;
+import android.net.vcn.IVcnUnderlyingNetworkPolicyListener;
 import android.net.vcn.VcnConfig;
+import android.net.vcn.VcnUnderlyingNetworkPolicy;
 import android.os.ParcelUuid;
+
+import java.util.List;
 
 /**
  * @hide
  */
 interface IVcnManagementService {
-    void setVcnConfig(in ParcelUuid subscriptionGroup, in VcnConfig config);
-    void clearVcnConfig(in ParcelUuid subscriptionGroup);
+    void setVcnConfig(in ParcelUuid subscriptionGroup, in VcnConfig config, in String opPkgName);
+    void clearVcnConfig(in ParcelUuid subscriptionGroup, in String opPkgName);
+    List<ParcelUuid> getConfiguredSubscriptionGroups(in String opPkgName);
+
+    void addVcnUnderlyingNetworkPolicyListener(in IVcnUnderlyingNetworkPolicyListener listener);
+    void removeVcnUnderlyingNetworkPolicyListener(in IVcnUnderlyingNetworkPolicyListener listener);
+    VcnUnderlyingNetworkPolicy getUnderlyingNetworkPolicy(in NetworkCapabilities nc, in LinkProperties lp);
+
+    void registerVcnStatusCallback(in ParcelUuid subscriptionGroup, in IVcnStatusCallback callback, in String opPkgName);
+    void unregisterVcnStatusCallback(in IVcnStatusCallback callback);
 }

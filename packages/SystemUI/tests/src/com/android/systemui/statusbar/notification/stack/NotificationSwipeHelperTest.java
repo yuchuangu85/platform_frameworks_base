@@ -35,6 +35,7 @@ import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 
 import androidx.test.filters.SmallTest;
 
@@ -78,7 +79,8 @@ public class NotificationSwipeHelperTest extends SysuiTestCase {
         mCallback = mock(NotificationSwipeHelper.NotificationCallback.class);
         mListener = mock(NotificationMenuRowPlugin.OnMenuEventListener.class);
         mSwipeHelper = spy(new NotificationSwipeHelper(
-                SwipeHelper.X, mCallback, mContext, mListener, new FalsingManagerFake()));
+                mContext.getResources(), ViewConfiguration.get(mContext),
+                new FalsingManagerFake(), SwipeHelper.X, mCallback, mListener));
         mView = mock(View.class);
         mEvent = mock(MotionEvent.class);
         mMenuRow = mock(NotificationMenuRowPlugin.class);
@@ -436,8 +438,8 @@ public class NotificationSwipeHelperTest extends SysuiTestCase {
         assertEquals("returns false when view is null", false,
                 NotificationSwipeHelper.isTouchInView(mEvent, null));
 
-        doReturn(5f).when(mEvent).getX();
-        doReturn(10f).when(mEvent).getY();
+        doReturn(5f).when(mEvent).getRawX();
+        doReturn(10f).when(mEvent).getRawY();
 
         doReturn(20).when(mView).getWidth();
         doReturn(20).when(mView).getHeight();
@@ -453,7 +455,7 @@ public class NotificationSwipeHelperTest extends SysuiTestCase {
         assertTrue("Touch is within the view",
                 mSwipeHelper.isTouchInView(mEvent, mView));
 
-        doReturn(50f).when(mEvent).getX();
+        doReturn(50f).when(mEvent).getRawX();
 
         assertFalse("Touch is not within the view",
                 mSwipeHelper.isTouchInView(mEvent, mView));
@@ -464,8 +466,8 @@ public class NotificationSwipeHelperTest extends SysuiTestCase {
         assertEquals("returns false when view is null", false,
                 NotificationSwipeHelper.isTouchInView(mEvent, null));
 
-        doReturn(5f).when(mEvent).getX();
-        doReturn(10f).when(mEvent).getY();
+        doReturn(5f).when(mEvent).getRawX();
+        doReturn(10f).when(mEvent).getRawY();
 
         doReturn(20).when(mNotificationRow).getWidth();
         doReturn(20).when(mNotificationRow).getActualHeight();
@@ -481,7 +483,7 @@ public class NotificationSwipeHelperTest extends SysuiTestCase {
         assertTrue("Touch is within the view",
                 mSwipeHelper.isTouchInView(mEvent, mNotificationRow));
 
-        doReturn(50f).when(mEvent).getX();
+        doReturn(50f).when(mEvent).getRawX();
 
         assertFalse("Touch is not within the view",
                 mSwipeHelper.isTouchInView(mEvent, mNotificationRow));

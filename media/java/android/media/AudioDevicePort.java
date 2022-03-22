@@ -21,6 +21,7 @@ import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
 
 import java.util.Arrays;
+import java.util.List;
 
 /**
  * The AudioDevicePort is a specialized type of AudioPort
@@ -57,6 +58,19 @@ public class AudioDevicePort extends AudioPort {
         mEncapsulationMetadataTypes = encapsulationMetadataTypes;
     }
 
+    AudioDevicePort(AudioHandle handle, String deviceName, List<AudioProfile> profiles,
+            AudioGain[] gains, int type, String address, int[] encapsulationModes,
+            @AudioTrack.EncapsulationMetadataType int[] encapsulationMetadataTypes,
+            List<AudioDescriptor> descriptors) {
+        super(handle,
+                AudioManager.isInputDevice(type) ? AudioPort.ROLE_SOURCE : AudioPort.ROLE_SINK,
+                deviceName, profiles, gains, descriptors);
+        mType = type;
+        mAddress = address;
+        mEncapsulationModes = encapsulationModes;
+        mEncapsulationMetadataTypes = encapsulationMetadataTypes;
+    }
+
     /**
      * Get the device type (e.g AudioManager.DEVICE_OUT_SPEAKER)
      */
@@ -76,7 +90,8 @@ public class AudioDevicePort extends AudioPort {
      * {@link AudioManager#DEVICE_OUT_BLE_HEADSET}, {@link AudioManager#DEVICE_OUT_BLE_SPEAKER})
      * use the MAC address of the bluetooth device in the form "00:11:22:AA:BB:CC" as reported by
      * {@link BluetoothDevice#getAddress()}.
-     * - Deivces that do not have an address will indicate an empty string "".
+     * - Bluetooth LE broadcast group ({@link AudioManager#DEVICE_OUT_BLE_BROADCAST} use the group number.
+     * - Devices that do not have an address will indicate an empty string "".
      */
     public String address() {
         return mAddress;

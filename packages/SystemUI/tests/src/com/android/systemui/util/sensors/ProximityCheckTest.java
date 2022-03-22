@@ -16,6 +16,8 @@
 
 package com.android.systemui.util.sensors;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -47,7 +49,7 @@ public class ProximityCheckTest extends SysuiTestCase {
 
     private TestableCallback mTestableCallback = new TestableCallback();
 
-    private ProximitySensor.ProximityCheck mProximityCheck;
+    private ProximityCheck mProximityCheck;
 
     @Before
     public void setUp() throws Exception {
@@ -56,7 +58,7 @@ public class ProximityCheckTest extends SysuiTestCase {
         thresholdSensor.setLoaded(true);
         mFakeProximitySensor = new FakeProximitySensor(thresholdSensor, null, mFakeExecutor);
 
-        mProximityCheck = new ProximitySensor.ProximityCheck(mFakeProximitySensor, mFakeExecutor);
+        mProximityCheck = new ProximityCheck(mFakeProximitySensor, mFakeExecutor);
     }
 
     @Test
@@ -65,7 +67,7 @@ public class ProximityCheckTest extends SysuiTestCase {
 
         assertNull(mTestableCallback.mLastResult);
 
-        mFakeProximitySensor.setLastEvent(new ProximitySensor.ThresholdSensorEvent(true, 0));
+        mFakeProximitySensor.setLastEvent(new ThresholdSensorEvent(true, 0));
         mFakeProximitySensor.alertListeners();
 
         assertTrue(mTestableCallback.mLastResult);
@@ -86,6 +88,29 @@ public class ProximityCheckTest extends SysuiTestCase {
     }
 
     @Test
+    public void testNotLoaded() {
+        mFakeProximitySensor.setSensorAvailable(false);
+
+        assertThat(mTestableCallback.mLastResult).isNull();
+        assertThat(mTestableCallback.mNumCalls).isEqualTo(0);
+
+        mProximityCheck.check(100, mTestableCallback);
+
+        assertThat(mTestableCallback.mLastResult).isNull();
+        assertThat(mTestableCallback.mNumCalls).isEqualTo(1);
+
+        mFakeProximitySensor.setSensorAvailable(true);
+
+        mProximityCheck.check(100, mTestableCallback);
+
+        mFakeProximitySensor.setLastEvent(new ThresholdSensorEvent(true, 0));
+        mFakeProximitySensor.alertListeners();
+
+        assertThat(mTestableCallback.mLastResult).isNotNull();
+        assertThat(mTestableCallback.mNumCalls).isEqualTo(2);
+    }
+
+    @Test
     public void testProxDoesntCancelOthers() {
         assertFalse(mFakeProximitySensor.isRegistered());
         // We don't need our "other" listener to do anything. Just ensure our sensor is registered.
@@ -98,7 +123,7 @@ public class ProximityCheckTest extends SysuiTestCase {
 
         assertNull(mTestableCallback.mLastResult);
 
-        mFakeProximitySensor.setLastEvent(new ProximitySensor.ThresholdSensorEvent(true, 0));
+        mFakeProximitySensor.setLastEvent(new ThresholdSensorEvent(true, 0));
         mFakeProximitySensor.alertListeners();
 
         assertTrue(mTestableCallback.mLastResult);

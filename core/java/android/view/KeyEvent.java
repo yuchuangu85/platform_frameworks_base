@@ -16,6 +16,7 @@
 
 package android.view;
 
+import static android.os.IInputConstants.INPUT_EVENT_FLAG_IS_ACCESSIBILITY_EVENT;
 import static android.view.Display.INVALID_DISPLAY;
 
 import android.annotation.NonNull;
@@ -519,8 +520,13 @@ public class KeyEvent extends InputEvent implements Parcelable {
     /** Key code constant: Settings key.
      * Starts the system settings activity. */
     public static final int KEYCODE_SETTINGS        = 176;
-    /** Key code constant: TV power key.
-     * On TV remotes, toggles the power on a television screen. */
+    /**
+     * Key code constant: TV power key.
+     * On HDMI TV panel devices and Android TV devices that don't support HDMI, toggles the power
+     * state of the device.
+     * On HDMI source devices, toggles the power state of the HDMI-connected TV via HDMI-CEC and
+     * makes the source device follow this power state.
+     */
     public static final int KEYCODE_TV_POWER        = 177;
     /** Key code constant: TV input key.
      * On TV remotes, switches the input on a television screen. */
@@ -824,13 +830,45 @@ public class KeyEvent extends InputEvent implements Parcelable {
      * consuming content. May be consumed by system to set account globally.
      */
     public static final int KEYCODE_PROFILE_SWITCH = 288;
+    /** Key code constant: Video Application key #1. */
+    public static final int KEYCODE_VIDEO_APP_1 = 289;
+    /** Key code constant: Video Application key #2. */
+    public static final int KEYCODE_VIDEO_APP_2 = 290;
+    /** Key code constant: Video Application key #3. */
+    public static final int KEYCODE_VIDEO_APP_3 = 291;
+    /** Key code constant: Video Application key #4. */
+    public static final int KEYCODE_VIDEO_APP_4 = 292;
+    /** Key code constant: Video Application key #5. */
+    public static final int KEYCODE_VIDEO_APP_5 = 293;
+    /** Key code constant: Video Application key #6. */
+    public static final int KEYCODE_VIDEO_APP_6 = 294;
+    /** Key code constant: Video Application key #7. */
+    public static final int KEYCODE_VIDEO_APP_7 = 295;
+    /** Key code constant: Video Application key #8. */
+    public static final int KEYCODE_VIDEO_APP_8 = 296;
+    /** Key code constant: Featured Application key #1. */
+    public static final int KEYCODE_FEATURED_APP_1 = 297;
+    /** Key code constant: Featured Application key #2. */
+    public static final int KEYCODE_FEATURED_APP_2 = 298;
+    /** Key code constant: Featured Application key #3. */
+    public static final int KEYCODE_FEATURED_APP_3 = 299;
+    /** Key code constant: Featured Application key #4. */
+    public static final int KEYCODE_FEATURED_APP_4 = 300;
+    /** Key code constant: Demo Application key #1. */
+    public static final int KEYCODE_DEMO_APP_1 = 301;
+    /** Key code constant: Demo Application key #2. */
+    public static final int KEYCODE_DEMO_APP_2 = 302;
+    /** Key code constant: Demo Application key #3. */
+    public static final int KEYCODE_DEMO_APP_3 = 303;
+    /** Key code constant: Demo Application key #4. */
+    public static final int KEYCODE_DEMO_APP_4 = 304;
 
-    /**
+   /**
      * Integer value of the last KEYCODE. Increases as new keycodes are added to KeyEvent.
      * @hide
      */
     @TestApi
-    public static final int LAST_KEYCODE = KEYCODE_PROFILE_SWITCH;
+    public static final int LAST_KEYCODE = KEYCODE_DEMO_APP_4;
 
     // NOTE: If you add a new keycode here you must also add it to:
     //  isSystem()
@@ -1215,6 +1253,14 @@ public class KeyEvent extends InputEvent implements Parcelable {
      * keys when numlock is off).
      */
     public static final int FLAG_FALLBACK = 0x400;
+
+    /**
+     * This flag indicates that this event was modified by or generated from an accessibility
+     * service. Value = 0x800
+     * @hide
+     */
+    @TestApi
+    public static final int FLAG_IS_ACCESSIBILITY_EVENT = INPUT_EVENT_FLAG_IS_ACCESSIBILITY_EVENT;
 
     /**
      * Signifies that the key is being predispatched.
@@ -1908,8 +1954,6 @@ public class KeyEvent extends InputEvent implements Parcelable {
     /**
      * Returns whether this key will be sent to the
      * {@link android.media.session.MediaSession.Callback} if not handled.
-     *
-     * @hide
      */
     public static final boolean isMediaSessionKey(int keyCode) {
         switch (keyCode) {

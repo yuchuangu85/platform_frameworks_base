@@ -17,6 +17,7 @@
 package com.android.server.recoverysystem;
 
 import android.os.IRecoverySystem;
+import android.os.RecoverySystem;
 import android.os.RemoteException;
 import android.os.ShellCommand;
 
@@ -43,6 +44,8 @@ public class RecoverySystemShellCommand extends ShellCommand {
                     return requestLskf();
                 case "clear-lskf":
                     return clearLskf();
+                case "is-lskf-captured":
+                    return isLskfCaptured();
                 case "reboot-and-apply":
                     return rebootAndApply();
                 default:
@@ -73,10 +76,19 @@ public class RecoverySystemShellCommand extends ShellCommand {
         return 0;
     }
 
+    private int isLskfCaptured() throws RemoteException {
+        String packageName = getNextArgRequired();
+        boolean captured = mService.isLskfCaptured(packageName);
+        PrintWriter pw = getOutPrintWriter();
+        pw.printf("%s LSKF capture status: %s\n", packageName, captured ? "true" : "false");
+        return 0;
+    }
+
     private int rebootAndApply() throws RemoteException {
         String packageName = getNextArgRequired();
         String rebootReason = getNextArgRequired();
-        boolean success = mService.rebootWithLskf(packageName, rebootReason, true);
+        boolean success = (mService.rebootWithLskf(packageName, rebootReason, false)
+                == RecoverySystem.RESUME_ON_REBOOT_REBOOT_ERROR_NONE);
         PrintWriter pw = getOutPrintWriter();
         // Keep the old message for cts test.
         pw.printf("%s Reboot and apply status: %s\n", packageName,
@@ -88,8 +100,9 @@ public class RecoverySystemShellCommand extends ShellCommand {
     public void onHelp() {
         PrintWriter pw = getOutPrintWriter();
         pw.println("Recovery system commands:");
-        pw.println("  request-lskf <token>");
+        pw.println("  request-lskf <package_name>");
         pw.println("  clear-lskf");
-        pw.println("  reboot-and-apply <token> <reason>");
+        pw.println("  is-lskf-captured <package_name>");
+        pw.println("  reboot-and-apply <package_name> <reason>");
     }
 }

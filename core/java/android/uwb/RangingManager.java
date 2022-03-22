@@ -17,6 +17,8 @@
 package android.uwb;
 
 import android.annotation.NonNull;
+import android.content.AttributionSource;
+import android.os.CancellationSignal;
 import android.os.PersistableBundle;
 import android.os.RemoteException;
 import android.util.Log;
@@ -32,6 +34,7 @@ public class RangingManager extends android.uwb.IUwbRangingCallbacks.Stub {
 
     private final IUwbAdapter mAdapter;
     private final Hashtable<SessionHandle, RangingSession> mRangingSessionTable = new Hashtable<>();
+    private int mNextSessionId = 1;
 
     public RangingManager(IUwbAdapter adapter) {
         mAdapter = adapter;
@@ -40,39 +43,102 @@ public class RangingManager extends android.uwb.IUwbRangingCallbacks.Stub {
     /**
      * Open a new ranging session
      *
+     * @param attributionSource Attribution source to use for the enforcement of
+     *                          {@link android.Manifest.permission#ULTRAWIDEBAND_RANGING} runtime
+     *                          permission.
      * @param params the parameters that define the ranging session
      * @param executor {@link Executor} to run callbacks
      * @param callbacks {@link RangingSession.Callback} to associate with the {@link RangingSession}
      *                  that is being opened.
-     * @return a new {@link RangingSession}
+     * @return a {@link CancellationSignal} that may be used to cancel the opening of the
+     *         {@link RangingSession}.
      */
-    public RangingSession openSession(@NonNull PersistableBundle params, @NonNull Executor executor,
+    public CancellationSignal openSession(@NonNull AttributionSource attributionSource,
+            @NonNull PersistableBundle params,
+            @NonNull Executor executor,
             @NonNull RangingSession.Callback callbacks) {
-        SessionHandle sessionHandle;
-        try {
-            sessionHandle = mAdapter.startRanging(this, params);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
-
         synchronized (this) {
-            if (hasSession(sessionHandle)) {
-                Log.w(TAG, "Newly created session unexpectedly reuses an active SessionHandle");
-                executor.execute(() -> callbacks.onClosed(
-                        RangingSession.Callback.CLOSE_REASON_LOCAL_GENERIC_ERROR,
-                        new PersistableBundle()));
-            }
-
+            SessionHandle sessionHandle = new SessionHandle(mNextSessionId++);
             RangingSession session =
                     new RangingSession(executor, callbacks, mAdapter, sessionHandle);
             mRangingSessionTable.put(sessionHandle, session);
-            return session;
+            try {
+                mAdapter.openRanging(attributionSource, sessionHandle, this, params);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+
+            CancellationSignal cancellationSignal = new CancellationSignal();
+            cancellationSignal.setOnCancelListener(() -> session.close());
+            return cancellationSignal;
         }
     }
 
     private boolean hasSession(SessionHandle sessionHandle) {
         return mRangingSessionTable.containsKey(sessionHandle);
     }
+
+    @Override
+    public void onRangingOpened(SessionHandle sessionHandle) {
+        synchronized (this) {
+            if (!hasSession(sessionHandle)) {
+                Log.w(TAG,
+                        "onRangingOpened - received unexpected SessionHandle: " + sessionHandle);
+                return;
+            }
+
+            RangingSession session = mRangingSessionTable.get(sessionHandle);
+            session.onRangingOpened();
+        }
+    }
+
+    @Override
+    public void onRangingOpenFailed(SessionHandle sessionHandle, @RangingChangeReason int reason,
+            PersistableBundle parameters) {
+        synchronized (this) {
+            if (!hasSession(sessionHandle)) {
+                Log.w(TAG,
+                        "onRangingOpenedFailed - received unexpected SessionHandle: "
+                                + sessionHandle);
+                return;
+            }
+
+            RangingSession session = mRangingSessionTable.get(sessionHandle);
+            session.onRangingOpenFailed(convertToReason(reason), parameters);
+            mRangingSessionTable.remove(sessionHandle);
+        }
+    }
+
+    @Override
+    public void onRangingReconfigured(SessionHandle sessionHandle, PersistableBundle parameters) {
+        synchronized (this) {
+            if (!hasSession(sessionHandle)) {
+                Log.w(TAG,
+                        "onRangingReconfigured - received unexpected SessionHandle: "
+                                + sessionHandle);
+                return;
+            }
+
+            RangingSession session = mRangingSessionTable.get(sessionHandle);
+            session.onRangingReconfigured(parameters);
+        }
+    }
+
+    @Override
+    public void onRangingReconfigureFailed(SessionHandle sessionHandle,
+            @RangingChangeReason int reason, PersistableBundle params) {
+        synchronized (this) {
+            if (!hasSession(sessionHandle)) {
+                Log.w(TAG, "onRangingReconfigureFailed - received unexpected SessionHandle: "
+                        + sessionHandle);
+                return;
+            }
+
+            RangingSession session = mRangingSessionTable.get(sessionHandle);
+            session.onRangingReconfigureFailed(convertToReason(reason), params);
+        }
+    }
+
 
     @Override
     public void onRangingStarted(SessionHandle sessionHandle, PersistableBundle parameters) {
@@ -89,7 +155,7 @@ public class RangingManager extends android.uwb.IUwbRangingCallbacks.Stub {
     }
 
     @Override
-    public void onRangingStartFailed(SessionHandle sessionHandle, int reason,
+    public void onRangingStartFailed(SessionHandle sessionHandle, @RangingChangeReason int reason,
             PersistableBundle params) {
         synchronized (this) {
             if (!hasSession(sessionHandle)) {
@@ -99,13 +165,43 @@ public class RangingManager extends android.uwb.IUwbRangingCallbacks.Stub {
             }
 
             RangingSession session = mRangingSessionTable.get(sessionHandle);
-            session.onRangingClosed(convertStartFailureToCloseReason(reason), params);
-            mRangingSessionTable.remove(sessionHandle);
+            session.onRangingStartFailed(convertToReason(reason), params);
         }
     }
 
     @Override
-    public void onRangingClosed(SessionHandle sessionHandle, int reason, PersistableBundle params) {
+    public void onRangingStopped(SessionHandle sessionHandle, @RangingChangeReason int reason,
+            PersistableBundle params) {
+        synchronized (this) {
+            if (!hasSession(sessionHandle)) {
+                Log.w(TAG, "onRangingStopped - received unexpected SessionHandle: "
+                        + sessionHandle);
+                return;
+            }
+
+            RangingSession session = mRangingSessionTable.get(sessionHandle);
+            session.onRangingStopped(convertToReason(reason), params);
+        }
+    }
+
+    @Override
+    public void onRangingStopFailed(SessionHandle sessionHandle, @RangingChangeReason int reason,
+            PersistableBundle parameters) {
+        synchronized (this) {
+            if (!hasSession(sessionHandle)) {
+                Log.w(TAG, "onRangingStopFailed - received unexpected SessionHandle: "
+                        + sessionHandle);
+                return;
+            }
+
+            RangingSession session = mRangingSessionTable.get(sessionHandle);
+            session.onRangingStopFailed(convertToReason(reason), parameters);
+        }
+    }
+
+    @Override
+    public void onRangingClosed(SessionHandle sessionHandle, @RangingChangeReason int reason,
+            PersistableBundle params) {
         synchronized (this) {
             if (!hasSession(sessionHandle)) {
                 Log.w(TAG, "onRangingClosed - received unexpected SessionHandle: " + sessionHandle);
@@ -113,7 +209,7 @@ public class RangingManager extends android.uwb.IUwbRangingCallbacks.Stub {
             }
 
             RangingSession session = mRangingSessionTable.get(sessionHandle);
-            session.onRangingClosed(convertToCloseReason(reason), params);
+            session.onRangingClosed(convertToReason(reason), params);
             mRangingSessionTable.remove(sessionHandle);
         }
     }
@@ -131,48 +227,30 @@ public class RangingManager extends android.uwb.IUwbRangingCallbacks.Stub {
         }
     }
 
-    @RangingSession.Callback.CloseReason
-    private static int convertToCloseReason(@CloseReason int reason) {
+    @RangingSession.Callback.Reason
+    private static int convertToReason(@RangingChangeReason int reason) {
         switch (reason) {
-            case CloseReason.LOCAL_API:
-                return RangingSession.Callback.CLOSE_REASON_LOCAL_CLOSE_API;
+            case RangingChangeReason.LOCAL_API:
+                return RangingSession.Callback.REASON_LOCAL_REQUEST;
 
-            case CloseReason.MAX_SESSIONS_REACHED:
-                return RangingSession.Callback.CLOSE_REASON_LOCAL_MAX_SESSIONS_REACHED;
+            case RangingChangeReason.MAX_SESSIONS_REACHED:
+                return RangingSession.Callback.REASON_MAX_SESSIONS_REACHED;
 
-            case CloseReason.SYSTEM_POLICY:
-                return RangingSession.Callback.CLOSE_REASON_LOCAL_SYSTEM_POLICY;
+            case RangingChangeReason.SYSTEM_POLICY:
+                return RangingSession.Callback.REASON_SYSTEM_POLICY;
 
-            case CloseReason.REMOTE_REQUEST:
-                return RangingSession.Callback.CLOSE_REASON_REMOTE_REQUEST;
+            case RangingChangeReason.REMOTE_REQUEST:
+                return RangingSession.Callback.REASON_REMOTE_REQUEST;
 
-            case CloseReason.PROTOCOL_SPECIFIC:
-                return RangingSession.Callback.CLOSE_REASON_PROTOCOL_SPECIFIC;
+            case RangingChangeReason.PROTOCOL_SPECIFIC:
+                return RangingSession.Callback.REASON_PROTOCOL_SPECIFIC_ERROR;
 
-            case CloseReason.UNKNOWN:
+            case RangingChangeReason.BAD_PARAMETERS:
+                return RangingSession.Callback.REASON_BAD_PARAMETERS;
+
+            case RangingChangeReason.UNKNOWN:
             default:
-                return RangingSession.Callback.CLOSE_REASON_UNKNOWN;
-        }
-    }
-
-    @RangingSession.Callback.CloseReason
-    private static int convertStartFailureToCloseReason(@StartFailureReason int reason) {
-        switch (reason) {
-            case StartFailureReason.BAD_PARAMETERS:
-                return RangingSession.Callback.CLOSE_REASON_LOCAL_BAD_PARAMETERS;
-
-            case StartFailureReason.MAX_SESSIONS_REACHED:
-                return RangingSession.Callback.CLOSE_REASON_LOCAL_MAX_SESSIONS_REACHED;
-
-            case StartFailureReason.SYSTEM_POLICY:
-                return RangingSession.Callback.CLOSE_REASON_LOCAL_SYSTEM_POLICY;
-
-            case StartFailureReason.PROTOCOL_SPECIFIC:
-                return RangingSession.Callback.CLOSE_REASON_PROTOCOL_SPECIFIC;
-
-            case StartFailureReason.UNKNOWN:
-            default:
-                return RangingSession.Callback.CLOSE_REASON_UNKNOWN;
+                return RangingSession.Callback.REASON_UNKNOWN;
         }
     }
 }

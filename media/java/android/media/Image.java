@@ -163,6 +163,14 @@ public abstract class Image implements AutoCloseable {
      *      {@link android.graphics.BitmapFactory#decodeByteArray BitmapFactory#decodeByteArray}.
      *   </td>
      * </tr>
+     * <tr>
+     *   <td>{@link android.graphics.ImageFormat#YCBCR_P010 YCBCR_P010}</td>
+     *   <td>1</td>
+     *   <td>P010 is a 4:2:0 YCbCr semiplanar format comprised of a WxH Y plane
+     *     followed by a Wx(H/2) CbCr plane. Each sample is represented by a 16-bit
+     *     little-endian value, with the lower 6 bits set to zero.
+     *   </td>
+     * </tr>
      * </table>
      *
      * @see android.graphics.ImageFormat
@@ -211,6 +219,23 @@ public abstract class Image implements AutoCloseable {
     @SuppressWarnings("HiddenAbstractMethod")
     public abstract int getScalingMode();
 
+    /**
+     * Get the fence file descriptor associated with this frame.
+     * @return The fence file descriptor for this frame.
+     * @hide
+     */
+    public int getFenceFd() {
+        return -1;
+    }
+
+    /**
+     * Get the number of planes.
+     * @return The number of expected planes.
+     * @hide
+     */
+    public int getPlaneCount() {
+        return -1;
+    }
     /**
      * Get the {@link android.hardware.HardwareBuffer HardwareBuffer} handle of the input image
      * intended for GPU and/or hardware access.
@@ -330,8 +355,9 @@ public abstract class Image implements AutoCloseable {
      * @return true if the image is attachable to a new owner, false if the image is still attached
      *         to its current owner, or the image is a stand-alone image and is not attachable to
      *         a new owner.
+     * @hide
      */
-    boolean isAttachable() {
+    public boolean isAttachable() {
         throwISEIfImageIsInvalid();
 
         return false;

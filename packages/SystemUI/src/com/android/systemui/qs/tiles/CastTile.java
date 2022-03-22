@@ -18,35 +18,48 @@ package com.android.systemui.qs.tiles;
 
 import static android.media.MediaRouter.ROUTE_TYPE_REMOTE_DISPLAY;
 
+import android.annotation.NonNull;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.Intent;
 import android.media.MediaRouter.RouteInfo;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.service.quicksettings.Tile;
 import android.util.Log;
 import android.view.View;
 import android.view.View.OnAttachStateChangeListener;
 import android.view.ViewGroup;
-import android.view.WindowManager.LayoutParams;
 import android.widget.Button;
+
+import androidx.annotation.Nullable;
 
 import com.android.internal.app.MediaRouteDialogPresenter;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 import com.android.systemui.R;
+import com.android.systemui.animation.DialogLaunchAnimator;
+import com.android.systemui.dagger.qualifiers.Background;
+import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.DetailAdapter;
 import com.android.systemui.plugins.qs.QSTile.BooleanState;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSDetailItems;
 import com.android.systemui.qs.QSDetailItems.Item;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
+import com.android.systemui.statusbar.connectivity.NetworkController;
+import com.android.systemui.statusbar.connectivity.SignalCallback;
+import com.android.systemui.statusbar.connectivity.WifiIndicators;
 import com.android.systemui.statusbar.phone.SystemUIDialog;
 import com.android.systemui.statusbar.policy.CastController;
 import com.android.systemui.statusbar.policy.CastController.CastDevice;
+import com.android.systemui.statusbar.policy.HotspotController;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
-import com.android.systemui.statusbar.policy.NetworkController;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -63,24 +76,39 @@ public class CastTile extends QSTileImpl<BooleanState> {
     private final CastDetailAdapter mDetailAdapter;
     private final KeyguardStateController mKeyguard;
     private final NetworkController mNetworkController;
+    private final DialogLaunchAnimator mDialogLaunchAnimator;
     private final Callback mCallback = new Callback();
-    private final ActivityStarter mActivityStarter;
     private Dialog mDialog;
     private boolean mWifiConnected;
+    private boolean mHotspotConnected;
 
     @Inject
-    public CastTile(QSHost host, CastController castController,
-            KeyguardStateController keyguardStateController, NetworkController networkController,
-            ActivityStarter activityStarter) {
-        super(host);
+    public CastTile(
+            QSHost host,
+            @Background Looper backgroundLooper,
+            @Main Handler mainHandler,
+            FalsingManager falsingManager,
+            MetricsLogger metricsLogger,
+            StatusBarStateController statusBarStateController,
+            ActivityStarter activityStarter,
+            QSLogger qsLogger,
+            CastController castController,
+            KeyguardStateController keyguardStateController,
+            NetworkController networkController,
+            HotspotController hotspotController,
+            DialogLaunchAnimator dialogLaunchAnimator
+    ) {
+        super(host, backgroundLooper, mainHandler, falsingManager, metricsLogger,
+                statusBarStateController, activityStarter, qsLogger);
         mController = castController;
         mDetailAdapter = new CastDetailAdapter();
         mKeyguard = keyguardStateController;
         mNetworkController = networkController;
-        mActivityStarter = activityStarter;
+        mDialogLaunchAnimator = dialogLaunchAnimator;
         mController.observe(this, mCallback);
         mKeyguard.observe(this, mCallback);
         mNetworkController.observe(this, mSignalCallback);
+        hotspotController.observe(this, mHotspotCallback);
     }
 
     @Override
@@ -116,33 +144,39 @@ public class CastTile extends QSTileImpl<BooleanState> {
     }
 
     @Override
-    protected void handleSecondaryClick() {
-        handleClick();
+    protected void handleLongClick(@Nullable View view) {
+        handleClick(view);
     }
 
     @Override
-    protected void handleLongClick() {
-        handleClick();
-    }
-
-    @Override
-    protected void handleClick() {
+    protected void handleClick(@Nullable View view) {
         if (getState().state == Tile.STATE_UNAVAILABLE) {
             return;
         }
 
         List<CastDevice> activeDevices = getActiveDevices();
-        // We want to pop up the media route selection dialog if we either have no active devices
-        // (neither routes nor projection), or if we have an active route. In other cases, we assume
-        // that a projection is active. This is messy, but this tile never correctly handled the
-        // case where multiple devices were active :-/.
-        if (activeDevices.isEmpty() || (activeDevices.get(0).tag instanceof RouteInfo)) {
-            mActivityStarter.postQSRunnableDismissingKeyguard(() -> {
-                showDetail(true);
-            });
+        if (willPopDetail()) {
+            if (!mKeyguard.isShowing()) {
+                showDetail(view);
+            } else {
+                mActivityStarter.postQSRunnableDismissingKeyguard(() -> {
+                    // Dismissing the keyguard will collapse the shade, so we don't animate from the
+                    // view here as it would not look good.
+                    showDetail(null /* view */);
+                });
+            }
         } else {
             mController.stopCasting(activeDevices.get(0));
         }
+    }
+
+    // We want to pop up the media route selection dialog if we either have no active devices
+    // (neither routes nor projection), or if we have an active route. In other cases, we assume
+    // that a projection is active. This is messy, but this tile never correctly handled the
+    // case where multiple devices were active :-/.
+    private boolean willPopDetail() {
+        List<CastDevice> activeDevices = getActiveDevices();
+        return activeDevices.isEmpty() || (activeDevices.get(0).tag instanceof RouteInfo);
     }
 
     private List<CastDevice> getActiveDevices() {
@@ -159,19 +193,29 @@ public class CastTile extends QSTileImpl<BooleanState> {
 
     @Override
     public void showDetail(boolean show) {
+        showDetail(null /* view */);
+    }
+
+    private void showDetail(@Nullable View view) {
         mUiHandler.post(() -> {
             mDialog = MediaRouteDialogPresenter.createDialog(mContext, ROUTE_TYPE_REMOTE_DISPLAY,
                     v -> {
+                        mDialogLaunchAnimator.disableAllCurrentDialogsExitAnimations();
                         mDialog.dismiss();
                         mActivityStarter
                                 .postStartActivityDismissingKeyguard(getLongClickIntent(), 0);
                     });
-            mDialog.getWindow().setType(LayoutParams.TYPE_KEYGUARD_DIALOG);
             SystemUIDialog.setShowForAllUsers(mDialog, true);
             SystemUIDialog.registerDismissListener(mDialog);
             SystemUIDialog.setWindowOnTop(mDialog);
-            mUiHandler.post(() -> mDialog.show());
-            mHost.collapsePanels();
+
+            mUiHandler.post(() -> {
+                if (view != null) {
+                    mDialogLaunchAnimator.showFromView(mDialog, view);
+                } else {
+                    mDialog.show();
+                }
+            });
         });
     }
 
@@ -208,7 +252,7 @@ public class CastTile extends QSTileImpl<BooleanState> {
         }
         state.icon = ResourceIcon.get(state.value ? R.drawable.ic_cast_connected
                 : R.drawable.ic_cast);
-        if (mWifiConnected || state.value) {
+        if (canCastToWifi() || state.value) {
             state.state = state.value ? Tile.STATE_ACTIVE : Tile.STATE_INACTIVE;
             if (!state.value) {
                 state.secondaryLabel = "";
@@ -216,10 +260,12 @@ public class CastTile extends QSTileImpl<BooleanState> {
             state.contentDescription = state.contentDescription + ","
                     + mContext.getString(R.string.accessibility_quick_settings_open_details);
             state.expandedAccessibilityClassName = Button.class.getName();
+            state.forceExpandIcon = willPopDetail();
         } else {
             state.state = Tile.STATE_UNAVAILABLE;
             String noWifi = mContext.getString(R.string.quick_settings_cast_no_wifi);
             state.secondaryLabel = noWifi;
+            state.forceExpandIcon = false;
         }
         state.stateDescription = state.stateDescription + ", " + state.secondaryLabel;
         mDetailAdapter.updateItems(devices);
@@ -244,18 +290,37 @@ public class CastTile extends QSTileImpl<BooleanState> {
                 : mContext.getString(R.string.quick_settings_cast_device_default_name);
     }
 
-    private final NetworkController.SignalCallback mSignalCallback =
-            new NetworkController.SignalCallback() {
+    private boolean canCastToWifi() {
+        return mWifiConnected || mHotspotConnected;
+    }
+
+    private final SignalCallback mSignalCallback = new SignalCallback() {
                 @Override
-                public void setWifiIndicators(boolean enabled,
-                        NetworkController.IconState statusIcon,
-                        NetworkController.IconState qsIcon, boolean activityIn, boolean activityOut,
-                        String description, boolean isTransient, String statusLabel) {
+                public void setWifiIndicators(@NonNull WifiIndicators indicators) {
                     // statusIcon.visible has the connected status information
-                    boolean enabledAndConnected = enabled && qsIcon.visible;
+                    boolean enabledAndConnected = indicators.enabled
+                            && (indicators.qsIcon == null ? false : indicators.qsIcon.visible);
                     if (enabledAndConnected != mWifiConnected) {
                         mWifiConnected = enabledAndConnected;
-                        refreshState();
+                        // Hotspot is not connected, so changes here should update
+                        if (!mHotspotConnected) {
+                            refreshState();
+                        }
+                    }
+                }
+            };
+
+    private final HotspotController.Callback mHotspotCallback =
+            new HotspotController.Callback() {
+                @Override
+                public void onHotspotChanged(boolean enabled, int numDevices) {
+                    boolean enabledAndConnected = enabled && numDevices > 0;
+                    if (enabledAndConnected != mHotspotConnected) {
+                        mHotspotConnected = enabledAndConnected;
+                        // Wifi is not connected, so changes here should update
+                        if (!mWifiConnected) {
+                            refreshState();
+                        }
                     }
                 }
             };

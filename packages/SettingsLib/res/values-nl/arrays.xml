@@ -59,9 +59,9 @@
     <item msgid="6421717003037072581">"HDCP-controle altijd gebruiken"</item>
   </string-array>
   <string-array name="bt_hci_snoop_log_entries">
-    <item msgid="695678520785580527">"Uitgeschakeld"</item>
-    <item msgid="6336372935919715515">"Gefilterd ingeschakeld"</item>
-    <item msgid="2779123106632690576">"Ingeschakeld"</item>
+    <item msgid="695678520785580527">"Uitgezet"</item>
+    <item msgid="6336372935919715515">"Gefilterd staat aan"</item>
+    <item msgid="2779123106632690576">"Aangezet"</item>
   </string-array>
   <string-array name="bluetooth_avrcp_versions">
     <item msgid="6603880723315236832">"AVRCP 1.5 (standaard)"</item>
@@ -161,7 +161,7 @@
     <item msgid="2715700596495505626">"256 K"</item>
     <item msgid="7099386891713159947">"1 M"</item>
     <item msgid="6069075827077845520">"4 M"</item>
-    <item msgid="8243549501764402572">"16 M"</item>
+    <item msgid="6078203297886482480">"8 M"</item>
   </string-array>
   <string-array name="select_logd_size_lowram_titles">
     <item msgid="1145807928339101085">"Uit"</item>
@@ -175,7 +175,7 @@
     <item msgid="7464037639415220106">"256 K per logbuffer"</item>
     <item msgid="8539423820514360724">"1 M per logbuffer"</item>
     <item msgid="1984761927103140651">"4 M per logbuffer"</item>
-    <item msgid="7892098981256010498">"16 M per logbuffer"</item>
+    <item msgid="2983219471251787208">"8 M per logbuffer"</item>
   </string-array>
   <string-array name="select_logpersist_titles">
     <item msgid="704720725704372366">"Uit"</item>
@@ -248,8 +248,8 @@
   </string-array>
   <string-array name="debug_hw_overdraw_entries">
     <item msgid="1968128556747588800">"Uit"</item>
-    <item msgid="3033215374382962216">"Gedeeltes met overbelasting weergeven"</item>
-    <item msgid="3474333938380896988">"Gebieden voor deuteranomalie weergeven"</item>
+    <item msgid="3033215374382962216">"Gedeelten met overbelasting tonen"</item>
+    <item msgid="3474333938380896988">"Gebieden voor deuteranomalie tonen"</item>
   </string-array>
   <string-array name="app_process_limit_entries">
     <item msgid="794656271086646068">"Standaardlimiet"</item>

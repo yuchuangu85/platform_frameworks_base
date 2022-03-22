@@ -42,6 +42,7 @@ import androidx.annotation.NonNull;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.systemui.Dumpable;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.dump.DumpManager;
 import com.android.systemui.statusbar.NotificationMediaManager;
@@ -53,12 +54,11 @@ import java.io.PrintWriter;
 import java.util.Objects;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * Manages the lockscreen wallpaper.
  */
-@Singleton
+@SysUISingleton
 public class LockscreenWallpaper extends IWallpaperManagerCallback.Stub implements Runnable,
         Dumpable {
 
@@ -114,7 +114,6 @@ public class LockscreenWallpaper extends IWallpaperManagerCallback.Stub implemen
         LoaderResult result = loadBitmap(mCurrentUserId, mSelectedUser);
         if (result.success) {
             mCached = true;
-            mUpdateMonitor.setHasLockscreenWallpaper(result.bitmap != null);
             mCache = result.bitmap;
         }
         return mCache;
@@ -222,7 +221,6 @@ public class LockscreenWallpaper extends IWallpaperManagerCallback.Stub implemen
                 if (result.success) {
                     mCached = true;
                     mCache = result.bitmap;
-                    mUpdateMonitor.setHasLockscreenWallpaper(result.bitmap != null);
                     mMediaManager.updateMediaMetaData(
                             true /* metaDataChanged */, true /* allowEnterAnimation */);
                 }

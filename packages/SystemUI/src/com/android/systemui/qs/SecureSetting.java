@@ -17,43 +17,52 @@
 package com.android.systemui.qs;
 
 import android.app.ActivityManager;
-import android.content.Context;
 import android.database.ContentObserver;
 import android.os.Handler;
-import android.provider.Settings.Secure;
 
 import com.android.systemui.statusbar.policy.Listenable;
+import com.android.systemui.util.settings.SecureSettings;
 
 /** Helper for managing a secure setting. **/
 public abstract class SecureSetting extends ContentObserver implements Listenable {
-    private static final int DEFAULT = 0;
-
-    private final Context mContext;
+    private final SecureSettings mSecureSettings;
     private final String mSettingName;
+    private final int mDefaultValue;
 
     private boolean mListening;
     private int mUserId;
-    private int mObservedValue = DEFAULT;
+    private int mObservedValue;
 
     protected abstract void handleValueChanged(int value, boolean observedChange);
 
-    protected SecureSetting(Context context, Handler handler, String settingName) {
-        this(context, handler, settingName, ActivityManager.getCurrentUser());
+    public SecureSetting(SecureSettings secureSettings, Handler handler, String settingName,
+            int userId) {
+        this(secureSettings, handler, settingName, userId, 0);
     }
 
-    public SecureSetting(Context context, Handler handler, String settingName, int userId) {
+    public SecureSetting(SecureSettings secureSetting, Handler handler, String settingName) {
+        this(secureSetting, handler, settingName, ActivityManager.getCurrentUser());
+    }
+
+    public SecureSetting(SecureSettings secureSettings, Handler handler, String settingName,
+            int userId, int defaultValue) {
         super(handler);
-        mContext = context;
+        mSecureSettings = secureSettings;
         mSettingName = settingName;
+        mObservedValue = mDefaultValue = defaultValue;
         mUserId = userId;
     }
 
     public int getValue() {
-        return Secure.getIntForUser(mContext.getContentResolver(), mSettingName, DEFAULT, mUserId);
+        return mListening ? mObservedValue : getValueFromProvider();
     }
 
     public void setValue(int value) {
-        Secure.putIntForUser(mContext.getContentResolver(), mSettingName, value, mUserId);
+        mSecureSettings.putIntForUser(mSettingName, value, mUserId);
+    }
+
+    private int getValueFromProvider() {
+        return mSecureSettings.getIntForUser(mSettingName, mDefaultValue, mUserId);
     }
 
     @Override
@@ -61,20 +70,21 @@ public abstract class SecureSetting extends ContentObserver implements Listenabl
         if (listening == mListening) return;
         mListening = listening;
         if (listening) {
-            mObservedValue = getValue();
-            mContext.getContentResolver().registerContentObserver(
-                    Secure.getUriFor(mSettingName), false, this, mUserId);
+            mObservedValue = getValueFromProvider();
+            mSecureSettings.registerContentObserverForUser(
+                    mSecureSettings.getUriFor(mSettingName), false, this, mUserId);
         } else {
-            mContext.getContentResolver().unregisterContentObserver(this);
-            mObservedValue = DEFAULT;
+            mSecureSettings.unregisterContentObserver(this);
+            mObservedValue = mDefaultValue;
         }
     }
 
     @Override
     public void onChange(boolean selfChange) {
-        final int value = getValue();
-        handleValueChanged(value, value != mObservedValue);
+        final int value = getValueFromProvider();
+        final boolean changed = value != mObservedValue;
         mObservedValue = value;
+        handleValueChanged(value, changed);
     }
 
     public void setUserId(int userId) {

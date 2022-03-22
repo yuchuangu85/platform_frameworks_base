@@ -16,6 +16,12 @@
 
 package com.android.server.locksettings;
 
+import android.annotation.IntDef;
+
+import java.io.IOException;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+
 import javax.crypto.SecretKey;
 
 /**
@@ -26,6 +32,21 @@ import javax.crypto.SecretKey;
  * @hide
  */
 public interface RebootEscrowProviderInterface {
+    @IntDef(prefix = {"TYPE_"}, value = {
+            TYPE_HAL,
+            TYPE_SERVER_BASED,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @interface RebootEscrowProviderType {
+    }
+    int TYPE_HAL = 0;
+    int TYPE_SERVER_BASED = 1;
+
+    /**
+     * Returns the reboot escrow provider type.
+     */
+    @RebootEscrowProviderType int getType();
+
     /**
      * Returns true if the secure store/discard of reboot escrow key is supported.
      */
@@ -33,9 +54,10 @@ public interface RebootEscrowProviderInterface {
 
     /**
      * Returns the stored RebootEscrowKey, and clears the storage. If the stored key is encrypted,
-     * use the input key to decrypt the RebootEscrowKey. Returns null on failure.
+     * use the input key to decrypt the RebootEscrowKey. Returns null on failure. Throws an
+     * IOException if the failure is non-fatal, and a retry may succeed.
      */
-    RebootEscrowKey getAndClearRebootEscrowKey(SecretKey decryptionKey);
+    RebootEscrowKey getAndClearRebootEscrowKey(SecretKey decryptionKey) throws IOException;
 
     /**
      * Clears the stored RebootEscrowKey.

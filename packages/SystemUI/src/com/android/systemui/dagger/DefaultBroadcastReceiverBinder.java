@@ -18,6 +18,9 @@ package com.android.systemui.dagger;
 
 import android.content.BroadcastReceiver;
 
+import com.android.systemui.media.dialog.MediaOutputDialogReceiver;
+import com.android.systemui.people.widget.PeopleSpaceWidgetPinnedReceiver;
+import com.android.systemui.people.widget.PeopleSpaceWidgetProvider;
 import com.android.systemui.screenshot.ActionProxyReceiver;
 import com.android.systemui.screenshot.DeleteScreenshotReceiver;
 import com.android.systemui.screenshot.SmartActionsReceiver;
@@ -58,5 +61,32 @@ public abstract class DefaultBroadcastReceiverBinder {
     @ClassKey(SmartActionsReceiver.class)
     public abstract BroadcastReceiver bindSmartActionsReceiver(
             SmartActionsReceiver broadcastReceiver);
+
+    /**
+     *
+     */
+    @Binds
+    @IntoMap
+    @ClassKey(MediaOutputDialogReceiver.class)
+    public abstract BroadcastReceiver bindMediaOutputDialogReceiver(
+            MediaOutputDialogReceiver broadcastReceiver);
+
+    /**
+     *
+     */
+    @Binds
+    @IntoMap
+    @ClassKey(PeopleSpaceWidgetPinnedReceiver.class)
+    public abstract BroadcastReceiver bindPeopleSpaceWidgetPinnedReceiver(
+            PeopleSpaceWidgetPinnedReceiver broadcastReceiver);
+
+    /**
+     *
+     */
+    @Binds
+    @IntoMap
+    @ClassKey(PeopleSpaceWidgetProvider.class)
+    public abstract BroadcastReceiver bindPeopleSpaceWidgetProvider(
+            PeopleSpaceWidgetProvider broadcastReceiver);
 
 }

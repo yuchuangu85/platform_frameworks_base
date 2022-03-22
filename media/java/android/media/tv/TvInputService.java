@@ -153,7 +153,7 @@ public abstract class TvInputService extends Service {
 
     @Override
     public final IBinder onBind(Intent intent) {
-        return new ITvInputService.Stub() {
+        ITvInputService.Stub tvInputServiceBinder = new ITvInputService.Stub() {
             @Override
             public void registerCallback(ITvInputServiceCallback cb) {
                 if (cb != null) {
@@ -182,7 +182,8 @@ public abstract class TvInputService extends Service {
                 args.arg2 = cb;
                 args.arg3 = inputId;
                 args.arg4 = sessionId;
-                mServiceHandler.obtainMessage(ServiceHandler.DO_CREATE_SESSION, args).sendToTarget();
+                mServiceHandler.obtainMessage(ServiceHandler.DO_CREATE_SESSION,
+                        args).sendToTarget();
             }
 
             @Override
@@ -197,6 +198,21 @@ public abstract class TvInputService extends Service {
                 args.arg3 = sessionId;
                 mServiceHandler.obtainMessage(ServiceHandler.DO_CREATE_RECORDING_SESSION, args)
                         .sendToTarget();
+            }
+
+            @Override
+            public List<String>  getAvailableExtensionInterfaceNames() {
+                return TvInputService.this.getAvailableExtensionInterfaceNames();
+            }
+
+            @Override
+            public IBinder getExtensionInterface(String name) {
+                return TvInputService.this.getExtensionInterface(name);
+            }
+
+            @Override
+            public String getExtensionInterfacePermission(String name) {
+                return TvInputService.this.getExtensionInterfacePermission(name);
             }
 
             @Override
@@ -229,6 +245,87 @@ public abstract class TvInputService extends Service {
                         deviceInfo).sendToTarget();
             }
         };
+        IBinder ext = createExtension();
+        if (ext != null) {
+            tvInputServiceBinder.setExtension(ext);
+        }
+        return tvInputServiceBinder;
+    }
+
+    /**
+     * Returns a new {@link android.os.Binder}
+     *
+     * <p> if an extension is provided on top of existing {@link TvInputService}; otherwise,
+     * return {@code null}. Override to provide extended interface.
+     *
+     * @see android.os.Binder#setExtension(IBinder)
+     * @hide
+     */
+    @Nullable
+    @SystemApi
+    public IBinder createExtension() {
+        return null;
+    }
+
+    /**
+     * Returns available extension interfaces. This can be used to provide domain-specific
+     * features that are only known between certain hardware TV inputs and their clients.
+     *
+     * <p>Note that this service-level extension interface mechanism is only for hardware
+     * TV inputs that are bound even when sessions are not created.
+     *
+     * @return a non-null list of available extension interface names. An empty list
+     *         indicates the TV input doesn't support any extension interfaces.
+     * @see #getExtensionInterface
+     * @see #getExtensionInterfacePermission
+     * @hide
+     */
+    @NonNull
+    @SystemApi
+    public List<String> getAvailableExtensionInterfaceNames() {
+        return new ArrayList<>();
+    }
+
+    /**
+     * Returns an extension interface. This can be used to provide domain-specific features
+     * that are only known between certain hardware TV inputs and their clients.
+     *
+     * <p>Note that this service-level extension interface mechanism is only for hardware
+     * TV inputs that are bound even when sessions are not created.
+     *
+     * @param name The extension interface name.
+     * @return an {@link IBinder} for the given extension interface, {@code null} if the TV input
+     *         doesn't support the given extension interface.
+     * @see #getAvailableExtensionInterfaceNames
+     * @see #getExtensionInterfacePermission
+     * @hide
+     */
+    @Nullable
+    @SystemApi
+    public IBinder getExtensionInterface(@NonNull String name) {
+        return null;
+    }
+
+    /**
+     * Returns a permission for the given extension interface. This can be used to provide
+     * domain-specific features that are only known between certain hardware TV inputs and their
+     * clients.
+     *
+     * <p>Note that this service-level extension interface mechanism is only for hardware
+     * TV inputs that are bound even when sessions are not created.
+     *
+     * @param name The extension interface name.
+     * @return a name of the permission being checked for the given extension interface,
+     *         {@code null} if there is no required permission, or if the TV input doesn't
+     *         support the given extension interface.
+     * @see #getAvailableExtensionInterfaceNames
+     * @see #getExtensionInterface
+     * @hide
+     */
+    @Nullable
+    @SystemApi
+    public String getExtensionInterfacePermission(@NonNull String name) {
+        return null;
     }
 
     /**
@@ -1852,6 +1949,28 @@ public abstract class TvInputService extends Service {
 
 
         /**
+         * Called when the application requests to pause TV program recording. Recording must pause
+         * immediately when this method is called.
+         *
+         * If the pause request cannot be fulfilled, the session must call
+         * {@link #notifyError(int)}.
+         *
+         * @param params Domain-specific data for recording request.
+         */
+        public void onPauseRecording(@NonNull Bundle params) { }
+
+        /**
+         * Called when the application requests to resume TV program recording. Recording must
+         * resume immediately when this method is called.
+         *
+         * If the resume request cannot be fulfilled, the session must call
+         * {@link #notifyError(int)}.
+         *
+         * @param params Domain-specific data for recording request.
+         */
+        public void onResumeRecording(@NonNull Bundle params) { }
+
+        /**
          * Called when the application requests to release all the resources held by this recording
          * session.
          */
@@ -1900,6 +2019,22 @@ public abstract class TvInputService extends Service {
          */
         void stopRecording() {
             onStopRecording();
+        }
+
+        /**
+         * Calls {@link #onPauseRecording(Bundle)}.
+         *
+         */
+        void pauseRecording(@NonNull Bundle params) {
+            onPauseRecording(params);
+        }
+
+        /**
+         * Calls {@link #onResumeRecording(Bundle)}.
+         *
+         */
+        void resumeRecording(@NonNull Bundle params) {
+            onResumeRecording(params);
         }
 
         /**

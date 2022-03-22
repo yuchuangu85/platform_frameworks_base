@@ -17,6 +17,7 @@
 package android.widget;
 
 import static android.widget.espresso.CustomViewActions.longPressAtRelativeCoordinates;
+import static android.widget.espresso.DragHandleUtils.assertNoSelectionHandles;
 import static android.widget.espresso.DragHandleUtils.onHandleView;
 import static android.widget.espresso.FloatingToolbarEspressoUtils.assertFloatingToolbarContainsItem;
 import static android.widget.espresso.FloatingToolbarEspressoUtils.assertFloatingToolbarDoesNotContainItem;
@@ -373,6 +374,91 @@ public class TextViewActivityTest {
 
         sleepForFloatingToolbarPopup();
         assertFloatingToolbarIsDisplayed();
+    }
+
+    @Test
+    public void testToolbarMenuItemClickAfterSelectionChange() throws Throwable {
+        final MenuItem[] latestItem = new MenuItem[1];
+        final MenuItem[] clickedItem = new MenuItem[1];
+        final String text = "abcd efg hijk";
+        mActivityRule.runOnUiThread(() -> {
+            final TextView textView = mActivity.findViewById(R.id.textview);
+            textView.setText(text);
+            textView.setCustomSelectionActionModeCallback(
+                    new ActionMode.Callback() {
+                        @Override
+                        public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                            menu.clear();
+                            latestItem[0] = menu.add("Item");
+                            return true;
+                        }
+
+                        @Override
+                        public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                            clickedItem[0] = item;
+                            return true;
+                        }
+
+                        @Override
+                        public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                            return true;
+                        }
+
+                        @Override
+                        public void onDestroyActionMode(ActionMode mode) {}
+                    });
+        });
+        mInstrumentation.waitForIdleSync();
+
+        onView(withId(R.id.textview)).perform(longPressOnTextAtIndex(text.indexOf("f")));
+        sleepForFloatingToolbarPopup();
+
+        // Change the selection so that the menu items are refreshed.
+        final TextView textView = mActivity.findViewById(R.id.textview);
+        onHandleView(com.android.internal.R.id.selection_start_handle)
+                .perform(dragHandle(textView, Handle.SELECTION_START, 0));
+        sleepForFloatingToolbarPopup();
+        assertFloatingToolbarIsDisplayed();
+
+        clickFloatingToolbarItem("Item");
+        mInstrumentation.waitForIdleSync();
+
+        assertEquals(latestItem[0], clickedItem[0]);
+    }
+
+    @Test
+    public void testSelectionOnCreateActionModeReturnsFalse() throws Throwable {
+        final String text = "hello world";
+        mActivityRule.runOnUiThread(() -> {
+            final TextView textView = mActivity.findViewById(R.id.textview);
+            textView.setText(text);
+            textView.setCustomSelectionActionModeCallback(
+                    new ActionMode.Callback() {
+                        @Override
+                        public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                            return false;
+                        }
+
+                        @Override
+                        public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                            return false;
+                        }
+
+                        @Override
+                        public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                            return false;
+                        }
+
+
+                        @Override
+                        public void onDestroyActionMode(ActionMode mode) {
+                        }
+                    });
+        });
+        mInstrumentation.waitForIdleSync();
+        onView(withId(R.id.textview)).perform(longPressOnTextAtIndex(text.indexOf("d")));
+        mInstrumentation.waitForIdleSync();
+        assertNoSelectionHandles();
     }
 
     @Test

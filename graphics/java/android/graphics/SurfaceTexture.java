@@ -76,9 +76,9 @@ public class SurfaceTexture {
     /**
      * These fields are used by native code, do not access or modify.
      */
-    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+    @UnsupportedAppUsage(trackingBug = 176388660)
     private long mSurfaceTexture;
-    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+    @UnsupportedAppUsage(trackingBug = 176388660)
     private long mProducer;
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private long mFrameAvailableListener;
@@ -288,7 +288,7 @@ public class SurfaceTexture {
      * context at a time.
      *
      * @param texName The name of the OpenGL ES texture that will be created.  This texture name
-     * must be unusued in the OpenGL ES context that is current on the calling thread.
+     * must be unused in the OpenGL ES context that is current on the calling thread.
      */
     public void attachToGLContext(int texName) {
         int err = nativeAttachToGLContext(texName);

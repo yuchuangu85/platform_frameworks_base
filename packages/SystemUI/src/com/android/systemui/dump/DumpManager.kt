@@ -34,7 +34,7 @@ import javax.inject.Singleton
  * See [DumpHandler] for more information on how and when this information is dumped.
  */
 @Singleton
-class DumpManager @Inject constructor() {
+open class DumpManager @Inject constructor() {
     private val dumpables: MutableMap<String, RegisteredDumpable<Dumpable>> = ArrayMap()
     private val buffers: MutableMap<String, RegisteredDumpable<LogBuffer>> = ArrayMap()
 
@@ -53,6 +53,15 @@ class DumpManager @Inject constructor() {
         }
 
         dumpables[name] = RegisteredDumpable(name, module)
+    }
+
+    /**
+     * Same as the above override, but automatically uses the simple class name as the dumpable
+     * name.
+     */
+    @Synchronized
+    fun registerDumpable(module: Dumpable) {
+        registerDumpable(module::class.java.simpleName, module)
     }
 
     /**

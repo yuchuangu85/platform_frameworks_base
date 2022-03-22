@@ -31,16 +31,18 @@ import android.view.View;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.systemui.assist.AssistManager;
+import com.android.systemui.biometrics.AuthController;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.doze.DozeHost;
 import com.android.systemui.doze.DozeLog;
 import com.android.systemui.doze.DozeReceiver;
 import com.android.systemui.keyguard.KeyguardViewMediator;
 import com.android.systemui.keyguard.WakefulnessLifecycle;
+import com.android.systemui.statusbar.NotificationShadeWindowController;
 import com.android.systemui.statusbar.PulseExpansionHandler;
 import com.android.systemui.statusbar.StatusBarState;
 import com.android.systemui.statusbar.SysuiStatusBarStateController;
 import com.android.systemui.statusbar.notification.NotificationWakeUpCoordinator;
-import com.android.systemui.statusbar.notification.VisualStabilityManager;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.policy.BatteryController;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController;
@@ -48,21 +50,19 @@ import com.android.systemui.statusbar.policy.DeviceProvisionedController;
 import java.util.ArrayList;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 import dagger.Lazy;
 
 /**
  * Implementation of DozeHost for SystemUI.
  */
-@Singleton
+@SysUISingleton
 public final class DozeServiceHost implements DozeHost {
     private static final String TAG = "DozeServiceHost";
     private final ArrayList<Callback> mCallbacks = new ArrayList<>();
     private final DozeLog mDozeLog;
     private final PowerManager mPowerManager;
     private boolean mAnimateWakeup;
-    private boolean mAnimateScreenOff;
     private boolean mIgnoreTouchWhilePulsing;
     private Runnable mPendingScreenOffCallback;
     @VisibleForTesting
@@ -70,7 +70,7 @@ public final class DozeServiceHost implements DozeHost {
             "persist.sysui.wake_performs_auth", true);
     private boolean mDozingRequested;
     private boolean mPulsing;
-    private WakefulnessLifecycle mWakefulnessLifecycle;
+    private final WakefulnessLifecycle mWakefulnessLifecycle;
     private final SysuiStatusBarStateController mStatusBarStateController;
     private final DeviceProvisionedController mDeviceProvisionedController;
     private final HeadsUpManagerPhone mHeadsUpManagerPhone;
@@ -81,13 +81,12 @@ public final class DozeServiceHost implements DozeHost {
     private final Lazy<AssistManager> mAssistManagerLazy;
     private final DozeScrimController mDozeScrimController;
     private final KeyguardUpdateMonitor mKeyguardUpdateMonitor;
-    private final VisualStabilityManager mVisualStabilityManager;
     private final PulseExpansionHandler mPulseExpansionHandler;
     private final NotificationShadeWindowController mNotificationShadeWindowController;
     private final NotificationWakeUpCoordinator mNotificationWakeUpCoordinator;
     private NotificationShadeWindowViewController mNotificationShadeWindowViewController;
-    private final LockscreenLockIconController mLockscreenLockIconController;
-    private NotificationIconAreaController mNotificationIconAreaController;
+    private final AuthController mAuthController;
+    private final NotificationIconAreaController mNotificationIconAreaController;
     private StatusBarKeyguardViewManager mStatusBarKeyguardViewManager;
     private NotificationPanelViewController mNotificationPanel;
     private View mAmbientIndicationContainer;
@@ -105,11 +104,11 @@ public final class DozeServiceHost implements DozeHost {
             KeyguardViewMediator keyguardViewMediator,
             Lazy<AssistManager> assistManagerLazy,
             DozeScrimController dozeScrimController, KeyguardUpdateMonitor keyguardUpdateMonitor,
-            VisualStabilityManager visualStabilityManager,
             PulseExpansionHandler pulseExpansionHandler,
             NotificationShadeWindowController notificationShadeWindowController,
             NotificationWakeUpCoordinator notificationWakeUpCoordinator,
-            LockscreenLockIconController lockscreenLockIconController) {
+            AuthController authController,
+            NotificationIconAreaController notificationIconAreaController) {
         super();
         mDozeLog = dozeLog;
         mPowerManager = powerManager;
@@ -124,11 +123,11 @@ public final class DozeServiceHost implements DozeHost {
         mAssistManagerLazy = assistManagerLazy;
         mDozeScrimController = dozeScrimController;
         mKeyguardUpdateMonitor = keyguardUpdateMonitor;
-        mVisualStabilityManager = visualStabilityManager;
         mPulseExpansionHandler = pulseExpansionHandler;
         mNotificationShadeWindowController = notificationShadeWindowController;
         mNotificationWakeUpCoordinator = notificationWakeUpCoordinator;
-        mLockscreenLockIconController = lockscreenLockIconController;
+        mAuthController = authController;
+        mNotificationIconAreaController = notificationIconAreaController;
     }
 
     // TODO: we should try to not pass status bar in here if we can avoid it.
@@ -136,13 +135,13 @@ public final class DozeServiceHost implements DozeHost {
     /**
      * Initialize instance with objects only available later during execution.
      */
-    public void initialize(StatusBar statusBar,
-            NotificationIconAreaController notificationIconAreaController,
+    public void initialize(
+            StatusBar statusBar,
             StatusBarKeyguardViewManager statusBarKeyguardViewManager,
             NotificationShadeWindowViewController notificationShadeWindowViewController,
-            NotificationPanelViewController notificationPanel, View ambientIndicationContainer) {
+            NotificationPanelViewController notificationPanel,
+            View ambientIndicationContainer) {
         mStatusBar = statusBar;
-        mNotificationIconAreaController = notificationIconAreaController;
         mStatusBarKeyguardViewManager = statusBarKeyguardViewManager;
         mNotificationPanel = notificationPanel;
         mNotificationShadeWindowViewController = notificationShadeWindowViewController;
@@ -226,11 +225,11 @@ public final class DozeServiceHost implements DozeHost {
             return;
         }
 
-        if (reason == DozeLog.PULSE_REASON_SENSOR_WAKE_LOCK_SCREEN) {
+        if (reason == DozeLog.PULSE_REASON_SENSOR_WAKE_REACH) {
             mScrimController.setWakeLockScreenSensorActive(true);
         }
 
-        boolean passiveAuthInterrupt = reason == DozeLog.PULSE_REASON_SENSOR_WAKE_LOCK_SCREEN
+        boolean passiveAuthInterrupt = reason == DozeLog.PULSE_REASON_SENSOR_WAKE_REACH
                         && mWakeLockScreenPerformsAuth;
         // Set the state to pulsing, so ScrimController will know what to do once we ask it to
         // execute the transition. The pulse callback will then be invoked when the scrims
@@ -254,11 +253,10 @@ public final class DozeServiceHost implements DozeHost {
             }
 
             private void setPulsing(boolean pulsing) {
-                mStatusBarStateController.setPulsing(pulsing);
                 mStatusBarKeyguardViewManager.setPulsing(pulsing);
                 mKeyguardViewMediator.setPulsing(pulsing);
                 mNotificationPanel.setPulsing(pulsing);
-                mVisualStabilityManager.setPulsing(pulsing);
+                mStatusBarStateController.setPulsing(pulsing);
                 mIgnoreTouchWhilePulsing = false;
                 if (mKeyguardUpdateMonitor != null && passiveAuthInterrupt) {
                     mKeyguardUpdateMonitor.onAuthInterruptDetected(pulsing /* active */);
@@ -296,6 +294,7 @@ public final class DozeServiceHost implements DozeHost {
     @Override
     public void dozeTimeTick() {
         mNotificationPanel.dozeTimeTick();
+        mAuthController.dozeTimeTick();
         if (mAmbientIndicationContainer instanceof DozeReceiver) {
             ((DozeReceiver) mAmbientIndicationContainer).dozeTimeTick();
         }
@@ -329,7 +328,7 @@ public final class DozeServiceHost implements DozeHost {
 
     @Override
     public void extendPulse(int reason) {
-        if (reason == DozeLog.PULSE_REASON_SENSOR_WAKE_LOCK_SCREEN) {
+        if (reason == DozeLog.PULSE_REASON_SENSOR_WAKE_REACH) {
             mScrimController.setWakeLockScreenSensorActive(true);
         }
         if (mDozeScrimController.isPulsing() && mHeadsUpManagerPhone.hasNotifications()) {
@@ -354,11 +353,6 @@ public final class DozeServiceHost implements DozeHost {
             return;
         }
         mAnimateWakeup = animateWakeup;
-    }
-
-    @Override
-    public void setAnimateScreenOff(boolean animateScreenOff) {
-        mAnimateScreenOff = animateScreenOff;
     }
 
     @Override
@@ -387,16 +381,16 @@ public final class DozeServiceHost implements DozeHost {
     }
 
     @Override
-    public void setDozeScreenBrightness(int value) {
-        mNotificationShadeWindowController.setDozeScreenBrightness(value);
+    public void setDozeScreenBrightness(int brightness) {
+        mDozeLog.traceDozeScreenBrightness(brightness);
+        mNotificationShadeWindowController.setDozeScreenBrightness(brightness);
     }
 
     @Override
     public void setAodDimmingScrim(float scrimOpacity) {
+        mDozeLog.traceSetAodDimmingScrim(scrimOpacity);
         mScrimController.setAodFrontScrimAlpha(scrimOpacity);
     }
-
-
 
     @Override
     public void prepareForGentleSleep(Runnable onDisplayOffCallback) {
@@ -440,10 +434,6 @@ public final class DozeServiceHost implements DozeHost {
         return mAnimateWakeup;
     }
 
-    boolean shouldAnimateScreenOff() {
-        return mAnimateScreenOff;
-    }
-
     boolean getIgnoreTouchWhilePulsing() {
         return mIgnoreTouchWhilePulsing;
     }
@@ -453,6 +443,7 @@ public final class DozeServiceHost implements DozeHost {
             return;
         }
         mSuppressed = suppressed;
+        mDozeLog.traceDozingSuppressed(mSuppressed);
         for (Callback callback : mCallbacks) {
             callback.onDozeSuppressedChanged(suppressed);
         }

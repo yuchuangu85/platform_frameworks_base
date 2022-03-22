@@ -24,6 +24,7 @@ import android.telephony.ims.DelegateMessageCallback;
 import android.telephony.ims.DelegateRegistrationState;
 import android.telephony.ims.DelegateStateCallback;
 import android.telephony.ims.FeatureTagState;
+import android.telephony.ims.SipDelegateConfiguration;
 import android.telephony.ims.SipDelegateImsConfiguration;
 import android.telephony.ims.SipDelegateManager;
 import android.telephony.ims.SipMessage;
@@ -40,11 +41,15 @@ import java.util.concurrent.Executor;
  * @hide
  */
 public class SipDelegateAidlWrapper implements DelegateStateCallback, DelegateMessageCallback {
+    private static final String LOG_TAG = "SipDelegateAW";
 
     private final ISipDelegate.Stub mDelegateBinder = new ISipDelegate.Stub() {
         @Override
         public void sendMessage(SipMessage sipMessage, long configVersion) {
             SipDelegate d = mDelegate;
+            if (d == null) {
+                return;
+            }
             final long token = Binder.clearCallingIdentity();
             try {
                 mExecutor.execute(() -> d.sendMessage(sipMessage, configVersion));
@@ -56,6 +61,9 @@ public class SipDelegateAidlWrapper implements DelegateStateCallback, DelegateMe
         @Override
         public void notifyMessageReceived(String viaTransactionId)  {
             SipDelegate d = mDelegate;
+            if (d == null) {
+                return;
+            }
             final long token = Binder.clearCallingIdentity();
             try {
                 mExecutor.execute(() -> d.notifyMessageReceived(viaTransactionId));
@@ -68,6 +76,9 @@ public class SipDelegateAidlWrapper implements DelegateStateCallback, DelegateMe
         @Override
         public void notifyMessageReceiveError(String viaTransactionId, int reason) {
             SipDelegate d = mDelegate;
+            if (d == null) {
+                return;
+            }
             final long token = Binder.clearCallingIdentity();
             try {
                 mExecutor.execute(() -> d.notifyMessageReceiveError(viaTransactionId, reason));
@@ -78,11 +89,14 @@ public class SipDelegateAidlWrapper implements DelegateStateCallback, DelegateMe
         }
 
         @Override
-        public void closeDialog(String callId)  {
+        public void cleanupSession(String callId)  {
             SipDelegate d = mDelegate;
+            if (d == null) {
+                return;
+            }
             final long token = Binder.clearCallingIdentity();
             try {
-                mExecutor.execute(() -> d.closeDialog(callId));
+                mExecutor.execute(() -> d.cleanupSession(callId));
             } finally {
                 Binder.restoreCallingIdentity(token);
             }
@@ -165,6 +179,15 @@ public class SipDelegateAidlWrapper implements DelegateStateCallback, DelegateMe
     }
 
     @Override
+    public void onConfigurationChanged(@NonNull SipDelegateConfiguration config) {
+        try {
+            mStateBinder.onConfigurationChanged(config);
+        } catch (RemoteException e) {
+            // BinderDied will trigger destroySipDelegate, so just ignore this locally.
+        }
+    }
+
+    @Override
     public void onDestroyed(int reasonCode) {
         mDelegate = null;
         try {
@@ -182,12 +205,15 @@ public class SipDelegateAidlWrapper implements DelegateStateCallback, DelegateMe
         return mDelegateBinder;
     }
 
+    public ISipDelegateStateCallback getStateCallbackBinder() {
+        return mStateBinder;
+    }
+
     private void notifyLocalMessageFailedToBeReceived(SipMessage m, int reason) {
-        //TODO: parse transaction ID or throw IllegalArgumentException if the SipMessage
-        // transaction ID can not be parsed.
+        String transactionId = m.getViaBranchParameter();
         SipDelegate d = mDelegate;
         if (d != null) {
-            mExecutor.execute(() -> d.notifyMessageReceiveError(null, reason));
+            mExecutor.execute(() -> d.notifyMessageReceiveError(transactionId, reason));
         }
     }
 }

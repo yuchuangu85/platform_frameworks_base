@@ -19,6 +19,7 @@ package android.security;
 import android.annotation.NonNull;
 import android.app.compat.CompatChanges;
 import android.hardware.security.keymint.KeyParameter;
+import android.os.Binder;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.security.keystore.BackendBusyException;
@@ -45,6 +46,7 @@ public class KeyStoreSecurityLevel {
     private final IKeystoreSecurityLevel mSecurityLevel;
 
     public KeyStoreSecurityLevel(IKeystoreSecurityLevel securityLevel) {
+        Binder.allowBlocking(securityLevel.asBinder());
         this.mSecurityLevel = securityLevel;
     }
 
@@ -52,12 +54,12 @@ public class KeyStoreSecurityLevel {
         try {
             return request.execute();
         } catch (ServiceSpecificException e) {
-            throw new KeyStoreException(e.errorCode, "");
+            throw KeyStore2.getKeyStoreException(e.errorCode, e.getMessage());
         } catch (RemoteException e) {
             // Log exception and report invalid operation handle.
             // This should prompt the caller drop the reference to this operation and retry.
             Log.e(TAG, "Could not connect to Keystore.", e);
-            throw new KeyStoreException(ResponseCode.SYSTEM_ERROR, "");
+            throw new KeyStoreException(ResponseCode.SYSTEM_ERROR, "", e.getMessage());
         }
     }
 
@@ -96,25 +98,26 @@ public class KeyStoreSecurityLevel {
             } catch (ServiceSpecificException e) {
                 switch (e.errorCode) {
                     case ResponseCode.BACKEND_BUSY: {
+                        long backOffHint = (long) (Math.random() * 80 + 20);
                         if (CompatChanges.isChangeEnabled(
                                 KeyStore2.KEYSTORE_OPERATION_CREATION_MAY_FAIL)) {
                             // Starting with Android S we inform the caller about the
                             // backend being busy.
-                            throw new BackendBusyException();
+                            throw new BackendBusyException(backOffHint);
                         } else {
                             // Before Android S operation creation must always succeed. So we
                             // just have to retry. We do so with a randomized back-off between
-                            // 50 and 250ms.
+                            // 20 and 100ms.
                             // It is a little awkward that we cannot break out of this loop
                             // by interrupting this thread. But that is the expected behavior.
                             // There is some comfort in the fact that interrupting a thread
                             // also does not unblock a thread waiting for a binder transaction.
-                            interruptedPreservingSleep((long) (Math.random() * 200 + 50));
+                            interruptedPreservingSleep(backOffHint);
                         }
                         break;
                     }
                     default:
-                        throw new KeyStoreException(e.errorCode, "");
+                        throw KeyStore2.getKeyStoreException(e.errorCode, e.getMessage());
                 }
             } catch (RemoteException e) {
                 Log.w(TAG, "Cannot connect to keystore", e);
@@ -189,7 +192,7 @@ public class KeyStoreSecurityLevel {
         keyDescriptor.blob = wrappedKey;
         keyDescriptor.domain = wrappedKeyDescriptor.domain;
 
-        return handleExceptions(() -> mSecurityLevel.importWrappedKey(wrappedKeyDescriptor,
+        return handleExceptions(() -> mSecurityLevel.importWrappedKey(keyDescriptor,
                 wrappingKeyDescriptor, maskingKey,
                 args.toArray(new KeyParameter[args.size()]), authenticatorSpecs));
     }

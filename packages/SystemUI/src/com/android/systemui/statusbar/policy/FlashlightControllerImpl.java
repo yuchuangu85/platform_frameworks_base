@@ -30,18 +30,22 @@ import android.provider.Settings.Secure;
 import android.text.TextUtils;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
+
+import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dump.DumpManager;
+
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /**
  * Manages the flashlight.
  */
-@Singleton
+@SysUISingleton
 public class FlashlightControllerImpl implements FlashlightController {
 
     private static final String TAG = "FlashlightController";
@@ -69,10 +73,11 @@ public class FlashlightControllerImpl implements FlashlightController {
     private boolean mTorchAvailable;
 
     @Inject
-    public FlashlightControllerImpl(Context context) {
+    public FlashlightControllerImpl(Context context, DumpManager dumpManager) {
         mContext = context;
         mCameraManager = (CameraManager) mContext.getSystemService(Context.CAMERA_SERVICE);
 
+        dumpManager.registerDumpable(getClass().getSimpleName(), this);
         tryInitCamera();
     }
 
@@ -123,7 +128,8 @@ public class FlashlightControllerImpl implements FlashlightController {
         return mTorchAvailable;
     }
 
-    public void addCallback(FlashlightListener l) {
+    @Override
+    public void addCallback(@NonNull FlashlightListener l) {
         synchronized (mListeners) {
             if (mCameraId == null) {
                 tryInitCamera();
@@ -135,7 +141,8 @@ public class FlashlightControllerImpl implements FlashlightController {
         }
     }
 
-    public void removeCallback(FlashlightListener l) {
+    @Override
+    public void removeCallback(@NonNull FlashlightListener l) {
         synchronized (mListeners) {
             cleanUpListenersLocked(l);
         }

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
- * Copyright (c) 2012, The Android Open Source Project
+ * Copyright (c) 2021, The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,28 +16,13 @@
 */
 -->
 <resources>
-    <dimen name="keyguard_clock_notifications_margin">36dp</dimen>
 
-    <dimen name="keyguard_indication_margin_bottom">80dp</dimen>
+    <!-- keyguard-->
+    <dimen name="keyguard_indication_margin_bottom">25dp</dimen>
+    <dimen name="ambient_indication_margin_bottom">115dp</dimen>
+    <dimen name="lock_icon_margin_bottom">60dp</dimen>
 
-    <!-- Screen pinning request width (just a little bit bigger than the three buttons here -->
-    <dimen name="screen_pinning_request_width">490dp</dimen>
-    <!-- Screen pinning request bottom button circle widths -->
-    <dimen name="screen_pinning_request_button_width">162dp</dimen>
-    <!-- Screen pinning request, controls padding on bigger screens, bigger nav bar -->
-    <dimen name="screen_pinning_request_frame_padding">39dp</dimen>
-    <!-- Screen pinning request side views to match nav bar
-         In sw600dp we want the buttons centered so this fills the space,
-         (screen_pinning_request_width - 3 * screen_pinning_request_button_width) / 2 -->
-    <dimen name="screen_pinning_request_side_width">2dp</dimen>
-
-    <dimen name="navigation_key_width">162dp</dimen>
-    <dimen name="navigation_key_padding">42dp</dimen>
-
-    <dimen name="battery_detail_graph_space_top">27dp</dimen>
-    <dimen name="battery_detail_graph_space_bottom">27dp</dimen>
-
-    <dimen name="qs_tile_margin_top">32dp</dimen>
-    <dimen name="qs_brightness_padding_top">6dp</dimen>
-    <dimen name="qs_detail_margin_top">28dp</dimen>
+    <!-- margin from keyguard status bar to clock. For split shade it should be
+         keyguard_split_shade_top_margin - status_bar_header_height_keyguard = 8dp -->
+    <dimen name="keyguard_clock_top_margin">8dp</dimen>
 </resources>

@@ -18,11 +18,11 @@ package com.android.systemui.statusbar.notification.stack;
 
 import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
 
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_ALERTING;
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_FOREGROUND_SERVICE;
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_HEADS_UP;
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_PEOPLE;
-import static com.android.systemui.statusbar.notification.stack.NotificationSectionsManagerKt.BUCKET_SILENT;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_ALERTING;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_FOREGROUND_SERVICE;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_HEADS_UP;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_PEOPLE;
+import static com.android.systemui.statusbar.notification.stack.NotificationPriorityBucketKt.BUCKET_SILENT;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -53,6 +53,7 @@ import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.statusbar.StatusBarState;
 import com.android.systemui.statusbar.notification.NotificationSectionsFeatureManager;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
+import com.android.systemui.statusbar.notification.collection.render.SectionHeaderController;
 import com.android.systemui.statusbar.notification.people.PeopleHubViewAdapter;
 import com.android.systemui.statusbar.notification.row.ActivatableNotificationViewController;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
@@ -87,6 +88,10 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
     @Mock private NotificationRowComponent mNotificationRowComponent;
     @Mock private ActivatableNotificationViewController mActivatableNotificationViewController;
     @Mock private NotificationSectionsLogger mLogger;
+    @Mock private SectionHeaderController mIncomingHeaderController;
+    @Mock private SectionHeaderController mPeopleHeaderController;
+    @Mock private SectionHeaderController mAlertingHeaderController;
+    @Mock private SectionHeaderController mSilentHeaderController;
 
     private NotificationSectionsManager mSectionsManager;
 
@@ -109,15 +114,21 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
                 });
         when(mNotificationRowComponent.getActivatableNotificationViewController())
                 .thenReturn(mActivatableNotificationViewController);
+        when(mIncomingHeaderController.getHeaderView()).thenReturn(mock(SectionHeaderView.class));
+        when(mPeopleHeaderController.getHeaderView()).thenReturn(mock(SectionHeaderView.class));
+        when(mAlertingHeaderController.getHeaderView()).thenReturn(mock(SectionHeaderView.class));
+        when(mSilentHeaderController.getHeaderView()).thenReturn(mock(SectionHeaderView.class));
         mSectionsManager =
                 new NotificationSectionsManager(
-                        mActivityStarterDelegate,
                         mStatusBarStateController,
                         mConfigurationController,
-                        mPeopleHubAdapter,
                         mKeyguardMediaController,
                         mSectionsFeatureManager,
-                        mLogger
+                        mLogger,
+                        mIncomingHeaderController,
+                        mPeopleHeaderController,
+                        mAlertingHeaderController,
+                        mSilentHeaderController
                 );
         // Required in order for the header inflation to work properly
         when(mNssl.generateLayoutParams(any(AttributeSet.class)))
@@ -241,8 +252,9 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
         mSectionsManager.updateSectionBoundaries();
         clearInvocations(mNssl);
 
+        SectionHeaderView silentHeaderView = mSectionsManager.getSilentHeaderView();
         ViewGroup transientParent = mock(ViewGroup.class);
-        mSectionsManager.getSilentHeaderView().setTransientContainer(transientParent);
+        when(silentHeaderView.getTransientContainer()).thenReturn(transientParent);
 
         // WHEN the LO section reappears
         setStackState(
@@ -252,8 +264,8 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
 
         // THEN the header is first removed from the transient parent before being added to the
         // NSSL.
-        verify(transientParent).removeTransientView(mSectionsManager.getSilentHeaderView());
-        verify(mNssl).addView(mSectionsManager.getSilentHeaderView(), 1);
+        verify(transientParent).removeTransientView(silentHeaderView);
+        verify(mNssl).addView(silentHeaderView, 1);
     }
 
     @Test
@@ -309,23 +321,7 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
     }
 
     @Test
-    public void testPeopleFiltering_addHeadersFromShowingOnlyGentle() {
-        enablePeopleFiltering();
-
-        setStackState(
-                GENTLE_HEADER,
-                PERSON,
-                ALERTING,
-                GENTLE);
-        mSectionsManager.updateSectionBoundaries();
-
-        verify(mNssl).changeViewPosition(mSectionsManager.getSilentHeaderView(), 2);
-        verify(mNssl).addView(mSectionsManager.getAlertingHeaderView(), 1);
-        verify(mNssl).addView(mSectionsManager.getPeopleHeaderView(), 0);
-    }
-
-    @Test
-    public void testPeopleFiltering_addAllHeaders() {
+    public void testPeopleFiltering_onlyAddSilentHeader() {
         enablePeopleFiltering();
 
         setStackState(
@@ -335,43 +331,6 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
         mSectionsManager.updateSectionBoundaries();
 
         verify(mNssl).addView(mSectionsManager.getSilentHeaderView(), 2);
-        verify(mNssl).addView(mSectionsManager.getAlertingHeaderView(), 1);
-        verify(mNssl).addView(mSectionsManager.getPeopleHeaderView(), 0);
-    }
-
-    @Test
-    public void testPeopleFiltering_moveAllHeaders() {
-        enablePeopleFiltering();
-
-        setStackState(
-                PEOPLE_HEADER,
-                ALERTING_HEADER,
-                GENTLE_HEADER,
-                PERSON,
-                ALERTING,
-                GENTLE);
-        mSectionsManager.updateSectionBoundaries();
-
-        verify(mNssl).changeViewPosition(mSectionsManager.getSilentHeaderView(), 4);
-        verify(mNssl).changeViewPosition(mSectionsManager.getAlertingHeaderView(), 2);
-        verify(mNssl).changeViewPosition(mSectionsManager.getPeopleHeaderView(), 0);
-    }
-
-    @Test
-    public void testPeopleFiltering_keepPeopleHeaderWhenSectionEmpty() {
-        mSectionsManager.setPeopleHubVisible(true);
-        enablePeopleFiltering();
-
-        setStackState(
-                PEOPLE_HEADER,
-                ALERTING_HEADER,
-                ALERTING,
-                GENTLE_HEADER,
-                GENTLE);
-        mSectionsManager.updateSectionBoundaries();
-
-        verify(mNssl, never()).removeView(mSectionsManager.getPeopleHeaderView());
-        verify(mNssl).changeViewPosition(mSectionsManager.getPeopleHeaderView(), 0);
     }
 
     @Test
@@ -389,9 +348,7 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
         mSectionsManager.updateSectionBoundaries();
 
         verifyMockStack(
-                ChildType.INCOMING_HEADER,
                 ChildType.HEADS_UP,
-                ChildType.PEOPLE_HEADER,
                 ChildType.PERSON,
                 ChildType.GENTLE_HEADER,
                 ChildType.GENTLE
@@ -412,10 +369,8 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
         mSectionsManager.updateSectionBoundaries();
 
         verifyMockStack(
-                ChildType.INCOMING_HEADER,
                 ChildType.HEADS_UP,
                 ChildType.HEADS_UP,
-                ChildType.PEOPLE_HEADER,
                 ChildType.PERSON
         );
     }
@@ -432,7 +387,6 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
         mSectionsManager.updateSectionBoundaries();
 
         verifyMockStack(
-                ChildType.PEOPLE_HEADER,
                 ChildType.PERSON,
                 ChildType.PERSON
         );
@@ -448,9 +402,7 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
         );
         mSectionsManager.updateSectionBoundaries();
         verifyMockStack(
-                ChildType.INCOMING_HEADER,
                 ChildType.HEADS_UP,
-                ChildType.PEOPLE_HEADER,
                 ChildType.PERSON
         );
     }
@@ -471,12 +423,9 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
         mSectionsManager.updateSectionBoundaries();
 
         verifyMockStack(
-                ChildType.INCOMING_HEADER,
                 ChildType.HEADS_UP,
                 ChildType.FSN,
-                ChildType.PEOPLE_HEADER,
                 ChildType.PERSON,
-                ChildType.ALERTING_HEADER,
                 ChildType.ALERTING,
                 ChildType.GENTLE_HEADER,
                 ChildType.GENTLE
@@ -521,7 +470,7 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
     }
 
     @Test
-    public void testRemoveIncomingHeader() {
+    public void testRemoveNonSilentHeader() {
         enablePeopleFiltering();
         enableMediaControls();
 
@@ -543,9 +492,7 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
 
         verifyMockStack(
                 ChildType.MEDIA_CONTROLS,
-                ChildType.PEOPLE_HEADER,
                 ChildType.PERSON,
-                ChildType.ALERTING_HEADER,
                 ChildType.ALERTING,
                 ChildType.ALERTING,
                 ChildType.ALERTING,
@@ -573,13 +520,10 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
         mSectionsManager.updateSectionBoundaries();
 
         verifyMockStack(
-                ChildType.INCOMING_HEADER,
                 ChildType.HEADS_UP,
                 ChildType.HEADS_UP,
                 ChildType.HEADS_UP,
-                ChildType.PEOPLE_HEADER,
                 ChildType.PERSON,
-                ChildType.ALERTING_HEADER,
                 ChildType.ALERTING
         );
     }
@@ -597,7 +541,6 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
         mSectionsManager.updateSectionBoundaries();
 
         verifyMockStack(
-                ChildType.ALERTING_HEADER,
                 ChildType.PERSON,
                 ChildType.ALERTING,
                 ChildType.GENTLE_HEADER,
@@ -664,7 +607,7 @@ public class NotificationSectionsManagerTest extends SysuiTestCase {
         }
     }
 
-    private View mockNotification(int bucket, boolean isGone) {
+    private View mockNotification(@PriorityBucket int bucket, boolean isGone) {
         ExpandableNotificationRow notifRow =
                 mock(ExpandableNotificationRow.class, RETURNS_DEEP_STUBS);
         when(notifRow.getVisibility()).thenReturn(View.VISIBLE);

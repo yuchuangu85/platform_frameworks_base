@@ -16,17 +16,29 @@
 
 package com.android.systemui.statusbar.notification.collection.coordinator
 
+import com.android.systemui.statusbar.notification.collection.ListEntry
 import com.android.systemui.statusbar.notification.collection.NotifPipeline
 import com.android.systemui.statusbar.notification.collection.NotificationEntry
+import com.android.systemui.statusbar.notification.collection.coordinator.dagger.CoordinatorScope
 import com.android.systemui.statusbar.notification.collection.listbuilder.pluggable.NotifPromoter
+import com.android.systemui.statusbar.notification.collection.listbuilder.pluggable.NotifSectioner
+import com.android.systemui.statusbar.notification.collection.render.NodeController
+import com.android.systemui.statusbar.notification.dagger.PeopleHeader
+import com.android.systemui.statusbar.notification.people.PeopleNotificationIdentifier
+import com.android.systemui.statusbar.notification.people.PeopleNotificationIdentifier.Companion.TYPE_NON_PERSON
+import com.android.systemui.statusbar.notification.stack.BUCKET_PEOPLE
 import javax.inject.Inject
-import javax.inject.Singleton
 
 /**
- * A coordinator that elevates important conversation notifications
+ * A Conversation/People Coordinator that:
+ * - Elevates important conversation notifications
+ * - Puts conversations into its own people section. @see [NotifCoordinators] for section ordering.
  */
-@Singleton
-class ConversationCoordinator @Inject constructor() : Coordinator {
+@CoordinatorScope
+class ConversationCoordinator @Inject constructor(
+    private val peopleNotificationIdentifier: PeopleNotificationIdentifier,
+    @PeopleHeader peopleHeaderController: NodeController
+) : Coordinator {
 
     private val notificationPromoter = object : NotifPromoter(TAG) {
         override fun shouldPromoteToTopLevel(entry: NotificationEntry): Boolean {
@@ -34,9 +46,20 @@ class ConversationCoordinator @Inject constructor() : Coordinator {
         }
     }
 
+    val sectioner = object : NotifSectioner("People", BUCKET_PEOPLE) {
+        override fun isInSection(entry: ListEntry): Boolean =
+                isConversation(entry.representativeEntry!!)
+        override fun getHeaderNodeController() =
+                // TODO: remove SHOW_ALL_SECTIONS, this redundant method, and peopleHeaderController
+                if (RankingCoordinator.SHOW_ALL_SECTIONS) peopleHeaderController else null
+    }
+
     override fun attach(pipeline: NotifPipeline) {
         pipeline.addPromoter(notificationPromoter)
     }
+
+    private fun isConversation(entry: NotificationEntry): Boolean =
+        peopleNotificationIdentifier.getPeopleNotificationType(entry) != TYPE_NON_PERSON
 
     companion object {
         private const val TAG = "ConversationCoordinator"

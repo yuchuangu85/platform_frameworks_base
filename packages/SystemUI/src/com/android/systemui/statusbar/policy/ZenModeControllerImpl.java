@@ -37,10 +37,14 @@ import android.service.notification.ZenModeConfig.ZenRule;
 import android.text.format.DateFormat;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
+
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.systemui.Dumpable;
 import com.android.systemui.broadcast.BroadcastDispatcher;
+import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.dump.DumpManager;
 import com.android.systemui.qs.GlobalSetting;
 import com.android.systemui.settings.CurrentUserTracker;
 import com.android.systemui.util.Utils;
@@ -51,10 +55,9 @@ import java.util.ArrayList;
 import java.util.Objects;
 
 import javax.inject.Inject;
-import javax.inject.Singleton;
 
 /** Platform implementation of the zen mode controller. **/
-@Singleton
+@SysUISingleton
 public class ZenModeControllerImpl extends CurrentUserTracker
         implements ZenModeController, Dumpable {
     private static final String TAG = "ZenModeController";
@@ -78,8 +81,11 @@ public class ZenModeControllerImpl extends CurrentUserTracker
     private NotificationManager.Policy mConsolidatedNotificationPolicy;
 
     @Inject
-    public ZenModeControllerImpl(Context context, @Main Handler handler,
-            BroadcastDispatcher broadcastDispatcher) {
+    public ZenModeControllerImpl(
+            Context context,
+            @Main Handler handler,
+            BroadcastDispatcher broadcastDispatcher,
+            DumpManager dumpManager) {
         super(broadcastDispatcher);
         mContext = context;
         mModeSetting = new GlobalSetting(mContext, handler, Global.ZEN_MODE) {
@@ -106,6 +112,8 @@ public class ZenModeControllerImpl extends CurrentUserTracker
         mSetupObserver.register();
         mUserManager = context.getSystemService(UserManager.class);
         startTracking();
+
+        dumpManager.registerDumpable(getClass().getSimpleName(), this);
     }
 
     @Override
@@ -124,14 +132,14 @@ public class ZenModeControllerImpl extends CurrentUserTracker
     }
 
     @Override
-    public void addCallback(Callback callback) {
+    public void addCallback(@NonNull Callback callback) {
         synchronized (mCallbacksLock) {
             mCallbacks.add(callback);
         }
     }
 
     @Override
-    public void removeCallback(Callback callback) {
+    public void removeCallback(@NonNull Callback callback) {
         synchronized (mCallbacksLock) {
             mCallbacks.remove(callback);
         }

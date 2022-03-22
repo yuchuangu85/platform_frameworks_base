@@ -28,7 +28,7 @@ import android.view.animation.Animation;
 import android.view.animation.AnimationUtils;
 
 import com.android.keyguard.AlphaOptimizedImageButton;
-import com.android.systemui.Interpolators;
+import com.android.systemui.animation.Interpolators;
 
 public class SettingsButton extends AlphaOptimizedImageButton {
 
@@ -120,6 +120,9 @@ public class SettingsButton extends AlphaOptimizedImageButton {
                         setAlpha(1f);
                         setTranslationX(0);
                         cancelLongClick();
+                        // Unset the listener, otherwise this may persist for
+                        // another view property animation
+                        animate().setListener(null);
                     }
 
                     @Override

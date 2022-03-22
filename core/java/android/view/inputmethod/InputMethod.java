@@ -96,17 +96,15 @@ public interface InputMethod {
      *
      * @param token special token for the system to identify
      *              {@link InputMethodService}
-     * @param displayId The id of the display that current IME shown.
-     *                  Used for {{@link #updateInputMethodDisplay(int)}}
      * @param privilegedOperations IPC endpoint to do some privileged
      *                             operations that are allowed only to the
      *                             current IME.
+     * @param configChanges {@link InputMethodInfo#getConfigChanges()} declared by IME.
      * @hide
      */
     @MainThread
-    default void initializeInternal(IBinder token, int displayId,
-            IInputMethodPrivilegedOperations privilegedOperations) {
-        updateInputMethodDisplay(displayId);
+    default void initializeInternal(IBinder token,
+            IInputMethodPrivilegedOperations privilegedOperations, int configChanges) {
         attachToken(token);
     }
 
@@ -140,16 +138,6 @@ public interface InputMethod {
      */
     @MainThread
     public void attachToken(IBinder token);
-
-    /**
-     * Update context display according to given displayId.
-     *
-     * @param displayId The id of the display that need to update for context.
-     * @hide
-     */
-    @MainThread
-    default void updateInputMethodDisplay(int displayId) {
-    }
 
     /**
      * Bind a new application environment in to the input method, so that it
@@ -243,7 +231,7 @@ public interface InputMethod {
     @MainThread
     default void dispatchStartInputWithToken(@Nullable InputConnection inputConnection,
             @NonNull EditorInfo editorInfo, boolean restarting,
-            @NonNull IBinder startInputToken, boolean shouldPreRenderIme) {
+            @NonNull IBinder startInputToken) {
         if (restarting) {
             restartInput(inputConnection, editorInfo);
         } else {

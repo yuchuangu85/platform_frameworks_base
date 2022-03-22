@@ -18,6 +18,7 @@ package android.telephony.ims;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.telephony.ims.stub.SipDelegate;
 import android.telephony.ims.stub.SipTransportImplBase;
@@ -52,7 +53,9 @@ public interface DelegateStateCallback {
      *    implementing this feature elsewhere. If all features of this {@link SipDelegate} are
      *    denied, this method should still be called.
      */
-    void onCreated(@NonNull SipDelegate delegate, @Nullable Set<FeatureTagState> deniedTags);
+    void onCreated(@NonNull SipDelegate delegate,
+            @SuppressLint("NullableCollection")  // TODO(b/154763999): Mark deniedTags @Nonnull
+            @Nullable Set<FeatureTagState> deniedTags);
 
     /**
      * This must be called by the ImsService after the framework calls
@@ -76,8 +79,28 @@ public interface DelegateStateCallback {
      * messages routing should be delayed until the {@link SipDelegate} sends the IMS configuration
      * change event to reduce conditions where the remote application is using a stale IMS
      * configuration.
+     * @removed This is being removed from API surface, Use
+     * {@link #onConfigurationChanged(SipDelegateConfiguration)} instead.
      */
+    @Deprecated
     void onImsConfigurationChanged(@NonNull SipDelegateImsConfiguration config);
+
+    /**
+     * Call to notify the remote application of a configuration change associated with this
+     * {@link SipDelegate}.
+     * <p>
+     * The remote application will not be able to proceed sending SIP messages until after this
+     * configuration is sent the first time, so this configuration should be sent as soon as the
+     * {@link SipDelegate} has access to these configuration parameters.
+     * <p>
+     * Incoming SIP messages should not be routed to the remote application until AFTER this
+     * configuration change is sent to ensure that the remote application can respond correctly.
+     * Similarly, if there is an event that triggers the IMS configuration to change, incoming SIP
+     * messages routing should be delayed until the {@link SipDelegate} sends the IMS configuration
+     * change event to reduce conditions where the remote application is using a stale IMS
+     * configuration.
+     */
+    void onConfigurationChanged(@NonNull SipDelegateConfiguration config);
 
     /**
      * Call to notify the remote application that the {@link SipDelegate} has modified the IMS

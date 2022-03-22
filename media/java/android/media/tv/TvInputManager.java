@@ -18,6 +18,7 @@ package android.media.tv;
 
 import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
+import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
@@ -27,6 +28,8 @@ import android.annotation.TestApi;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Rect;
+import android.media.AudioDeviceInfo;
+import android.media.AudioFormat.Encoding;
 import android.media.PlaybackParams;
 import android.net.Uri;
 import android.os.Binder;
@@ -59,6 +62,7 @@ import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.Executor;
 
 /**
@@ -899,6 +903,17 @@ public final class TvInputManager {
          */
         public void onTvInputInfoUpdated(TvInputInfo inputInfo) {
         }
+
+        /**
+         * This is called when the information about current tuned information has been updated.
+         *
+         * @param tunedInfos a list of {@link TunedInfo} objects of new tuned information.
+         * @hide
+         */
+        @SystemApi
+        @RequiresPermission(android.Manifest.permission.ACCESS_TUNED_INFO)
+        public void onCurrentTunedInfosUpdated(@NonNull List<TunedInfo> tunedInfos) {
+        }
     }
 
     private static final class TvInputCallbackRecord {
@@ -955,6 +970,15 @@ public final class TvInputManager {
                 @Override
                 public void run() {
                     mCallback.onTvInputInfoUpdated(inputInfo);
+                }
+            });
+        }
+
+        public void postCurrentTunedInfosUpdated(final List<TunedInfo> currentTunedInfos) {
+            mHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    mCallback.onCurrentTunedInfosUpdated(currentTunedInfos);
                 }
             });
         }
@@ -1262,6 +1286,15 @@ public final class TvInputManager {
                     }
                 }
             }
+
+            @Override
+            public void onCurrentTunedInfosUpdated(List<TunedInfo> currentTunedInfos) {
+                synchronized (mLock) {
+                    for (TvInputCallbackRecord record : mCallbackRecords) {
+                        record.postCurrentTunedInfosUpdated(currentTunedInfos);
+                    }
+                }
+            }
         };
         try {
             if (mService != null) {
@@ -1357,6 +1390,57 @@ public final class TvInputManager {
                 return INPUT_STATE_DISCONNECTED;
             }
             return state;
+        }
+    }
+
+    /**
+     * Returns available extension interfaces of a given hardware TV input. This can be used to
+     * provide domain-specific features that are only known between certain hardware TV inputs
+     * and their clients.
+     *
+     * @param inputId The ID of the TV input.
+     * @return a non-null list of extension interface names available to the caller. An empty
+     *         list indicates the given TV input is not found, or the given TV input is not a
+     *         hardware TV input, or the given TV input doesn't support any extension
+     *         interfaces, or the caller doesn't hold the required permission for the extension
+     *         interfaces supported by the given TV input.
+     * @see #getExtensionInterface
+     * @hide
+     */
+    @SystemApi
+    @NonNull
+    public List<String> getAvailableExtensionInterfaceNames(@NonNull String inputId) {
+        Preconditions.checkNotNull(inputId);
+        try {
+            return mService.getAvailableExtensionInterfaceNames(inputId, mUserId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns an extension interface of a given hardware TV input. This can be used to provide
+     * domain-specific features that are only known between certain hardware TV inputs and
+     * their clients.
+     *
+     * @param inputId The ID of the TV input.
+     * @param name The extension interface name.
+     * @return an {@link IBinder} for the given extension interface, {@code null} if the given TV
+     *         input is not found, or if the given TV input is not a hardware TV input, or if the
+     *         given TV input doesn't support the given extension interface, or if the caller
+     *         doesn't hold the required permission for the given extension interface.
+     * @see #getAvailableExtensionInterfaceNames
+     * @hide
+     */
+    @SystemApi
+    @Nullable
+    public IBinder getExtensionInterface(@NonNull String inputId, @NonNull String name) {
+        Preconditions.checkNotNull(inputId);
+        Preconditions.checkNotNull(name);
+        try {
+            return mService.getExtensionInterface(inputId, name, mUserId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
         }
     }
 
@@ -1953,6 +2037,25 @@ public final class TvInputManager {
     }
 
     /**
+     * Returns the list of session information for {@link TvInputService.Session} that are
+     * currently in use.
+     * <p> Permission com.android.providers.tv.permission.ACCESS_WATCHED_PROGRAMS is required to get
+     * the channel URIs. If the permission is not granted,
+     * {@link TunedInfo#getChannelUri()} returns {@code null}.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.ACCESS_TUNED_INFO)
+    @NonNull
+    public List<TunedInfo> getCurrentTunedInfos() {
+        try {
+            return mService.getCurrentTunedInfos(mUserId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * The Session provides the per-session functionality of TV inputs.
      * @hide
      */
@@ -2476,6 +2579,46 @@ public final class TvInputManager {
         }
 
         /**
+         * Pauses TV program recording in the current recording session.
+         *
+         * @param params Domain-specific data for this request. Keys <em>must</em> be a scoped
+         *            name, i.e. prefixed with a package name you own, so that different developers
+         *            will not create conflicting keys.
+         *        {@link TvRecordingClient#pauseRecording(Bundle)}.
+         */
+        void pauseRecording(@NonNull Bundle params) {
+            if (mToken == null) {
+                Log.w(TAG, "The session has been already released");
+                return;
+            }
+            try {
+                mService.pauseRecording(mToken, params, mUserId);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+
+        /**
+         * Resumes TV program recording in the current recording session.
+         *
+         * @param params Domain-specific data for this request. Keys <em>must</em> be a scoped
+         *            name, i.e. prefixed with a package name you own, so that different developers
+         *            will not create conflicting keys.
+         *        {@link TvRecordingClient#resumeRecording(Bundle)}.
+         */
+        void resumeRecording(@NonNull Bundle params) {
+            if (mToken == null) {
+                Log.w(TAG, "The session has been already released");
+                return;
+            }
+            try {
+                mService.resumeRecording(mToken, params, mUserId);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+
+        /**
          * Calls {@link TvInputService.Session#appPrivateCommand(String, Bundle)
          * TvInputService.Session.appPrivateCommand()} on the current TvView.
          *
@@ -2859,11 +3002,43 @@ public final class TvInputManager {
             return false;
         }
 
+        /**
+         * Override default audio sink from audio policy.
+         *
+         * @param audioType device type of the audio sink to override with.
+         * @param audioAddress device address of the audio sink to override with.
+         * @param samplingRate desired sampling rate. Use default when it's 0.
+         * @param channelMask desired channel mask. Use default when it's
+         *        AudioFormat.CHANNEL_OUT_DEFAULT.
+         * @param format desired format. Use default when it's AudioFormat.ENCODING_DEFAULT.
+         */
         public void overrideAudioSink(int audioType, String audioAddress, int samplingRate,
                 int channelMask, int format) {
             try {
                 mInterface.overrideAudioSink(audioType, audioAddress, samplingRate, channelMask,
                         format);
+            } catch (RemoteException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /**
+         * Override default audio sink from audio policy.
+         *
+         * @param device {@link android.media.AudioDeviceInfo} to use.
+         * @param samplingRate desired sampling rate. Use default when it's 0.
+         * @param channelMask desired channel mask. Use default when it's
+         *        AudioFormat.CHANNEL_OUT_DEFAULT.
+         * @param format desired format. Use default when it's AudioFormat.ENCODING_DEFAULT.
+         */
+        public void overrideAudioSink(@NonNull AudioDeviceInfo device,
+                @IntRange(from = 0) int samplingRate,
+                int channelMask, @Encoding int format) {
+            Objects.requireNonNull(device);
+            try {
+                mInterface.overrideAudioSink(
+                        AudioDeviceInfo.convertDeviceTypeToInternalDevice(device.getType()),
+                        device.getAddress(), samplingRate, channelMask, format);
             } catch (RemoteException e) {
                 throw new RuntimeException(e);
             }

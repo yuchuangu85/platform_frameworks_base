@@ -2,7 +2,7 @@
 <resources xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
     <string name="app_label" msgid="8016145283189546017">"உள்ளீட்டுச் சாதனங்கள்"</string>
-    <string name="keyboard_layouts_label" msgid="6688773268302087545">"Android விசைப்பலகை"</string>
+    <string name="keyboard_layouts_label" msgid="6688773268302087545">"Android கீபோர்டு"</string>
     <string name="keyboard_layout_english_uk_label" msgid="6664258463319999632">"ஆங்கிலம் (யூகே)"</string>
     <string name="keyboard_layout_english_us_label" msgid="8994890249649106291">"ஆங்கிலம் (யூஎஸ்)"</string>
     <string name="keyboard_layout_english_us_intl" msgid="3705168594034233583">"ஆங்கிலம் (யூஎஸ்), சர்வதேச நடை"</string>
@@ -19,6 +19,7 @@
     <string name="keyboard_layout_swiss_german_label" msgid="2305520941993314258">"ஸ்விஸ் ஜெர்மன்"</string>
     <string name="keyboard_layout_belgian" msgid="2011984572838651558">"பெல்ஜியன்"</string>
     <string name="keyboard_layout_bulgarian" msgid="8951224309972028398">"பல்கேரியன்"</string>
+    <string name="keyboard_layout_bulgarian_phonetic" msgid="7568914730360106653">"பல்கேரியன், ஒலிப்புமுறை"</string>
     <string name="keyboard_layout_italian" msgid="6497079660449781213">"இத்தாலியன்"</string>
     <string name="keyboard_layout_danish" msgid="8036432066627127851">"டேனிஷ்"</string>
     <string name="keyboard_layout_norwegian" msgid="9090097917011040937">"நார்வேஜியன்"</string>

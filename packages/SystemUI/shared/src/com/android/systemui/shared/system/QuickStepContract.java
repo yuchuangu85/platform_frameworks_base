@@ -36,11 +36,29 @@ import java.util.StringJoiner;
  * Various shared constants between Launcher and SysUI as part of quickstep
  */
 public class QuickStepContract {
+    // Fully qualified name of the Launcher activity.
+    public static final String LAUNCHER_ACTIVITY_CLASS_NAME =
+            "com.google.android.apps.nexuslauncher.NexusLauncherActivity";
 
     public static final String KEY_EXTRA_SYSUI_PROXY = "extra_sysui_proxy";
-    public static final String KEY_EXTRA_INPUT_MONITOR = "extra_input_monitor";
     public static final String KEY_EXTRA_WINDOW_CORNER_RADIUS = "extra_window_corner_radius";
     public static final String KEY_EXTRA_SUPPORTS_WINDOW_CORNERS = "extra_supports_window_corners";
+    // See IPip.aidl
+    public static final String KEY_EXTRA_SHELL_PIP = "extra_shell_pip";
+    // See ISplitScreen.aidl
+    public static final String KEY_EXTRA_SHELL_SPLIT_SCREEN = "extra_shell_split_screen";
+    // See IOneHanded.aidl
+    public static final String KEY_EXTRA_SHELL_ONE_HANDED = "extra_shell_one_handed";
+    // See IShellTransitions.aidl
+    public static final String KEY_EXTRA_SHELL_SHELL_TRANSITIONS =
+            "extra_shell_shell_transitions";
+    // See IStartingWindow.aidl
+    public static final String KEY_EXTRA_SHELL_STARTING_WINDOW =
+            "extra_shell_starting_window";
+    // See ISmartspaceTransitionController.aidl
+    public static final String KEY_EXTRA_SMARTSPACE_TRANSITION_CONTROLLER = "smartspace_transition";
+    // See IRecentTasks.aidl
+    public static final String KEY_EXTRA_RECENT_TASKS = "recent_tasks";
 
     public static final String NAV_BAR_MODE_2BUTTON_OVERLAY =
             WindowManagerPolicyConstants.NAV_BAR_MODE_2BUTTON_OVERLAY;
@@ -88,6 +106,22 @@ public class QuickStepContract {
     public static final int SYSUI_STATE_BUBBLES_EXPANDED = 1 << 14;
     // The global actions dialog is showing
     public static final int SYSUI_STATE_GLOBAL_ACTIONS_SHOWING = 1 << 15;
+    // The one-handed mode is active
+    public static final int SYSUI_STATE_ONE_HANDED_ACTIVE = 1 << 16;
+    // Allow system gesture no matter the system bar(s) is visible or not
+    public static final int SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY = 1 << 17;
+    // The IME is showing
+    public static final int SYSUI_STATE_IME_SHOWING = 1 << 18;
+    // The window magnification is overlapped with system gesture insets at the bottom.
+    public static final int SYSUI_STATE_MAGNIFICATION_OVERLAP = 1 << 19;
+    // ImeSwitcher is showing
+    public static final int SYSUI_STATE_IME_SWITCHER_SHOWING = 1 << 20;
+    // Device dozing/AOD state
+    public static final int SYSUI_STATE_DEVICE_DOZING = 1 << 21;
+    // The home feature is disabled (either by SUW/SysUI/device policy)
+    public static final int SYSUI_STATE_BACK_DISABLED = 1 << 22;
+    // The bubble stack is expanded AND the mange menu for bubbles is expanded on top of it.
+    public static final int SYSUI_STATE_BUBBLES_MANAGE_MENU_EXPANDED = 1 << 23;
 
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({SYSUI_STATE_SCREEN_PINNING,
@@ -105,7 +139,15 @@ public class QuickStepContract {
             SYSUI_STATE_TRACING_ENABLED,
             SYSUI_STATE_ASSIST_GESTURE_CONSTRAINED,
             SYSUI_STATE_BUBBLES_EXPANDED,
-            SYSUI_STATE_GLOBAL_ACTIONS_SHOWING
+            SYSUI_STATE_GLOBAL_ACTIONS_SHOWING,
+            SYSUI_STATE_ONE_HANDED_ACTIVE,
+            SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY,
+            SYSUI_STATE_IME_SHOWING,
+            SYSUI_STATE_MAGNIFICATION_OVERLAP,
+            SYSUI_STATE_IME_SWITCHER_SHOWING,
+            SYSUI_STATE_DEVICE_DOZING,
+            SYSUI_STATE_BACK_DISABLED,
+            SYSUI_STATE_BUBBLES_MANAGE_MENU_EXPANDED
     })
     public @interface SystemUiStateFlags {}
 
@@ -129,6 +171,16 @@ public class QuickStepContract {
         str.add((flags & SYSUI_STATE_ASSIST_GESTURE_CONSTRAINED) != 0
                 ? "asst_gesture_constrain" : "");
         str.add((flags & SYSUI_STATE_BUBBLES_EXPANDED) != 0 ? "bubbles_expanded" : "");
+        str.add((flags & SYSUI_STATE_ONE_HANDED_ACTIVE) != 0 ? "one_handed_active" : "");
+        str.add((flags & SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY) != 0
+                ? "allow_gesture" : "");
+        str.add((flags & SYSUI_STATE_IME_SHOWING) != 0 ? "ime_visible" : "");
+        str.add((flags & SYSUI_STATE_MAGNIFICATION_OVERLAP) != 0 ? "magnification_overlap" : "");
+        str.add((flags & SYSUI_STATE_IME_SWITCHER_SHOWING) != 0 ? "ime_switcher_showing" : "");
+        str.add((flags & SYSUI_STATE_DEVICE_DOZING) != 0 ? "device_dozing" : "");
+        str.add((flags & SYSUI_STATE_BACK_DISABLED) != 0 ? "back_disabled" : "");
+        str.add((flags & SYSUI_STATE_BUBBLES_MANAGE_MENU_EXPANDED) != 0
+                ? "bubbles_mange_menu_expanded" : "");
         return str.toString();
     }
 
@@ -171,6 +223,9 @@ public class QuickStepContract {
      * disabled.
      */
     public static boolean isAssistantGestureDisabled(int sysuiStateFlags) {
+        if ((sysuiStateFlags & SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY) != 0) {
+            sysuiStateFlags &= ~SYSUI_STATE_NAV_BAR_HIDDEN;
+        }
         // Disable when in quick settings, screen pinning, immersive, the bouncer is showing, 
         // or search is disabled
         int disableFlags = SYSUI_STATE_SCREEN_PINNING
@@ -200,6 +255,9 @@ public class QuickStepContract {
         if ((sysuiStateFlags & SYSUI_STATE_BOUNCER_SHOWING) != 0
                 || (sysuiStateFlags & SYSUI_STATE_GLOBAL_ACTIONS_SHOWING) != 0) {
             return false;
+        }
+        if ((sysuiStateFlags & SYSUI_STATE_ALLOW_GESTURE_IGNORING_BAR_VISIBILITY) != 0) {
+            sysuiStateFlags &= ~SYSUI_STATE_NAV_BAR_HIDDEN;
         }
         // Disable when in immersive, or the notifications are interactive
         int disableFlags = SYSUI_STATE_NAV_BAR_HIDDEN
@@ -234,8 +292,8 @@ public class QuickStepContract {
      * These values are expressed in pixels because they should not respect display or font
      * scaling, this means that we don't have to reload them on config changes.
      */
-    public static float getWindowCornerRadius(Resources resources) {
-        return ScreenDecorationsUtils.getWindowCornerRadius(resources);
+    public static float getWindowCornerRadius(Context context) {
+        return ScreenDecorationsUtils.getWindowCornerRadius(context);
     }
 
     /**

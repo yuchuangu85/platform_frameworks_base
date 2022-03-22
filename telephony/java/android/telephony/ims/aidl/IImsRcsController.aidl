@@ -47,12 +47,12 @@ interface IImsRcsController {
     void registerRcsAvailabilityCallback(int subId, IImsCapabilityCallback c);
     void unregisterRcsAvailabilityCallback(int subId, IImsCapabilityCallback c);
     boolean isCapable(int subId, int capability, int radioTech);
-    boolean isAvailable(int subId, int capability);
+    boolean isAvailable(int subId, int capability, int radioTech);
 
     // ImsUceAdapter specific
     void requestCapabilities(int subId, String callingPackage, String callingFeatureId,
             in List<Uri> contactNumbers, IRcsUceControllerCallback c);
-    void requestNetworkAvailability(int subId, String callingPackage,
+    void requestAvailability(int subId, String callingPackage,
             String callingFeatureId, in Uri contactNumber,
             IRcsUceControllerCallback c);
     int getUcePublishState(int subId);

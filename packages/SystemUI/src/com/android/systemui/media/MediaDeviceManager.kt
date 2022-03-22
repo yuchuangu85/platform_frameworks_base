@@ -63,7 +63,13 @@ class MediaDeviceManager @Inject constructor(
      */
     fun removeListener(listener: Listener) = listeners.remove(listener)
 
-    override fun onMediaDataLoaded(key: String, oldKey: String?, data: MediaData) {
+    override fun onMediaDataLoaded(
+        key: String,
+        oldKey: String?,
+        data: MediaData,
+        immediately: Boolean,
+        receivedSmartspaceCardLatency: Int
+    ) {
         if (oldKey != null && oldKey != key) {
             val oldEntry = entries.remove(oldKey)
             oldEntry?.stop()
@@ -103,11 +109,9 @@ class MediaDeviceManager @Inject constructor(
     }
 
     @MainThread
-    private fun processDevice(key: String, oldKey: String?, device: MediaDevice?) {
-        val enabled = device != null
-        val data = MediaDeviceData(enabled, device?.iconWithoutBackground, device?.name)
+    private fun processDevice(key: String, oldKey: String?, device: MediaDeviceData?) {
         listeners.forEach {
-            it.onMediaDeviceChanged(key, oldKey, data)
+            it.onMediaDeviceChanged(key, oldKey, device)
         }
     }
 
@@ -129,7 +133,7 @@ class MediaDeviceManager @Inject constructor(
             get() = controller?.sessionToken
         private var started = false
         private var playbackType = PLAYBACK_TYPE_UNKNOWN
-        private var current: MediaDevice? = null
+        private var current: MediaDeviceData? = null
             set(value) {
                 if (!started || value != field) {
                     field = value
@@ -195,15 +199,13 @@ class MediaDeviceManager @Inject constructor(
 
         @WorkerThread
         private fun updateCurrent() {
-            val device = localMediaManager.getCurrentConnectedDevice()
-            controller?.let {
-                val route = mr2manager.getRoutingSessionForMediaController(it)
-                // If we get a null route, then don't trust the device. Just set to null to disable the
-                // output switcher chip.
-                current = if (route != null) device else null
-            } ?: run {
-                current = device
-            }
+            val device = localMediaManager.currentConnectedDevice
+            val route = controller?.let { mr2manager.getRoutingSessionForMediaController(it) }
+
+            // If we have a controller but get a null route, then don't trust the device
+            val enabled = device != null && (controller == null || route != null)
+            val name = route?.name?.toString() ?: device?.name
+            current = MediaDeviceData(enabled, device?.iconWithoutBackground, name)
         }
     }
 }

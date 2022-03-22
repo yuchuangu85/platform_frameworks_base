@@ -27,6 +27,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.telephony.CarrierConfigManager;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 
@@ -188,6 +189,15 @@ public final class PhoneAccount implements Parcelable {
         "android.telecom.extra.SKIP_CALL_FILTERING";
 
     /**
+     * Boolean {@link PhoneAccount} extras key (see {@link PhoneAccount#getExtras()}) which
+     * indicates whether a Self-managed {@link PhoneAccount} want to expose its calls to all
+     * {@link InCallService} which declares the metadata
+     * {@link TelecomManager#METADATA_INCLUDE_SELF_MANAGED_CALLS}.
+     */
+    public static final String EXTRA_ADD_SELF_MANAGED_CALLS_TO_INCALLSERVICE =
+            "android.telecom.extra.ADD_SELF_MANAGED_CALLS_TO_INCALLSERVICE";
+
+    /**
      * Flag indicating that this {@code PhoneAccount} can act as a connection manager for
      * other connections. The {@link ConnectionService} associated with this {@code PhoneAccount}
      * will be allowed to manage phone calls including using its own proprietary phone-call
@@ -274,10 +284,13 @@ public final class PhoneAccount implements Parcelable {
      * number relies on presence.  Should only be set if the {@code PhoneAccount} also has
      * {@link #CAPABILITY_VIDEO_CALLING}.
      * <p>
-     * When set, the {@link ConnectionService} is responsible for toggling the
+     * Note: As of Android 12, using the
      * {@link android.provider.ContactsContract.Data#CARRIER_PRESENCE_VT_CAPABLE} bit on the
      * {@link android.provider.ContactsContract.Data#CARRIER_PRESENCE} column to indicate whether
-     * a contact's phone number supports video calling.
+     * a contact's phone number supports video calling has been deprecated and should only be used
+     * on devices where {@link CarrierConfigManager#KEY_USE_RCS_PRESENCE_BOOL} is set. On newer
+     * devices, applications must use {@link android.telephony.ims.RcsUceAdapter} instead to
+     * determine whether or not a contact's phone number supports carrier video calling.
      * <p>
      * See {@link #getCapabilities}
      */
@@ -361,7 +374,13 @@ public final class PhoneAccount implements Parcelable {
      */
     public static final int CAPABILITY_ADHOC_CONFERENCE_CALLING = 0x4000;
 
-    /* NEXT CAPABILITY: 0x8000 */
+    /**
+     * Flag indicating whether this {@link PhoneAccount} is capable of supporting the call composer
+     * functionality for enriched calls.
+     */
+    public static final int CAPABILITY_CALL_COMPOSER = 0x8000;
+
+    /* NEXT CAPABILITY: 0x10000 */
 
     /**
      * URI scheme for telephone number URIs.
@@ -1087,6 +1106,9 @@ public final class PhoneAccount implements Parcelable {
         }
         if (hasCapabilities(CAPABILITY_ADHOC_CONFERENCE_CALLING)) {
             sb.append("AdhocConf");
+        }
+        if (hasCapabilities(CAPABILITY_CALL_COMPOSER)) {
+            sb.append("CallComposer ");
         }
         return sb.toString();
     }

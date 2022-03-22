@@ -23,15 +23,27 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.nfc.NfcAdapter;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.service.quicksettings.Tile;
+import android.view.View;
 import android.widget.Switch;
 
+import androidx.annotation.Nullable;
+
+import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 import com.android.systemui.R;
 import com.android.systemui.broadcast.BroadcastDispatcher;
+import com.android.systemui.dagger.qualifiers.Background;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.QSTile.BooleanState;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 
 import javax.inject.Inject;
@@ -39,6 +51,7 @@ import javax.inject.Inject;
 /** Quick settings tile: Enable/Disable NFC **/
 public class NfcTile extends QSTileImpl<BooleanState> {
 
+    private static final String NFC = "nfc";
     private final Icon mIcon = ResourceIcon.get(R.drawable.ic_qs_nfc);
 
     private NfcAdapter mAdapter;
@@ -47,8 +60,19 @@ public class NfcTile extends QSTileImpl<BooleanState> {
     private boolean mListening;
 
     @Inject
-    public NfcTile(QSHost host, BroadcastDispatcher broadcastDispatcher) {
-        super(host);
+    public NfcTile(
+            QSHost host,
+            @Background Looper backgroundLooper,
+            @Main Handler mainHandler,
+            FalsingManager falsingManager,
+            MetricsLogger metricsLogger,
+            StatusBarStateController statusBarStateController,
+            ActivityStarter activityStarter,
+            QSLogger qsLogger,
+            BroadcastDispatcher broadcastDispatcher
+    ) {
+        super(host, backgroundLooper, mainHandler, falsingManager, metricsLogger,
+                statusBarStateController, activityStarter, qsLogger);
         mBroadcastDispatcher = broadcastDispatcher;
     }
 
@@ -71,7 +95,13 @@ public class NfcTile extends QSTileImpl<BooleanState> {
 
     @Override
     public boolean isAvailable() {
-        return mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_NFC);
+        String stockTiles = mContext.getString(R.string.quick_settings_tiles_stock);
+        // For the restore from backup case
+        // Return false when "nfc" is not listed in quick_settings_tiles_stock.
+        if (stockTiles.contains(NFC)) {
+            return mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_NFC);
+        }
+        return false;
     }
 
     @Override
@@ -84,7 +114,7 @@ public class NfcTile extends QSTileImpl<BooleanState> {
     }
 
     @Override
-    protected void handleClick() {
+    protected void handleClick(@Nullable View view) {
         if (getAdapter() == null) {
             return;
         }
@@ -93,11 +123,6 @@ public class NfcTile extends QSTileImpl<BooleanState> {
         } else {
             getAdapter().disable();
         }
-    }
-
-    @Override
-    protected void handleSecondaryClick() {
-        handleClick();
     }
 
     @Override

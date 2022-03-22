@@ -1,1 +1,0 @@
-rule com.android.net.module.util.** com.android.connectivity.util.@1

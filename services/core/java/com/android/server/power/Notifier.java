@@ -36,7 +36,6 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.PowerManager;
-import android.os.PowerManager.WakeReason;
 import android.os.PowerManagerInternal;
 import android.os.Process;
 import android.os.RemoteException;
@@ -49,7 +48,7 @@ import android.provider.Settings;
 import android.telephony.TelephonyManager;
 import android.util.EventLog;
 import android.util.Slog;
-import android.view.WindowManagerPolicyConstants.OnReason;
+import android.view.WindowManagerPolicyConstants;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.app.IBatteryStats;
@@ -94,8 +93,10 @@ public class Notifier {
     private static final int MSG_USER_ACTIVITY = 1;
     private static final int MSG_BROADCAST = 2;
     private static final int MSG_WIRELESS_CHARGING_STARTED = 3;
+    private static final int MSG_BROADCAST_ENHANCED_PREDICTION = 4;
     private static final int MSG_PROFILE_TIMED_OUT = 5;
     private static final int MSG_WIRED_CHARGING_STARTED = 6;
+    private static final int MSG_SCREEN_POLICY = 7;
 
     private static final long[] CHARGING_VIBRATION_TIME = {
             40, 40, 40, 40, 40, 40, 40, 40, 40, // ramp-up sampling rate = 40ms
@@ -119,6 +120,8 @@ public class Notifier {
     private final AppOpsManager mAppOps;
     private final SuspendBlocker mSuspendBlocker;
     private final WindowManagerPolicy mPolicy;
+    private final FaceDownDetector mFaceDownDetector;
+    private final ScreenUndimDetector mScreenUndimDetector;
     private final ActivityManagerInternal mActivityManagerInternal;
     private final InputManagerInternal mInputManagerInternal;
     private final InputMethodManagerInternal mInputMethodManagerInternal;
@@ -165,12 +168,15 @@ public class Notifier {
     private boolean mUserActivityPending;
 
     public Notifier(Looper looper, Context context, IBatteryStats batteryStats,
-            SuspendBlocker suspendBlocker, WindowManagerPolicy policy) {
+            SuspendBlocker suspendBlocker, WindowManagerPolicy policy,
+            FaceDownDetector faceDownDetector, ScreenUndimDetector screenUndimDetector) {
         mContext = context;
         mBatteryStats = batteryStats;
         mAppOps = mContext.getSystemService(AppOpsManager.class);
         mSuspendBlocker = suspendBlocker;
         mPolicy = policy;
+        mFaceDownDetector = faceDownDetector;
+        mScreenUndimDetector = screenUndimDetector;
         mActivityManagerInternal = LocalServices.getService(ActivityManagerInternal.class);
         mInputManagerInternal = LocalServices.getService(InputManagerInternal.class);
         mInputMethodManagerInternal = LocalServices.getService(InputMethodManagerInternal.class);
@@ -454,13 +460,7 @@ public class Notifier {
         synchronized (mLock) {
             if (mInteractive) {
                 // Waking up...
-                mHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        final int why = translateOnReason(mInteractiveChangeReason);
-                        mPolicy.startedWakingUp(why);
-                    }
-                });
+                mHandler.post(() -> mPolicy.startedWakingUp(mInteractiveChangeReason));
 
                 // Send interactive broadcast.
                 mPendingInteractiveState = INTERACTIVE_STATE_AWAKE;
@@ -469,13 +469,7 @@ public class Notifier {
             } else {
                 // Going to sleep...
                 // Tell the policy that we started going to sleep.
-                final int why = translateOffReason(mInteractiveChangeReason);
-                mHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        mPolicy.startedGoingToSleep(why);
-                    }
-                });
+                mHandler.post(() -> mPolicy.startedGoingToSleep(mInteractiveChangeReason));
             }
         }
     }
@@ -491,20 +485,17 @@ public class Notifier {
                     (int) (SystemClock.uptimeMillis() - mInteractiveChangeStartTime);
             if (mInteractive) {
                 // Finished waking up...
-                final int why = translateOnReason(mInteractiveChangeReason);
-                mHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        LogMaker log = new LogMaker(MetricsEvent.SCREEN);
-                        log.setType(MetricsEvent.TYPE_OPEN);
-                        log.setSubtype(why);
-                        log.setLatency(interactiveChangeLatency);
-                        log.addTaggedData(
-                                MetricsEvent.FIELD_SCREEN_WAKE_REASON, mInteractiveChangeReason);
-                        MetricsLogger.action(log);
-                        EventLogTags.writePowerScreenState(1, 0, 0, 0, interactiveChangeLatency);
-                        mPolicy.finishedWakingUp(why);
-                    }
+                mHandler.post(() -> {
+                    LogMaker log = new LogMaker(MetricsEvent.SCREEN);
+                    log.setType(MetricsEvent.TYPE_OPEN);
+                    log.setSubtype(WindowManagerPolicyConstants.translateWakeReasonToOnReason(
+                            mInteractiveChangeReason));
+                    log.setLatency(interactiveChangeLatency);
+                    log.addTaggedData(
+                            MetricsEvent.FIELD_SCREEN_WAKE_REASON, mInteractiveChangeReason);
+                    MetricsLogger.action(log);
+                    EventLogTags.writePowerScreenState(1, 0, 0, 0, interactiveChangeLatency);
+                    mPolicy.finishedWakingUp(mInteractiveChangeReason);
                 });
             } else {
                 // Finished going to sleep...
@@ -520,20 +511,19 @@ public class Notifier {
                 }
 
                 // Tell the policy we finished going to sleep.
-                final int why = translateOffReason(mInteractiveChangeReason);
-                mHandler.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        LogMaker log = new LogMaker(MetricsEvent.SCREEN);
-                        log.setType(MetricsEvent.TYPE_CLOSE);
-                        log.setSubtype(why);
-                        log.setLatency(interactiveChangeLatency);
-                        log.addTaggedData(
-                                MetricsEvent.FIELD_SCREEN_SLEEP_REASON, mInteractiveChangeReason);
-                        MetricsLogger.action(log);
-                        EventLogTags.writePowerScreenState(0, why, 0, 0, interactiveChangeLatency);
-                        mPolicy.finishedGoingToSleep(why);
-                    }
+                final int offReason = WindowManagerPolicyConstants.translateSleepReasonToOffReason(
+                        mInteractiveChangeReason);
+                mHandler.post(() -> {
+                    LogMaker log = new LogMaker(MetricsEvent.SCREEN);
+                    log.setType(MetricsEvent.TYPE_CLOSE);
+                    log.setSubtype(offReason);
+                    log.setLatency(interactiveChangeLatency);
+                    log.addTaggedData(
+                            MetricsEvent.FIELD_SCREEN_SLEEP_REASON, mInteractiveChangeReason);
+                    MetricsLogger.action(log);
+                    EventLogTags.writePowerScreenState(
+                            0, offReason, 0, 0, interactiveChangeLatency);
+                    mPolicy.finishedGoingToSleep(mInteractiveChangeReason);
                 });
 
                 // Send non-interactive broadcast.
@@ -541,35 +531,6 @@ public class Notifier {
                 mPendingGoToSleepBroadcast = true;
                 updatePendingBroadcastLocked();
             }
-        }
-    }
-
-    private static int translateOffReason(int reason) {
-        switch (reason) {
-            case PowerManager.GO_TO_SLEEP_REASON_DEVICE_ADMIN:
-                return WindowManagerPolicy.OFF_BECAUSE_OF_ADMIN;
-            case PowerManager.GO_TO_SLEEP_REASON_TIMEOUT:
-            case PowerManager.GO_TO_SLEEP_REASON_INATTENTIVE:
-                return WindowManagerPolicy.OFF_BECAUSE_OF_TIMEOUT;
-            default:
-                return WindowManagerPolicy.OFF_BECAUSE_OF_USER;
-        }
-    }
-
-    private static @OnReason int translateOnReason(@WakeReason int reason) {
-        switch (reason) {
-            case PowerManager.WAKE_REASON_POWER_BUTTON:
-            case PowerManager.WAKE_REASON_PLUGGED_IN:
-            case PowerManager.WAKE_REASON_GESTURE:
-            case PowerManager.WAKE_REASON_CAMERA_LAUNCH:
-            case PowerManager.WAKE_REASON_WAKE_KEY:
-            case PowerManager.WAKE_REASON_WAKE_MOTION:
-            case PowerManager.WAKE_REASON_LID:
-                return WindowManagerPolicy.ON_BECAUSE_OF_USER;
-            case PowerManager.WAKE_REASON_APPLICATION:
-                return WindowManagerPolicy.ON_BECAUSE_OF_APPLICATION;
-            default:
-                return WindowManagerPolicy.ON_BECAUSE_OF_UNKNOWN;
         }
     }
 
@@ -591,6 +552,7 @@ public class Notifier {
             if (!mUserActivityPending) {
                 mUserActivityPending = true;
                 Message msg = mHandler.obtainMessage(MSG_USER_ACTIVITY);
+                msg.arg1 = event;
                 msg.setAsynchronous(true);
                 mHandler.sendMessage(msg);
             }
@@ -661,6 +623,22 @@ public class Notifier {
     }
 
     /**
+     * Called when the screen policy changes.
+     */
+    public void onScreenPolicyUpdate(int newPolicy) {
+        if (DEBUG) {
+            Slog.d(TAG, "onScreenPolicyUpdate: newPolicy=" + newPolicy);
+        }
+
+        synchronized (mLock) {
+            Message msg = mHandler.obtainMessage(MSG_SCREEN_POLICY);
+            msg.arg1 = newPolicy;
+            msg.setAsynchronous(true);
+            mHandler.sendMessage(msg);
+        }
+    }
+
+    /**
      * Dumps data for bugreports.
      *
      * @param pw The stream to print to.
@@ -689,7 +667,7 @@ public class Notifier {
         mSuspendBlocker.release();
     }
 
-    private void sendUserActivity() {
+    private void sendUserActivity(int event) {
         synchronized (mLock) {
             if (!mUserActivityPending) {
                 return;
@@ -699,6 +677,18 @@ public class Notifier {
         TelephonyManager tm = mContext.getSystemService(TelephonyManager.class);
         tm.notifyUserActivity();
         mPolicy.userActivity();
+        mFaceDownDetector.userActivity(event);
+        mScreenUndimDetector.userActivity();
+    }
+
+    void postEnhancedDischargePredictionBroadcast(long delayMs) {
+        mHandler.sendEmptyMessageDelayed(MSG_BROADCAST_ENHANCED_PREDICTION, delayMs);
+    }
+
+    private void sendEnhancedDischargePredictionBroadcast() {
+        Intent intent = new Intent(PowerManager.ACTION_ENHANCED_DISCHARGE_PREDICTION_CHANGED)
+                .addFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY);
+        mContext.sendBroadcastAsUser(intent, UserHandle.ALL);
     }
 
     private void sendNextBroadcast() {
@@ -842,6 +832,10 @@ public class Notifier {
         mSuspendBlocker.release();
     }
 
+    private void screenPolicyChanging(int screenPolicy) {
+        mScreenUndimDetector.recordScreenPolicy(screenPolicy);
+    }
+
     private void lockProfile(@UserIdInt int userId) {
         mTrustManager.setDeviceLockedForUser(userId, true /*locked*/);
     }
@@ -864,7 +858,7 @@ public class Notifier {
         public void handleMessage(Message msg) {
             switch (msg.what) {
                 case MSG_USER_ACTIVITY:
-                    sendUserActivity();
+                    sendUserActivity(msg.arg1);
                     break;
                 case MSG_BROADCAST:
                     sendNextBroadcast();
@@ -872,11 +866,18 @@ public class Notifier {
                 case MSG_WIRELESS_CHARGING_STARTED:
                     showWirelessChargingStarted(msg.arg1, msg.arg2);
                     break;
+                case MSG_BROADCAST_ENHANCED_PREDICTION:
+                    removeMessages(MSG_BROADCAST_ENHANCED_PREDICTION);
+                    sendEnhancedDischargePredictionBroadcast();
+                    break;
                 case MSG_PROFILE_TIMED_OUT:
                     lockProfile(msg.arg1);
                     break;
                 case MSG_WIRED_CHARGING_STARTED:
                     showWiredChargingStarted(msg.arg1);
+                    break;
+                case MSG_SCREEN_POLICY:
+                    screenPolicyChanging(msg.arg1);
                     break;
             }
         }

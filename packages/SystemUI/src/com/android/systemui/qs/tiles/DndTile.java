@@ -19,17 +19,17 @@ package com.android.systemui.qs.tiles;
 import static android.provider.Settings.Global.ZEN_MODE_ALARMS;
 import static android.provider.Settings.Global.ZEN_MODE_OFF;
 
-import android.app.ActivityManager;
+import android.app.AlertDialog;
 import android.app.Dialog;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.SharedPreferences.OnSharedPreferenceChangeListener;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.UserManager;
 import android.provider.Settings;
 import android.provider.Settings.Global;
@@ -42,9 +42,10 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.View.OnAttachStateChangeListener;
 import android.view.ViewGroup;
-import android.view.WindowManager;
 import android.widget.Switch;
 import android.widget.Toast;
+
+import androidx.annotation.Nullable;
 
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
@@ -52,15 +53,21 @@ import com.android.settingslib.notification.EnableZenModeDialog;
 import com.android.systemui.Prefs;
 import com.android.systemui.R;
 import com.android.systemui.SysUIToast;
-import com.android.systemui.broadcast.BroadcastDispatcher;
+import com.android.systemui.animation.DialogLaunchAnimator;
+import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.qs.DetailAdapter;
 import com.android.systemui.plugins.qs.QSTile.BooleanState;
+import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.SecureSetting;
+import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 import com.android.systemui.statusbar.phone.SystemUIDialog;
 import com.android.systemui.statusbar.policy.ZenModeController;
+import com.android.systemui.util.settings.SecureSettings;
 import com.android.systemui.volume.ZenModePanel;
 
 import javax.inject.Inject;
@@ -74,41 +81,44 @@ public class DndTile extends QSTileImpl<BooleanState> {
     private static final Intent ZEN_PRIORITY_SETTINGS =
             new Intent(Settings.ACTION_ZEN_MODE_PRIORITY_SETTINGS);
 
-    private static final String ACTION_SET_VISIBLE = "com.android.systemui.dndtile.SET_VISIBLE";
-    private static final String EXTRA_VISIBLE = "visible";
-
     private final ZenModeController mController;
     private final DndDetailAdapter mDetailAdapter;
-    private final ActivityStarter mActivityStarter;
     private final SharedPreferences mSharedPreferences;
-    private final BroadcastDispatcher mBroadcastDispatcher;
+    private final SecureSetting mSettingZenDuration;
+    private final DialogLaunchAnimator mDialogLaunchAnimator;
 
     private boolean mListening;
     private boolean mShowingDetail;
-    private boolean mReceiverRegistered;
 
     @Inject
-    public DndTile(QSHost host, ZenModeController zenModeController,
-            ActivityStarter activityStarter, BroadcastDispatcher broadcastDispatcher,
-            @Main SharedPreferences sharedPreferences) {
-        super(host);
+    public DndTile(
+            QSHost host,
+            @Background Looper backgroundLooper,
+            @Main Handler mainHandler,
+            FalsingManager falsingManager,
+            MetricsLogger metricsLogger,
+            StatusBarStateController statusBarStateController,
+            ActivityStarter activityStarter,
+            QSLogger qsLogger,
+            ZenModeController zenModeController,
+            @Main SharedPreferences sharedPreferences,
+            SecureSettings secureSettings,
+            DialogLaunchAnimator dialogLaunchAnimator
+    ) {
+        super(host, backgroundLooper, mainHandler, falsingManager, metricsLogger,
+                statusBarStateController, activityStarter, qsLogger);
         mController = zenModeController;
-        mActivityStarter = activityStarter;
         mSharedPreferences = sharedPreferences;
         mDetailAdapter = new DndDetailAdapter();
-        mBroadcastDispatcher = broadcastDispatcher;
-        broadcastDispatcher.registerReceiver(mReceiver, new IntentFilter(ACTION_SET_VISIBLE));
-        mReceiverRegistered = true;
         mController.observe(getLifecycle(), mZenCallback);
-    }
-
-    @Override
-    protected void handleDestroy() {
-        super.handleDestroy();
-        if (mReceiverRegistered) {
-            mBroadcastDispatcher.unregisterReceiver(mReceiver);
-            mReceiverRegistered = false;
-        }
+        mDialogLaunchAnimator = dialogLaunchAnimator;
+        mSettingZenDuration = new SecureSetting(secureSettings, mUiHandler,
+                Settings.Secure.ZEN_DURATION, getHost().getUserId()) {
+            @Override
+            protected void handleValueChanged(int value, boolean observedChange) {
+                refreshState();
+            }
+        };
     }
 
     public static void setVisible(Context context, boolean visible) {
@@ -144,19 +154,23 @@ public class DndTile extends QSTileImpl<BooleanState> {
     }
 
     @Override
-    protected void handleClick() {
+    protected void handleClick(@Nullable View view) {
         // Zen is currently on
         if (mState.value) {
             mController.setZen(ZEN_MODE_OFF, null, TAG);
         } else {
-            showDetail(true);
+            enableZenMode(view);
         }
     }
 
     @Override
-    public void showDetail(boolean show) {
-        int zenDuration = Settings.Secure.getInt(mContext.getContentResolver(),
-                Settings.Secure.ZEN_DURATION, 0);
+    protected void handleUserSwitch(int newUserId) {
+        super.handleUserSwitch(newUserId);
+        mSettingZenDuration.setUserId(newUserId);
+    }
+
+    private void enableZenMode(@Nullable View view) {
+        int zenDuration = mSettingZenDuration.getValue();
         boolean showOnboarding = Settings.Secure.getInt(mContext.getContentResolver(),
                 Settings.Secure.SHOW_ZEN_UPGRADE_NOTIFICATION, 0) != 0
                 && Settings.Secure.getInt(mContext.getContentResolver(),
@@ -175,14 +189,12 @@ public class DndTile extends QSTileImpl<BooleanState> {
             switch (zenDuration) {
                 case Settings.Secure.ZEN_DURATION_PROMPT:
                     mUiHandler.post(() -> {
-                        Dialog mDialog = new EnableZenModeDialog(mContext).createDialog();
-                        mDialog.getWindow().setType(
-                                WindowManager.LayoutParams.TYPE_KEYGUARD_DIALOG);
-                        SystemUIDialog.setShowForAllUsers(mDialog, true);
-                        SystemUIDialog.registerDismissListener(mDialog);
-                        SystemUIDialog.setWindowOnTop(mDialog);
-                        mUiHandler.post(() -> mDialog.show());
-                        mHost.collapsePanels();
+                        Dialog dialog = makeZenModeDialog();
+                        if (view != null) {
+                            mDialogLaunchAnimator.showFromView(dialog, view, false);
+                        } else {
+                            dialog.show();
+                        }
                     });
                     break;
                 case Settings.Secure.ZEN_DURATION_FOREVER:
@@ -190,15 +202,25 @@ public class DndTile extends QSTileImpl<BooleanState> {
                     break;
                 default:
                     Uri conditionId = ZenModeConfig.toTimeCondition(mContext, zenDuration,
-                            ActivityManager.getCurrentUser(), true).id;
+                            mHost.getUserId(), true).id;
                     mController.setZen(Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS,
                             conditionId, TAG);
             }
         }
     }
 
+    private Dialog makeZenModeDialog() {
+        AlertDialog dialog = new EnableZenModeDialog(mContext, R.style.Theme_SystemUI_Dialog,
+                true /* cancelIsNeutral */).createDialog();
+        SystemUIDialog.applyFlags(dialog);
+        SystemUIDialog.setShowForAllUsers(dialog, true);
+        SystemUIDialog.registerDismissListener(dialog);
+        SystemUIDialog.setDialogSize(dialog);
+        return dialog;
+    }
+
     @Override
-    protected void handleSecondaryClick() {
+    protected void handleSecondaryClick(@Nullable View view) {
         if (mController.isVolumeRestricted()) {
             // Collapse the panels, so the user can see the toast.
             mHost.collapsePanels();
@@ -275,6 +297,8 @@ public class DndTile extends QSTileImpl<BooleanState> {
         state.dualLabelContentDescription = mContext.getResources().getString(
                 R.string.accessibility_quick_settings_open_settings, getTileLabel());
         state.expandedAccessibilityClassName = Switch.class.getName();
+        state.forceExpandIcon =
+                mSettingZenDuration.getValue() == Settings.Secure.ZEN_DURATION_PROMPT;
     }
 
     @Override
@@ -301,6 +325,13 @@ public class DndTile extends QSTileImpl<BooleanState> {
         } else {
             Prefs.unregisterListener(mContext, mPrefListener);
         }
+        mSettingZenDuration.setListening(listening);
+    }
+
+    @Override
+    protected void handleDestroy() {
+        super.handleDestroy();
+        mSettingZenDuration.setListening(false);
     }
 
     @Override
@@ -333,15 +364,6 @@ public class DndTile extends QSTileImpl<BooleanState> {
             if (isShowingDetail()) {
                 mDetailAdapter.updatePanel();
             }
-        }
-    };
-
-    private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            final boolean visible = intent.getBooleanExtra(EXTRA_VISIBLE, false);
-            setVisible(mContext, visible);
-            refreshState();
         }
     };
 
