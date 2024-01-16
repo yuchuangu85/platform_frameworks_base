@@ -19,8 +19,8 @@ import android.app.backup.FullBackupDataOutput;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.content.pm.PackageParser.SigningDetails;
 import android.content.pm.Signature;
+import android.content.pm.SigningDetails;
 import android.content.pm.SigningInfo;
 import android.os.Build;
 import android.os.Environment;
@@ -57,6 +57,7 @@ import java.nio.file.attribute.FileTime;
             ShadowBackupDataOutput.class,
             ShadowEnvironment.class,
             ShadowFullBackup.class,
+            ShadowSigningInfo.class,
         })
 public class AppMetadataBackupWriterTest {
     private static final String TEST_PACKAGE = "com.test.package";

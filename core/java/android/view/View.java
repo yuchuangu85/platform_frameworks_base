@@ -17,6 +17,7 @@
 package android.view;
 
 import static android.content.res.Resources.ID_NULL;
+import static android.os.Trace.TRACE_TAG_APP;
 import static android.view.ContentInfo.SOURCE_DRAG_AND_DROP;
 import static android.view.accessibility.AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED;
 import static android.view.displayhash.DisplayHashResultCallback.DISPLAY_HASH_ERROR_INVALID_BOUNDS;
@@ -46,9 +47,11 @@ import android.annotation.IntRange;
 import android.annotation.LayoutRes;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresPermission;
 import android.annotation.Size;
 import android.annotation.StyleRes;
 import android.annotation.SuppressLint;
+import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.annotation.UiContext;
 import android.annotation.UiThread;
@@ -60,6 +63,7 @@ import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.res.ColorStateList;
+import android.content.res.CompatibilityInfo;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
@@ -88,6 +92,7 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.display.DisplayManagerGlobal;
+import android.hardware.input.InputManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -149,6 +154,7 @@ import android.view.displayhash.DisplayHashManager;
 import android.view.displayhash.DisplayHashResultCallback;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
+import android.view.inputmethod.InputMethodManager;
 import android.view.inspector.InspectableProperty;
 import android.view.inspector.InspectableProperty.EnumEntry;
 import android.view.inspector.InspectableProperty.FlagEntry;
@@ -160,6 +166,7 @@ import android.view.translation.ViewTranslationResponse;
 import android.widget.Checkable;
 import android.widget.FrameLayout;
 import android.widget.ScrollBarDrawable;
+import android.window.OnBackInvokedDispatcher;
 
 import com.android.internal.R;
 import com.android.internal.util.ArrayUtils;
@@ -307,7 +314,7 @@ import java.util.function.Predicate;
  *     </tr>
  *
  *     <tr>
- *         <td rowspan="4">Event processing</td>
+ *         <td rowspan="6">Event processing</td>
  *         <td><code>{@link #onKeyDown(int, KeyEvent)}</code></td>
  *         <td>Called when a new hardware key event occurs.
  *         </td>
@@ -325,6 +332,16 @@ import java.util.function.Predicate;
  *     <tr>
  *         <td><code>{@link #onTouchEvent(MotionEvent)}</code></td>
  *         <td>Called when a touch screen motion event occurs.
+ *         </td>
+ *     </tr>
+ *     <tr>
+ *         <td><code>{@link #onGenericMotionEvent(MotionEvent)}</code></td>
+ *         <td>Called when a generic motion event occurs.
+ *         </td>
+ *     </tr>
+ *     <tr>
+ *         <td><code>{@link #onHoverEvent(MotionEvent)}</code></td>
+ *         <td>Called when a hover motion event occurs.
  *         </td>
  *     </tr>
  *
@@ -744,8 +761,9 @@ import java.util.function.Predicate;
  * To enable touch filtering, call {@link #setFilterTouchesWhenObscured(boolean)} or set the
  * android:filterTouchesWhenObscured layout attribute to true.  When enabled, the framework
  * will discard touches that are received whenever the view's window is obscured by
- * another visible window.  As a result, the view will not receive touches whenever a
- * toast, dialog or other window appears above the view's window.
+ * another visible window at the touched location.  As a result, the view will not receive touches
+ * whenever the touch passed through a toast, dialog or other window that appears above the view's
+ * window.
  * </p><p>
  * For more fine-grained control over security, consider overriding the
  * {@link #onFilterTouchEventForSecurity(MotionEvent)} method to implement your own
@@ -979,6 +997,22 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * Currently zero size SurfaceControl cannot be created thus we create a 1x1 surface instead.
      */
     private static boolean sAcceptZeroSizeDragShadow;
+
+    /**
+     * When true, measure and layout passes of all the newly attached views will be logged with
+     * {@link Trace}, so we can better debug jank due to complex view hierarchies.
+     */
+    private static boolean sTraceLayoutSteps;
+
+    /**
+     * When not null, emits a {@link Trace} instant event and the stacktrace every time a relayout
+     * of a class having this name happens.
+     */
+    private static String sTraceRequestLayoutClass;
+
+    /** Used to avoid computing the full strings each time when layout tracing is enabled. */
+    @Nullable
+    private ViewTraversalTracingStrings mTracingStrings;
 
     /**
      * Prior to R, {@link #dispatchApplyWindowInsets} had an issue:
@@ -1276,6 +1310,17 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * <p>See {@link #setAutofillHints(String...)} for more info about autofill hints.
      */
     public static final String AUTOFILL_HINT_CREDIT_CARD_EXPIRATION_DAY = "creditCardExpirationDay";
+
+    /**
+     * A hint indicating that this view can be autofilled with a password.
+     *
+     * This is a heuristic-based hint that is meant to be used by UI Toolkit developers when a
+     * view is a password field but doesn't specify a
+     * <code>{@value View#AUTOFILL_HINT_PASSWORD}</code>.
+     * @hide
+     */
+    // TODO(229765029): unhide this for UI toolkit
+    public static final String AUTOFILL_HINT_PASSWORD_AUTO = "passwordAuto";
 
     /**
      * Hints for the autofill services that describes the content of the view.
@@ -3060,6 +3105,44 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     static final int IMPORTANT_FOR_ACCESSIBILITY_DEFAULT = IMPORTANT_FOR_ACCESSIBILITY_AUTO;
 
     /**
+     * Automatically determine whether the view should only allow interactions from
+     * {@link android.accessibilityservice.AccessibilityService}s with the
+     * {@link android.accessibilityservice.AccessibilityServiceInfo#isAccessibilityTool} property
+     * set to true.
+     *
+     * <p>
+     * Accessibility interactions from services without {@code isAccessibilityTool} set to true are
+     * disallowed for any of the following conditions:
+     * <li>this view sets {@link #getFilterTouchesWhenObscured()}.</li>
+     * <li>any parent of this view returns true from {@link #isAccessibilityDataSensitive()}.</li>
+     * </p>
+     */
+    public static final int ACCESSIBILITY_DATA_SENSITIVE_AUTO = 0x00000000;
+
+    /**
+     * Only allow interactions from {@link android.accessibilityservice.AccessibilityService}s
+     * with the {@link android.accessibilityservice.AccessibilityServiceInfo#isAccessibilityTool}
+     * property set to true.
+     */
+    public static final int ACCESSIBILITY_DATA_SENSITIVE_YES = 0x00000001;
+
+    /**
+     * Allow interactions from all {@link android.accessibilityservice.AccessibilityService}s,
+     * regardless of their
+     * {@link android.accessibilityservice.AccessibilityServiceInfo#isAccessibilityTool} property.
+     */
+    public static final int ACCESSIBILITY_DATA_SENSITIVE_NO = 0x00000002;
+
+    /** @hide */
+    @IntDef(prefix = { "ACCESSIBILITY_DATA_SENSITIVE_" }, value = {
+            ACCESSIBILITY_DATA_SENSITIVE_AUTO,
+            ACCESSIBILITY_DATA_SENSITIVE_YES,
+            ACCESSIBILITY_DATA_SENSITIVE_NO,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface AccessibilityDataSensitive {}
+
+    /**
      * Mask for obtaining the bits which specify how to determine
      * whether a view is important for accessibility.
      */
@@ -3516,6 +3599,10 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *                   1              PFLAG4_DETACHED
      *                  1               PFLAG4_HAS_TRANSLATION_TRANSIENT_STATE
      *                 1                PFLAG4_DRAG_A11Y_STARTED
+     *                1                 PFLAG4_AUTO_HANDWRITING_INITIATION_ENABLED
+     *               1                  PFLAG4_IMPORTANT_FOR_CREDENTIAL_MANAGER
+     *              1                   PFLAG4_TRAVERSAL_TRACING_ENABLED
+     *             1                    PFLAG4_RELAYOUT_TRACING_ENABLED
      * |-------|-------|-------|-------|
      */
 
@@ -3591,6 +3678,28 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * Indicates that the view has started a drag with {@link AccessibilityAction#ACTION_DRAG_START}
      */
     private static final int PFLAG4_DRAG_A11Y_STARTED = 0x000008000;
+
+    /**
+     * Indicates that the view enables auto handwriting initiation.
+     */
+    private static final int PFLAG4_AUTO_HANDWRITING_ENABLED = 0x000010000;
+
+    /**
+     * Indicates that the view is important for Credential Manager.
+     */
+    private static final int PFLAG4_IMPORTANT_FOR_CREDENTIAL_MANAGER = 0x000020000;
+
+    /**
+     * When set, measure and layout passes of this view will be logged with {@link Trace}, so we
+     * can better debug jank due to complex view hierarchies.
+     */
+    private static final int PFLAG4_TRAVERSAL_TRACING_ENABLED = 0x000040000;
+
+    /**
+     * When set, emits a {@link Trace} instant event and stacktrace every time a requestLayout of
+     * this class happens.
+     */
+    private static final int PFLAG4_RELAYOUT_TRACING_ENABLED = 0x000080000;
 
     /* End of masks for mPrivateFlags4 */
 
@@ -4455,6 +4564,26 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     protected int mPaddingBottom;
 
     /**
+     * The amount of pixel offset applied to the left edge of this view's handwriting bounds.
+     */
+    private float mHandwritingBoundsOffsetLeft;
+
+    /**
+     * The amount of pixel offset applied to the top edge of this view's handwriting bounds.
+     */
+    private float mHandwritingBoundsOffsetTop;
+
+    /**
+     * The amount of pixel offset applied to the right edge of this view's handwriting bounds.
+     */
+    private float mHandwritingBoundsOffsetRight;
+
+    /**
+     * The amount of pixel offset applied to the bottom edge of this view's handwriting bounds.
+     */
+    private float mHandwritingBoundsOffsetBottom;
+
+    /**
      * The layout insets in pixels, that is the distance in pixels between the
      * visible edges of this view its bounds.
      */
@@ -4475,6 +4604,16 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * area.
      */
     private CharSequence mAccessibilityPaneTitle;
+
+    /**
+     * Describes whether this view should only allow interactions from
+     * {@link android.accessibilityservice.AccessibilityService}s with the
+     * {@link android.accessibilityservice.AccessibilityServiceInfo#isAccessibilityTool} property
+     * set to true.
+     */
+    private int mExplicitAccessibilityDataSensitive = ACCESSIBILITY_DATA_SENSITIVE_AUTO;
+    /** Used to calculate and cache {@link #isAccessibilityDataSensitive()}. */
+    private int mInferredAccessibilityDataSensitive = ACCESSIBILITY_DATA_SENSITIVE_AUTO;
 
     /**
      * Specifies the id of a view for which this view serves as a label for
@@ -4733,15 +4872,21 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         WindowInsetsAnimation.Callback mWindowInsetsAnimationCallback;
 
         /**
-         * This lives here since it's only valid for interactive views. This list is null until the
-         * first use.
+         * This lives here since it's only valid for interactive views. This list is null
+         * until its first use.
          */
         private List<Rect> mSystemGestureExclusionRects = null;
+        private List<Rect> mKeepClearRects = null;
+        private List<Rect> mUnrestrictedKeepClearRects = null;
+        private boolean mPreferKeepClear = false;
+        private Rect mHandwritingArea = null;
 
         /**
-         * Used to track {@link #mSystemGestureExclusionRects}
+         * Used to track {@link #mSystemGestureExclusionRects}, {@link #mKeepClearRects} and
+         * {@link #mHandwritingArea}.
          */
         public RenderNode.PositionUpdateListener mPositionUpdateListener;
+        private Runnable mPositionChangedUpdate;
 
         /**
          * Allows the application to implement custom scroll capture support.
@@ -4956,6 +5101,14 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      */
     private boolean mHoveringTouchDelegate = false;
 
+    // These two fields are set if the view is a handwriting delegator.
+    private Runnable mHandwritingDelegatorCallback;
+    private String mAllowedHandwritingDelegatePackageName;
+
+    // These two fields are set if the view is a handwriting delegate.
+    private boolean mIsHandwritingDelegate;
+    private String mAllowedHandwritingDelegatorPackageName;
+
     /**
      * Solid color to use as a background when creating the drawing cache. Enables
      * the cache to use 16 bit bitmaps instead of 32 bit.
@@ -5048,6 +5201,24 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * is used by the system to perform a drag without animations.
      */
     public static final int DRAG_FLAG_ACCESSIBILITY_ACTION = 1 << 10;
+
+    /**
+     * Flag indicating that the caller desires to take ownership of the drag surface for handling
+     * the animation associated with an unhandled drag.  It is mainly useful if the view starting
+     * a global drag changes visibility during the gesture and the default animation of animating
+     * the surface back to the origin is not sufficient.
+     *
+     * The calling app must hold the {@link android.Manifest.permission#START_TASKS_FROM_RECENTS}
+     * permission and will receive the drag surface as a part of
+     * {@link action.view.DragEvent#ACTION_DRAG_ENDED} only if the drag event's
+     * {@link action.view.DragEvent#getDragResult()} is {@code false}.  The caller is responsible
+     * for removing the surface after its animation.
+     *
+     * This flag has no effect if the system decides that a cancel-drag animation does not need to
+     * occur.
+     * @hide
+     */
+    public static final int DRAG_FLAG_REQUEST_SURFACE_FOR_RETURN_ANIMATION = 1 << 11;
 
     /**
      * Vertical scroll factor cached by {@link #getVerticalScrollFactor}.
@@ -5147,11 +5318,6 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     @Retention(RetentionPolicy.SOURCE)
     public @interface LayerType {}
 
-    @ViewDebug.ExportedProperty(category = "drawing", mapping = {
-            @ViewDebug.IntToString(from = LAYER_TYPE_NONE, to = "NONE"),
-            @ViewDebug.IntToString(from = LAYER_TYPE_SOFTWARE, to = "SOFTWARE"),
-            @ViewDebug.IntToString(from = LAYER_TYPE_HARDWARE, to = "HARDWARE")
-    })
     int mLayerType = LAYER_TYPE_NONE;
     Paint mLayerPaint;
 
@@ -5243,7 +5409,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     /**
      * The pointer icon when the mouse hovers on this view. The default is null.
      */
-    private PointerIcon mPointerIcon;
+    private PointerIcon mMousePointerIcon;
 
     /**
      * @hide
@@ -5844,6 +6010,10 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                     setImportantForAccessibility(a.getInt(attr,
                             IMPORTANT_FOR_ACCESSIBILITY_DEFAULT));
                     break;
+                case R.styleable.View_accessibilityDataSensitive:
+                    setAccessibilityDataSensitive(a.getInt(attr,
+                            ACCESSIBILITY_DATA_SENSITIVE_AUTO));
+                    break;
                 case R.styleable.View_accessibilityLiveRegion:
                     setAccessibilityLiveRegion(a.getInt(attr, ACCESSIBILITY_LIVE_REGION_DEFAULT));
                     break;
@@ -5994,6 +6164,12 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                         setImportantForContentCapture(a.getInt(attr,
                                 IMPORTANT_FOR_CONTENT_CAPTURE_AUTO));
                     }
+                    break;
+                case R.styleable.View_isCredential:
+                    if (a.peekValue(attr) != null) {
+                        setIsCredential(a.getBoolean(attr, false));
+                    }
+                    break;
                 case R.styleable.View_defaultFocusHighlightEnabled:
                     if (a.peekValue(attr) != null) {
                         setDefaultFocusHighlightEnabled(a.getBoolean(attr, true));
@@ -6026,6 +6202,24 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                     break;
                 case R.styleable.View_clipToOutline:
                     setClipToOutline(a.getBoolean(attr, false));
+                    break;
+                case R.styleable.View_preferKeepClear:
+                    setPreferKeepClear(a.getBoolean(attr, false));
+                    break;
+                case R.styleable.View_autoHandwritingEnabled:
+                    setAutoHandwritingEnabled(a.getBoolean(attr, false));
+                    break;
+                case R.styleable.View_handwritingBoundsOffsetLeft:
+                    mHandwritingBoundsOffsetLeft = a.getDimension(attr, 0);
+                    break;
+                case R.styleable.View_handwritingBoundsOffsetTop:
+                    mHandwritingBoundsOffsetTop = a.getDimension(attr, 0);
+                    break;
+                case R.styleable.View_handwritingBoundsOffsetRight:
+                    mHandwritingBoundsOffsetRight = a.getDimension(attr, 0);
+                    break;
+                case R.styleable.View_handwritingBoundsOffsetBottom:
+                    mHandwritingBoundsOffsetBottom = a.getDimension(attr, 0);
                     break;
             }
         }
@@ -6446,7 +6640,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
     @Override
     public String toString() {
-        StringBuilder out = new StringBuilder(128);
+        StringBuilder out = new StringBuilder(256);
         out.append(getClass().getName());
         out.append('{');
         out.append(Integer.toHexString(System.identityHashCode(this)));
@@ -6486,6 +6680,15 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         out.append(mRight);
         out.append(',');
         out.append(mBottom);
+        appendId(out);
+        if (mAutofillId != null) {
+            out.append(" aid="); out.append(mAutofillId);
+        }
+        out.append("}");
+        return out.toString();
+    }
+
+    void appendId(StringBuilder out) {
         final int id = getId();
         if (id != NO_ID) {
             out.append(" #");
@@ -6517,11 +6720,6 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                 }
             }
         }
-        if (mAutofillId != null) {
-            out.append(" aid="); out.append(mAutofillId);
-        }
-        out.append("}");
-        return out.toString();
     }
 
     /**
@@ -7530,9 +7728,15 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_LONG_CLICKED);
 
         boolean handled = false;
-        final ListenerInfo li = mListenerInfo;
-        if (li != null && li.mOnLongClickListener != null) {
-            handled = li.mOnLongClickListener.onLongClick(View.this);
+        final OnLongClickListener listener =
+                mListenerInfo == null ? null : mListenerInfo.mOnLongClickListener;
+        boolean shouldPerformHapticFeedback = true;
+        if (listener != null) {
+            handled = listener.onLongClick(View.this);
+            if (handled) {
+                shouldPerformHapticFeedback = listener.onLongClickUseDefaultHapticFeedback(
+                        View.this);
+            }
         }
         if (!handled) {
             final boolean isAnchored = !Float.isNaN(x) && !Float.isNaN(y);
@@ -7543,7 +7747,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                 handled = showLongClickTooltip((int) x, (int) y);
             }
         }
-        if (handled) {
+        if (handled && shouldPerformHapticFeedback) {
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
         }
         return handled;
@@ -8115,6 +8319,13 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             onFocusLost();
         } else if (hasWindowFocus()) {
             notifyFocusChangeToImeFocusController(true /* hasFocus */);
+
+            if (mIsHandwritingDelegate) {
+                ViewRootImpl viewRoot = getViewRootImpl();
+                if (viewRoot != null) {
+                    viewRoot.getHandwritingInitiator().onDelegateViewFocused(this);
+                }
+            }
         }
 
         invalidate(true);
@@ -8132,6 +8343,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         }
 
         notifyEnterOrExitForAutoFillIfNeeded(gainFocus);
+        updatePreferKeepClearForFocus();
     }
 
     /**
@@ -8151,19 +8363,31 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         if (canNotifyAutofillEnterExitEvent()) {
             AutofillManager afm = getAutofillManager();
             if (afm != null) {
-                if (enter && isFocused()) {
+                if (enter) {
                     // We have not been laid out yet, hence cannot evaluate
                     // whether this view is visible to the user, we will do
                     // the evaluation once layout is complete.
-                    if (!isLaidOut()) {
+                    // Sometimes, views are already laid out, but it's still
+                    // not visible to the user, we also do the evaluation once
+                    // the view is visible. ex: There is a fade-in animation
+                    // for the activity, the view will be laid out when the
+                    // animation beginning. On the time, the view is not visible
+                    // to the user. And then as the animation progresses, the view
+                    // becomes visible to the user.
+                    if (!isLaidOut() || !isVisibleToUser()) {
                         mPrivateFlags3 |= PFLAG3_NOTIFY_AUTOFILL_ENTER_ON_LAYOUT;
                     } else if (isVisibleToUser()) {
-                        // TODO This is a potential problem that View gets focus before it's visible
-                        // to User. Ideally View should handle the event when isVisibleToUser()
-                        // becomes true where it should issue notifyViewEntered().
-                        afm.notifyViewEntered(this);
+                        if (isFocused()) {
+                            // TODO This is a potential problem that View gets focus before it's
+                            // visible to User. Ideally View should handle the event when
+                            // isVisibleToUser() becomes true where it should issue
+                            // notifyViewEntered().
+                            afm.notifyViewEntered(this);
+                        } else {
+                            afm.notifyViewEnteredForFillDialog(this);
+                        }
                     }
-                } else if (!enter && !isFocused()) {
+                } else if (!isFocused()) {
                     afm.notifyViewExited(this);
                 }
             }
@@ -8172,10 +8396,17 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
     /**
      * Visually distinct portion of a window with window-like semantics are considered panes for
-     * accessibility purposes. One example is the content view of a fragment that is replaced.
+     * accessibility purposes. One example is the content view of a large fragment that is replaced.
      * In order for accessibility services to understand a pane's window-like behavior, panes
-     * should have descriptive titles. Views with pane titles produce {@link AccessibilityEvent}s
-     * when they appear, disappear, or change title.
+     * should have descriptive titles. Views with pane titles produce
+     * {@link AccessibilityEvent#TYPE_WINDOW_STATE_CHANGED}s when they appear, disappear, or change
+     * title.
+     *
+     * <p>
+     * When transitioning from one Activity to another, instead of using
+     * setAccessibilityPaneTitle(), set a descriptive title for its window by using android:label
+     * for the matching <activity> entry in your application’s manifest or updating the title at
+     * runtime with{@link android.app.Activity#setTitle(CharSequence)}.
      *
      * @param accessibilityPaneTitle The pane's title. Setting to {@code null} indicates that this
      *                               View is not a pane.
@@ -8186,9 +8417,25 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      */
     public void setAccessibilityPaneTitle(@Nullable CharSequence accessibilityPaneTitle) {
         if (!TextUtils.equals(accessibilityPaneTitle, mAccessibilityPaneTitle)) {
+            boolean currentPaneTitleEmpty = mAccessibilityPaneTitle == null;
+            boolean newPaneTitleEmpty =  accessibilityPaneTitle == null;
             mAccessibilityPaneTitle = accessibilityPaneTitle;
-            notifyViewAccessibilityStateChangedIfNeeded(
-                    AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_TITLE);
+            // Make explicitly important as nulled titles need to be important for DISAPPEARED
+            // events.
+            if (mAccessibilityPaneTitle != null
+                    && getImportantForAccessibility() == IMPORTANT_FOR_ACCESSIBILITY_AUTO) {
+                setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
+            }
+            if (currentPaneTitleEmpty) {
+                notifyViewAccessibilityStateChangedIfNeeded(
+                        AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_APPEARED);
+            } else if (newPaneTitleEmpty) {
+                notifyViewAccessibilityStateChangedIfNeeded(
+                        AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_DISAPPEARED);
+            } else {
+                notifyViewAccessibilityStateChangedIfNeeded(
+                        AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_TITLE);
+            }
         }
     }
 
@@ -8218,7 +8465,10 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * to populate information about the event source (this View), then calls
      * {@link #dispatchPopulateAccessibilityEvent(AccessibilityEvent)} to
      * populate the text content of the event source including its descendants,
-     * and last calls
+     * then for events type {@link AccessibilityEvent#TYPE_VIEW_SCROLLED}
+     * and {@link AccessibilityEvent#TYPE_WINDOW_CONTENT_CHANGED} with
+     * subtype {@link AccessibilityEvent#CONTENT_CHANGE_TYPE_STATE_DESCRIPTION},
+     * throttle the events, and last calls
      * {@link ViewParent#requestSendAccessibilityEvent(View, AccessibilityEvent)}
      * on its parent to request sending of the event to interested parties.
      * <p>
@@ -8227,11 +8477,19 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * {@link AccessibilityDelegate#sendAccessibilityEvent(View, int)} is
      * responsible for handling this call.
      * </p>
+     * <p>
+     * If this view uses {@link AccessibilityNodeProvider} to provide virtual view hierarchy rooted
+     * at this view, this method should not be called to send events from virtual children because
+     * it will populate the events with wrong information and the events should be throttled per
+     * child instead at the virtual root level. To send events from virtual children, call
+     * {@link ViewParent#requestSendAccessibilityEvent(View, AccessibilityEvent)} on the view's
+     * parent to request sending of the event to interested parties.
+     * </p>
      *
      * @param eventType The type of the event to send, as defined by several types from
-     * {@link android.view.accessibility.AccessibilityEvent}, such as
-     * {@link android.view.accessibility.AccessibilityEvent#TYPE_VIEW_CLICKED} or
-     * {@link android.view.accessibility.AccessibilityEvent#TYPE_VIEW_HOVER_ENTER}.
+     * {@link AccessibilityEvent}, such as
+     * {@link AccessibilityEvent#TYPE_VIEW_CLICKED} or
+     * {@link AccessibilityEvent#TYPE_VIEW_HOVER_ENTER}.
      *
      * @see #onInitializeAccessibilityEvent(AccessibilityEvent)
      * @see #dispatchPopulateAccessibilityEvent(AccessibilityEvent)
@@ -8255,6 +8513,18 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * in exceptional situations. Apps can generally achieve correct behavior for accessibility by
      * accurately supplying the semantics of their UI.
      * They should not need to specify what exactly is announced to users.
+     *
+     * <p>
+     * In general, only announce transitions and don’t generate a confirmation message for simple
+     * actions like a button press. Label your controls concisely and precisely instead, and for
+     * significant UI changes like window changes, use
+     * {@link android.app.Activity#setTitle(CharSequence)} and
+     * {@link View#setAccessibilityPaneTitle(CharSequence)}.
+     *
+     * <p>
+     * Use {@link View#setAccessibilityLiveRegion(int)} to inform the user of changes to critical
+     * views within the user interface. These should still be used sparingly as they may generate
+     * announcements every time a View is updated.
      *
      * @param text The announcement text.
      */
@@ -8390,6 +8660,11 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * {@link #setAccessibilityDelegate(AccessibilityDelegate)} its
      * {@link AccessibilityDelegate#dispatchPopulateAccessibilityEvent(View, AccessibilityEvent)}
      * is responsible for handling this call.
+     * </p>
+     * <p>
+     * If this view sets {@link #isAccessibilityDataSensitive()} then this view should only append
+     * sensitive information to an event that also sets
+     * {@link AccessibilityEvent#isAccessibilityDataSensitive()}.
      * </p>
      * <p>
      * <em>Note:</em> Accessibility events of certain types are not dispatched for
@@ -8577,7 +8852,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *
      * @hide
      */
-    public AccessibilityNodeInfo createAccessibilityNodeInfoInternal() {
+    public @Nullable AccessibilityNodeInfo createAccessibilityNodeInfoInternal() {
         AccessibilityNodeProvider provider = getAccessibilityNodeProvider();
         if (provider != null) {
             return provider.createAccessibilityNodeInfo(AccessibilityNodeProvider.HOST_VIEW_ID);
@@ -8647,16 +8922,61 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @hide
      */
     @UnsupportedAppUsage
-    public void getBoundsOnScreen(Rect outRect, boolean clipToParent) {
+    @TestApi
+    public void getBoundsOnScreen(@NonNull Rect outRect, boolean clipToParent) {
         if (mAttachInfo == null) {
             return;
         }
-
         RectF position = mAttachInfo.mTmpTransformRect;
-        position.set(0, 0, mRight - mLeft, mBottom - mTop);
-        mapRectFromViewToScreenCoords(position, clipToParent);
+        getBoundsToScreenInternal(position, clipToParent);
         outRect.set(Math.round(position.left), Math.round(position.top),
                 Math.round(position.right), Math.round(position.bottom));
+        // If "Sandboxing View Bounds APIs" override is enabled, applyViewBoundsSandboxingIfNeeded
+        // will sandbox outRect within window bounds.
+        mAttachInfo.mViewRootImpl.applyViewBoundsSandboxingIfNeeded(outRect);
+    }
+
+    /**
+     * Gets the location of this view in screen coordinates.
+     *
+     * @param outRect The output location
+     * @param clipToParent Whether to clip child bounds to the parent ones.
+     * @hide
+     */
+    public void getBoundsOnScreen(RectF outRect, boolean clipToParent) {
+        if (mAttachInfo == null) {
+            return;
+        }
+        RectF position = mAttachInfo.mTmpTransformRect;
+        getBoundsToScreenInternal(position, clipToParent);
+        outRect.set(position.left, position.top, position.right, position.bottom);
+    }
+
+    /**
+     * Gets the location of this view in window coordinates.
+     *
+     * @param outRect The output location
+     * @param clipToParent Whether to clip child bounds to the parent ones.
+     * @hide
+     */
+    public void getBoundsInWindow(Rect outRect, boolean clipToParent) {
+        if (mAttachInfo == null) {
+            return;
+        }
+        RectF position = mAttachInfo.mTmpTransformRect;
+        getBoundsToWindowInternal(position, clipToParent);
+        outRect.set(Math.round(position.left), Math.round(position.top),
+                Math.round(position.right), Math.round(position.bottom));
+    }
+
+    private void getBoundsToScreenInternal(RectF position, boolean clipToParent) {
+        position.set(0, 0, mRight - mLeft, mBottom - mTop);
+        mapRectFromViewToScreenCoords(position, clipToParent);
+    }
+
+    private void getBoundsToWindowInternal(RectF position, boolean clipToParent) {
+        position.set(0, 0, mRight - mLeft, mBottom - mTop);
+        mapRectFromViewToWindowCoords(position, clipToParent);
     }
 
     /**
@@ -8667,6 +8987,18 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @hide
      */
     public void mapRectFromViewToScreenCoords(RectF rect, boolean clipToParent) {
+        mapRectFromViewToWindowCoords(rect, clipToParent);
+        rect.offset(mAttachInfo.mWindowLeft, mAttachInfo.mWindowTop);
+    }
+
+    /**
+     * Map a rectangle from view-relative coordinates to window-relative coordinates
+     *
+     * @param rect The rectangle to be mapped
+     * @param clipToParent Whether to clip child bounds to the parent ones.
+     * @hide
+     */
+    public void mapRectFromViewToWindowCoords(RectF rect, boolean clipToParent) {
         if (!hasIdentityMatrix()) {
             getMatrix().mapRect(rect);
         }
@@ -8699,8 +9031,6 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             ViewRootImpl viewRootImpl = (ViewRootImpl) parent;
             rect.offset(0, -viewRootImpl.mCurScrollY);
         }
-
-        rect.offset(mAttachInfo.mWindowLeft, mAttachInfo.mWindowTop);
     }
 
     /**
@@ -8901,8 +9231,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             }
 
             while (parentGroup != null && !parentGroup.isImportantForAutofill()) {
-                ignoredParentLeft += parentGroup.mLeft;
-                ignoredParentTop += parentGroup.mTop;
+                ignoredParentLeft += parentGroup.mLeft - parentGroup.mScrollX;
+                ignoredParentTop += parentGroup.mTop - parentGroup.mScrollY;
 
                 viewParent = parentGroup.getParent();
                 if (viewParent instanceof View) {
@@ -8987,8 +9317,12 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             final AccessibilityNodeInfo info = createAccessibilityNodeInfo();
             structure.setChildCount(1);
             final ViewStructure root = structure.newChild(0);
-            populateVirtualStructure(root, provider, info, forAutofill);
-            info.recycle();
+            if (info != null) {
+                populateVirtualStructure(root, provider, info, forAutofill);
+                info.recycle();
+            } else {
+                Log.w(AUTOFILL_LOG_TAG, "AccessibilityNodeInfo is null.");
+            }
         }
     }
 
@@ -9510,10 +9844,11 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *
      * <p><b>Note:</b> Setting the mode as {@link #IMPORTANT_FOR_AUTOFILL_NO} or
      * {@link #IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS} does not guarantee the view (and its
-     * children) will be always be considered not important; for example, when the user explicitly
-     * makes an autofill request, all views are considered important. See
-     * {@link #isImportantForAutofill()} for more details about how the View's importance for
-     * autofill is used.
+     * children) will not be used for autofill purpose; for example, when the user explicitly
+     * makes an autofill request, all views are included in the ViewStructure, and starting in
+     * {@link android.os.Build.VERSION_CODES#UPSIDE_DOWN_CAKE} the system uses other factors along
+     * with importance to determine the autofill behavior. See {@link #isImportantForAutofill()}
+     * for more details about how the View's importance for autofill is used.
      *
      * @param mode {@link #IMPORTANT_FOR_AUTOFILL_AUTO}, {@link #IMPORTANT_FOR_AUTOFILL_YES},
      * {@link #IMPORTANT_FOR_AUTOFILL_NO}, {@link #IMPORTANT_FOR_AUTOFILL_YES_EXCLUDE_DESCENDANTS},
@@ -9559,21 +9894,36 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *   <li>otherwise, it returns {@code false}.
      * </ol>
      *
-     * <p>When a view is considered important for autofill:
-     * <ul>
-     *   <li>The view might automatically trigger an autofill request when focused on.
-     *   <li>The contents of the view are included in the {@link ViewStructure} used in an autofill
-     *       request.
-     * </ul>
-     *
-     * <p>On the other hand, when a view is considered not important for autofill:
-     * <ul>
-     *   <li>The view never automatically triggers autofill requests, but it can trigger a manual
-     *       request through {@link AutofillManager#requestAutofill(View)}.
-     *   <li>The contents of the view are not included in the {@link ViewStructure} used in an
-     *       autofill request, unless the request has the
-     *       {@link #AUTOFILL_FLAG_INCLUDE_NOT_IMPORTANT_VIEWS} flag.
-     * </ul>
+     * <p> The behavior of importances depends on Android version:
+     * <ol>
+     *   <li>For {@link android.os.Build.VERSION_CODES#TIRAMISU} and below:
+     *     <ol>
+     *       <li>When a view is considered important for autofill:
+     *          <ol>
+     *            <li>The view might automatically trigger an autofill request when focused on.
+     *            <li>The contents of the view are included in the {@link ViewStructure} used in an
+     *                autofill request.
+     *          </ol>
+     *        <li>On the other hand, when a view is considered not important for autofill:
+     *          <ol>
+     *            <li>The view never automatically triggers autofill requests, but it can trigger a
+     *                manual request through {@link AutofillManager#requestAutofill(View)}.
+     *            <li>The contents of the view are not included in the {@link ViewStructure} used in
+     *                an autofill request, unless the request has the
+     *                {@link #AUTOFILL_FLAG_INCLUDE_NOT_IMPORTANT_VIEWS} flag.
+     *          </ol>
+     *      </ol>
+     *  <li>For {@link android.os.Build.VERSION_CODES#UPSIDE_DOWN_CAKE} and above:
+     *    <ol>
+     *      <li>The system uses importance, along with other view properties and other optimization
+     *          factors, to determine if a view should trigger autofill on focus.
+     *      <li>The contents of {@link #IMPORTANT_FOR_AUTOFILL_AUTO},
+     *        {@link #IMPORTANT_FOR_AUTOFILL_YES}, {@link #IMPORTANT_FOR_AUTOFILL_NO},
+     *        {@link #IMPORTANT_FOR_AUTOFILL_YES_EXCLUDE_DESCENDANTS}, and
+     *        {@link #IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS} views will be included in the
+     *        {@link ViewStructure} used in an autofill request.
+     *    </ol>
+     * </ol>
      *
      * @return whether the view is considered important for autofill.
      *
@@ -9816,7 +10166,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * <ol>
      *   <li>It should only be called when content capture is enabled for the view.
      *   <li>It must call viewAppeared() before viewDisappeared()
-     *   <li>viewAppearead() can only be called when the view is visible and laidout
+     *   <li>viewAppeared() can only be called when the view is visible and laid out
      *   <li>It should not call the same event twice.
      * </ol>
      */
@@ -9876,6 +10226,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             setNotifiedContentCaptureAppeared();
 
             if (ai != null) {
+                makeParentImportantAndNotifyAppearedEventIfNeed();
                 ai.delayNotifyContentCaptureEvent(session, this, appeared);
             } else {
                 if (DEBUG_CONTENT_CAPTURE) {
@@ -9893,6 +10244,29 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                     Log.v(CONTENT_CAPTURE_LOG_TAG, "no AttachInfo on disappeared for " + this);
                 }
             }
+
+            // We reset any translation state as views may be re-used (e.g., as in ListView and
+            // RecyclerView). We only need to do this for views important for content capture since
+            // views unimportant for content capture won't be translated anyway.
+            if (!isTemporarilyDetached()) {
+                clearTranslationState();
+            }
+        }
+    }
+
+    private void makeParentImportantAndNotifyAppearedEventIfNeed() {
+        // If view sent the appeared event to Content Capture, Content Capture also
+        // would like to receive its parents' appeared events. So checks its parents
+        // whether the appeared event is sent or not. If not, send the appeared event.
+        final ViewParent parent = getParent();
+        if (parent instanceof View) {
+            View p = ((View) parent);
+            if (p.getNotifiedContentCaptureAppeared()) {
+                return;
+            }
+            // Set important for content capture in the cache.
+            p.mPrivateFlags4 |= PFLAG4_CONTENT_CAPTURE_IMPORTANCE_MASK;
+            p.notifyAppearedOrDisappearedForContentCaptureIfNeeded(/* appeared */ true);
         }
     }
 
@@ -9987,22 +10361,66 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         return mContext.getSystemService(AutofillManager.class);
     }
 
+    /**
+     * Check whether current activity / package is in autofill denylist.
+     *
+     * Called by viewGroup#populateChildrenForAutofill() to determine whether to include view in
+     * assist structure
+     */
+    final boolean isActivityDeniedForAutofillForUnimportantView() {
+        final AutofillManager afm = getAutofillManager();
+        if (afm == null) return false;
+        return afm.isActivityDeniedForAutofill();
+    }
+
+    /**
+     * Check whether current view matches autofillable heuristics
+     *
+     * Called by viewGroup#populateChildrenForAutofill() to determine whether to include view in
+     * assist structure
+     */
+    final boolean isMatchingAutofillableHeuristics() {
+        final AutofillManager afm = getAutofillManager();
+        if (afm == null) return false;
+        // check the flag to see if trigger fill request on not important views is enabled
+        return afm.isTriggerFillRequestOnUnimportantViewEnabled()
+            ? afm.isAutofillable(this) : false;
+    }
+
     private boolean isAutofillable() {
         if (getAutofillType() == AUTOFILL_TYPE_NONE) return false;
 
-        if (!isImportantForAutofill()) {
-            // View is not important for "regular" autofill, so we must check if Augmented Autofill
-            // is enabled for the activity
-            final AutofillOptions options = mContext.getAutofillOptions();
-            if (options == null || !options.isAugmentedAutofillEnabled(mContext)) {
-                return false;
-            }
-            final AutofillManager afm = getAutofillManager();
-            if (afm == null) return false;
-            afm.notifyViewEnteredForAugmentedAutofill(this);
+        final AutofillManager afm = getAutofillManager();
+        if (afm == null) {
+            return false;
         }
 
-        return getAutofillViewId() > LAST_APP_AUTOFILL_ID;
+        // Check whether view is not part of an activity. If it's not, return false.
+        if (getAutofillViewId() <= LAST_APP_AUTOFILL_ID) {
+            return false;
+        }
+
+        // If view is important and filter important view flag is turned on, or view is not
+        // important and trigger fill request on not important view flag is turned on, then use
+        // AutofillManager.isAutofillable() to decide whether view is autofillable instead.
+        if ((isImportantForAutofill() && afm.isTriggerFillRequestOnFilteredImportantViewsEnabled())
+                || (!isImportantForAutofill()
+                    && afm.isTriggerFillRequestOnUnimportantViewEnabled())) {
+            return afm.isAutofillable(this) ? true : notifyAugmentedAutofillIfNeeded(afm);
+        }
+
+        // If the previous condition is not met, fall back to the previous way to trigger fill
+        // request based on autofill importance instead.
+        return isImportantForAutofill() ? true : notifyAugmentedAutofillIfNeeded(afm);
+    }
+
+    private boolean notifyAugmentedAutofillIfNeeded(AutofillManager afm) {
+        final AutofillOptions options = mContext.getAutofillOptions();
+        if (options == null || !options.isAugmentedAutofillEnabled(mContext)) {
+            return false;
+        }
+        afm.notifyViewEnteredForAugmentedAutofill(this);
+        return true;
     }
 
     /** @hide */
@@ -10249,6 +10667,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
         getBoundsOnScreen(bounds, true);
         info.setBoundsInScreen(bounds);
+        getBoundsInWindow(bounds, true);
+        info.setBoundsInWindow(bounds);
 
         ViewParent parent = getParentForAccessibility();
         if (parent instanceof View) {
@@ -10267,7 +10687,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             }
 
             if ((mAttachInfo.mAccessibilityFetchFlags
-                    & AccessibilityNodeInfo.FLAG_REPORT_VIEW_IDS) != 0
+                    & AccessibilityNodeInfo.FLAG_SERVICE_REQUESTS_REPORT_VIEW_IDS) != 0
                     && Resources.resourceHasPackage(mID)) {
                 try {
                     String viewId = getResources().getResourceName(mID);
@@ -10316,6 +10736,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         info.setVisibleToUser(isVisibleToUser());
 
         info.setImportantForAccessibility(isImportantForAccessibility());
+        info.setAccessibilityDataSensitive(isAccessibilityDataSensitive());
         info.setPackageName(mContext.getPackageName());
         info.setClassName(getAccessibilityClassName());
         info.setStateDescription(getStateDescription());
@@ -10783,8 +11204,19 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * description. An image of a floppy disk that is used to save a file may
      * use "Save".
      *
+     * <p>
+     * This should omit role or state. Role refers to the kind of user-interface element the View
+     * is, such as a Button or Checkbox. State refers to a frequently changing property of the View,
+     * such as an On/Off state of a button or the audio level of a volume slider.
+     *
+     * <p>
+     * Content description updates are not frequent, and are used when the semantic content - not
+     * the state - of the element changes. For example, a Play button might change to a Pause
+     * button during music playback.
+     *
      * @param contentDescription The content description.
      * @see #getContentDescription()
+     * @see #setStateDescription(CharSequence)} for state changes.
      * @attr ref android.R.styleable#View_contentDescription
      */
     @RemotableViewMethod
@@ -11634,37 +12066,53 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         } else {
             info.mSystemGestureExclusionRects = new ArrayList<>(rects);
         }
-        if (rects.isEmpty()) {
+
+        updatePositionUpdateListener();
+        postUpdate(this::updateSystemGestureExclusionRects);
+    }
+
+    private void updatePositionUpdateListener() {
+        final ListenerInfo info = getListenerInfo();
+        if (getSystemGestureExclusionRects().isEmpty()
+                && collectPreferKeepClearRects().isEmpty()
+                && collectUnrestrictedPreferKeepClearRects().isEmpty()
+                && (info.mHandwritingArea == null || !shouldInitiateHandwriting())) {
             if (info.mPositionUpdateListener != null) {
                 mRenderNode.removePositionUpdateListener(info.mPositionUpdateListener);
+                info.mPositionUpdateListener = null;
+                info.mPositionChangedUpdate = null;
             }
         } else {
             if (info.mPositionUpdateListener == null) {
+                info.mPositionChangedUpdate = () -> {
+                    updateSystemGestureExclusionRects();
+                    updateKeepClearRects();
+                    updateHandwritingArea();
+                };
                 info.mPositionUpdateListener = new RenderNode.PositionUpdateListener() {
                     @Override
                     public void positionChanged(long n, int l, int t, int r, int b) {
-                        postUpdateSystemGestureExclusionRects();
+                        postUpdate(info.mPositionChangedUpdate);
                     }
 
                     @Override
                     public void positionLost(long frameNumber) {
-                        postUpdateSystemGestureExclusionRects();
+                        postUpdate(info.mPositionChangedUpdate);
                     }
                 };
                 mRenderNode.addPositionUpdateListener(info.mPositionUpdateListener);
             }
         }
-        postUpdateSystemGestureExclusionRects();
     }
 
     /**
      * WARNING: this can be called by a hwui worker thread, not just the UI thread!
      */
-    void postUpdateSystemGestureExclusionRects() {
+    private void postUpdate(Runnable r) {
         // Potentially racey from a background thread. It's ok if it's not perfect.
         final Handler h = getHandler();
         if (h != null) {
-            h.postAtFrontOfQueue(this::updateSystemGestureExclusionRects);
+            h.postAtFrontOfQueue(r);
         }
     }
 
@@ -11696,13 +12144,476 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
-     * Compute the view's coordinate within the surface.
+     * Set a preference to keep the bounds of this view clear from floating windows above this
+     * view's window. This informs the system that the view is considered a vital area for the
+     * user and that ideally it should not be covered. Setting this is only appropriate for UI
+     * where the user would likely take action to uncover it.
+     * <p>
+     * The system will try to respect this preference, but when not possible will ignore it.
+     * <p>
+     * Note: This is independent from {@link #setPreferKeepClearRects}. If both are set, both will
+     * be taken into account.
+     * <p>
+     * @see #setPreferKeepClearRects
+     * @see #isPreferKeepClear
+     * @attr ref android.R.styleable#View_preferKeepClear
+     */
+    public final void setPreferKeepClear(boolean preferKeepClear) {
+        getListenerInfo().mPreferKeepClear = preferKeepClear;
+        updatePositionUpdateListener();
+        postUpdate(this::updateKeepClearRects);
+    }
+
+    /**
+     * Retrieve the preference for this view to be kept clear. This is set either by
+     * {@link #setPreferKeepClear} or via the attribute android.R.styleable#View_preferKeepClear.
+     * <p>
+     * If this is {@code true}, the system will ignore the Rects set by
+     * {@link #setPreferKeepClearRects} and try to keep the whole view clear.
+     * <p>
+     * @see #setPreferKeepClear
+     * @attr ref android.R.styleable#View_preferKeepClear
+     */
+    public final boolean isPreferKeepClear() {
+        return mListenerInfo != null && mListenerInfo.mPreferKeepClear;
+    }
+
+    /**
+     * Set a preference to keep the provided rects clear from floating windows above this
+     * view's window. This informs the system that these rects are considered vital areas for the
+     * user and that ideally they should not be covered. Setting this is only appropriate for UI
+     * where the user would likely take action to uncover it.
+     * <p>
+     * The system will try to respect this preference, but when not possible will ignore it.
+     * <p>
+     * Note: This is independent from {@link #setPreferKeepClear}. If both are set, both will be
+     * taken into account.
+     * <p>
+     * @see #setPreferKeepClear
+     * @see #getPreferKeepClearRects
      *
-     * <p>Computes the coordinates of this view in its surface. The argument
-     * must be an array of two integers. After the method returns, the array
-     * contains the x and y location in that order.</p>
+     * @param rects A list of rects in this view's local coordinate system
+     */
+    public final void setPreferKeepClearRects(@NonNull List<Rect> rects) {
+        final ListenerInfo info = getListenerInfo();
+        if (info.mKeepClearRects != null) {
+            info.mKeepClearRects.clear();
+            info.mKeepClearRects.addAll(rects);
+        } else {
+            info.mKeepClearRects = new ArrayList<>(rects);
+        }
+        updatePositionUpdateListener();
+        postUpdate(this::updateKeepClearRects);
+    }
+
+    /**
+     * @return the list of rects, set by {@link #setPreferKeepClearRects}.
      *
-     * @param location an array of two integers in which to hold the coordinates
+     * @see #setPreferKeepClearRects
+     */
+    @NonNull
+    public final List<Rect> getPreferKeepClearRects() {
+        final ListenerInfo info = mListenerInfo;
+        if (info != null && info.mKeepClearRects != null) {
+            return new ArrayList(info.mKeepClearRects);
+        }
+
+        return Collections.emptyList();
+    }
+
+    /**
+     * Set a preference to keep the provided rects clear from floating windows above this
+     * view's window. This informs the system that these rects are considered vital areas for the
+     * user and that ideally they should not be covered. Setting this is only appropriate for UI
+     * where the user would likely take action to uncover it.
+     * <p>
+     * Note: The difference with {@link #setPreferKeepClearRects} is that the system won't apply
+     * restrictions to the rects set here.
+     * <p>
+     * @see #setPreferKeepClear
+     * @see #getPreferKeepClearRects
+     *
+     * @param rects A list of rects in this view's local coordinate system
+     *
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.SET_UNRESTRICTED_KEEP_CLEAR_AREAS)
+    public final void setUnrestrictedPreferKeepClearRects(@NonNull List<Rect> rects) {
+        final ListenerInfo info = getListenerInfo();
+        if (info.mUnrestrictedKeepClearRects != null) {
+            info.mUnrestrictedKeepClearRects.clear();
+            info.mUnrestrictedKeepClearRects.addAll(rects);
+        } else {
+            info.mUnrestrictedKeepClearRects = new ArrayList<>(rects);
+        }
+        updatePositionUpdateListener();
+        postUpdate(this::updateKeepClearRects);
+    }
+
+    /**
+     * @return the list of rects, set by {@link #setPreferKeepClearRects}.
+     *
+     * @see #setPreferKeepClearRects
+     *
+     * @hide
+     */
+    @SystemApi
+    @NonNull
+    public final List<Rect> getUnrestrictedPreferKeepClearRects() {
+        final ListenerInfo info = mListenerInfo;
+        if (info != null && info.mUnrestrictedKeepClearRects != null) {
+            return new ArrayList(info.mUnrestrictedKeepClearRects);
+        }
+
+        return Collections.emptyList();
+    }
+
+    void updateKeepClearRects() {
+        final AttachInfo ai = mAttachInfo;
+        if (ai != null) {
+            ai.mViewRootImpl.updateKeepClearRectsForView(this);
+        }
+    }
+
+    /**
+     * Retrieve the list of areas within this view's post-layout coordinate space which the
+     * system will try to not cover with other floating elements, like the pip window.
+     */
+    @NonNull
+    List<Rect> collectPreferKeepClearRects() {
+        ListenerInfo info = mListenerInfo;
+        boolean keepClearForFocus = isFocused()
+                && ViewConfiguration.get(mContext).isPreferKeepClearForFocusEnabled();
+        boolean keepBoundsClear = (info != null && info.mPreferKeepClear) || keepClearForFocus;
+        boolean hasCustomKeepClearRects = info != null && info.mKeepClearRects != null;
+
+        if (!keepBoundsClear && !hasCustomKeepClearRects) {
+            return Collections.emptyList();
+        } else if (keepBoundsClear && !hasCustomKeepClearRects) {
+            return Collections.singletonList(new Rect(0, 0, getWidth(), getHeight()));
+        }
+
+        final List<Rect> list = new ArrayList<>();
+        if (keepBoundsClear) {
+            list.add(new Rect(0, 0, getWidth(), getHeight()));
+        }
+
+        if (hasCustomKeepClearRects) {
+            list.addAll(info.mKeepClearRects);
+        }
+
+        return list;
+    }
+
+    private void updatePreferKeepClearForFocus() {
+        if (ViewConfiguration.get(mContext).isPreferKeepClearForFocusEnabled()) {
+            updatePositionUpdateListener();
+            post(this::updateKeepClearRects);
+        }
+    }
+
+    /**
+     * Retrieve the list of unrestricted areas within this view's post-layout coordinate space
+     * which the system will try to not cover with other floating elements, like the pip window.
+     */
+    @NonNull
+    List<Rect> collectUnrestrictedPreferKeepClearRects() {
+        final ListenerInfo info = mListenerInfo;
+        if (info != null && info.mUnrestrictedKeepClearRects != null) {
+            return info.mUnrestrictedKeepClearRects;
+        }
+
+        return Collections.emptyList();
+    }
+
+    /**
+     * Set the amount of offset applied to this view's stylus handwriting bounds. A positive offset
+     * will offset the edge outwards.The base handwriting bounds of a view is its visible bounds.
+     * The handwriting bounds offsets are applied to the base handwriting bounds to determine the
+     * final handwriting bounds.
+     * <p> This method is mainly used to enlarge the view's handwriting bounds for a better user
+     * experience.
+     * <p> Note that when the view is clipped (e.g. the view is in a
+     * {@link android.widget.ScrollView}), the offsets are applied after the view's handwriting
+     * bounds is clipped.
+     *
+     * @param offsetLeft the amount of pixel offset applied to the left edge outwards of the view's
+     *                   handwriting bounds.
+     * @param offsetTop the amount of pixel offset applied to the top edge outwards of the view's
+     *                  handwriting bounds.
+     * @param offsetRight the amount of pixel offset applied to the right edge outwards of the
+     *                    view's handwriting bounds.
+     * @param offsetBottom the amount of pixel offset applied to the bottom edge outwards of the
+     *                     view's handwriting bounds.
+     *
+     * @see #setAutoHandwritingEnabled(boolean)
+     * @see #getHandwritingBoundsOffsetLeft()
+     * @see #getHandwritingBoundsOffsetTop()
+     * @see #getHandwritingBoundsOffsetRight()
+     * @see #getHandwritingBoundsOffsetBottom()
+     */
+    public void setHandwritingBoundsOffsets(float offsetLeft, float offsetTop,
+            float offsetRight, float offsetBottom) {
+        mHandwritingBoundsOffsetLeft = offsetLeft;
+        mHandwritingBoundsOffsetTop = offsetTop;
+        mHandwritingBoundsOffsetRight = offsetRight;
+        mHandwritingBoundsOffsetBottom = offsetBottom;
+    }
+
+    /**
+     * Return the amount of offset applied to the left edge of this view's handwriting bounds,
+     * in the unit of pixel.
+     *
+     * @see #setAutoHandwritingEnabled(boolean)
+     * @see #setHandwritingBoundsOffsets(float, float, float, float)
+     */
+    public float getHandwritingBoundsOffsetLeft() {
+        return mHandwritingBoundsOffsetLeft;
+    }
+
+    /**
+     * Return the amount of offset applied to the top edge of this view's handwriting bounds,
+     * in the unit of pixel.
+     *
+     * @see #setAutoHandwritingEnabled(boolean)
+     * @see #setHandwritingBoundsOffsets(float, float, float, float)
+     */
+    public float getHandwritingBoundsOffsetTop() {
+        return mHandwritingBoundsOffsetTop;
+    }
+
+    /**
+     * Return the amount of offset applied to the right edge of this view's handwriting bounds, in
+     * the unit of pixel.
+     *
+     * @see #setAutoHandwritingEnabled(boolean)
+     * @see #setHandwritingBoundsOffsets(float, float, float, float)
+     */
+    public float getHandwritingBoundsOffsetRight() {
+        return mHandwritingBoundsOffsetRight;
+    }
+
+    /**
+     * Return the amount of offset applied to the bottom edge of this view's handwriting bounds, in
+     * the unit of pixel.
+     *
+     * @see #setAutoHandwritingEnabled(boolean)
+     * @see #setHandwritingBoundsOffsets(float, float, float, float)
+     */
+    public float getHandwritingBoundsOffsetBottom() {
+        return mHandwritingBoundsOffsetBottom;
+    }
+
+
+    /**
+     * Set a handwriting area in this view. If there is any stylus {@link MotionEvent}
+     * occurs within this area, it will trigger stylus handwriting mode. This can be disabled by
+     * disabling the auto handwriting initiation by calling
+     * {@link #setAutoHandwritingEnabled(boolean)} with false.
+     *
+     * @attr rect the handwriting area in the view's local coordiniates.
+     *
+     * @see android.view.inputmethod.InputMethodManager#startStylusHandwriting(View)
+     * @see #setAutoHandwritingEnabled(boolean)
+     *
+     * @hide
+     */
+    public void setHandwritingArea(@Nullable Rect rect) {
+        final ListenerInfo info = getListenerInfo();
+        info.mHandwritingArea = rect;
+        updatePositionUpdateListener();
+        postUpdate(this::updateHandwritingArea);
+    }
+
+    /**
+     * Return the handwriting areas set on this view, in its local coordinates.
+     * @see #setHandwritingArea(Rect)
+     *
+     * @hide
+     */
+    @Nullable
+    public Rect getHandwritingArea() {
+        final ListenerInfo info = mListenerInfo;
+        if (info != null && info.mHandwritingArea != null) {
+            return new Rect(info.mHandwritingArea);
+        }
+        return null;
+    }
+
+    void updateHandwritingArea() {
+        // If autoHandwritingArea is not enabled, do nothing.
+        if (!shouldInitiateHandwriting()) return;
+        final AttachInfo ai = mAttachInfo;
+        if (ai != null) {
+            ai.mViewRootImpl.getHandwritingInitiator().updateHandwritingAreasForView(this);
+        }
+    }
+
+    /**
+     * Returns true if a stylus {@link MotionEvent} within this view's bounds should initiate
+     * handwriting mode, either for this view ({@link #isAutoHandwritingEnabled()} is {@code true})
+     * or for a handwriting delegate view ({@link #getHandwritingDelegatorCallback()} is not {@code
+     * null}).
+     */
+    boolean shouldInitiateHandwriting() {
+        return isAutoHandwritingEnabled() || getHandwritingDelegatorCallback() != null;
+    }
+
+    /**
+     * Sets a callback which should be called when a stylus {@link MotionEvent} occurs within this
+     * view's bounds. The callback will be called from the UI thread.
+     *
+     * <p>Setting a callback allows this view to act as a handwriting delegator, so that handwriting
+     * mode for a delegate editor view can be initiated by stylus movement on this delegator view.
+     * The callback implementation is expected to show and focus the delegate editor view. If a view
+     * which returns {@code true} for {@link #isHandwritingDelegate()} creates an input connection
+     * while the same stylus {@link MotionEvent} sequence is ongoing, handwriting mode will be
+     * initiated for that view.
+     *
+     * <p>A common use case is a custom view which looks like a text editor but does not actually
+     * support text editing itself, and clicking on the custom view causes an EditText to be shown.
+     * To support handwriting initiation in this case, this method can be called on the custom view
+     * to configure it as a delegator. The EditText should call {@link #setIsHandwritingDelegate} to
+     * set it as a delegate. The {@code callback} implementation is typically the same as the click
+     * listener implementation which shows the EditText.
+     *
+     * <p>If {@code null} is passed, this view will no longer act as a handwriting initiation
+     * delegator.
+     *
+     * @param callback a callback which should be called when a stylus {@link MotionEvent} occurs
+     *     within this view's bounds
+     */
+    public void setHandwritingDelegatorCallback(@Nullable Runnable callback) {
+        mHandwritingDelegatorCallback = callback;
+        if (callback != null) {
+            setHandwritingArea(new Rect(0, 0, getWidth(), getHeight()));
+        }
+    }
+
+    /**
+     * Returns the callback set by {@link #setHandwritingDelegatorCallback} which should be called
+     * when a stylus {@link MotionEvent} occurs within this view's bounds. The callback should only
+     * be called from the UI thread.
+     */
+    @Nullable
+    public Runnable getHandwritingDelegatorCallback() {
+        return mHandwritingDelegatorCallback;
+    }
+
+    /**
+     * Specifies that this view may act as a handwriting initiation delegator for a delegate editor
+     * view from the specified package. If this method is not called, delegators may only be used to
+     * initiate handwriting mode for a delegate editor view from the same package as the delegator
+     * view. This method allows specifying a different trusted package which may contain a delegate
+     * editor view linked to this delegator view.
+     *
+     * <p>This method has no effect unless {@link #setHandwritingDelegatorCallback} is also called
+     * to configure this view to act as a handwriting delegator.
+     *
+     * <p>If this method is called on the delegator view, then {@link
+     * #setAllowedHandwritingDelegatorPackage} should also be called on the delegate editor view.
+     *
+     * <p>For example, to configure a delegator view in package 1:
+     *
+     * <pre>
+     * delegatorView.setHandwritingDelegatorCallback(callback);
+     * delegatorView.setAllowedHandwritingDelegatePackage(package2);</pre>
+     *
+     * Then to configure the corresponding delegate editor view in package 2:
+     *
+     * <pre>
+     * delegateEditorView.setIsHandwritingDelegate(true);
+     * delegateEditorView.setAllowedHandwritingDelegatorPackage(package1);</pre>
+     *
+     * @param allowedPackageName the package name of a delegate editor view linked to this delegator
+     *     view, or {@code null} to restore the default behavior of only allowing delegate editor
+     *     views from the same package as this delegator view
+     */
+    public void setAllowedHandwritingDelegatePackage(@Nullable String allowedPackageName) {
+        mAllowedHandwritingDelegatePackageName = allowedPackageName;
+    }
+
+    /**
+     * Returns the allowed package for delegate editor views for which this view may act as a
+     * handwriting delegator, as set by {@link #setAllowedHandwritingDelegatePackage}. If {@link
+     * #setAllowedHandwritingDelegatePackage} has not been called, or called with {@code null}
+     * argument, this will return {@code null}, meaning that this delegator view may only be used to
+     * initiate handwriting mode for a delegate editor view from the same package as this delegator
+     * view.
+     */
+    @Nullable
+    public String getAllowedHandwritingDelegatePackageName() {
+        return mAllowedHandwritingDelegatePackageName;
+    }
+
+    /**
+     * Sets this view to be a handwriting delegate. If a delegate view creates an input connection
+     * while a stylus {@link MotionEvent} sequence from a delegator view is ongoing, handwriting
+     * mode will be initiated for the delegate view.
+     *
+     * @param isHandwritingDelegate whether this view is a handwriting initiation delegate
+     * @see #setHandwritingDelegatorCallback(Runnable)
+     */
+    public void setIsHandwritingDelegate(boolean isHandwritingDelegate) {
+        mIsHandwritingDelegate = isHandwritingDelegate;
+    }
+
+    /**
+     * Returns whether this view has been set as a handwriting delegate by {@link
+     * #setIsHandwritingDelegate}.
+     */
+    public boolean isHandwritingDelegate() {
+        return mIsHandwritingDelegate;
+    }
+
+    /**
+     * Specifies that a view from the specified package may act as a handwriting delegator for this
+     * delegate editor view. If this method is not called, only views from the same package as this
+     * delegate editor view may act as a handwriting delegator. This method allows specifying a
+     * different trusted package which may contain a delegator view linked to this delegate editor
+     * view.
+     *
+     * <p>This method has no effect unless {@link #setIsHandwritingDelegate} is also called to
+     * configure this view to act as a handwriting delegate.
+     *
+     * <p>If this method is called on the delegate editor view, then {@link
+     * #setAllowedHandwritingDelegatePackage} should also be called on the delegator view.
+     *
+     * @param allowedPackageName the package name of a delegator view linked to this delegate editor
+     *     view, or {@code null} to restore the default behavior of only allowing delegator views
+     *     from the same package as this delegate editor view
+     */
+    public void setAllowedHandwritingDelegatorPackage(@Nullable String allowedPackageName) {
+        mAllowedHandwritingDelegatorPackageName = allowedPackageName;
+    }
+
+    /**
+     * Returns the allowed package for views which may act as a handwriting delegator for this
+     * delegate editor view, as set by {@link #setAllowedHandwritingDelegatorPackage}. If {@link
+     * #setAllowedHandwritingDelegatorPackage} has not been called, or called with {@code null}
+     * argument, this will return {@code null}, meaning that only views from the same package as
+     * this delegator editor view may act as a handwriting delegator.
+     */
+    @Nullable
+    public String getAllowedHandwritingDelegatorPackageName() {
+        return mAllowedHandwritingDelegatorPackageName;
+    }
+
+    /**
+     * Gets the coordinates of this view in the coordinate space of the
+     * {@link Surface} that contains the view.
+     *
+     * <p>In multiple-screen scenarios, if the surface spans multiple screens,
+     * the coordinate space of the surface also spans multiple screens.
+     *
+     * <p>After the method returns, the argument array contains the x and y
+     * coordinates of the view relative to the view's left and top edges,
+     * respectively.
+     *
+     * @param location A two-element integer array in which the view coordinates
+     *      are stored. The x-coordinate is at index 0; the y-coordinate, at
+     *      index 1.
      */
     public void getLocationInSurface(@NonNull @Size(2) int[] location) {
         getLocationInWindow(location);
@@ -11742,6 +12653,23 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         } else if (parent instanceof ViewRootImpl) {
             // Between WindowManager.addView() and the first traversal AttachInfo isn't set yet.
             return ((ViewRootImpl) parent).getInsetsController();
+        }
+        return null;
+    }
+
+
+    /**
+     * Walk up the View hierarchy to find the nearest {@link OnBackInvokedDispatcher}.
+     *
+     * @return The {@link OnBackInvokedDispatcher} from this or the nearest
+     * ancestor, or null if this view is both not attached and have no ancestor providing an
+     * {@link OnBackInvokedDispatcher}.
+     */
+    @Nullable
+    public final OnBackInvokedDispatcher findOnBackInvokedDispatcher() {
+        ViewParent parent = getParent();
+        if (parent != null) {
+            return parent.findOnBackInvokedDispatcherForChild(this, this);
         }
         return null;
     }
@@ -11956,6 +12884,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         if (!enabled) {
             cancelPendingInputEvents();
         }
+        notifyViewAccessibilityStateChangedIfNeeded(
+                AccessibilityEvent.CONTENT_CHANGE_TYPE_ENABLED);
     }
 
     /**
@@ -12128,7 +13058,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
     /**
      * @return whether this view should have haptic feedback enabled for events
-     * long presses.
+     * such as long presses.
      *
      * @see #setHapticFeedbackEnabled(boolean)
      * @see #performHapticFeedback(int)
@@ -12323,6 +13253,20 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     public boolean hasTranslationTransientState() {
         return (mPrivateFlags4 & PFLAG4_HAS_TRANSLATION_TRANSIENT_STATE)
                 == PFLAG4_HAS_TRANSLATION_TRANSIENT_STATE;
+    }
+
+    /**
+     * @hide
+     */
+    public void clearTranslationState() {
+        if (mViewTranslationCallback != null) {
+            mViewTranslationCallback.onClearTranslation(this);
+        }
+        clearViewTranslationResponse();
+        if (hasTranslationTransientState()) {
+            setHasTransientState(false);
+            setHasTranslationTransientState(false);
+        }
     }
 
     /**
@@ -12660,7 +13604,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
     /**
      * Gets whether the framework should discard touches when the view's
-     * window is obscured by another visible window.
+     * window is obscured by another visible window at the touched location.
      * Refer to the {@link View} security documentation for more details.
      *
      * @return True if touch filtering is enabled.
@@ -12676,7 +13620,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
     /**
      * Sets whether the framework should discard touches when the view's
-     * window is obscured by another visible window.
+     * window is obscured by another visible window at the touched location.
      * Refer to the {@link View} security documentation for more details.
      *
      * @param enabled True if touch filtering should be enabled.
@@ -12687,6 +13631,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     public void setFilterTouchesWhenObscured(boolean enabled) {
         setFlags(enabled ? FILTER_TOUCHES_WHEN_OBSCURED : 0,
                 FILTER_TOUCHES_WHEN_OBSCURED);
+        calculateAccessibilityDataSensitive();
     }
 
     /**
@@ -12810,6 +13755,10 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
     /**
      * Set if view is a heading for a section of content for accessibility purposes.
+     * <p>
+     * Users of some accessibility services can choose to navigate between headings
+     * instead of between paragraphs, words, etc. Apps that provide headings on
+     * sections of text can help the text navigation experience.
      *
      * @param isHeading {@code true} if the view is a heading, {@code false} otherwise.
      *
@@ -13074,8 +14023,6 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
-
-    /**
      * Returns whether this View should use a default focus highlight when it gets focused but
      * doesn't have {@link android.R.attr#state_focused} defined in its background.
      *
@@ -13322,6 +14269,11 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * See also {@link #focusSearch(int)}, which is what you call to say that you
      * have focus, and you want your parent to look for the next one.
      *
+     * <p>
+     * <b>Note:</b> Avoid setting accessibility focus. This is intended to be controlled by screen
+     * readers. Apps changing focus can confuse screen readers, so the resulting behavior can vary
+     * by device and screen reader version.
+     *
      * @return Whether this view actually took accessibility focus.
      *
      * @hide
@@ -13385,7 +14337,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         // working solution.
         View source = this;
         while (true) {
-            if (source.includeForAccessibility()) {
+            if (source.includeForAccessibility(false)) {
                 source.sendAccessibilityEvent(eventType);
                 return;
             }
@@ -13422,6 +14374,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                     sendAccessibilityEventUnchecked(event);
                 }
             }
+
+            updatePreferKeepClearForFocus();
         }
     }
 
@@ -13737,11 +14691,12 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             // importance, since we'll need to check it later to make sure.
             final boolean maySkipNotify = oldMode == IMPORTANT_FOR_ACCESSIBILITY_AUTO
                     || mode == IMPORTANT_FOR_ACCESSIBILITY_AUTO;
-            final boolean oldIncludeForAccessibility = maySkipNotify && includeForAccessibility();
+            final boolean oldIncludeForAccessibility =
+                    maySkipNotify && includeForAccessibility(false);
             mPrivateFlags2 &= ~PFLAG2_IMPORTANT_FOR_ACCESSIBILITY_MASK;
             mPrivateFlags2 |= (mode << PFLAG2_IMPORTANT_FOR_ACCESSIBILITY_SHIFT)
                     & PFLAG2_IMPORTANT_FOR_ACCESSIBILITY_MASK;
-            if (!maySkipNotify || oldIncludeForAccessibility != includeForAccessibility()) {
+            if (!maySkipNotify || oldIncludeForAccessibility != includeForAccessibility(false)) {
                 notifySubtreeAccessibilityStateChangedIfNeeded();
             } else {
                 notifyViewAccessibilityStateChangedIfNeeded(
@@ -13873,23 +14828,111 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
-     * Whether to regard this view for accessibility. A view is regarded for
-     * accessibility if it is important for accessibility or the querying
-     * accessibility service has explicitly requested that view not
-     * important for accessibility are regarded.
-     *
-     * @return Whether to regard the view for accessibility.
-     *
+     * @see #includeForAccessibility(boolean)
      * @hide
      */
     @UnsupportedAppUsage
     public boolean includeForAccessibility() {
-        if (mAttachInfo != null) {
-            return (mAttachInfo.mAccessibilityFetchFlags
-                    & AccessibilityNodeInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS) != 0
-                    || isImportantForAccessibility();
+        return includeForAccessibility(true);
+    }
+
+    /**
+     * Whether to regard this view for accessibility.
+     *
+     * <p>
+     * If this decision is used for generating the accessibility node tree then this returns false
+     * for {@link #isAccessibilityDataPrivate()} views queried by non-accessibility tools.
+     * </p>
+     * <p>
+     * Otherwise, a view is regarded for accessibility if:
+     * <li>the view returns true for {@link #isImportantForAccessibility()}, or</li>
+     * <li>the querying accessibility service has explicitly requested that views not important for
+     * accessibility are regarded by setting
+     * {@link android.accessibilityservice.AccessibilityServiceInfo#FLAG_INCLUDE_NOT_IMPORTANT_VIEWS}</li>
+     * </p>
+     *
+     * @param forNodeTree True if the result of this function will be used for generating a node
+     *                    tree, otherwise false (like when sending {@link AccessibilityEvent}s).
+     * @return Whether to regard the view for accessibility.
+     * @hide
+     */
+    public boolean includeForAccessibility(boolean forNodeTree) {
+        if (mAttachInfo == null) {
+            return false;
         }
-        return false;
+
+        if (forNodeTree) {
+            // The AccessibilityDataPrivate property should not effect whether this View is
+            // included for consideration when sending AccessibilityEvents. Events copy their
+            // source View's AccessibilityDataPrivate value, and then filtering is done when
+            // AccessibilityManagerService propagates events to each recipient AccessibilityService.
+            if (!AccessibilityManager.getInstance(mContext).isRequestFromAccessibilityTool()
+                    && isAccessibilityDataSensitive()) {
+                return false;
+            }
+        }
+
+        return (mAttachInfo.mAccessibilityFetchFlags
+                & AccessibilityNodeInfo.FLAG_SERVICE_REQUESTS_INCLUDE_NOT_IMPORTANT_VIEWS) != 0
+                || isImportantForAccessibility();
+    }
+
+    /**
+     * Whether this view should restrict accessibility service access only to services that have the
+     * {@link android.accessibilityservice.AccessibilityServiceInfo#isAccessibilityTool} property
+     * set to true.
+     *
+     * <p>
+     * See default behavior provided by {@link #ACCESSIBILITY_DATA_SENSITIVE_AUTO}. Otherwise,
+     * returns true for {@link #ACCESSIBILITY_DATA_SENSITIVE_YES} or false for {@link
+     * #ACCESSIBILITY_DATA_SENSITIVE_NO}.
+     * </p>
+     *
+     * @return True if this view should restrict accessibility service access to services that have
+     * the isAccessibilityTool property.
+     */
+    @ViewDebug.ExportedProperty(category = "accessibility")
+    public boolean isAccessibilityDataSensitive() {
+        if (mInferredAccessibilityDataSensitive == ACCESSIBILITY_DATA_SENSITIVE_AUTO) {
+            calculateAccessibilityDataSensitive();
+        }
+        return mInferredAccessibilityDataSensitive == ACCESSIBILITY_DATA_SENSITIVE_YES;
+    }
+
+    /**
+     * Calculate and cache the inferred value for {@link #isAccessibilityDataSensitive()}.
+     *
+     * <p>
+     * <strong>Note:</strong> This method needs to be called any time one of the below conditions
+     * changes, to recalculate the new value.
+     * </p>
+     */
+    void calculateAccessibilityDataSensitive() {
+        // Use the explicit value if set.
+        if (mExplicitAccessibilityDataSensitive != ACCESSIBILITY_DATA_SENSITIVE_AUTO) {
+            mInferredAccessibilityDataSensitive = mExplicitAccessibilityDataSensitive;
+        } else if (getFilterTouchesWhenObscured()) {
+            // Views that set filterTouchesWhenObscured default to accessibilityDataSensitive.
+            mInferredAccessibilityDataSensitive = ACCESSIBILITY_DATA_SENSITIVE_YES;
+        } else if (mParent instanceof View && ((View) mParent).isAccessibilityDataSensitive()) {
+            // Descendants of accessibilityDataSensitive Views are also accessibilityDataSensitive.
+            mInferredAccessibilityDataSensitive = ACCESSIBILITY_DATA_SENSITIVE_YES;
+        } else {
+            // Otherwise, default to not accessibilityDataSensitive.
+            mInferredAccessibilityDataSensitive = ACCESSIBILITY_DATA_SENSITIVE_NO;
+        }
+    }
+
+    /**
+     * Specifies whether this view should only allow interactions from
+     * {@link android.accessibilityservice.AccessibilityService}s with the
+     * {@link android.accessibilityservice.AccessibilityServiceInfo#isAccessibilityTool} property
+     * set to true.
+     */
+    public void setAccessibilityDataSensitive(
+            @AccessibilityDataSensitive int accessibilityDataSensitive) {
+        mExplicitAccessibilityDataSensitive = accessibilityDataSensitive;
+        calculateAccessibilityDataSensitive();
     }
 
     /**
@@ -13936,12 +14979,15 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         }
 
         // Changes to views with a pane title count as window state changes, as the pane title
-        // marks them as significant parts of the UI.
+        // marks them as significant parts of the UI. A visible view with a nulled title may send
+        // a disappeared event.
         if ((changeType != AccessibilityEvent.CONTENT_CHANGE_TYPE_SUBTREE)
-                && isAccessibilityPane()) {
+                && (isAccessibilityPane()
+                || (changeType == AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_DISAPPEARED)
+                && isAggregatedVisible())) {
             // If the pane isn't visible, content changed events are sufficient unless we're
             // reporting that the view just disappeared
-            if ((getVisibility() == VISIBLE)
+            if ((isAggregatedVisible())
                     || (changeType == AccessibilityEvent.CONTENT_CHANGE_TYPE_PANE_DISAPPEARED)) {
                 final AccessibilityEvent event = AccessibilityEvent.obtain();
                 onInitializeAccessibilityEvent(event);
@@ -14064,7 +15110,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @param arguments Optional action arguments
      * @return true if the action was consumed by a parent
      */
-    public boolean dispatchNestedPrePerformAccessibilityAction(int action, Bundle arguments) {
+    public boolean dispatchNestedPrePerformAccessibilityAction(int action,
+            @Nullable Bundle arguments) {
         for (ViewParent p = getParent(); p != null; p = p.getParent()) {
             if (p.onNestedPrePerformAccessibilityAction(this, action, arguments)) {
                 return true;
@@ -14088,11 +15135,17 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * {@link AccessibilityNodeInfo#ACTION_SCROLL_FORWARD} to nested scrolling parents if
      * {@link #isNestedScrollingEnabled() nested scrolling is enabled} on this view.</p>
      *
+     * <p>
+     * <b>Note:</b> Avoid setting accessibility focus with
+     * {@link AccessibilityNodeInfo#ACTION_ACCESSIBILITY_FOCUS}. This is intended to be controlled
+     * by screen readers. Apps changing focus can confuse screen readers, so the resulting behavior
+     * can vary by device and screen reader version.
+     *
      * @param action The action to perform.
      * @param arguments Optional action arguments.
      * @return Whether the action was performed.
      */
-    public boolean performAccessibilityAction(int action, Bundle arguments) {
+    public boolean performAccessibilityAction(int action, @Nullable Bundle arguments) {
       if (mAccessibilityDelegate != null) {
           return mAccessibilityDelegate.performAccessibilityAction(this, action, arguments);
       } else {
@@ -14108,7 +15161,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     * @hide
     */
     @UnsupportedAppUsage
-    public boolean performAccessibilityActionInternal(int action, Bundle arguments) {
+    public boolean performAccessibilityActionInternal(int action, @Nullable Bundle arguments) {
         if (isNestedScrollingEnabled()
                 && (action == AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
                 || action == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
@@ -14236,34 +15289,34 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                 hideTooltip();
                 return true;
             }
-        }
-
-        if (action == R.id.accessibilityActionDragDrop) {
-            if (!canAcceptAccessibilityDrop()) {
-                return false;
-            }
-            try {
-                if (mAttachInfo != null && mAttachInfo.mSession != null) {
-                    final int[] location = new int[2];
-                    getLocationInWindow(location);
-                    final int centerX = location[0] + getWidth() / 2;
-                    final int centerY = location[1] + getHeight() / 2;
-                    return mAttachInfo.mSession.dropForAccessibility(mAttachInfo.mWindow,
-                            centerX, centerY);
+            case R.id.accessibilityActionDragDrop: {
+                if (!canAcceptAccessibilityDrop()) {
+                    return false;
                 }
-            } catch (RemoteException e) {
-                Log.e(VIEW_LOG_TAG, "Unable to drop for accessibility", e);
-            }
-            return false;
-        } else if (action == R.id.accessibilityActionDragCancel) {
-            if (!startedSystemDragForAccessibility()) {
+                try {
+                    if (mAttachInfo != null && mAttachInfo.mSession != null) {
+                        final int[] location = new int[2];
+                        getLocationInWindow(location);
+                        final int centerX = location[0] + getWidth() / 2;
+                        final int centerY = location[1] + getHeight() / 2;
+                        return mAttachInfo.mSession.dropForAccessibility(mAttachInfo.mWindow,
+                                centerX, centerY);
+                    }
+                } catch (RemoteException e) {
+                    Log.e(VIEW_LOG_TAG, "Unable to drop for accessibility", e);
+                }
                 return false;
             }
-            if (mAttachInfo != null && mAttachInfo.mDragToken != null) {
-                cancelDragAndDrop();
-                return true;
+            case R.id.accessibilityActionDragCancel: {
+                if (!startedSystemDragForAccessibility()) {
+                    return false;
+                }
+                if (mAttachInfo != null && mAttachInfo.mDragToken != null) {
+                    cancelDragAndDrop();
+                    return true;
+                }
+                return false;
             }
-            return false;
         }
         return false;
     }
@@ -14299,6 +15352,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         int selectionStart;
         int selectionEnd;
         if (extendSelection && isAccessibilitySelectionExtendable()) {
+            prepareForExtendedAccessibilitySelection();
             selectionStart = getAccessibilitySelectionStart();
             if (selectionStart == ACCESSIBILITY_CURSOR_POSITION_UNDEFINED) {
                 selectionStart = forward ? segmentStart : segmentEnd;
@@ -14335,6 +15389,14 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      */
     public boolean isAccessibilitySelectionExtendable() {
         return false;
+    }
+
+    /**
+     * Prepare for extended selection.
+     * @hide
+     */
+    public void prepareForExtendedAccessibilitySelection() {
+        return;
     }
 
     /**
@@ -14561,6 +15623,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *
      * @param event The motion event to be dispatched.
      * @return True if the event was handled by the view, false otherwise.
+     *
+     * @see #onTouchEvent(MotionEvent)
      */
     public boolean dispatchTouchEvent(MotionEvent event) {
         // If the event should be handled by accessibility focus first.
@@ -14655,6 +15719,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *
      * @param event The motion event to be dispatched.
      * @return True if the event was handled by the view, false otherwise.
+     *
+     * @see #onTrackballEvent(MotionEvent)
      */
     public boolean dispatchTrackballEvent(MotionEvent event) {
         if (mInputEventConsistencyVerifier != null) {
@@ -14689,11 +15755,14 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * Generic motion events with source class {@link InputDevice#SOURCE_CLASS_POINTER}
      * are delivered to the view under the pointer.  All other generic motion events are
      * delivered to the focused view.  Hover events are handled specially and are delivered
-     * to {@link #onHoverEvent(MotionEvent)}.
+     * to {@link #onHoverEvent(MotionEvent)} first.
      * </p>
      *
      * @param event The motion event to be dispatched.
      * @return True if the event was handled by the view, false otherwise.
+     *
+     * @see #onHoverEvent(MotionEvent)
+     * @see #onGenericMotionEvent(MotionEvent)
      */
     public boolean dispatchGenericMotionEvent(MotionEvent event) {
         if (mInputEventConsistencyVerifier != null) {
@@ -15000,8 +16069,10 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     /**
      * @return true if this view and all ancestors are visible as of the last
      * {@link #onVisibilityAggregated(boolean)} call.
+     *
+     * @hide
      */
-    boolean isAggregatedVisible() {
+    public boolean isAggregatedVisible() {
         return (mPrivateFlags3 & PFLAG3_AGGREGATED_VISIBLE) != 0;
     }
 
@@ -15087,7 +16158,11 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             notifyAppearedOrDisappearedForContentCaptureIfNeeded(isVisible);
 
             if (!getSystemGestureExclusionRects().isEmpty()) {
-                postUpdateSystemGestureExclusionRects();
+                postUpdate(this::updateSystemGestureExclusionRects);
+            }
+
+            if (!collectPreferKeepClearRects().isEmpty()) {
+                postUpdate(this::updateKeepClearRects);
             }
         }
     }
@@ -15133,7 +16208,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @hide
      */
     @UnsupportedAppUsage
-    public void getWindowDisplayFrame(Rect outRect) {
+    @TestApi
+    public void getWindowDisplayFrame(@NonNull Rect outRect) {
         if (mAttachInfo != null) {
             mAttachInfo.mViewRootImpl.getDisplayFrame(outRect);
             return;
@@ -15202,19 +16278,23 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
-     * Returns whether the device is currently in touch mode.  Touch mode is entered
-     * once the user begins interacting with the device by touch, and affects various
-     * things like whether focus is always visible to the user.
+     * Returns the touch mode state associated with this view.
      *
-     * @return Whether the device is in touch mode.
+     * Attached views return the touch mode state from the associated window's display.
+     * Detached views just return the default touch mode value defined in
+     * {@code com.android.internal.R.bool.config_defaultInTouchMode}.
+     *
+     * Touch mode is entered once the user begins interacting with the device by touch, and
+     * affects various things like whether focus highlight is always visible to the user.
+     *
+     * @return the touch mode state associated with this view
      */
     @ViewDebug.ExportedProperty
     public boolean isInTouchMode() {
         if (mAttachInfo != null) {
             return mAttachInfo.mInTouchMode;
-        } else {
-            return ViewRootImpl.isInTouchMode();
         }
+        return mResources.getBoolean(com.android.internal.R.bool.config_defaultInTouchMode);
     }
 
     /**
@@ -15260,7 +16340,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @param event the KeyEvent object that defines the button action
      */
     public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (KeyEvent.isConfirmKey(keyCode)) {
+        if (KeyEvent.isConfirmKey(keyCode) && event.hasNoModifiers()) {
             if ((mViewFlags & ENABLED_MASK) == DISABLED) {
                 return true;
             }
@@ -15317,7 +16397,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @param event   The KeyEvent object that defines the button action.
      */
     public boolean onKeyUp(int keyCode, KeyEvent event) {
-        if (KeyEvent.isConfirmKey(keyCode)) {
+        if (KeyEvent.isConfirmKey(keyCode) && event.hasNoModifiers()) {
             if ((mViewFlags & ENABLED_MASK) == DISABLED) {
                 return true;
             }
@@ -15518,13 +16598,15 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
-     * Implement this method to handle trackball motion events.  The
-     * <em>relative</em> movement of the trackball since the last event
+     * Implement this method to handle trackball motion events.
+     * <p>
+     * The <em>relative</em> movement of the trackball since the last event
      * can be retrieve with {@link MotionEvent#getX MotionEvent.getX()} and
      * {@link MotionEvent#getY MotionEvent.getY()}.  These are normalized so
      * that a movement of 1 corresponds to the user pressing one DPAD key (so
      * they will often be fractional values, representing the more fine-grained
      * movement information available from a trackball).
+     * </p>
      *
      * @param event The motion event.
      * @return True if the event was handled, false otherwise.
@@ -15536,9 +16618,10 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     /**
      * Implement this method to handle generic motion events.
      * <p>
-     * Generic motion events describe joystick movements, mouse hovers, track pad
-     * touches, scroll wheel movements and other input events.  The
-     * {@link MotionEvent#getSource() source} of the motion event specifies
+     * Generic motion events describe joystick movements, hover events from mouse or stylus
+     * devices, trackpad touches, scroll wheel movements and other motion events not handled
+     * by {@link #onTouchEvent(MotionEvent)} or {@link #onTrackballEvent(MotionEvent)}.
+     * The {@link MotionEvent#getSource() source} of the motion event specifies
      * the class of input that was received.  Implementations of this method
      * must examine the bits in the source before processing the event.
      * The following code example shows how this is done.
@@ -15557,7 +16640,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *     if (event.isFromSource(InputDevice.SOURCE_CLASS_POINTER)) {
      *         switch (event.getAction()) {
      *             case MotionEvent.ACTION_HOVER_MOVE:
-     *                 // process the mouse hover movement...
+     *                 // process the hover movement...
      *                 return true;
      *             case MotionEvent.ACTION_SCROLL:
      *                 // process the scroll wheel movement...
@@ -16303,6 +17386,9 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * This is similar to {@link View#requestUnbufferedDispatch(MotionEvent)}, but does not
      * automatically terminate, and allows the specification of arbitrary input source classes.
      *
+     * <p>Prior to {@link android.os.Build.VERSION_CODES#UPSIDE_DOWN_CAKE}, calling this method
+     * will not result in any behavioral changes when this View is not attached to a window.
+     *
      * @param source The combined input source class to request unbuffered dispatch for. All
      *               events coming from these source classes will not be buffered. Set to
      *               {@link InputDevice#SOURCE_CLASS_NONE} in order to return to default behaviour.
@@ -16340,7 +17426,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     void setFlags(int flags, int mask) {
         final boolean accessibilityEnabled =
                 AccessibilityManager.getInstance(mContext).isEnabled();
-        final boolean oldIncludeForAccessibility = accessibilityEnabled && includeForAccessibility();
+        final boolean oldIncludeForAccessibility =
+                accessibilityEnabled && includeForAccessibility(false);
 
         int old = mViewFlags;
         mViewFlags = (mViewFlags & ~mask) | (flags & mask);
@@ -16566,7 +17653,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             if ((changed & FOCUSABLE) != 0 || (changed & VISIBILITY_MASK) != 0
                     || (changed & CLICKABLE) != 0 || (changed & LONG_CLICKABLE) != 0
                     || (changed & CONTEXT_CLICKABLE) != 0) {
-                if (oldIncludeForAccessibility != includeForAccessibility()) {
+                if (oldIncludeForAccessibility != includeForAccessibility(false)) {
                     notifySubtreeAccessibilityStateChangedIfNeeded();
                 } else {
                     notifyViewAccessibilityStateChangedIfNeeded(
@@ -16693,7 +17780,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * (but after its own view has been drawn).
      * @param canvas the canvas on which to draw the view
      */
-    protected void dispatchDraw(Canvas canvas) {
+    protected void dispatchDraw(@NonNull Canvas canvas) {
 
     }
 
@@ -18152,8 +19239,10 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @see #getOutlineProvider()
      */
     public void setOutlineProvider(ViewOutlineProvider provider) {
-        mOutlineProvider = provider;
-        invalidateOutline();
+        if (mOutlineProvider != provider) {
+            mOutlineProvider = provider;
+            invalidateOutline();
+        }
     }
 
     /**
@@ -18334,18 +19423,37 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
-     * If some part of this view is not clipped by any of its parents, then
-     * return that area in r in global (root) coordinates. To convert r to local
-     * coordinates (without taking possible View rotations into account), offset
-     * it by -globalOffset (e.g. r.offset(-globalOffset.x, -globalOffset.y)).
-     * If the view is completely clipped or translated out, return false.
+     * Sets {@code r} to the coordinates of the non-clipped area of this view in
+     * the coordinate space of the view's root view. Sets {@code globalOffset}
+     * to the offset of the view's x and y coordinates from the coordinate space
+     * origin, which is the top left corner of the root view irrespective of
+     * screen decorations and system UI elements.
      *
-     * @param r If true is returned, r holds the global coordinates of the
-     *        visible portion of this view.
-     * @param globalOffset If true is returned, globalOffset holds the dx,dy
-     *        between this view and its root. globalOffet may be null.
-     * @return true if r is non-empty (i.e. part of the view is visible at the
-     *         root level.
+     * <p>To convert {@code r} to coordinates relative to the top left corner of
+     * this view (without taking view rotations into account), offset {@code r}
+     * by the inverse values of
+     * {@code globalOffset}&mdash;{@code r.offset(-globalOffset.x,
+     * -globalOffset.y)}&mdash;which is equivalent to calling
+     * {@link #getLocalVisibleRect(Rect) getLocalVisibleRect(Rect)}.
+     *
+     * <p><b>Note:</b> Do not use this method to determine the size of a window
+     * in multi-window mode; use
+     * {@link WindowManager#getCurrentWindowMetrics()}.
+     *
+     * @param r If the method returns true, contains the coordinates of the
+     *      visible portion of this view in the coordinate space of the view's
+     *      root view. If the method returns false, the contents of {@code r}
+     *      are undefined.
+     * @param globalOffset If the method returns true, contains the offset of
+     *      the x and y coordinates of this view from the top left corner of the
+     *      view's root view. If the method returns false, the contents of
+     *      {@code globalOffset} are undefined. The argument can be null (see
+     *      {@link #getGlobalVisibleRect(Rect) getGlobalVisibleRect(Rect)}.
+     * @return true if at least part of the view is visible within the root
+     *      view; false if the view is completely clipped or translated out of
+     *      the visible area of the root view.
+     *
+     * @see #getLocalVisibleRect(Rect)
      */
     public boolean getGlobalVisibleRect(Rect r, Point globalOffset) {
         int width = mRight - mLeft;
@@ -18360,10 +19468,48 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         return false;
     }
 
+    /**
+     * Sets {@code r} to the coordinates of the non-clipped area of this view in
+     * the coordinate space of the view's root view.
+     *
+     * <p>See {@link #getGlobalVisibleRect(Rect, Point)
+     * getGlobalVisibleRect(Rect, Point)} for more information.
+     *
+     * @param r If the method returns true, contains the coordinates of the
+     *      visible portion of this view in the coordinate space of the view's
+     *      root view. If the method returns false, the contents of {@code r}
+     *      are undefined.
+     * @return true if at least part of the view is visible within the root
+     *      view; otherwise false.
+     */
     public final boolean getGlobalVisibleRect(Rect r) {
         return getGlobalVisibleRect(r, null);
     }
 
+    /**
+     * Sets {@code r} to the coordinates of the non-clipped area of this view
+     * relative to the top left corner of the view.
+     *
+     * <p>If the view is clipped on the left or top, the left and top
+     * coordinates are offset from 0 by the clipped amount. For example, if the
+     * view is off screen 50px on the left and 30px at the top, the left and top
+     * coordinates are 50 and 30 respectively.
+     *
+     * <p>If the view is clipped on the right or bottom, the right and bottom
+     * coordinates are reduced by the clipped amount. For example, if the view
+     * is off screen 40px on the right and 20px at the bottom, the right
+     * coordinate is the view width - 40, and the bottom coordinate is the view
+     * height - 20.
+     *
+     * @param r If the method returns true, contains the coordinates of the
+     *      visible portion of this view relative to the top left corner of the
+     *      view. If the method returns false, the contents of {@code r} are
+     *      undefined.
+     * @return true if at least part of the view is visible; false if the view
+     *      is completely clipped or translated out of the visible area.
+     *
+     * @see #getGlobalVisibleRect(Rect, Point)
+     */
     public final boolean getLocalVisibleRect(Rect r) {
         final Point offset = mAttachInfo != null ? mAttachInfo.mPoint : new Point();
         if (getGlobalVisibleRect(r, offset)) {
@@ -19875,6 +21021,9 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     /**
      * Check if this view can be scrolled horizontally in a certain direction.
      *
+     * <p>This is without regard to whether the view is enabled or not, or if it will scroll
+     * in response to user input or not.
+     *
      * @param direction Negative to check scrolling left, positive to check scrolling right.
      * @return true if this view can be scrolled in the specified direction, false otherwise.
      */
@@ -19891,6 +21040,9 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
     /**
      * Check if this view can be scrolled vertically in a certain direction.
+     *
+     * <p>This is without regard to whether the view is enabled or not, or if it will scroll
+     * in response to user input or not.
      *
      * @param direction Negative to check scrolling up, positive to check scrolling down.
      * @return true if this view can be scrolled in the specified direction, false otherwise.
@@ -19913,7 +21065,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         out.bottom = mScrollY + mBottom - mTop;
     }
 
-    private void onDrawScrollIndicators(Canvas c) {
+    private void onDrawScrollIndicators(@NonNull Canvas c) {
         if ((mPrivateFlags3 & SCROLL_INDICATORS_PFLAG3_MASK) == 0) {
             // No scroll indicators enabled.
             return;
@@ -20097,7 +21249,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *
      * @see #awakenScrollBars(int)
      */
-    protected final void onDrawScrollBars(Canvas canvas) {
+    protected final void onDrawScrollBars(@NonNull Canvas canvas) {
         // scrollbars are drawn only when the animation is running
         final ScrollabilityCache cache = mScrollCache;
 
@@ -20209,7 +21361,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @hide
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-    protected void onDrawHorizontalScrollBar(Canvas canvas, Drawable scrollBar,
+    protected void onDrawHorizontalScrollBar(@NonNull Canvas canvas, Drawable scrollBar,
             int l, int t, int r, int b) {
         scrollBar.setBounds(l, t, r, b);
         scrollBar.draw(canvas);
@@ -20229,7 +21381,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @hide
      */
     @UnsupportedAppUsage
-    protected void onDrawVerticalScrollBar(Canvas canvas, Drawable scrollBar,
+    protected void onDrawVerticalScrollBar(@NonNull Canvas canvas, Drawable scrollBar,
             int l, int t, int r, int b) {
         scrollBar.setBounds(l, t, r, b);
         scrollBar.draw(canvas);
@@ -20240,7 +21392,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *
      * @param canvas the canvas on which the background will be drawn
      */
-    protected void onDraw(Canvas canvas) {
+    protected void onDraw(@NonNull Canvas canvas) {
     }
 
     /*
@@ -20286,6 +21438,14 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
         if (isFocused()) {
             notifyFocusChangeToImeFocusController(true /* hasFocus */);
+        }
+
+        if (sTraceLayoutSteps) {
+            setTraversalTracingEnabled(true);
+        }
+        if (sTraceRequestLayoutClass != null
+                && sTraceRequestLayoutClass.equals(getClass().getSimpleName())) {
+            setRelayoutTracingEnabled(true);
         }
     }
 
@@ -20669,10 +21829,17 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         mCurrentAnimation = null;
 
         if ((mViewFlags & TOOLTIP) == TOOLTIP) {
+            removeCallbacks(mTooltipInfo.mShowTooltipRunnable);
+            removeCallbacks(mTooltipInfo.mHideTooltipRunnable);
             hideTooltip();
         }
 
         AccessibilityNodeIdManager.getInstance().unregisterViewWithId(getAccessibilityViewId());
+
+        if (mBackgroundRenderNode != null) {
+            mBackgroundRenderNode.forceEndAnimators();
+        }
+        mRenderNode.forceEndAnimators();
     }
 
     private void cleanupDraw() {
@@ -20779,6 +21946,17 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         return Math.max(vis1, vis2);
     }
 
+    private boolean mShouldFakeFocus = false;
+
+    /**
+     * Fake send a focus event after attaching to window.
+     * See {@link android.view.ViewRootImpl#dispatchCompatFakeFocus()} for details.
+     * @hide
+     */
+    public void fakeFocusAfterAttachingToWindow() {
+        mShouldFakeFocus = true;
+    }
+
     /**
      * @param info the {@link android.view.View.AttachInfo} to associated with
      *        this view
@@ -20847,6 +22025,11 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
         notifyEnterOrExitForAutoFillIfNeeded(true);
         notifyAppearedOrDisappearedForContentCaptureIfNeeded(true);
+
+        if (mShouldFakeFocus) {
+            getViewRootImpl().dispatchCompatFakeFocus();
+            mShouldFakeFocus = false;
+        }
     }
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P)
@@ -20897,6 +22080,10 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         }
 
         notifyEnterOrExitForAutoFillIfNeeded(false);
+
+        if (info != null && !collectPreferKeepClearRects().isEmpty()) {
+            info.mViewRootImpl.updateKeepClearRectsForView(this);
+        }
     }
 
     /**
@@ -21266,6 +22453,22 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
+     * Configure the {@link android.graphics.RenderEffect} to apply to the backdrop contents of this
+     * View. This will apply a visual effect to the result of the backdrop contents of this View
+     * before it is drawn. For example if
+     * {@link RenderEffect#createBlurEffect(float, float, RenderEffect, Shader.TileMode)}
+     * is provided, the previous content behind this View will be blurred before this View is drawn.
+     * @param renderEffect to be applied to the View. Passing null clears the previously configured
+     *                     {@link RenderEffect}
+     * @hide
+     */
+    public void setBackdropRenderEffect(@Nullable RenderEffect renderEffect) {
+        if (mRenderNode.setBackdropRenderEffect(renderEffect)) {
+            invalidateViewProperty(true, true);
+        }
+    }
+
+    /**
      * Updates the {@link Paint} object used with the current layer (used only if the current
      * layer type is not set to {@link #LAYER_TYPE_NONE}). Changed properties of the Paint
      * provided to {@link #setLayerType(int, android.graphics.Paint)} will be used the next time
@@ -21323,6 +22526,11 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             @EnumEntry(value = LAYER_TYPE_NONE, name = "none"),
             @EnumEntry(value = LAYER_TYPE_SOFTWARE, name = "software"),
             @EnumEntry(value = LAYER_TYPE_HARDWARE, name = "hardware")
+    })
+    @ViewDebug.ExportedProperty(category = "drawing", mapping = {
+            @ViewDebug.IntToString(from = LAYER_TYPE_NONE, to = "NONE"),
+            @ViewDebug.IntToString(from = LAYER_TYPE_SOFTWARE, to = "SOFTWARE"),
+            @ViewDebug.IntToString(from = LAYER_TYPE_HARDWARE, to = "HARDWARE")
     })
     @LayerType
     public int getLayerType() {
@@ -22339,22 +23547,30 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
+     * If an attached view draws to a HW canvas, it may use its RenderNode + DisplayList.
+     *
+     * If a view is dettached, its DisplayList shouldn't exist. If the canvas isn't
+     * HW accelerated, it can't handle drawing RenderNodes.
+     *
+     * @hide
+     */
+    protected final boolean drawsWithRenderNode(@NonNull Canvas canvas) {
+        return mAttachInfo != null
+                && mAttachInfo.mHardwareAccelerated
+                && canvas.isHardwareAccelerated();
+    }
+
+    /**
      * This method is called by ViewGroup.drawChild() to have each child view draw itself.
      *
      * This is where the View specializes rendering behavior based on layer type,
      * and hardware acceleration.
      */
-    boolean draw(Canvas canvas, ViewGroup parent, long drawingTime) {
+    boolean draw(@NonNull Canvas canvas, ViewGroup parent, long drawingTime) {
 
         final boolean hardwareAcceleratedCanvas = canvas.isHardwareAccelerated();
-        /* If an attached view draws to a HW canvas, it may use its RenderNode + DisplayList.
-         *
-         * If a view is dettached, its DisplayList shouldn't exist. If the canvas isn't
-         * HW accelerated, it can't handle drawing RenderNodes.
-         */
-        boolean drawingWithRenderNode = mAttachInfo != null
-                && mAttachInfo.mHardwareAccelerated
-                && hardwareAcceleratedCanvas;
+
+        boolean drawingWithRenderNode = drawsWithRenderNode(canvas);
 
         boolean more = false;
         final boolean childHasIdentityMatrix = hasIdentityMatrix();
@@ -22638,7 +23854,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         return (int) (dips * scale + 0.5f);
     }
 
-    final private void debugDrawFocus(Canvas canvas) {
+    private void debugDrawFocus(@NonNull Canvas canvas) {
         if (isFocused()) {
             final int cornerSquareSize = dipsToPixels(DEBUG_CORNERS_SIZE_DIP);
             final int l = mScrollX;
@@ -22673,7 +23889,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @param canvas The Canvas to which the View is rendered.
      */
     @CallSuper
-    public void draw(Canvas canvas) {
+    public void draw(@NonNull Canvas canvas) {
         final int privateFlags = mPrivateFlags;
         mPrivateFlags = (privateFlags & ~PFLAG_DIRTY_MASK) | PFLAG_DRAWN;
 
@@ -22908,7 +24124,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @param canvas Canvas on which to draw the background
      */
     @UnsupportedAppUsage
-    private void drawBackground(Canvas canvas) {
+    private void drawBackground(@NonNull Canvas canvas) {
         final Drawable background = mBackground;
         if (background == null) {
             return;
@@ -23153,6 +24369,30 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         return o instanceof ViewGroup && ((ViewGroup) o).isLayoutModeOptical();
     }
 
+    /**
+     * Enable measure/layout debugging on traces.
+     *
+     * @see Trace
+     * @hide
+     */
+    public static void setTraceLayoutSteps(boolean traceLayoutSteps) {
+        sTraceLayoutSteps = traceLayoutSteps;
+    }
+
+    /**
+     * Enable request layout tracing classes with {@code s} simple name.
+     * <p>
+     * When set, a {@link Trace} instant event and a log with the stacktrace is emitted every
+     * time a requestLayout of a class matching {@code s} name happens.
+     * This applies only to views attached from this point onwards.
+     *
+     * @see Trace#instant(long, String)
+     * @hide
+     */
+    public static void setTracedRequestLayoutClassClass(String s) {
+        sTraceRequestLayoutClass = s;
+    }
+
     private boolean setOpticalFrame(int left, int top, int right, int bottom) {
         Insets parentInsets = mParent instanceof View ?
                 ((View) mParent).getOpticalInsets() : Insets.NONE;
@@ -23187,7 +24427,13 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     @SuppressWarnings({"unchecked"})
     public void layout(int l, int t, int r, int b) {
         if ((mPrivateFlags3 & PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT) != 0) {
+            if (isTraversalTracingEnabled()) {
+                Trace.beginSection(mTracingStrings.onMeasureBeforeLayout);
+            }
             onMeasure(mOldWidthMeasureSpec, mOldHeightMeasureSpec);
+            if (isTraversalTracingEnabled()) {
+                Trace.endSection();
+            }
             mPrivateFlags3 &= ~PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT;
         }
 
@@ -23200,7 +24446,13 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                 setOpticalFrame(l, t, r, b) : setFrame(l, t, r, b);
 
         if (changed || (mPrivateFlags & PFLAG_LAYOUT_REQUIRED) == PFLAG_LAYOUT_REQUIRED) {
+            if (isTraversalTracingEnabled()) {
+                Trace.beginSection(mTracingStrings.onLayout);
+            }
             onLayout(changed, l, t, r, b);
+            if (isTraversalTracingEnabled()) {
+                Trace.endSection();
+            }
 
             if (shouldDrawRoundScrollbar()) {
                 if(mRoundScrollbarRenderer == null) {
@@ -23413,6 +24665,9 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
             }
         }
         rebuildOutline();
+        if (onCheckIsTextEditor() || mHandwritingDelegatorCallback != null) {
+            setHandwritingArea(new Rect(0, 0, newWidth, newHeight));
+        }
     }
 
     /**
@@ -23805,7 +25060,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * Draw the default focus highlight onto the canvas if there is one and this view is focused.
      * @param canvas the canvas where we're drawing the highlight.
      */
-    private void drawDefaultFocusHighlight(Canvas canvas) {
+    private void drawDefaultFocusHighlight(@NonNull Canvas canvas) {
         if (mDefaultFocusHighlight != null && isFocused()) {
             if (mDefaultFocusHighlightSizeChanged) {
                 mDefaultFocusHighlightSizeChanged = false;
@@ -24603,7 +25858,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *
      * @param canvas canvas to draw into
      */
-    public void onDrawForeground(Canvas canvas) {
+    public void onDrawForeground(@NonNull Canvas canvas) {
         onDrawScrollIndicators(canvas);
         onDrawScrollBars(canvas);
 
@@ -25160,11 +26415,31 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
-     * <p>Computes the coordinates of this view on the screen. The argument
-     * must be an array of two integers. After the method returns, the array
-     * contains the x and y location in that order.</p>
+     * Gets the coordinates of this view in the coordinate space of the device
+     * screen, irrespective of system decorations and whether the system is in
+     * multi-window mode.
      *
-     * @param outLocation an array of two integers in which to hold the coordinates
+     * <p>In multi-window mode, the coordinate space encompasses the entire
+     * device screen, ignoring the bounds of the app window. For example, if the
+     * view is in the bottom portion of a horizontal split screen, the top edge
+     * of the screen&mdash;not the top edge of the window&mdash;is the origin
+     * from which the y-coordinate is calculated.
+     *
+     * <p>In multiple-screen scenarios, the coordinate space can span screens.
+     * For example, if the app is spanning both screens of a dual-screen device
+     * and the view is located on the right-hand screen, the x-coordinate is
+     * calculated from the left edge of the left-hand screen to the left edge of
+     * the view. When the app is restricted to a single screen in a
+     * multiple-screen environment, the coordinate space includes only the
+     * screen on which the app is running.
+     *
+     * <p>After the method returns, the argument array contains the x and y
+     * coordinates of the view relative to the view's left and top edges,
+     * respectively.
+     *
+     * @param outLocation A two-element integer array in which the view
+     *      coordinates are stored. The x-coordinate is at index 0; the
+     *      y-coordinate, at index 1.
      */
     public void getLocationOnScreen(@Size(2) int[] outLocation) {
         getLocationInWindow(outLocation);
@@ -25173,15 +26448,32 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         if (info != null) {
             outLocation[0] += info.mWindowLeft;
             outLocation[1] += info.mWindowTop;
+            // If OVERRIDE_SANDBOX_VIEW_BOUNDS_APIS override is enabled,
+            // applyViewLocationSandboxingIfNeeded sandboxes outLocation within window bounds.
+            info.mViewRootImpl.applyViewLocationSandboxingIfNeeded(outLocation);
         }
     }
 
     /**
-     * <p>Computes the coordinates of this view in its window. The argument
-     * must be an array of two integers. After the method returns, the array
-     * contains the x and y location in that order.</p>
+     * Gets the coordinates of this view in the coordinate space of the window
+     * that contains the view, irrespective of system decorations.
      *
-     * @param outLocation an array of two integers in which to hold the coordinates
+     * <p>In multi-window mode, the origin of the coordinate space is the
+     * top left corner of the window that contains the view. In full screen
+     * mode, the origin is the top left corner of the device screen.
+     *
+     * <p>In multiple-screen scenarios, if the app spans multiple screens, the
+     * coordinate space also spans multiple screens. But if the app is
+     * restricted to a single screen, the coordinate space includes only the
+     * screen on which the app is running.
+     *
+     * <p>After the method returns, the argument array contains the x and y
+     * coordinates of the view relative to the view's left and top edges,
+     * respectively.
+     *
+     * @param outLocation A two-element integer array in which the view
+     *      coordinates are stored. The x-coordinate is at index 0; the
+     *      y-coordinate, at index 1.
      */
     public void getLocationInWindow(@Size(2) int[] outLocation) {
         if (outLocation == null || outLocation.length < 2) {
@@ -25723,6 +27015,25 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         return (viewRoot != null && viewRoot.isInLayout());
     }
 
+    /** To be used only for debugging purposes. */
+    private void printStackStrace(String name) {
+        Log.d(VIEW_LOG_TAG, "---- ST:" + name);
+
+        StringBuilder sb = new StringBuilder();
+        StackTraceElement[] stackTraceElements = Thread.currentThread().getStackTrace();
+        int startIndex = 1;
+        int endIndex = Math.min(stackTraceElements.length, startIndex + 20); // max 20 entries.
+        for (int i = startIndex; i < endIndex; i++) {
+            StackTraceElement s = stackTraceElements[i];
+            sb.append(s.getMethodName())
+                    .append("(")
+                    .append(s.getFileName())
+                    .append(":")
+                    .append(s.getLineNumber())
+                    .append(") <- ");
+        }
+        Log.d(VIEW_LOG_TAG, name + ": " + sb);
+    }
     /**
      * Call this when something has changed which has invalidated the
      * layout of this view. This will schedule a layout pass of the view
@@ -25736,6 +27047,12 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      */
     @CallSuper
     public void requestLayout() {
+        if (isRelayoutTracingEnabled()) {
+            Trace.instantForTrack(TRACE_TAG_APP, "requestLayoutTracing",
+                    mTracingStrings.classSimpleName);
+            printStackStrace(mTracingStrings.requestLayoutStacktracePrefix);
+        }
+
         if (mMeasureCache != null) mMeasureCache.clear();
 
         if (mAttachInfo != null && mAttachInfo.mViewRequestingLayout == null) {
@@ -25829,8 +27146,14 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
             int cacheIndex = forceLayout ? -1 : mMeasureCache.indexOfKey(key);
             if (cacheIndex < 0 || sIgnoreMeasureCache) {
+                if (isTraversalTracingEnabled()) {
+                    Trace.beginSection(mTracingStrings.onMeasure);
+                }
                 // measure ourselves, this should set the measured dimension flag back
                 onMeasure(widthMeasureSpec, heightMeasureSpec);
+                if (isTraversalTracingEnabled()) {
+                    Trace.endSection();
+                }
                 mPrivateFlags3 &= ~PFLAG3_MEASURE_NEEDED_BEFORE_LAYOUT;
             } else {
                 long value = mMeasureCache.valueAt(cacheIndex);
@@ -26333,7 +27656,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      * @param flags Additional flags as per {@link HapticFeedbackConstants}.
      */
     public boolean performHapticFeedback(int feedbackConstant, int flags) {
-        if (mAttachInfo == null) {
+        if (feedbackConstant == HapticFeedbackConstants.NO_HAPTICS
+                || mAttachInfo == null) {
             return false;
         }
         //noinspection SimplifiableIfStatement
@@ -26627,7 +27951,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          *
          * @param canvas A {@link android.graphics.Canvas} object in which to draw the shadow image.
          */
-        public void onDrawShadow(Canvas canvas) {
+        public void onDrawShadow(@NonNull Canvas canvas) {
             final View view = mView.get();
             if (view != null) {
                 view.draw(canvas);
@@ -26755,6 +28079,11 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                 || (shadowTouchPoint.x < 0) || (shadowTouchPoint.y < 0)) {
             throw new IllegalStateException("Drag shadow dimensions must not be negative");
         }
+        final float overrideInvScale = CompatibilityInfo.getOverrideInvertedScale();
+        if (overrideInvScale != 1f) {
+            shadowTouchPoint.x = (int) (shadowTouchPoint.x / overrideInvScale);
+            shadowTouchPoint.y = (int) (shadowTouchPoint.y / overrideInvScale);
+        }
 
         // Create 1x1 surface when zero surface size is specified because SurfaceControl.Builder
         // does not accept zero size surface.
@@ -26779,6 +28108,11 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
                 .setFormat(PixelFormat.TRANSLUCENT)
                 .setCallsite("View.startDragAndDrop")
                 .build();
+        if (overrideInvScale != 1f) {
+            final SurfaceControl.Transaction transaction = new SurfaceControl.Transaction();
+            transaction.setMatrix(surfaceControl, 1 / overrideInvScale, 0, 0, 1 / overrideInvScale)
+                    .apply();
+        }
         final Surface surface = new Surface();
         surface.copyFrom(surfaceControl);
         IBinder token = null;
@@ -28216,30 +29550,71 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
-     * Returns the pointer icon for the motion event, or null if it doesn't specify the icon.
-     * The default implementation does not care the location or event types, but some subclasses
-     * may use it (such as WebViews).
-     * @param event The MotionEvent from a mouse
-     * @param pointerIndex The index of the pointer for which to retrieve the {@link PointerIcon}.
-     *                     This will be between 0 and {@link MotionEvent#getPointerCount()}.
+     * Resolve the pointer icon that should be used for specified pointer in the motion event.
+     *
+     * The default implementation will resolve the pointer icon to one set using
+     * {@link #setPointerIcon(PointerIcon)} for mouse devices. Subclasses may override this to
+     * customize the icon for the given pointer.
+     *
+     * For example, the pointer icon for a stylus pointer can be resolved in the following way:
+     * <code><pre>
+     * &#64;Override
+     * public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
+     *     final int toolType = event.getToolType(pointerIndex);
+     *     if (!event.isFromSource(InputDevice.SOURCE_MOUSE)
+     *             && event.isFromSource(InputDevice.SOURCE_STYLUS)
+     *             && (toolType == MotionEvent.TOOL_TYPE_STYLUS
+     *                     || toolType == MotionEvent.TOOL_TYPE_ERASER)) {
+     *         // Show this pointer icon only if this pointer is a stylus.
+     *         return PointerIcon.getSystemIcon(mContext, PointerIcon.TYPE_WAIT);
+     *     }
+     *     // Use the default logic for determining the pointer icon for other non-stylus pointers,
+     *     // like for the mouse cursor.
+     *     return super.onResolvePointerIcon(event, pointerIndex);
+     * }
+     * </pre></code>
+     *
+     * @param event The {@link MotionEvent} that requires a pointer icon to be resolved for one of
+     *              pointers.
+     * @param pointerIndex The index of the pointer in {@code event} for which to retrieve the
+     *     {@link PointerIcon}. This will be between 0 and {@link MotionEvent#getPointerCount()}.
+     * @return the pointer icon to use for specified pointer, or {@code null} if a pointer icon
+     *     is not specified and the default icon should be used.
      * @see PointerIcon
+     * @see InputManager#isStylusPointerIconEnabled()
      */
     public PointerIcon onResolvePointerIcon(MotionEvent event, int pointerIndex) {
         final float x = event.getX(pointerIndex);
         final float y = event.getY(pointerIndex);
         if (isDraggingScrollBar() || isOnScrollbarThumb(x, y)) {
-            return PointerIcon.getSystemIcon(mContext, PointerIcon.TYPE_ARROW);
+            // Use the default pointer icon.
+            return null;
         }
-        return mPointerIcon;
+
+        // Note: A drawing tablet will have both SOURCE_MOUSE and SOURCE_STYLUS, but it would use
+        // TOOL_TYPE_STYLUS. For now, treat drawing tablets the same way as a mouse or touchpad.
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)) {
+            return mMousePointerIcon;
+        }
+
+        return null;
     }
 
     /**
-     * Set the pointer icon for the current view.
+     * Set the pointer icon to be used for a mouse pointer in the current view.
+     *
      * Passing {@code null} will restore the pointer icon to its default value.
+     * Note that setting the pointer icon using this method will only set it for events coming from
+     * a mouse device (i.e. with source {@link InputDevice#SOURCE_MOUSE}). To resolve
+     * the pointer icon for other device types like styluses, override
+     * {@link #onResolvePointerIcon(MotionEvent, int)}.
+     *
      * @param pointerIcon A PointerIcon instance which will be shown when the mouse hovers.
+     * @see #onResolvePointerIcon(MotionEvent, int)
+     * @see PointerIcon
      */
     public void setPointerIcon(PointerIcon pointerIcon) {
-        mPointerIcon = pointerIcon;
+        mMousePointerIcon = pointerIcon;
         if (mAttachInfo == null || mAttachInfo.mHandlingPointerEvent) {
             return;
         }
@@ -28250,11 +29625,13 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
-     * Gets the pointer icon for the current view.
+     * Gets the mouse pointer icon for the current view.
+     *
+     * @see #setPointerIcon(PointerIcon)
      */
     @InspectableProperty
     public PointerIcon getPointerIcon() {
-        return mPointerIcon;
+        return mMousePointerIcon;
     }
 
     /**
@@ -28283,7 +29660,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *     {@link InputDevice#SOURCE_MOUSE_RELATIVE}, and relative position changes will be
      *     available through {@link MotionEvent#getX} and {@link MotionEvent#getY}.</li>
      *
-     *     <li>Events from a touchpad will be delivered with the source
+     *     <li>Events from a touchpad or trackpad will be delivered with the source
      *     {@link InputDevice#SOURCE_TOUCHPAD}, where the absolute position of each of the pointers
      *     on the touchpad will be available through {@link MotionEvent#getX(int)} and
      *     {@link MotionEvent#getY(int)}, and their relative movements are stored in
@@ -28291,6 +29668,12 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
      *
      *     <li>Events from other types of devices, such as touchscreens, will not be affected.</li>
      * </ul>
+     * <p>
+     * When pointer capture changes, connected mouse and trackpad devices may be reconfigured,
+     * and their properties (such as their sources or motion ranges) may change. Use an
+     * {@link android.hardware.input.InputManager.InputDeviceListener} to be notified when a device
+     * changes (which may happen after enabling or disabling pointer capture), and use
+     * {@link InputDevice#getDevice(int)} to get the updated {@link InputDevice}.
      * <p>
      * Events captured through pointer capture will be dispatched to
      * {@link OnCapturedPointerListener#onCapturedPointer(View, MotionEvent)} if an
@@ -28968,6 +30351,19 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * @return true if the callback consumed the long click, false otherwise.
          */
         boolean onLongClick(View v);
+
+        /**
+         * Returns whether the default {@link HapticFeedbackConstants#LONG_PRESS} haptic feedback
+         * is performed when this listener has consumed the long click. This method is called
+         * immediately after {@link #onLongClick} has returned true.
+         *
+         * @param v The view that was clicked and held.
+         * @return true to perform the default {@link HapticFeedbackConstants#LONG_PRESS} haptic
+         * feedback, or false if the handler manages all haptics itself.
+         */
+        default boolean onLongClickUseDefaultHapticFeedback(@NonNull View v) {
+            return true;
+        }
     }
 
     /**
@@ -29086,12 +30482,12 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * Called when the view is attached to a window.
          * @param v The view that was attached
          */
-        public void onViewAttachedToWindow(View v);
+        public void onViewAttachedToWindow(@NonNull View v);
         /**
          * Called when the view is detached from a window.
          * @param v The view that was detached
          */
-        public void onViewDetachedFromWindow(View v);
+        public void onViewDetachedFromWindow(@NonNull View v);
     }
 
     /**
@@ -29116,7 +30512,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * @param insets The insets to apply
          * @return The insets supplied, minus any insets that were consumed
          */
-        public WindowInsets onApplyWindowInsets(View v, WindowInsets insets);
+        public @NonNull WindowInsets onApplyWindowInsets(@NonNull View v,
+                @NonNull WindowInsets insets);
     }
 
     private final class UnsetPressedState implements Runnable {
@@ -29498,16 +30895,10 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         boolean mHandlingPointerEvent;
 
         /**
-         * The offset of this view's window when it's on an embedded display that is re-parented
-         * to another window.
-         */
-        final Point mLocationInParentDisplay = new Point();
-
-        /**
-         * The screen matrix of this view when it's on a {@link SurfaceControlViewHost} that is
+         * The window matrix of this view when it's on a {@link SurfaceControlViewHost} that is
          * embedded within a SurfaceView.
          */
-        Matrix mScreenMatrixInEmbeddedHierarchy;
+        Matrix mWindowMatrixInEmbeddedHierarchy;
 
         /**
          * Global to the view hierarchy used as a temporary for dealing with
@@ -29606,8 +30997,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
         /**
          * Flags related to accessibility processing.
          *
-         * @see AccessibilityNodeInfo#FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
-         * @see AccessibilityNodeInfo#FLAG_REPORT_VIEW_IDS
+         * @see AccessibilityNodeInfo#FLAG_SERVICE_REQUESTS_INCLUDE_NOT_IMPORTANT_VIEWS
+         * @see AccessibilityNodeInfo#FLAG_SERVICE_REQUESTS_REPORT_VIEW_IDS
          */
         int mAccessibilityFetchFlags;
 
@@ -30065,7 +31456,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          *
          * @see View#sendAccessibilityEvent(int) View#sendAccessibilityEvent(int)
          */
-        public void sendAccessibilityEvent(View host, int eventType) {
+        public void sendAccessibilityEvent(@NonNull View host, int eventType) {
             host.sendAccessibilityEventInternal(eventType);
         }
 
@@ -30085,7 +31476,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * @see View#performAccessibilityAction(int, Bundle)
          *      View#performAccessibilityAction(int, Bundle)
          */
-        public boolean performAccessibilityAction(View host, int action, Bundle args) {
+        public boolean performAccessibilityAction(@NonNull View host, int action,
+                @Nullable Bundle args) {
             return host.performAccessibilityActionInternal(action, args);
         }
 
@@ -30107,7 +31499,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * @see View#sendAccessibilityEventUnchecked(AccessibilityEvent)
          *      View#sendAccessibilityEventUnchecked(AccessibilityEvent)
          */
-        public void sendAccessibilityEventUnchecked(View host, AccessibilityEvent event) {
+        public void sendAccessibilityEventUnchecked(@NonNull View host,
+                @NonNull AccessibilityEvent event) {
             host.sendAccessibilityEventUncheckedInternal(event);
         }
 
@@ -30128,7 +31521,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * @see View#dispatchPopulateAccessibilityEvent(AccessibilityEvent)
          *      View#dispatchPopulateAccessibilityEvent(AccessibilityEvent)
          */
-        public boolean dispatchPopulateAccessibilityEvent(View host, AccessibilityEvent event) {
+        public boolean dispatchPopulateAccessibilityEvent(@NonNull View host,
+                @NonNull AccessibilityEvent event) {
             return host.dispatchPopulateAccessibilityEventInternal(event);
         }
 
@@ -30148,7 +31542,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * @see View#onPopulateAccessibilityEvent(AccessibilityEvent)
          *      View#onPopulateAccessibilityEvent(AccessibilityEvent)
          */
-        public void onPopulateAccessibilityEvent(View host, AccessibilityEvent event) {
+        public void onPopulateAccessibilityEvent(@NonNull View host,
+                @NonNull AccessibilityEvent event) {
             host.onPopulateAccessibilityEventInternal(event);
         }
 
@@ -30168,7 +31563,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * @see View#onInitializeAccessibilityEvent(AccessibilityEvent)
          *      View#onInitializeAccessibilityEvent(AccessibilityEvent)
          */
-        public void onInitializeAccessibilityEvent(View host, AccessibilityEvent event) {
+        public void onInitializeAccessibilityEvent(@NonNull View host,
+                @NonNull AccessibilityEvent event) {
             host.onInitializeAccessibilityEventInternal(event);
         }
 
@@ -30187,7 +31583,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * @see View#onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo)
          *      View#onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo)
          */
-        public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
+        public void onInitializeAccessibilityNodeInfo(@NonNull View host,
+                @NonNull AccessibilityNodeInfo info) {
             host.onInitializeAccessibilityNodeInfoInternal(info);
         }
 
@@ -30239,8 +31636,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * @see ViewGroup#onRequestSendAccessibilityEvent(View, AccessibilityEvent)
          *      ViewGroup#onRequestSendAccessibilityEvent(View, AccessibilityEvent)
          */
-        public boolean onRequestSendAccessibilityEvent(ViewGroup host, View child,
-                AccessibilityEvent event) {
+        public boolean onRequestSendAccessibilityEvent(@NonNull ViewGroup host, @NonNull View child,
+                @NonNull AccessibilityEvent event) {
             return host.onRequestSendAccessibilityEventInternal(child, event);
         }
 
@@ -30258,7 +31655,8 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          *
          * @see AccessibilityNodeProvider
          */
-        public AccessibilityNodeProvider getAccessibilityNodeProvider(View host) {
+        public @Nullable AccessibilityNodeProvider getAccessibilityNodeProvider(
+                @NonNull View host) {
             return null;
         }
 
@@ -30286,7 +31684,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
          * @hide
          */
         @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-        public AccessibilityNodeInfo createAccessibilityNodeInfo(View host) {
+        public AccessibilityNodeInfo createAccessibilityNodeInfo(@NonNull View host) {
             return host.createAccessibilityNodeInfoInternal();
         }
     }
@@ -30955,6 +32353,120 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
     }
 
     /**
+     * Sets whether this view is a credential for Credential Manager purposes.
+     *
+     * <p>See {@link #isCredential()}.
+     *
+     * @param isCredential Whether the view is a credential.
+     *
+     * @attr ref android.R.styleable#View_isCredential
+     */
+    public void setIsCredential(boolean isCredential) {
+        if (isCredential) {
+            mPrivateFlags4 |= PFLAG4_IMPORTANT_FOR_CREDENTIAL_MANAGER;
+        } else {
+            mPrivateFlags4 &= ~PFLAG4_IMPORTANT_FOR_CREDENTIAL_MANAGER;
+        }
+    }
+
+    /**
+     * Gets the mode for determining whether this view is a credential.
+     *
+     * <p>See {@link #setIsCredential(boolean)}.
+     *
+     * @return false by default, or value passed to {@link #setIsCredential(boolean)}.
+     *
+     * @attr ref android.R.styleable#View_isCredential
+     */
+    public boolean isCredential() {
+        return ((mPrivateFlags4 & PFLAG4_IMPORTANT_FOR_CREDENTIAL_MANAGER)
+                == PFLAG4_IMPORTANT_FOR_CREDENTIAL_MANAGER);
+    }
+
+    /**
+     * Set whether this view enables automatic handwriting initiation.
+     *
+     * For a view with an active {@link InputConnection}, if auto handwriting is enabled then
+     * stylus movement within its view boundary will automatically trigger the handwriting mode.
+     * Check {@link android.view.inputmethod.InputMethodManager#startStylusHandwriting(View)} for
+     * more details about handwriting mode.
+     *
+     * If the View wants to initiate handwriting mode by itself, it can set this field to
+     * {@code false} and call
+     * {@link android.view.inputmethod.InputMethodManager#startStylusHandwriting(View)} when there
+     * is stylus movement detected.
+     *
+     * Note that this attribute has no effect on the View's children. For example, if a
+     * {@link ViewGroup} disables auto handwriting but its children set auto handwriting to true,
+     * auto handwriting will still work for the children, and vice versa.
+     *
+     * @see #onCreateInputConnection(EditorInfo)
+     * @see android.view.inputmethod.InputMethodManager#startStylusHandwriting(View)
+     * @param enabled whether auto handwriting initiation is enabled for this view.
+     * @attr ref android.R.styleable#View_autoHandwritingEnabled
+     */
+    public void setAutoHandwritingEnabled(boolean enabled) {
+        if (enabled) {
+            mPrivateFlags4 |= PFLAG4_AUTO_HANDWRITING_ENABLED;
+        } else {
+            mPrivateFlags4 &= ~PFLAG4_AUTO_HANDWRITING_ENABLED;
+        }
+        updatePositionUpdateListener();
+        postUpdate(this::updateHandwritingArea);
+    }
+
+    /**
+     * Return whether the View allows automatic handwriting initiation. Returns true if automatic
+     * handwriting initiation is enabled, and verse visa.
+     * @see #setAutoHandwritingEnabled(boolean)
+     */
+    public boolean isAutoHandwritingEnabled() {
+        return (mPrivateFlags4 & PFLAG4_AUTO_HANDWRITING_ENABLED)
+                == PFLAG4_AUTO_HANDWRITING_ENABLED;
+    }
+
+    /**
+     * Return whether the stylus handwriting is available for this View.
+     * @hide
+     */
+    public boolean isStylusHandwritingAvailable() {
+        return getContext().getSystemService(InputMethodManager.class)
+                .isStylusHandwritingAvailable();
+    }
+
+    private void setTraversalTracingEnabled(boolean enabled) {
+        if (enabled) {
+            if (mTracingStrings == null) {
+                mTracingStrings = new ViewTraversalTracingStrings(this);
+            }
+            mPrivateFlags4 |= PFLAG4_TRAVERSAL_TRACING_ENABLED;
+        } else {
+            mPrivateFlags4 &= ~PFLAG4_TRAVERSAL_TRACING_ENABLED;
+        }
+    }
+
+    private boolean isTraversalTracingEnabled() {
+        return (mPrivateFlags4 & PFLAG4_TRAVERSAL_TRACING_ENABLED)
+                == PFLAG4_TRAVERSAL_TRACING_ENABLED;
+    }
+
+    private void setRelayoutTracingEnabled(boolean enabled) {
+        if (enabled) {
+            if (mTracingStrings == null) {
+                mTracingStrings = new ViewTraversalTracingStrings(this);
+            }
+            mPrivateFlags4 |= PFLAG4_RELAYOUT_TRACING_ENABLED;
+        } else {
+            mPrivateFlags4 &= ~PFLAG4_RELAYOUT_TRACING_ENABLED;
+        }
+    }
+
+    private boolean isRelayoutTracingEnabled() {
+        return (mPrivateFlags4 & PFLAG4_RELAYOUT_TRACING_ENABLED)
+                == PFLAG4_RELAYOUT_TRACING_ENABLED;
+    }
+
+    /**
      * Collects a {@link ViewTranslationRequest} which represents the content to be translated in
      * the view.
      *
@@ -31202,7 +32714,7 @@ public class View implements Drawable.Callback, KeyEvent.Callback,
 
         RemoteCallback remoteCallback = new RemoteCallback(result ->
                 executor.execute(() -> {
-                    DisplayHash displayHash = result.getParcelable(EXTRA_DISPLAY_HASH);
+                    DisplayHash displayHash = result.getParcelable(EXTRA_DISPLAY_HASH, android.view.displayhash.DisplayHash.class);
                     int errorCode = result.getInt(EXTRA_DISPLAY_HASH_ERROR_CODE,
                             DISPLAY_HASH_ERROR_UNKNOWN);
                     if (displayHash != null) {

@@ -39,6 +39,7 @@ import android.util.SparseArray;
 import android.view.DragEvent;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.PointerIcon;
 import android.view.View;
 import android.view.ViewGroup.LayoutParams;
 import android.view.WindowInsets;
@@ -480,9 +481,29 @@ public interface WebViewProvider {
             return false;
         }
 
+        /**
+         * @see View#onApplyWindowInsets(WindowInsets).
+         *
+         * <p>This is the entry point for the WebView implementation to override. It returns
+         * {@code null} when the WebView implementation hasn't implemented the WindowInsets support
+         * on S yet. In this case, the {@link View#onApplyWindowInsets()} super method will be
+         * called instead.
+         *
+         * @param insets Insets to apply
+         * @return The supplied insets with any applied insets consumed.
+         */
         @SuppressWarnings("unused")
         @Nullable
         default WindowInsets onApplyWindowInsets(@Nullable WindowInsets insets) {
+            return null;
+        }
+
+        /**
+         * @hide Only used by WebView.
+         */
+        @SuppressWarnings("unused")
+        @Nullable
+        default PointerIcon onResolvePointerIcon(@NonNull MotionEvent event, int pointerIndex) {
             return null;
         }
     }

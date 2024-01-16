@@ -25,6 +25,7 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.os.DeadObjectException;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -133,6 +134,10 @@ class ServiceWatcherImpl<TBoundServiceInfo extends BoundServiceInfo> implements 
             newBoundServiceInfo = null;
         }
 
+        // if the current connection is not connected, always force a rebind, helping with earlier
+        // recovery when something goes wrong with a connection.
+        forceRebind |= !mServiceConnection.isConnected();
+
         if (forceRebind || !Objects.equals(mServiceConnection.getBoundServiceInfo(),
                 newBoundServiceInfo)) {
             Log.i(TAG, "[" + mTag + "] chose new implementation " + newBoundServiceInfo);
@@ -201,16 +206,21 @@ class ServiceWatcherImpl<TBoundServiceInfo extends BoundServiceInfo> implements 
                 Log.d(TAG, "[" + mTag + "] binding to " + mBoundServiceInfo);
             }
 
+            mRebinder = null;
+
             Intent bindIntent = new Intent(mBoundServiceInfo.getAction()).setComponent(
                     mBoundServiceInfo.getComponentName());
-            if (!mContext.bindServiceAsUser(bindIntent, this,
-                    BIND_AUTO_CREATE | BIND_NOT_FOREGROUND | BIND_NOT_VISIBLE,
-                    mHandler, UserHandle.of(mBoundServiceInfo.getUserId()))) {
-                Log.e(TAG, "[" + mTag + "] unexpected bind failure - retrying later");
-                mRebinder = this::bind;
-                mHandler.postDelayed(mRebinder, RETRY_DELAY_MS);
-            } else {
-                mRebinder = null;
+            try {
+                if (!mContext.bindServiceAsUser(bindIntent, this,
+                        BIND_AUTO_CREATE | BIND_NOT_FOREGROUND | BIND_NOT_VISIBLE,
+                        mHandler, UserHandle.of(mBoundServiceInfo.getUserId()))) {
+                    Log.e(TAG, "[" + mTag + "] unexpected bind failure - retrying later");
+                    mRebinder = this::bind;
+                    mHandler.postDelayed(mRebinder, RETRY_DELAY_MS);
+                }
+            } catch (SecurityException e) {
+                // if anything goes wrong it shouldn't crash the system server
+                Log.e(TAG, "[" + mTag + "] " + mBoundServiceInfo + " bind failed", e);
             }
         }
 
@@ -239,7 +249,7 @@ class ServiceWatcherImpl<TBoundServiceInfo extends BoundServiceInfo> implements 
             Preconditions.checkState(Looper.myLooper() == mHandler.getLooper());
 
             if (mBinder == null) {
-                operation.onError();
+                operation.onError(new DeadObjectException());
                 return;
             }
 
@@ -249,7 +259,7 @@ class ServiceWatcherImpl<TBoundServiceInfo extends BoundServiceInfo> implements 
                 // binders may propagate some specific non-RemoteExceptions from the other side
                 // through the binder as well - we cannot allow those to crash the system server
                 Log.e(TAG, "[" + mTag + "] error running operation on " + mBoundServiceInfo, e);
-                operation.onError();
+                operation.onError(e);
             }
         }
 

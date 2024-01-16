@@ -8,12 +8,18 @@ import android.provider.Settings;
 import android.util.AttributeSet;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.TextView;
+
+import androidx.annotation.Nullable;
 
 import com.android.internal.logging.UiEventLogger;
+import com.android.systemui.FontSizeUtils;
 import com.android.systemui.R;
 import com.android.systemui.qs.QSPanel.QSTileLayout;
 import com.android.systemui.qs.QSPanelControllerBase.TileRecord;
 import com.android.systemui.qs.tileimpl.HeightOverrideable;
+import com.android.systemui.qs.tileimpl.QSTileViewImplKt;
 
 import java.util.ArrayList;
 
@@ -25,9 +31,10 @@ public class TileLayout extends ViewGroup implements QSTileLayout {
 
     protected int mColumns;
     protected int mCellWidth;
-    protected int mCellHeightResId = R.dimen.qs_tile_height;
+    protected int mResourceCellHeightResId = R.dimen.qs_tile_height;
+    protected int mResourceCellHeight;
+    protected int mEstimatedCellHeight;
     protected int mCellHeight;
-    protected int mMaxCellHeight;
     protected int mCellMarginHorizontal;
     protected int mCellMarginVertical;
     protected int mSidePadding;
@@ -43,17 +50,19 @@ public class TileLayout extends ViewGroup implements QSTileLayout {
     private int mMaxColumns = NO_MAX_COLUMNS;
     protected int mResourceColumns;
     private float mSquishinessFraction = 1f;
-    private int mLastTileBottom;
+    protected int mLastTileBottom;
+
+    protected TextView mTempTextView;
 
     public TileLayout(Context context) {
         this(context, null);
     }
 
-    public TileLayout(Context context, AttributeSet attrs) {
+    public TileLayout(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
-        setFocusableInTouchMode(true);
         mLessRows = ((Settings.System.getInt(context.getContentResolver(), "qs_less_rows", 0) != 0)
                 || useQsMediaPlayer(context));
+        mTempTextView = new TextView(context);
         updateResources();
     }
 
@@ -67,7 +76,7 @@ public class TileLayout extends ViewGroup implements QSTileLayout {
     }
 
     @Override
-    public void setListening(boolean listening, UiEventLogger uiEventLogger) {
+    public void setListening(boolean listening, @Nullable UiEventLogger uiEventLogger) {
         if (mListening == listening) return;
         mListening = listening;
         for (TileRecord record : mRecords) {
@@ -117,15 +126,19 @@ public class TileLayout extends ViewGroup implements QSTileLayout {
     }
 
     public boolean updateResources() {
-        final Resources res = mContext.getResources();
+        Resources res = getResources();
         mResourceColumns = Math.max(1, res.getInteger(R.integer.quick_settings_num_columns));
-        updateColumns();
-        mMaxCellHeight = mContext.getResources().getDimensionPixelSize(mCellHeightResId);
+        mResourceCellHeight = res.getDimensionPixelSize(mResourceCellHeightResId);
         mCellMarginHorizontal = res.getDimensionPixelSize(R.dimen.qs_tile_margin_horizontal);
         mSidePadding = useSidePadding() ? mCellMarginHorizontal / 2 : 0;
         mCellMarginVertical= res.getDimensionPixelSize(R.dimen.qs_tile_margin_vertical);
         mMaxAllowedRows = Math.max(1, getResources().getInteger(R.integer.quick_settings_max_rows));
-        if (mLessRows) mMaxAllowedRows = Math.max(mMinRows, mMaxAllowedRows - 1);
+        if (mLessRows) {
+            mMaxAllowedRows = Math.max(mMinRows, mMaxAllowedRows - 1);
+        }
+        // update estimated cell height under current font scaling
+        mTempTextView.dispatchConfigurationChanged(mContext.getResources().getConfiguration());
+        estimateCellHeight();
         if (updateColumns()) {
             requestLayout();
             return true;
@@ -209,8 +222,23 @@ public class TileLayout extends ViewGroup implements QSTileLayout {
         return MeasureSpec.makeMeasureSpec(size, MeasureSpec.EXACTLY);
     }
 
+    // Estimate the height for the tile with 2 labels (general case) under current font scaling.
+    protected void estimateCellHeight() {
+        FontSizeUtils.updateFontSize(mTempTextView, R.dimen.qs_tile_text_size);
+        int unspecifiedSpec = MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED);
+        mTempTextView.measure(unspecifiedSpec, unspecifiedSpec);
+        int padding = mContext.getResources().getDimensionPixelSize(R.dimen.qs_tile_padding);
+        mEstimatedCellHeight = mTempTextView.getMeasuredHeight() * 2 + padding * 2;
+    }
+
     protected int getCellHeight() {
-        return mMaxCellHeight;
+        // Compare estimated height with resource height and return the larger one.
+        // If estimated height > resource height, it means the resource height is not enough
+        // for the tile content under current font scaling. Therefore, we need to use the estimated
+        // height to have a full tile content view.
+        // If estimated height <= resource height, we can use the resource height for tile to keep
+        // the same UI as original behavior.
+        return Math.max(mResourceCellHeight, mEstimatedCellHeight);
     }
 
     private void layoutTileRecords(int numRecords, boolean forLayout) {
@@ -238,7 +266,12 @@ public class TileLayout extends ViewGroup implements QSTileLayout {
             } else {
                 record.tileView.setLeftTopRightBottom(left, top, right, bottom);
             }
-            mLastTileBottom = bottom;
+            record.tileView.setPosition(i);
+
+            // Set the bottom to the unoverriden squished bottom. This is to avoid fake bottoms that
+            // are only used for QQS -> QS expansion animations
+            float scale = QSTileViewImplKt.constrainSquishiness(mSquishinessFraction);
+            mLastTileBottom = top + (int) (record.tileView.getMeasuredHeight() * scale);
         }
     }
 
@@ -248,7 +281,8 @@ public class TileLayout extends ViewGroup implements QSTileLayout {
     }
 
     protected int getRowTop(int row) {
-        return (int) (row * (mCellHeight * mSquishinessFraction + mCellMarginVertical));
+        float scale = QSTileViewImplKt.constrainSquishiness(mSquishinessFraction);
+        return (int) (row * (mCellHeight * scale + mCellMarginVertical));
     }
 
     protected int getColumnStart(int column) {
@@ -293,5 +327,12 @@ public class TileLayout extends ViewGroup implements QSTileLayout {
                 ((HeightOverrideable) record.tileView).setSquishinessFraction(mSquishinessFraction);
             }
         }
+    }
+
+    @Override
+    public void onInitializeAccessibilityNodeInfoInternal(AccessibilityNodeInfo info) {
+        super.onInitializeAccessibilityNodeInfoInternal(info);
+        info.setCollectionInfo(
+                new AccessibilityNodeInfo.CollectionInfo(mRecords.size(), 1, false));
     }
 }

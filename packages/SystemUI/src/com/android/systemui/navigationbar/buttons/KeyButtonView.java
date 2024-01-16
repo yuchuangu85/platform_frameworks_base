@@ -30,6 +30,7 @@ import android.graphics.Paint;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.hardware.input.InputManager;
+import android.hardware.input.InputManagerGlobal;
 import android.media.AudioManager;
 import android.metrics.LogMaker;
 import android.os.AsyncTask;
@@ -79,7 +80,7 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
     private final KeyButtonRipple mRipple;
     private final OverviewProxyService mOverviewProxyService;
     private final MetricsLogger mMetricsLogger = Dependency.get(MetricsLogger.class);
-    private final InputManager mInputManager;
+    private final InputManagerGlobal mInputManagerGlobal;
     private final Paint mOvalBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private float mDarkIntensity;
     private boolean mHasOvalBg = false;
@@ -145,12 +146,12 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
     }
 
     public KeyButtonView(Context context, AttributeSet attrs, int defStyle) {
-        this(context, attrs, defStyle, InputManager.getInstance(), new UiEventLoggerImpl());
+        this(context, attrs, defStyle, InputManagerGlobal.getInstance(), new UiEventLoggerImpl());
     }
 
     @VisibleForTesting
-    public KeyButtonView(Context context, AttributeSet attrs, int defStyle, InputManager manager,
-            UiEventLogger uiEventLogger) {
+    public KeyButtonView(Context context, AttributeSet attrs, int defStyle,
+            InputManagerGlobal manager, UiEventLogger uiEventLogger) {
         super(context, attrs);
         mUiEventLogger = uiEventLogger;
 
@@ -173,7 +174,7 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
 
         mRipple = new KeyButtonRipple(context, this, R.dimen.key_button_ripple_max_width);
         mOverviewProxyService = Dependency.get(OverviewProxyService.class);
-        mInputManager = manager;
+        mInputManagerGlobal = manager;
         setBackground(mRipple);
         setWillNotDraw(false);
         forceHasOverlappingRendering(false);
@@ -273,9 +274,8 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
                 mLongClicked = false;
                 setPressed(true);
 
-                // Use raw X and Y to detect gestures in case a parent changes the x and y values
-                mTouchDownX = (int) ev.getRawX();
-                mTouchDownY = (int) ev.getRawY();
+                mTouchDownX = (int) ev.getX();
+                mTouchDownY = (int) ev.getY();
                 if (mCode != KEYCODE_UNKNOWN) {
                     sendEvent(KeyEvent.ACTION_DOWN, 0, mDownTime);
                 } else {
@@ -289,8 +289,8 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
                 postDelayed(mCheckLongPress, ViewConfiguration.getLongPressTimeout());
                 break;
             case MotionEvent.ACTION_MOVE:
-                x = (int)ev.getRawX();
-                y = (int)ev.getRawY();
+                x = (int) ev.getX();
+                y = (int) ev.getY();
 
                 float slop = QuickStepContract.getQuickStepTouchSlopPx(getContext());
                 if (Math.abs(x - mTouchDownX) > slop || Math.abs(y - mTouchDownY) > slop) {
@@ -413,10 +413,6 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
         logSomePresses(action, flags);
         if (mCode == KeyEvent.KEYCODE_BACK && flags != KeyEvent.FLAG_LONG_PRESS) {
             Log.i(TAG, "Back button event: " + KeyEvent.actionToString(action));
-            if (action == MotionEvent.ACTION_UP) {
-                mOverviewProxyService.notifyBackAction((flags & KeyEvent.FLAG_CANCELED) == 0,
-                        -1, -1, true /* isButton */, false /* gestureSwipeLeft */);
-            }
         }
         final int repeatCount = (flags & KeyEvent.FLAG_LONG_PRESS) != 0 ? 1 : 0;
         final KeyEvent ev = new KeyEvent(mDownTime, when, action, mCode, repeatCount,
@@ -433,7 +429,8 @@ public class KeyButtonView extends ImageView implements ButtonInterface {
         if (displayId != INVALID_DISPLAY) {
             ev.setDisplayId(displayId);
         }
-        mInputManager.injectInputEvent(ev, InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
+        mInputManagerGlobal.injectInputEvent(ev,
+                InputManager.INJECT_INPUT_EVENT_MODE_ASYNC);
     }
 
     @Override

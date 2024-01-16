@@ -23,15 +23,21 @@ import android.hardware.biometrics.BiometricAuthenticator.Modality;
 import android.os.Bundle;
 import android.view.WindowManager;
 
+import com.android.systemui.Dumpable;
+import com.android.systemui.biometrics.ui.viewmodel.PromptViewModel;
+
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /**
  * Interface for the biometric dialog UI.
+ *
+ * TODO(b/251476085): remove along with legacy controller once flag is removed
  */
-public interface AuthDialog {
+@Deprecated
+public interface AuthDialog extends Dumpable {
 
-    String KEY_CONTAINER_STATE = "container_state";
+    String KEY_CONTAINER_GOING_AWAY = "container_going_away";
     String KEY_BIOMETRIC_SHOWING = "biometric_showing";
     String KEY_CREDENTIAL_SHOWING = "credential_showing";
 
@@ -64,14 +70,14 @@ public interface AuthDialog {
     @interface DialogSize {}
 
     /**
-     * Parameters used when laying out {@link AuthBiometricView}, its sublclasses, and
+     * Parameters used when laying out {@link AuthBiometricView}, its subclasses, and
      * {@link AuthPanelController}.
      */
     class LayoutParams {
-        final int mMediumHeight;
-        final int mMediumWidth;
+        public final int mMediumHeight;
+        public final int mMediumWidth;
 
-        LayoutParams(int mediumWidth, int mediumHeight) {
+        public LayoutParams(int mediumWidth, int mediumHeight) {
             mMediumWidth = mediumWidth;
             mMediumHeight = mediumHeight;
         }
@@ -113,7 +119,7 @@ public interface AuthDialog {
     /**
      * Biometric authenticated. May be pending user confirmation, or completed.
      */
-    void onAuthenticationSucceeded();
+    void onAuthenticationSucceeded(@Modality int modality);
 
     /**
      * Authentication failed (reject, timeout). Dialog stays showing.
@@ -136,6 +142,9 @@ public interface AuthDialog {
      */
     void onError(@Modality int modality, String error);
 
+    /** UDFPS pointer down event. */
+    void onPointerDown();
+
     /**
      * Save the current state.
      * @param outState
@@ -147,10 +156,13 @@ public interface AuthDialog {
      */
     String getOpPackageName();
 
+    /** The requestId of the underlying operation within the framework. */
+    long getRequestId();
+
     /**
      * Animate to credential UI. Typically called after biometric is locked out.
      */
-    void animateToCredentialUI();
+    void animateToCredentialUI(boolean isError);
 
     /**
      * @return true if device credential is allowed.
@@ -164,4 +176,6 @@ public interface AuthDialog {
      * must remain fixed on the physical sensor location.
      */
     void onOrientationChanged();
+
+    PromptViewModel getViewModel();
 }

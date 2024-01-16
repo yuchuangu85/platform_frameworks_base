@@ -21,20 +21,34 @@ import android.content.Context;
 import android.service.quickaccesswallet.QuickAccessWalletClient;
 
 import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dagger.qualifiers.Background;
+import com.android.systemui.qs.tileimpl.QSTileImpl;
+import com.android.systemui.qs.tiles.QuickAccessWalletTile;
 import com.android.systemui.wallet.ui.WalletActivity;
+
+import java.util.concurrent.Executor;
 
 import dagger.Binds;
 import dagger.Module;
 import dagger.Provides;
 import dagger.multibindings.ClassKey;
 import dagger.multibindings.IntoMap;
+import dagger.multibindings.StringKey;
 
+import android.app.Service;
+import com.android.systemui.wallet.controller.WalletContextualLocationsService;
 
 /**
  * Module for injecting classes in Wallet.
  */
 @Module
 public abstract class WalletModule {
+
+    @Binds
+    @IntoMap
+    @ClassKey(WalletContextualLocationsService.class)
+    abstract Service bindWalletContextualLocationsService(
+        WalletContextualLocationsService service);
 
     /** */
     @Binds
@@ -45,7 +59,15 @@ public abstract class WalletModule {
     /** */
     @SysUISingleton
     @Provides
-    public static QuickAccessWalletClient provideQuickAccessWalletClient(Context context) {
-        return QuickAccessWalletClient.create(context);
+    public static QuickAccessWalletClient provideQuickAccessWalletClient(Context context,
+            @Background Executor bgExecutor) {
+        return QuickAccessWalletClient.create(context, bgExecutor);
     }
+
+    /** */
+    @Binds
+    @IntoMap
+    @StringKey(QuickAccessWalletTile.TILE_SPEC)
+    public abstract QSTileImpl<?> bindQuickAccessWalletTile(
+            QuickAccessWalletTile quickAccessWalletTile);
 }

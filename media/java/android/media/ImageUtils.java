@@ -18,7 +18,9 @@ package android.media;
 
 import android.graphics.ImageFormat;
 import android.graphics.PixelFormat;
+import android.hardware.HardwareBuffer;
 import android.media.Image.Plane;
+import android.util.Log;
 import android.util.Size;
 
 import libcore.io.Memory;
@@ -29,6 +31,7 @@ import java.nio.ByteBuffer;
  * Package private utility class for hosting commonly used Image related methods.
  */
 class ImageUtils {
+    private static final String IMAGEUTILS_LOG_TAG = "ImageUtils";
 
     /**
      * Only a subset of the formats defined in
@@ -67,6 +70,7 @@ class ImageUtils {
             case ImageFormat.RAW_DEPTH10:
             case ImageFormat.DEPTH_JPEG:
             case ImageFormat.HEIC:
+            case ImageFormat.JPEG_R:
                 return 1;
             case ImageFormat.PRIVATE:
                 return 0;
@@ -76,6 +80,35 @@ class ImageUtils {
         }
     }
 
+    /**
+     * Only a subset of the formats defined in
+     * {@link android.graphics.HardwareBuffer.Format} constants are supported by ImageReader.
+     */
+    public static int getNumPlanesForHardwareBufferFormat(int hardwareBufferFormat) {
+        switch(hardwareBufferFormat) {
+            case HardwareBuffer.YCBCR_420_888:
+            case HardwareBuffer.YCBCR_P010:
+                return 3;
+            case HardwareBuffer.RGBA_8888:
+            case HardwareBuffer.RGBX_8888:
+            case HardwareBuffer.RGB_888:
+            case HardwareBuffer.RGB_565:
+            case HardwareBuffer.RGBA_FP16:
+            case HardwareBuffer.RGBA_1010102:
+            case HardwareBuffer.BLOB:
+            case HardwareBuffer.D_16:
+            case HardwareBuffer.D_24:
+            case HardwareBuffer.DS_24UI8:
+            case HardwareBuffer.D_FP32:
+            case HardwareBuffer.DS_FP32UI8:
+            case HardwareBuffer.S_UI8:
+                return 1;
+            default:
+                throw new UnsupportedOperationException(
+                    String.format("Invalid hardwareBuffer format specified %d",
+                            hardwareBufferFormat));
+        }
+    }
     /**
      * <p>
      * Copy source image data to destination Image.
@@ -202,6 +235,7 @@ class ImageUtils {
             case ImageFormat.DEPTH_POINT_CLOUD:
             case ImageFormat.DEPTH_JPEG:
             case ImageFormat.HEIC:
+            case ImageFormat.JPEG_R:
                 estimatedBytePerPixel = 0.3;
                 break;
             case ImageFormat.Y8:
@@ -226,19 +260,23 @@ class ImageUtils {
             case ImageFormat.RAW_SENSOR:
             case ImageFormat.RAW_PRIVATE: // round estimate, real size is unknown
             case ImageFormat.DEPTH16:
-            case ImageFormat.YCBCR_P010:
                 estimatedBytePerPixel = 2.0;
                 break;
             case PixelFormat.RGB_888:
+            case ImageFormat.YCBCR_P010:
                 estimatedBytePerPixel = 3.0;
                 break;
             case PixelFormat.RGBA_8888:
             case PixelFormat.RGBX_8888:
+            case PixelFormat.RGBA_1010102:
                 estimatedBytePerPixel = 4.0;
                 break;
             default:
-                throw new UnsupportedOperationException(
-                        String.format("Invalid format specified %d", format));
+                if (Log.isLoggable(IMAGEUTILS_LOG_TAG, Log.VERBOSE)) {
+                    Log.v(IMAGEUTILS_LOG_TAG, "getEstimatedNativeAllocBytes() uses default"
+                            + "estimated native allocation size.");
+                }
+                estimatedBytePerPixel = 1.0;
         }
 
         return (int)(width * height * estimatedBytePerPixel * numImages);
@@ -263,6 +301,7 @@ class ImageUtils {
                 }
             case PixelFormat.RGB_565:
             case PixelFormat.RGBA_8888:
+            case PixelFormat.RGBA_1010102:
             case PixelFormat.RGBX_8888:
             case PixelFormat.RGB_888:
             case ImageFormat.JPEG:
@@ -275,12 +314,16 @@ class ImageUtils {
             case ImageFormat.RAW_DEPTH:
             case ImageFormat.RAW_DEPTH10:
             case ImageFormat.HEIC:
+            case ImageFormat.JPEG_R:
                 return new Size(image.getWidth(), image.getHeight());
             case ImageFormat.PRIVATE:
                 return new Size(0, 0);
             default:
-                throw new UnsupportedOperationException(
-                        String.format("Invalid image format %d", image.getFormat()));
+                if (Log.isLoggable(IMAGEUTILS_LOG_TAG, Log.VERBOSE)) {
+                    Log.v(IMAGEUTILS_LOG_TAG, "getEffectivePlaneSizeForImage() uses"
+                            + "image's width and height for plane size.");
+                }
+                return new Size(image.getWidth(), image.getHeight());
         }
     }
 

@@ -24,17 +24,12 @@ import android.view.View;
 import com.android.systemui.Dumpable;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dump.DumpManager;
-import com.android.systemui.qs.QSFragment;
 import com.android.systemui.statusbar.policy.ConfigurationController;
 
-import java.io.FileDescriptor;
 import java.io.PrintWriter;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 
 import javax.inject.Inject;
-
-import dagger.Subcomponent;
+import javax.inject.Provider;
 
 /**
  * Holds a map of root views to FragmentHostStates and generates them as needed.
@@ -50,10 +45,11 @@ public class FragmentService implements Dumpable {
      * A map with the means to create fragments via Dagger injection.
      *
      * key: the fragment class name.
-     * value: see {@link FragmentInstantiationInfo}.
+     * value: A {@link Provider} for the Fragment
      */
-    private final ArrayMap<String, FragmentInstantiationInfo> mInjectionMap = new ArrayMap<>();
+    private final ArrayMap<String, Provider<? extends Fragment>> mInjectionMap = new ArrayMap<>();
     private final Handler mHandler = new Handler();
+    private final FragmentHostManager.Factory mFragmentHostManagerFactory;
 
     private ConfigurationController.ConfigurationListener mConfigurationListener =
             new ConfigurationController.ConfigurationListener() {
@@ -67,36 +63,31 @@ public class FragmentService implements Dumpable {
 
     @Inject
     public FragmentService(
-            FragmentCreator.Factory fragmentCreatorFactory,
+            FragmentHostManager.Factory fragmentHostManagerFactory,
             ConfigurationController configurationController,
             DumpManager dumpManager) {
-        addFragmentInstantiationProvider(fragmentCreatorFactory.build());
+        mFragmentHostManagerFactory = fragmentHostManagerFactory;
         configurationController.addCallback(mConfigurationListener);
 
-        dumpManager.registerDumpable(getClass().getSimpleName(), this);
+        dumpManager.registerNormalDumpable(this);
     }
 
-    ArrayMap<String, FragmentInstantiationInfo> getInjectionMap() {
+    ArrayMap<String, Provider<? extends Fragment>> getInjectionMap() {
         return mInjectionMap;
     }
 
     /**
      * Adds a new Dagger component object that provides method(s) to create fragments via injection.
      */
-    public void addFragmentInstantiationProvider(Object daggerComponent) {
-        for (Method method : daggerComponent.getClass().getDeclaredMethods()) {
-            if (Fragment.class.isAssignableFrom(method.getReturnType())
-                    && (method.getModifiers() & Modifier.PUBLIC) != 0) {
-                String fragmentName = method.getReturnType().getName();
-                if (mInjectionMap.containsKey(fragmentName)) {
-                    Log.w(TAG, "Fragment " + fragmentName + " is already provided by different"
-                            + " Dagger component; Not adding method");
-                    continue;
-                }
-                mInjectionMap.put(
-                        fragmentName, new FragmentInstantiationInfo(method, daggerComponent));
-            }
+    public void addFragmentInstantiationProvider(
+            Class<?> fragmentCls, Provider<? extends Fragment> provider) {
+        String fragmentName = fragmentCls.getName();
+        if (mInjectionMap.containsKey(fragmentName)) {
+            Log.w(TAG, "Fragment " + fragmentName + " is already provided by different"
+                    + " Dagger component; Not adding method");
+            return;
         }
+        mInjectionMap.put(fragmentName, provider);
     }
 
     public FragmentHostManager getFragmentHostManager(View view) {
@@ -123,27 +114,11 @@ public class FragmentService implements Dumpable {
     }
 
     @Override
-    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+    public void dump(PrintWriter pw, String[] args) {
         pw.println("Dumping fragments:");
         for (FragmentHostState state : mHosts.values()) {
-            state.mFragmentHostManager.getFragmentManager().dump("  ", fd, pw, args);
+            state.mFragmentHostManager.getFragmentManager().dump("  ", null, pw, args);
         }
-    }
-
-    /**
-     * The subcomponent of dagger that holds all fragments that need injection.
-     */
-    @Subcomponent
-    public interface FragmentCreator {
-        /** Factory for creating a FragmentCreator. */
-        @Subcomponent.Factory
-        interface Factory {
-            FragmentCreator build();
-        }
-        /**
-         * Inject a QSFragment.
-         */
-        QSFragment createQSFragment();
     }
 
     private class FragmentHostState {
@@ -153,7 +128,7 @@ public class FragmentService implements Dumpable {
 
         public FragmentHostState(View view) {
             mView = view;
-            mFragmentHostManager = new FragmentHostManager(FragmentService.this, mView);
+            mFragmentHostManager = mFragmentHostManagerFactory.create(mView);
         }
 
         public void sendConfigurationChange(Configuration newConfig) {
@@ -166,18 +141,6 @@ public class FragmentService implements Dumpable {
 
         private void handleSendConfigurationChange(Configuration newConfig) {
             mFragmentHostManager.onConfigurationChanged(newConfig);
-        }
-    }
-
-    /** An object containing the information needed to instantiate a fragment. */
-    static class FragmentInstantiationInfo {
-        /** The method that returns a newly-created fragment of the given class. */
-        final Method mMethod;
-        /** The Dagger component that the method should be invoked on. */
-        final Object mDaggerComponent;
-        FragmentInstantiationInfo(Method method, Object daggerComponent) {
-            this.mMethod = method;
-            this.mDaggerComponent = daggerComponent;
         }
     }
 }

@@ -18,15 +18,15 @@ package com.android.server.pm;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.util.ArraySet;
 import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.server.pm.parsing.pkg.AndroidPackage;
-import com.android.server.pm.parsing.pkg.AndroidPackageUtils;
 import com.android.server.pm.parsing.pkg.ParsedPackage;
+import com.android.server.pm.pkg.AndroidPackage;
+import com.android.server.pm.pkg.PackageStateInternal;
 
 import java.io.File;
-import java.util.Set;
 
 
 
@@ -38,8 +38,8 @@ public interface PackageAbiHelper {
      * which varies depending on where and how the package was installed.
      */
     @NonNull
-    NativeLibraryPaths deriveNativeLibraryPaths(AndroidPackage pkg, boolean isUpdatedSystemApp,
-            File appLib32InstallDir);
+    NativeLibraryPaths deriveNativeLibraryPaths(AndroidPackage pkg, boolean isSystemApp,
+            boolean isUpdatedSystemApp, File appLib32InstallDir);
 
     /**
      * Calculate the abis for a bundled app. These can uniquely be determined from the contents of
@@ -54,8 +54,9 @@ public interface PackageAbiHelper {
      *
      * If {@code extractLibs} is true, native libraries are extracted from the app if required.
      */
-    Pair<Abis, NativeLibraryPaths> derivePackageAbi(AndroidPackage pkg, boolean isUpdatedSystemApp,
-            String cpuAbiOverride, File appLib32InstallDir) throws PackageManagerException;
+    Pair<Abis, NativeLibraryPaths> derivePackageAbi(AndroidPackage pkg, boolean isSystemApp,
+            boolean isUpdatedSystemApp, String cpuAbiOverride, File appLib32InstallDir)
+            throws PackageManagerException;
 
     /**
      * Calculates adjusted ABIs for a set of packages belonging to a shared user so that they all
@@ -74,8 +75,8 @@ public interface PackageAbiHelper {
      *         belonging to the shared user.
      */
     @Nullable
-    String getAdjustedAbiForSharedUser(
-            Set<PackageSetting> packagesForUser, AndroidPackage scannedPackage);
+    String getAdjustedAbiForSharedUser(ArraySet<? extends PackageStateInternal> packagesForUser,
+            AndroidPackage scannedPackage);
 
     /**
      * The native library paths and related properties that should be set on a
@@ -118,11 +119,6 @@ public interface PackageAbiHelper {
             this.secondary = secondary;
         }
 
-        Abis(AndroidPackage pkg, PackageSetting pkgSetting)  {
-            this(AndroidPackageUtils.getPrimaryCpuAbi(pkg, pkgSetting),
-                    AndroidPackageUtils.getSecondaryCpuAbi(pkg, pkgSetting));
-        }
-
         public void applyTo(ParsedPackage pkg) {
             pkg.setPrimaryCpuAbi(primary)
                     .setSecondaryCpuAbi(secondary);
@@ -134,8 +130,8 @@ public interface PackageAbiHelper {
             //
             // If the settings aren't null, sync them up with what we've derived.
             if (pkgSetting != null) {
-                pkgSetting.primaryCpuAbiString = primary;
-                pkgSetting.secondaryCpuAbiString = secondary;
+                pkgSetting.setPrimaryCpuAbi(primary);
+                pkgSetting.setSecondaryCpuAbi(secondary);
             }
         }
     }

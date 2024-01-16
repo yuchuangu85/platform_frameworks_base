@@ -24,7 +24,10 @@
 #include "SkClipStack.h"
 #include "SkRect.h"
 #include "SkM44.h"
+#include "include/gpu/GpuTypes.h" // from Skia
 #include "utils/GLUtils.h"
+#include <effects/GainmapRenderer.h>
+#include "renderthread/CanvasContext.h"
 
 namespace android {
 namespace uirenderer {
@@ -61,6 +64,17 @@ void GLFunctorDrawable::onDraw(SkCanvas* canvas) {
         return;
     }
 
+    // canvas may be an AlphaFilterCanvas, which is intended to draw with a
+    // modified alpha. We do not have a way to do this without drawing into an
+    // extra layer, which would have a performance cost. Draw directly into the
+    // underlying gpu canvas. This matches prior behavior and the behavior in
+    // Vulkan.
+    {
+        auto* gpuCanvas = SkAndroidFrameworkUtils::getBaseWrappedCanvas(canvas);
+        LOG_ALWAYS_FATAL_IF(!gpuCanvas, "GLFunctorDrawable::onDraw is using an invalid canvas!");
+        canvas = gpuCanvas;
+    }
+
     // flush will create a GrRenderTarget if not already present.
     canvas->flush();
 
@@ -81,7 +95,7 @@ void GLFunctorDrawable::onDraw(SkCanvas* canvas) {
         SkImageInfo surfaceInfo =
                 canvas->imageInfo().makeWH(clipBounds.width(), clipBounds.height());
         tmpSurface =
-                SkSurface::MakeRenderTarget(directContext, SkBudgeted::kYes, surfaceInfo);
+                SkSurface::MakeRenderTarget(directContext, skgpu::Budgeted::kYes, surfaceInfo);
         tmpSurface->getCanvas()->clear(SK_ColorTRANSPARENT);
 
         GrGLFramebufferInfo fboInfo;
@@ -117,6 +131,9 @@ void GLFunctorDrawable::onDraw(SkCanvas* canvas) {
     info.height = fboSize.height();
     mat4.getColMajor(&info.transform[0]);
     info.color_space_ptr = canvas->imageInfo().colorSpace();
+    info.currentHdrSdrRatio = getTargetHdrSdrRatio(info.color_space_ptr);
+    info.fboColorType = canvas->imageInfo().colorType();
+    info.shouldDither = renderthread::CanvasContext::shouldDither();
 
     // ensure that the framebuffer that the webview will render into is bound before we clear
     // the stencil and/or draw the functor.

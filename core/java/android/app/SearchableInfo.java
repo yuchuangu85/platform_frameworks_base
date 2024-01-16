@@ -396,6 +396,17 @@ public final class SearchableInfo implements Parcelable {
         private final String mSuggestActionMsg;
         private final String mSuggestActionMsgColumn;
 
+        public static final Parcelable.Creator<ActionKeyInfo> CREATOR =
+                new Parcelable.Creator<ActionKeyInfo>() {
+                    public ActionKeyInfo createFromParcel(Parcel in) {
+                        return new ActionKeyInfo(in);
+                    }
+
+                    public ActionKeyInfo[] newArray(int size) {
+                        return new ActionKeyInfo[size];
+                    }
+                };
+
         /**
          * Create one object using attributeset as input data.
          * @param activityContext runtime context of the activity that the action key information
@@ -524,7 +535,7 @@ public final class SearchableInfo implements Parcelable {
      */
     public static SearchableInfo getActivityMetaData(Context context, ActivityInfo activityInfo,
             int userId) {
-        Context userContext = null;
+        Context userContext;
         try {
             userContext = context.createPackageContextAsUser("system", 0,
                 new UserHandle(userId));

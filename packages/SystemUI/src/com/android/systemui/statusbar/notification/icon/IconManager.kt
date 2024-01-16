@@ -27,11 +27,13 @@ import android.view.View
 import android.widget.ImageView
 import com.android.internal.statusbar.StatusBarIcon
 import com.android.systemui.R
+import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.statusbar.StatusBarIconView
 import com.android.systemui.statusbar.notification.InflationException
 import com.android.systemui.statusbar.notification.collection.NotificationEntry
 import com.android.systemui.statusbar.notification.collection.notifcollection.CommonNotifCollection
 import com.android.systemui.statusbar.notification.collection.notifcollection.NotifCollectionListener
+import com.android.systemui.util.traceSection
 import javax.inject.Inject
 
 /**
@@ -44,11 +46,14 @@ import javax.inject.Inject
  * TODO: Much of this code was copied whole-sale in order to get it out of NotificationEntry.
  *  Long-term, it should probably live somewhere in the content inflation pipeline.
  */
+@SysUISingleton
 class IconManager @Inject constructor(
     private val notifCollection: CommonNotifCollection,
     private val launcherApps: LauncherApps,
     private val iconBuilder: IconBuilder
-) {
+) : ConversationIconManager {
+    private var unimportantConversationKeys: Set<String> = emptySet()
+
     fun attach() {
         notifCollection.addCollectionListener(entryListener)
     }
@@ -63,21 +68,25 @@ class IconManager @Inject constructor(
         }
 
         override fun onRankingApplied() {
-            // When the sensitivity changes OR when the isImportantConversation status changes,
-            // we need to update the icons
-            for (entry in notifCollection.allNotifs) {
-                val isImportant = isImportantConversation(entry)
-                if (entry.icons.areIconsAvailable &&
-                        isImportant != entry.icons.isImportantConversation) {
-                    updateIconsSafe(entry)
-                }
-                entry.icons.isImportantConversation = isImportant
-            }
+            // rankings affect whether a conversation is important, which can change the icons
+            recalculateForImportantConversationChange()
         }
     }
 
     private val sensitivityListener = NotificationEntry.OnSensitivityChangedListener {
         entry -> updateIconsSafe(entry)
+    }
+
+    private fun recalculateForImportantConversationChange() {
+        for (entry in notifCollection.allNotifs) {
+            val isImportant = isImportantConversation(entry)
+            if (entry.icons.areIconsAvailable &&
+                isImportant != entry.icons.isImportantConversation
+            ) {
+                updateIconsSafe(entry)
+            }
+            entry.icons.isImportantConversation = isImportant
+        }
     }
 
     /**
@@ -87,7 +96,7 @@ class IconManager @Inject constructor(
      * @throws InflationException Exception if required icons are not valid or specified
      */
     @Throws(InflationException::class)
-    fun createIcons(entry: NotificationEntry) {
+    fun createIcons(entry: NotificationEntry) = traceSection("IconManager.createIcons") {
         // Construct the status bar icon view.
         val sbIcon = iconBuilder.createIconView(entry)
         sbIcon.scaleType = ImageView.ScaleType.CENTER_INSIDE
@@ -135,9 +144,9 @@ class IconManager @Inject constructor(
      * @throws InflationException Exception if required icons are not valid or specified
      */
     @Throws(InflationException::class)
-    fun updateIcons(entry: NotificationEntry) {
+    fun updateIcons(entry: NotificationEntry) = traceSection("IconManager.updateIcons") {
         if (!entry.icons.areIconsAvailable) {
-            return
+            return@traceSection
         }
         entry.icons.smallIconDescriptor = null
         entry.icons.peopleAvatarDescriptor = null
@@ -306,8 +315,28 @@ class IconManager @Inject constructor(
     }
 
     private fun isImportantConversation(entry: NotificationEntry): Boolean {
-        return entry.ranking.channel != null && entry.ranking.channel.isImportantConversation
+        return entry.ranking.channel != null &&
+                entry.ranking.channel.isImportantConversation &&
+                entry.key !in unimportantConversationKeys
+    }
+
+    override fun setUnimportantConversations(keys: Collection<String>) {
+        val newKeys = keys.toSet()
+        val changed = unimportantConversationKeys != newKeys
+        unimportantConversationKeys = newKeys
+        if (changed) {
+            recalculateForImportantConversationChange()
+        }
     }
 }
 
 private const val TAG = "IconManager"
+
+interface ConversationIconManager {
+    /**
+     * Sets the complete current set of notification keys which should (for the purposes of icon
+     * presentation) be considered unimportant.  This tells the icon manager to remove the avatar
+     * of a group from which the priority notification has been removed.
+     */
+    fun setUnimportantConversations(keys: Collection<String>)
+}

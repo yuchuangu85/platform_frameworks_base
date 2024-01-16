@@ -16,6 +16,8 @@
 
 package com.android.server.power;
 
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -32,8 +34,12 @@ import android.hardware.SensorManager;
 import android.hardware.display.AmbientDisplayConfiguration;
 import android.os.BatteryStats;
 import android.os.Handler;
+import android.os.IWakeLockCallback;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.os.VibrationAttributes;
 import android.os.Vibrator;
 import android.os.test.TestLooper;
 import android.provider.Settings;
@@ -42,18 +48,20 @@ import android.testing.TestableContext;
 import androidx.test.InstrumentationRegistry;
 
 import com.android.internal.app.IBatteryStats;
-import com.android.internal.os.BatteryStatsImpl;
 import com.android.server.LocalServices;
 import com.android.server.policy.WindowManagerPolicy;
 import com.android.server.power.batterysaver.BatterySaverController;
 import com.android.server.power.batterysaver.BatterySaverPolicy;
 import com.android.server.power.batterysaver.BatterySavingStats;
+import com.android.server.power.stats.BatteryStatsImpl;
 import com.android.server.statusbar.StatusBarManagerInternal;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+
+import java.util.concurrent.Executor;
 
 /**
  * Tests for {@link com.android.server.power.Notifier}
@@ -78,6 +86,7 @@ public class NotifierTest {
     private Context mContextSpy;
     private Resources mResourcesSpy;
     private TestLooper mTestLooper = new TestLooper();
+    private FakeExecutor mTestExecutor = new FakeExecutor();
     private Notifier mNotifier;
 
     @Before
@@ -106,9 +115,10 @@ public class NotifierTest {
         // WHEN wired charging starts
         mNotifier.onWiredChargingStarted(USER_ID);
         mTestLooper.dispatchAll();
+        mTestExecutor.simulateAsyncExecutionOfLastCommand();
 
         // THEN the device vibrates once
-        verify(mVibrator, times(1)).vibrate(any(), any());
+        verify(mVibrator, times(1)).vibrate(any(), any(VibrationAttributes.class));
     }
 
     @Test
@@ -121,9 +131,10 @@ public class NotifierTest {
         // WHEN wired charging starts
         mNotifier.onWiredChargingStarted(USER_ID);
         mTestLooper.dispatchAll();
+        mTestExecutor.simulateAsyncExecutionOfLastCommand();
 
         // THEN the device doesn't vibrate
-        verify(mVibrator, never()).vibrate(any(), any());
+        verify(mVibrator, never()).vibrate(any(), any(VibrationAttributes.class));
     }
 
     @Test
@@ -136,9 +147,10 @@ public class NotifierTest {
         // WHEN wireless charging starts
         mNotifier.onWirelessChargingStarted(5, USER_ID);
         mTestLooper.dispatchAll();
+        mTestExecutor.simulateAsyncExecutionOfLastCommand();
 
         // THEN the device vibrates once
-        verify(mVibrator, times(1)).vibrate(any(), any());
+        verify(mVibrator, times(1)).vibrate(any(), any(VibrationAttributes.class));
     }
 
     @Test
@@ -151,9 +163,10 @@ public class NotifierTest {
         // WHEN wireless charging starts
         mNotifier.onWirelessChargingStarted(5, USER_ID);
         mTestLooper.dispatchAll();
+        mTestExecutor.simulateAsyncExecutionOfLastCommand();
 
         // THEN the device doesn't vibrate
-        verify(mVibrator, never()).vibrate(any(), any());
+        verify(mVibrator, never()).vibrate(any(), any(VibrationAttributes.class));
     }
 
     @Test
@@ -169,9 +182,10 @@ public class NotifierTest {
         // WHEN wired charging starts
         mNotifier.onWiredChargingStarted(USER_ID);
         mTestLooper.dispatchAll();
+        mTestExecutor.simulateAsyncExecutionOfLastCommand();
 
         // THEN the device doesn't vibrate
-        verify(mVibrator, never()).vibrate(any(), any());
+        verify(mVibrator, never()).vibrate(any(), any(VibrationAttributes.class));
     }
 
     @Test
@@ -185,6 +199,7 @@ public class NotifierTest {
         // WHEN wireless charging starts
         mNotifier.onWirelessChargingStarted(5, USER_ID);
         mTestLooper.dispatchAll();
+        mTestExecutor.simulateAsyncExecutionOfLastCommand();
 
         // THEN the charging animation is triggered
         verify(mStatusBarManagerInternal, times(1)).showChargingAnimation(5);
@@ -201,16 +216,46 @@ public class NotifierTest {
         // WHEN wireless charging starts
         mNotifier.onWirelessChargingStarted(5, USER_ID);
         mTestLooper.dispatchAll();
+        mTestExecutor.simulateAsyncExecutionOfLastCommand();
 
         // THEN the charging animation never gets called
         verify(mStatusBarManagerInternal, never()).showChargingAnimation(anyInt());
+    }
+
+    @Test
+    public void testOnWakeLockListener_RemoteException_NoRethrow() {
+        createNotifier();
+
+        IWakeLockCallback exceptingCallback = new IWakeLockCallback.Stub() {
+            @Override public void onStateChanged(boolean enabled) throws RemoteException {
+                throw new RemoteException("Just testing");
+            }
+        };
+
+        final int uid = 1234;
+        final int pid = 5678;
+        mNotifier.onWakeLockReleased(PowerManager.PARTIAL_WAKE_LOCK, "wakelockTag",
+                "my.package.name", uid, pid, /* workSource= */ null, /* historyTag= */ null,
+                exceptingCallback);
+        mNotifier.onWakeLockAcquired(PowerManager.PARTIAL_WAKE_LOCK, "wakelockTag",
+                "my.package.name", uid, pid, /* workSource= */ null, /* historyTag= */ null,
+                exceptingCallback);
+        mNotifier.onWakeLockChanging(PowerManager.PARTIAL_WAKE_LOCK, "wakelockTag",
+                "my.package.name", uid, pid, /* workSource= */ null, /* historyTag= */ null,
+                exceptingCallback,
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "wakelockTag",
+                "my.package.name", uid, pid, /* newWorkSource= */ null, /* newHistoryTag= */ null,
+                exceptingCallback);
+        mTestLooper.dispatchAll();
+        // If we didn't throw, we're good!
     }
 
     private final PowerManagerService.Injector mInjector = new PowerManagerService.Injector() {
         @Override
         Notifier createNotifier(Looper looper, Context context, IBatteryStats batteryStats,
                 SuspendBlocker suspendBlocker, WindowManagerPolicy policy,
-                FaceDownDetector faceDownDetector, ScreenUndimDetector screenUndimDetector) {
+                FaceDownDetector faceDownDetector, ScreenUndimDetector screenUndimDetector,
+                Executor backgroundExecutor) {
             return mNotifierMock;
         }
 
@@ -299,6 +344,32 @@ public class NotifierTest {
                 mInjector.createSuspendBlocker(mService, "testBlocker"),
                 null,
                 null,
-                null);
+                null,
+                mTestExecutor);
     }
+
+    private static class FakeExecutor implements Executor {
+        private Runnable mLastCommand;
+
+        @Override
+        public void execute(Runnable command) {
+            assertNull(mLastCommand);
+            assertNotNull(command);
+            mLastCommand = command;
+        }
+
+        public Runnable getAndResetLastCommand() {
+            Runnable toReturn = mLastCommand;
+            mLastCommand = null;
+            return toReturn;
+        }
+
+        public void simulateAsyncExecutionOfLastCommand() {
+            Runnable toRun = getAndResetLastCommand();
+            if (toRun != null) {
+                toRun.run();
+            }
+        }
+    }
+
 }

@@ -38,8 +38,13 @@ import com.android.internal.app.procstats.DumpUtils;
 import com.android.internal.app.procstats.IProcessStats;
 import com.android.internal.app.procstats.ProcessState;
 import com.android.internal.app.procstats.ProcessStats;
+import com.android.internal.app.procstats.ProcessStatsInternal;
 import com.android.internal.app.procstats.ServiceState;
+import com.android.internal.app.procstats.UidState;
 import com.android.internal.os.BackgroundThread;
+import com.android.server.LocalServices;
+
+import dalvik.annotation.optimization.NeverCompile;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -64,7 +69,7 @@ public final class ProcessStatsService extends IProcessStats.Stub {
     // define the encoding of that data in an integer.
 
     static final int MAX_HISTORIC_STATES = 8;   // Maximum number of historic states we will keep.
-    static final String STATE_FILE_PREFIX = "state-"; // Prefix to use for state filenames.
+    static final String STATE_FILE_PREFIX = "state-v2-"; // Prefix to use for state filenames.
     static final String STATE_FILE_SUFFIX = ".bin"; // Suffix to use for state filenames.
     static final String STATE_FILE_CHECKIN_SUFFIX = ".ci"; // State files that have checked in.
     static long WRITE_PERIOD = 30*60*1000;      // Write file every 30 minutes or so.
@@ -457,6 +462,10 @@ public final class ProcessStatsService extends IProcessStats.Stub {
             File file = files[i];
             String fileStr = file.getPath();
             if (DEBUG) Slog.d(TAG, "Collecting: " + fileStr);
+            if (!file.getName().startsWith(STATE_FILE_PREFIX)) {
+                if (DEBUG) Slog.d(TAG, "Skipping: mismatching prefix");
+                continue;
+            }
             if (!inclCheckedIn && fileStr.endsWith(STATE_FILE_CHECKIN_SUFFIX)) {
                 if (DEBUG) Slog.d(TAG, "Skipping: already checked in");
                 continue;
@@ -473,6 +482,14 @@ public final class ProcessStatsService extends IProcessStats.Stub {
 
     @GuardedBy("mFileLock")
     private void trimHistoricStatesWriteLF() {
+        File[] files = mBaseDir.listFiles();
+        if (files != null) {
+            for (int i = 0; i < files.length; i++) {
+                if (!files[i].getName().startsWith(STATE_FILE_PREFIX)) {
+                    files[i].delete();
+                }
+            }
+        }
         ArrayList<String> filesArray = getCommittedFilesLF(MAX_HISTORIC_STATES, false, true);
         if (filesArray == null) {
             return;
@@ -559,10 +576,11 @@ public final class ProcessStatsService extends IProcessStats.Stub {
         return res;
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.PACKAGE_USAGE_STATS)
     @Override
     public byte[] getCurrentStats(List<ParcelFileDescriptor> historic) {
-        mAm.mContext.enforceCallingOrSelfPermission(
-                android.Manifest.permission.PACKAGE_USAGE_STATS, null);
+        super.getCurrentStats_enforcePermission();
+
         Parcel current = Parcel.obtain();
         synchronized (mLock) {
             long now = SystemClock.uptimeMillis();
@@ -614,11 +632,12 @@ public final class ProcessStatsService extends IProcessStats.Stub {
      * @return List of proto binary of individual commit files or one that is merged from them;
      *         the merged, final ProcessStats object.
      */
+    @android.annotation.EnforcePermission(android.Manifest.permission.PACKAGE_USAGE_STATS)
     @Override
     public long getCommittedStatsMerged(long highWaterMarkMs, int section, boolean doAggregate,
             List<ParcelFileDescriptor> committedStats, ProcessStats mergedStats) {
-        mAm.mContext.enforceCallingOrSelfPermission(
-                android.Manifest.permission.PACKAGE_USAGE_STATS, null);
+
+        super.getCommittedStatsMerged_enforcePermission();
 
         long newHighWaterMark = highWaterMarkMs;
         mFileLock.lock();
@@ -627,7 +646,6 @@ public final class ProcessStatsService extends IProcessStats.Stub {
             if (files != null) {
                 String highWaterMarkStr =
                         DateFormat.format("yyyy-MM-dd-HH-mm-ss", highWaterMarkMs).toString();
-                ProcessStats stats = new ProcessStats(false);
                 for (int i = files.size() - 1; i >= 0; i--) {
                     String fileName = files.get(i);
                     try {
@@ -640,7 +658,7 @@ public final class ProcessStatsService extends IProcessStats.Stub {
                                     new File(fileName),
                                     ParcelFileDescriptor.MODE_READ_ONLY);
                             InputStream is = new ParcelFileDescriptor.AutoCloseInputStream(pfd);
-                            stats.reset();
+                            final ProcessStats stats = new ProcessStats(false);
                             stats.read(is);
                             is.close();
                             if (stats.mTimePeriodStartClock > newHighWaterMark) {
@@ -703,10 +721,11 @@ public final class ProcessStatsService extends IProcessStats.Stub {
         return fds[0];
     }
 
+    @android.annotation.EnforcePermission(android.Manifest.permission.PACKAGE_USAGE_STATS)
     @Override
     public ParcelFileDescriptor getStatsOverTime(long minTime) {
-        mAm.mContext.enforceCallingOrSelfPermission(
-                android.Manifest.permission.PACKAGE_USAGE_STATS, null);
+        super.getStatsOverTime_enforcePermission();
+
         Parcel current = Parcel.obtain();
         long curTime;
         synchronized (mLock) {
@@ -780,6 +799,63 @@ public final class ProcessStatsService extends IProcessStats.Stub {
     public int getCurrentMemoryState() {
         synchronized (mLock) {
             return mLastMemOnlyState;
+        }
+    }
+
+    private SparseArray<long[]> getUidProcStateStatsOverTime(long minTime) {
+        final ProcessStats stats = new ProcessStats();
+        long curTime;
+        synchronized (mLock) {
+            final long now = SystemClock.uptimeMillis();
+            mProcessStats.mTimePeriodEndRealtime = SystemClock.elapsedRealtime();
+            mProcessStats.mTimePeriodEndUptime = now;
+            stats.add(mProcessStats);
+            curTime = mProcessStats.mTimePeriodEndRealtime - mProcessStats.mTimePeriodStartRealtime;
+        }
+        if (curTime < minTime) {
+            try {
+                mFileLock.lock();
+                // Need to add in older stats to reach desired time.
+                ArrayList<String> files = getCommittedFilesLF(0, false, true);
+                if (files != null && files.size() > 0) {
+                    int i = files.size() - 1;
+                    while (i >= 0 && (stats.mTimePeriodEndRealtime
+                            - stats.mTimePeriodStartRealtime) < minTime) {
+                        AtomicFile file = new AtomicFile(new File(files.get(i)));
+                        i--;
+                        ProcessStats moreStats = new ProcessStats(false);
+                        readLF(moreStats, file);
+                        if (moreStats.mReadError == null) {
+                            stats.add(moreStats);
+                        } else {
+                            Slog.w(TAG, "Failure reading " + files.get(i + 1) + "; "
+                                    + moreStats.mReadError);
+                            continue;
+                        }
+                    }
+                }
+            } finally {
+                mFileLock.unlock();
+            }
+        }
+        final SparseArray<UidState> uidStates = stats.mUidStates;
+        final SparseArray<long[]> results = new SparseArray<>();
+        for (int i = 0, size = uidStates.size(); i < size; i++) {
+            final int uid = uidStates.keyAt(i);
+            final UidState uidState = uidStates.valueAt(i);
+            results.put(uid, uidState.getAggregatedDurationsInStates());
+        }
+        return results;
+    }
+
+    void publish() {
+        LocalServices.addService(ProcessStatsInternal.class, new LocalService());
+    }
+
+    private final class LocalService extends ProcessStatsInternal {
+        @Override
+        public SparseArray<long[]> getUidProcStateStatsOverTime(long minTime) {
+            return ProcessStatsService.this.getUidProcStateStatsOverTime(minTime);
         }
     }
 
@@ -872,6 +948,7 @@ public final class ProcessStatsService extends IProcessStats.Stub {
         }
     }
 
+    @NeverCompile // Avoid size overhead of debugging code.
     private void dumpInner(PrintWriter pw, String[] args) {
         final long now = SystemClock.uptimeMillis();
 

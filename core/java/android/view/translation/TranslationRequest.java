@@ -27,7 +27,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Translation request sent to the {@link android.service.translation.TranslationService} by the
+ * Translation request sent to the translation service by the
  * {@link android.view.translation.Translator} which contains the text to be translated.
  */
 @DataClass(genToString = true, genHiddenConstDefs = true, genBuilder = true)
@@ -255,9 +255,9 @@ public final class TranslationRequest implements Parcelable {
 
         int flags = in.readInt();
         List<TranslationRequestValue> translationRequestValues = new ArrayList<>();
-        in.readParcelableList(translationRequestValues, TranslationRequestValue.class.getClassLoader());
+        in.readParcelableList(translationRequestValues, TranslationRequestValue.class.getClassLoader(), android.view.translation.TranslationRequestValue.class);
         List<ViewTranslationRequest> viewTranslationRequests = new ArrayList<>();
-        in.readParcelableList(viewTranslationRequests, ViewTranslationRequest.class.getClassLoader());
+        in.readParcelableList(viewTranslationRequests, ViewTranslationRequest.class.getClassLoader(), android.view.translation.ViewTranslationRequest.class);
 
         this.mFlags = flags;
 

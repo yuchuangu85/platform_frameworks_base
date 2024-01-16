@@ -20,7 +20,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.os.ServiceManager;
 import android.os.ServiceSpecificException;
-import android.security.keystore.KeyProperties;
+import android.os.StrictMode;
 import android.security.maintenance.IKeystoreMaintenance;
 import android.system.keystore2.Domain;
 import android.system.keystore2.KeyDescriptor;
@@ -28,8 +28,8 @@ import android.system.keystore2.ResponseCode;
 import android.util.Log;
 
 /**
- * @hide This is the client side for IKeystoreUserManager AIDL.
- * It shall only be used by the LockSettingsService.
+ * @hide This is the client side for IKeystoreMaintenance AIDL.
+ * It is used mainly by LockSettingsService.
  */
 public class AndroidKeyStoreMaintenance {
     private static final String TAG = "AndroidKeyStoreMaintenance";
@@ -51,7 +51,8 @@ public class AndroidKeyStoreMaintenance {
      * @return 0 if successful or a {@code ResponseCode}
      * @hide
      */
-    public static int onUserAdded(@NonNull int userId) {
+    public static int onUserAdded(int userId) {
+        StrictMode.noteDiskWrite();
         try {
             getService().onUserAdded(userId);
             return 0;
@@ -65,13 +66,38 @@ public class AndroidKeyStoreMaintenance {
     }
 
     /**
-     * Informs Keystore 2.0 about removing a usergit mer
+     * Tells Keystore to create a user's super keys and store them encrypted by the given secret.
+     *
+     * @param userId - Android user id of the user
+     * @param password - a secret derived from the user's synthetic password
+     * @param allowExisting - true if the keys already existing should not be considered an error
+     * @return 0 if successful or a {@code ResponseCode}
+     * @hide
+     */
+    public static int initUserSuperKeys(int userId, @NonNull byte[] password,
+            boolean allowExisting) {
+        StrictMode.noteDiskWrite();
+        try {
+            getService().initUserSuperKeys(userId, password, allowExisting);
+            return 0;
+        } catch (ServiceSpecificException e) {
+            Log.e(TAG, "initUserSuperKeys failed", e);
+            return e.errorCode;
+        } catch (Exception e) {
+            Log.e(TAG, "Can not connect to keystore", e);
+            return SYSTEM_ERROR;
+        }
+    }
+
+    /**
+     * Informs Keystore 2.0 about removing a user
      *
      * @param userId - Android user id of the user being removed
      * @return 0 if successful or a {@code ResponseCode}
      * @hide
      */
     public static int onUserRemoved(int userId) {
+        StrictMode.noteDiskWrite();
         try {
             getService().onUserRemoved(userId);
             return 0;
@@ -89,11 +115,12 @@ public class AndroidKeyStoreMaintenance {
      *
      * @param userId   - Android user id of the user
      * @param password - a secret derived from the synthetic password provided by the
-     *                 LockSettingService
+     *                 LockSettingsService
      * @return 0 if successful or a {@code ResponseCode}
      * @hide
      */
     public static int onUserPasswordChanged(int userId, @Nullable byte[] password) {
+        StrictMode.noteDiskWrite();
         try {
             getService().onUserPasswordChanged(userId, password);
             return 0;
@@ -107,10 +134,33 @@ public class AndroidKeyStoreMaintenance {
     }
 
     /**
-     * Informs Keystore 2.0 that an app was uninstalled and the corresponding namspace is to
+     * Tells Keystore that a user's LSKF is being removed, ie the user's lock screen is changing to
+     * Swipe or None.  Keystore uses this notification to delete the user's auth-bound keys.
+     *
+     * @param userId - Android user id of the user
+     * @return 0 if successful or a {@code ResponseCode}
+     * @hide
+     */
+    public static int onUserLskfRemoved(int userId) {
+        StrictMode.noteDiskWrite();
+        try {
+            getService().onUserLskfRemoved(userId);
+            return 0;
+        } catch (ServiceSpecificException e) {
+            Log.e(TAG, "onUserLskfRemoved failed", e);
+            return e.errorCode;
+        } catch (Exception e) {
+            Log.e(TAG, "Can not connect to keystore", e);
+            return SYSTEM_ERROR;
+        }
+    }
+
+    /**
+     * Informs Keystore 2.0 that an app was uninstalled and the corresponding namespace is to
      * be cleared.
      */
     public static int clearNamespace(@Domain int domain, long namespace) {
+        StrictMode.noteDiskWrite();
         try {
             getService().clearNamespace(domain, namespace);
             return 0;
@@ -124,27 +174,10 @@ public class AndroidKeyStoreMaintenance {
     }
 
     /**
-     * Queries user state from Keystore 2.0.
-     *
-     * @param userId - Android user id of the user.
-     * @return UserState enum variant as integer if successful or an error
-     */
-    public static int getState(int userId) {
-        try {
-            return getService().getState(userId);
-        } catch (ServiceSpecificException e) {
-            Log.e(TAG, "getState failed", e);
-            return e.errorCode;
-        } catch (Exception e) {
-            Log.e(TAG, "Can not connect to keystore", e);
-            return SYSTEM_ERROR;
-        }
-    }
-
-    /**
      * Informs Keystore 2.0 that an off body event was detected.
      */
     public static void onDeviceOffBody() {
+        StrictMode.noteDiskWrite();
         try {
             getService().onDeviceOffBody();
         } catch (Exception e) {
@@ -158,11 +191,6 @@ public class AndroidKeyStoreMaintenance {
      * Migrates a key given by the source descriptor to the location designated by the destination
      * descriptor.
      *
-     * If Domain::APP is selected in either source or destination, nspace must be set to
-     * {@link KeyProperties#NAMESPACE_APPLICATION}, implying the caller's UID.
-     * If the caller has the MIGRATE_ANY_KEY permission, Domain::APP may be used with
-     * other nspace values which then indicates the UID of a different application.
-     *
      * @param source - The key to migrate may be specified by Domain.APP, Domain.SELINUX, or
      *               Domain.KEY_ID. The caller needs the permissions use, delete, and grant for the
      *               source namespace.
@@ -171,13 +199,14 @@ public class AndroidKeyStoreMaintenance {
      *                    namespace.
      *
      * @return * 0 on success
-     *         * KEY_NOT_FOUND if the source did not exists.
+     *         * KEY_NOT_FOUND if the source did not exist.
      *         * PERMISSION_DENIED if any of the required permissions was missing.
      *         * INVALID_ARGUMENT if the destination was occupied or any domain value other than
-     *                   the allowed once were specified.
+     *                   the allowed ones was specified.
      *         * SYSTEM_ERROR if an unexpected error occurred.
      */
     public static int migrateKeyNamespace(KeyDescriptor source, KeyDescriptor destination) {
+        StrictMode.noteDiskWrite();
         try {
             getService().migrateKeyNamespace(source, destination);
             return 0;
@@ -187,22 +216,6 @@ public class AndroidKeyStoreMaintenance {
         } catch (Exception e) {
             Log.e(TAG, "Can not connect to keystore", e);
             return SYSTEM_ERROR;
-        }
-    }
-
-    /**
-     * @see IKeystoreMaintenance#listEntries(int, long)
-     */
-    @Nullable
-    public static KeyDescriptor[] listEntries(int domain, long nspace) {
-        try {
-            return getService().listEntries(domain, nspace);
-        } catch (ServiceSpecificException e) {
-            Log.e(TAG, "listEntries failed", e);
-            return null;
-        } catch (Exception e) {
-            Log.e(TAG, "Can not connect to keystore", e);
-            return null;
         }
     }
 }

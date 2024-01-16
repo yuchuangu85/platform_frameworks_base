@@ -196,6 +196,15 @@ status_t JMediaExtractor::readSampleData(
         dstSize = (size_t) env->GetDirectBufferCapacity(byteBuf);
     }
 
+    // unlikely, but GetByteArrayElements() can fail
+    if (dst == nullptr) {
+        ALOGE("no buffer into which to read the data");
+        if (byteArray != NULL) {
+            env->ReleaseByteArrayElements(byteArray, (jbyte *)dst, 0);
+        }
+        return -ENOMEM;
+    }
+
     if (dstSize < offset) {
         if (byteArray != NULL) {
             env->ReleaseByteArrayElements(byteArray, (jbyte *)dst, 0);
@@ -204,8 +213,10 @@ status_t JMediaExtractor::readSampleData(
         return -ERANGE;
     }
 
+    // passes in the backing memory to use, so it doesn't fail
     sp<ABuffer> buffer = new ABuffer((char *)dst + offset, dstSize - offset);
 
+    buffer->setRange(0, 0);  // mark it empty
     status_t err = mImpl->readSampleData(buffer);
 
     if (byteArray != NULL) {
@@ -281,7 +292,6 @@ status_t JMediaExtractor::getMetrics(Parcel *reply) const {
     status_t status = mImpl->getMetrics(reply);
     return status;
 }
-
 
 status_t JMediaExtractor::getSampleMeta(sp<MetaData> *sampleMeta) {
     return mImpl->getSampleMeta(sampleMeta);

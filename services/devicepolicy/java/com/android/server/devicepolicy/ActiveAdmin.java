@@ -16,9 +16,12 @@
 
 package com.android.server.devicepolicy;
 
-import static android.app.admin.DevicePolicyManager.NEARBY_STREAMING_DISABLED;
+import static android.app.admin.DevicePolicyManager.NEARBY_STREAMING_SAME_MANAGED_ACCOUNT_ONLY;
 import static android.app.admin.DevicePolicyManager.PASSWORD_COMPLEXITY_NONE;
 import static android.app.admin.DevicePolicyManager.PASSWORD_QUALITY_UNSPECIFIED;
+import static android.app.admin.WifiSsidPolicy.WIFI_SSID_POLICY_TYPE_ALLOWLIST;
+import static android.app.admin.WifiSsidPolicy.WIFI_SSID_POLICY_TYPE_DENYLIST;
+import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_1;
 
 import static com.android.server.devicepolicy.DevicePolicyManagerService.LOG_TAG;
 
@@ -31,9 +34,13 @@ import android.annotation.Nullable;
 import android.app.admin.DeviceAdminInfo;
 import android.app.admin.DevicePolicyManager;
 import android.app.admin.FactoryResetProtectionPolicy;
+import android.app.admin.ManagedSubscriptionsPolicy;
+import android.app.admin.PackagePolicy;
 import android.app.admin.PasswordPolicy;
 import android.app.admin.PreferentialNetworkServiceConfig;
+import android.app.admin.WifiSsidPolicy;
 import android.graphics.Color;
+import android.net.wifi.WifiSsid;
 import android.os.Bundle;
 import android.os.PersistableBundle;
 import android.os.UserHandle;
@@ -42,17 +49,18 @@ import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.IndentingPrintWriter;
-import android.util.TypedXmlPullParser;
-import android.util.TypedXmlSerializer;
 
 import com.android.internal.util.Preconditions;
 import com.android.internal.util.XmlUtils;
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
 import com.android.server.pm.UserRestrictionsUtils;
 import com.android.server.utils.Slogf;
 
 import org.xmlpull.v1.XmlPullParserException;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -60,8 +68,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 
 class ActiveAdmin {
+
+    private final int userId;
+    public final boolean isPermissionBased;
+
     private static final String TAG_DISABLE_KEYGUARD_FEATURES = "disable-keyguard-features";
     private static final String TAG_TEST_ONLY_ADMIN = "test-only-admin";
     private static final String TAG_DISABLE_CAMERA = "disable-camera";
@@ -146,10 +159,31 @@ class ActiveAdmin {
     private static final String TAG_PREFERENTIAL_NETWORK_SERVICE_ENABLED =
             "preferential-network-service-enabled";
     private static final String TAG_USB_DATA_SIGNALING = "usb-data-signaling";
+    private static final String TAG_WIFI_MIN_SECURITY = "wifi-min-security";
+    private static final String TAG_SSID_ALLOWLIST = "ssid-allowlist";
+    private static final String TAG_SSID_DENYLIST = "ssid-denylist";
+    private static final String TAG_SSID = "ssid";
+    private static final String TAG_CROSS_PROFILE_CALLER_ID_POLICY = "caller-id-policy";
+    private static final String TAG_CROSS_PROFILE_CONTACTS_SEARCH_POLICY = "contacts-policy";
+    private static final String TAG_PACKAGE_POLICY_PACKAGE_NAMES = "package-policy-packages";
+    private static final String TAG_PREFERENTIAL_NETWORK_SERVICE_CONFIGS =
+            "preferential_network_service_configs";
+    private static final String TAG_PREFERENTIAL_NETWORK_SERVICE_CONFIG =
+            "preferential_network_service_config";
+    private static final String TAG_PROTECTED_PACKAGES = "protected_packages";
+    private static final String TAG_SUSPENDED_PACKAGES = "suspended-packages";
+    private static final String TAG_MTE_POLICY = "mte-policy";
+    private static final String TAG_MANAGED_SUBSCRIPTIONS_POLICY = "managed_subscriptions_policy";
     private static final String ATTR_VALUE = "value";
     private static final String ATTR_LAST_NETWORK_LOGGING_NOTIFICATION = "last-notification";
     private static final String ATTR_NUM_NETWORK_LOGGING_NOTIFICATIONS = "num-notifications";
+    private static final String ATTR_PACKAGE_POLICY_MODE = "package-policy-type";
+    private static final String TAG_CREDENTIAL_MANAGER_POLICY = "credential-manager-policy";
+    private static final String TAG_DIALER_PACKAGE = "dialer_package";
+    private static final String TAG_SMS_PACKAGE = "sms_package";
 
+    // If the ActiveAdmin is a permission-based admin, then info will be null because the
+    // permission-based admin is not mapped to a device administrator component.
     DeviceAdminInfo info;
 
     static final int DEF_PASSWORD_HISTORY_LENGTH = 0;
@@ -162,10 +196,10 @@ class ActiveAdmin {
     int mPasswordComplexity = PASSWORD_COMPLEXITY_NONE;
 
     @DevicePolicyManager.NearbyStreamingPolicy
-    int mNearbyNotificationStreamingPolicy = NEARBY_STREAMING_DISABLED;
+    int mNearbyNotificationStreamingPolicy = NEARBY_STREAMING_SAME_MANAGED_ACCOUNT_ONLY;
 
     @DevicePolicyManager.NearbyStreamingPolicy
-    int mNearbyAppStreamingPolicy = NEARBY_STREAMING_DISABLED;
+    int mNearbyAppStreamingPolicy = NEARBY_STREAMING_SAME_MANAGED_ACCOUNT_ONLY;
 
     @Nullable
     FactoryResetProtectionPolicy mFactoryResetProtectionPolicy = null;
@@ -205,6 +239,8 @@ class ActiveAdmin {
     int numNetworkLoggingNotifications = 0;
     long lastNetworkLoggingNotificationTimeMs = 0; // Time in milliseconds since epoch
 
+    @DevicePolicyManager.MtePolicy int mtePolicy = DevicePolicyManager.MTE_NOT_CONTROLLED_BY_POLICY;
+
     ActiveAdmin parentAdmin;
     final boolean isParent;
 
@@ -237,6 +273,17 @@ class ActiveAdmin {
 
     // List of package names to keep cached.
     List<String> keepUninstalledPackages;
+
+    // List of packages for which the user cannot invoke "clear data" or "force stop".
+    List<String> protectedPackages;
+
+    List<String> suspendedPackages;
+
+    // Wi-Fi SSID restriction policy.
+    WifiSsidPolicy mWifiSsidPolicy;
+
+    // Managed subscriptions policy.
+    ManagedSubscriptionsPolicy mManagedSubscriptionsPolicy;
 
     // TODO: review implementation decisions with frameworks team
     boolean specifiesGlobalProxy = false;
@@ -287,23 +334,46 @@ class ActiveAdmin {
     // Time by which the profile should be turned on according to System.currentTimeMillis().
     long mProfileOffDeadline = 0;
 
+    // The package policy for Cross Profile Contacts Search
+    PackagePolicy mManagedProfileCallerIdAccess = null;
+
+    // The package policy for Cross Profile Contacts Search
+    PackagePolicy mManagedProfileContactsAccess = null;
+
+    // The package policy for Credential Manager
+    PackagePolicy mCredentialManagerPolicy = null;
+
     public String mAlwaysOnVpnPackage;
     public boolean mAlwaysOnVpnLockdown;
     boolean mCommonCriteriaMode;
     public String mOrganizationId;
     public String mEnrollmentSpecificId;
     public boolean mAdminCanGrantSensorsPermissions;
-    public boolean mPreferentialNetworkServiceEnabled =
-            DevicePolicyManager.PREFERENTIAL_NETWORK_SERVICE_ENABLED_DEFAULT;
     public List<PreferentialNetworkServiceConfig> mPreferentialNetworkServiceConfigs =
             List.of(PreferentialNetworkServiceConfig.DEFAULT);
 
     private static final boolean USB_DATA_SIGNALING_ENABLED_DEFAULT = true;
     boolean mUsbDataSignalingEnabled = USB_DATA_SIGNALING_ENABLED_DEFAULT;
 
+    int mWifiMinimumSecurityLevel = DevicePolicyManager.WIFI_SECURITY_OPEN;
+    String mDialerPackage;
+    String mSmsPackage;
+
     ActiveAdmin(DeviceAdminInfo info, boolean isParent) {
+        this.userId = -1;
         this.info = info;
         this.isParent = isParent;
+        this.isPermissionBased = false;
+    }
+
+    ActiveAdmin(int userId, boolean permissionBased) {
+        if (permissionBased == false) {
+            throw new IllegalArgumentException("Can only pass true for permissionBased admin");
+        }
+        this.userId = userId;
+        this.isPermissionBased = permissionBased;
+        this.isParent = false;
+        this.info = null;
     }
 
     ActiveAdmin getParentActiveAdmin() {
@@ -320,18 +390,26 @@ class ActiveAdmin {
     }
 
     int getUid() {
+        if (isPermissionBased) {
+            return -1;
+        }
         return info.getActivityInfo().applicationInfo.uid;
     }
 
     public UserHandle getUserHandle() {
+        if (isPermissionBased) {
+            return UserHandle.of(userId);
+        }
         return UserHandle.of(UserHandle.getUserId(info.getActivityInfo().applicationInfo.uid));
     }
 
     void writeToXml(TypedXmlSerializer out)
             throws IllegalArgumentException, IllegalStateException, IOException {
-        out.startTag(null, TAG_POLICIES);
-        info.writePoliciesToXml(out);
-        out.endTag(null, TAG_POLICIES);
+        if (info != null) {
+            out.startTag(null, TAG_POLICIES);
+            info.writePoliciesToXml(out);
+            out.endTag(null, TAG_POLICIES);
+        }
         if (mPasswordPolicy.quality != PASSWORD_QUALITY_UNSPECIFIED) {
             writeAttributeValueToXml(
                     out, TAG_PASSWORD_QUALITY, mPasswordPolicy.quality);
@@ -485,6 +563,8 @@ class ActiveAdmin {
                 permittedNotificationListeners);
         writePackageListToXml(out, TAG_KEEP_UNINSTALLED_PACKAGES, keepUninstalledPackages);
         writePackageListToXml(out, TAG_METERED_DATA_DISABLED_PACKAGES, meteredDisabledPackages);
+        writePackageListToXml(out, TAG_PROTECTED_PACKAGES, protectedPackages);
+        writePackageListToXml(out, TAG_SUSPENDED_PACKAGES, suspendedPackages);
         if (hasUserRestrictions()) {
             UserRestrictionsUtils.writeRestrictions(
                     out, userRestrictions, TAG_USER_RESTRICTIONS);
@@ -556,11 +636,11 @@ class ActiveAdmin {
         if (mPasswordComplexity != PASSWORD_COMPLEXITY_NONE) {
             writeAttributeValueToXml(out, TAG_PASSWORD_COMPLEXITY, mPasswordComplexity);
         }
-        if (mNearbyNotificationStreamingPolicy != NEARBY_STREAMING_DISABLED) {
+        if (mNearbyNotificationStreamingPolicy != NEARBY_STREAMING_SAME_MANAGED_ACCOUNT_ONLY) {
             writeAttributeValueToXml(out, TAG_NEARBY_NOTIFICATION_STREAMING_POLICY,
                     mNearbyNotificationStreamingPolicy);
         }
-        if (mNearbyAppStreamingPolicy != NEARBY_STREAMING_DISABLED) {
+        if (mNearbyAppStreamingPolicy != NEARBY_STREAMING_SAME_MANAGED_ACCOUNT_ONLY) {
             writeAttributeValueToXml(out, TAG_NEARBY_APP_STREAMING_POLICY,
                     mNearbyAppStreamingPolicy);
         }
@@ -572,11 +652,65 @@ class ActiveAdmin {
         }
         writeAttributeValueToXml(out, TAG_ADMIN_CAN_GRANT_SENSORS_PERMISSIONS,
                 mAdminCanGrantSensorsPermissions);
-        writeAttributeValueToXml(out, TAG_PREFERENTIAL_NETWORK_SERVICE_ENABLED,
-                mPreferentialNetworkServiceEnabled);
         if (mUsbDataSignalingEnabled != USB_DATA_SIGNALING_ENABLED_DEFAULT) {
             writeAttributeValueToXml(out, TAG_USB_DATA_SIGNALING, mUsbDataSignalingEnabled);
         }
+        if (mWifiMinimumSecurityLevel != DevicePolicyManager.WIFI_SECURITY_OPEN) {
+            writeAttributeValueToXml(out, TAG_WIFI_MIN_SECURITY, mWifiMinimumSecurityLevel);
+        }
+        if (mWifiSsidPolicy != null) {
+            List<String> ssids = ssidsToStrings(mWifiSsidPolicy.getSsids());
+            if (mWifiSsidPolicy.getPolicyType() == WIFI_SSID_POLICY_TYPE_ALLOWLIST) {
+                writeAttributeValuesToXml(out, TAG_SSID_ALLOWLIST, TAG_SSID, ssids);
+            } else if (mWifiSsidPolicy.getPolicyType() == WIFI_SSID_POLICY_TYPE_DENYLIST) {
+                writeAttributeValuesToXml(out, TAG_SSID_DENYLIST, TAG_SSID, ssids);
+            }
+        }
+        if (!mPreferentialNetworkServiceConfigs.isEmpty()) {
+            out.startTag(null, TAG_PREFERENTIAL_NETWORK_SERVICE_CONFIGS);
+            for (PreferentialNetworkServiceConfig config : mPreferentialNetworkServiceConfigs) {
+                config.writeToXml(out);
+            }
+            out.endTag(null, TAG_PREFERENTIAL_NETWORK_SERVICE_CONFIGS);
+        }
+        if (mtePolicy != DevicePolicyManager.MTE_NOT_CONTROLLED_BY_POLICY) {
+            writeAttributeValueToXml(out, TAG_MTE_POLICY, mtePolicy);
+        }
+        writePackagePolicy(out, TAG_CROSS_PROFILE_CALLER_ID_POLICY,
+                mManagedProfileCallerIdAccess);
+        writePackagePolicy(out, TAG_CROSS_PROFILE_CONTACTS_SEARCH_POLICY,
+                mManagedProfileContactsAccess);
+        writePackagePolicy(out, TAG_CREDENTIAL_MANAGER_POLICY,
+                mCredentialManagerPolicy);
+        if (mManagedSubscriptionsPolicy != null) {
+            out.startTag(null, TAG_MANAGED_SUBSCRIPTIONS_POLICY);
+            mManagedSubscriptionsPolicy.saveToXml(out);
+            out.endTag(null, TAG_MANAGED_SUBSCRIPTIONS_POLICY);
+        }
+        if (!TextUtils.isEmpty(mDialerPackage)) {
+            writeAttributeValueToXml(out, TAG_DIALER_PACKAGE, mDialerPackage);
+        }
+        if (!TextUtils.isEmpty(mSmsPackage)) {
+            writeAttributeValueToXml(out, TAG_SMS_PACKAGE, mSmsPackage);
+        }
+    }
+
+    private void writePackagePolicy(TypedXmlSerializer out, String tag,
+            PackagePolicy packagePolicy) throws IOException {
+        if (packagePolicy == null) {
+            return;
+        }
+        out.startTag(null, tag);
+        out.attributeInt(null, ATTR_PACKAGE_POLICY_MODE, packagePolicy.getPolicyType());
+        writePackageListToXml(out, TAG_PACKAGE_POLICY_PACKAGE_NAMES,
+                new ArrayList<>(packagePolicy.getPackageNames()));
+        out.endTag(null, tag);
+    }
+
+    private List<String> ssidsToStrings(Set<WifiSsid> ssids) {
+        return ssids.stream()
+                .map(ssid -> new String(ssid.getBytes(), StandardCharsets.UTF_8))
+                .collect(Collectors.toList());
     }
 
     void writeTextToXml(TypedXmlSerializer out, String tag, String text) throws IOException {
@@ -729,6 +863,10 @@ class ActiveAdmin {
                 keepUninstalledPackages = readPackageList(parser, tag);
             } else if (TAG_METERED_DATA_DISABLED_PACKAGES.equals(tag)) {
                 meteredDisabledPackages = readPackageList(parser, tag);
+            } else if (TAG_PROTECTED_PACKAGES.equals(tag)) {
+                protectedPackages = readPackageList(parser, tag);
+            } else if (TAG_SUSPENDED_PACKAGES.equals(tag)) {
+                suspendedPackages = readPackageList(parser, tag);
             } else if (TAG_USER_RESTRICTIONS.equals(tag)) {
                 userRestrictions = UserRestrictionsUtils.readRestrictions(parser);
             } else if (TAG_DEFAULT_ENABLED_USER_RESTRICTIONS.equals(tag)) {
@@ -799,8 +937,16 @@ class ActiveAdmin {
             } else if (TAG_ALWAYS_ON_VPN_LOCKDOWN.equals(tag)) {
                 mAlwaysOnVpnLockdown = parser.getAttributeBoolean(null, ATTR_VALUE, false);
             } else if (TAG_PREFERENTIAL_NETWORK_SERVICE_ENABLED.equals(tag)) {
-                mPreferentialNetworkServiceEnabled = parser.getAttributeBoolean(null, ATTR_VALUE,
+                boolean preferentialNetworkServiceEnabled = parser.getAttributeBoolean(null,
+                        ATTR_VALUE,
                         DevicePolicyManager.PREFERENTIAL_NETWORK_SERVICE_ENABLED_DEFAULT);
+                if (preferentialNetworkServiceEnabled) {
+                    PreferentialNetworkServiceConfig.Builder configBuilder =
+                            new PreferentialNetworkServiceConfig.Builder();
+                    configBuilder.setEnabled(preferentialNetworkServiceEnabled);
+                    configBuilder.setNetworkId(NET_ENTERPRISE_ID_1);
+                    mPreferentialNetworkServiceConfigs = List.of(configBuilder.build());
+                }
             } else if (TAG_COMMON_CRITERIA_MODE.equals(tag)) {
                 mCommonCriteriaMode = parser.getAttributeBoolean(null, ATTR_VALUE, false);
             } else if (TAG_PASSWORD_COMPLEXITY.equals(tag)) {
@@ -829,11 +975,59 @@ class ActiveAdmin {
             } else if (TAG_USB_DATA_SIGNALING.equals(tag)) {
                 mUsbDataSignalingEnabled = parser.getAttributeBoolean(null, ATTR_VALUE,
                         USB_DATA_SIGNALING_ENABLED_DEFAULT);
+            } else if (TAG_WIFI_MIN_SECURITY.equals(tag)) {
+                mWifiMinimumSecurityLevel = parser.getAttributeInt(null, ATTR_VALUE);
+            } else if (TAG_SSID_ALLOWLIST.equals(tag)) {
+                List<WifiSsid> ssids = readWifiSsids(parser, TAG_SSID);
+                mWifiSsidPolicy = new WifiSsidPolicy(
+                        WIFI_SSID_POLICY_TYPE_ALLOWLIST, new ArraySet<>(ssids));
+            } else if (TAG_SSID_DENYLIST.equals(tag)) {
+                List<WifiSsid> ssids = readWifiSsids(parser, TAG_SSID);
+                mWifiSsidPolicy = new WifiSsidPolicy(
+                        WIFI_SSID_POLICY_TYPE_DENYLIST, new ArraySet<>(ssids));
+            } else if (TAG_PREFERENTIAL_NETWORK_SERVICE_CONFIGS.equals(tag)) {
+                List<PreferentialNetworkServiceConfig> configs =
+                        getPreferentialNetworkServiceConfigs(parser, tag);
+                if (!configs.isEmpty()) {
+                    mPreferentialNetworkServiceConfigs = configs;
+                }
+            } else if (TAG_MTE_POLICY.equals(tag)) {
+                mtePolicy = parser.getAttributeInt(null, ATTR_VALUE);
+            } else if (TAG_CROSS_PROFILE_CALLER_ID_POLICY.equals(tag)) {
+                mManagedProfileCallerIdAccess = readPackagePolicy(parser);
+            } else if (TAG_CROSS_PROFILE_CONTACTS_SEARCH_POLICY.equals(tag)) {
+                mManagedProfileContactsAccess = readPackagePolicy(parser);
+            } else if (TAG_MANAGED_SUBSCRIPTIONS_POLICY.equals(tag)) {
+                mManagedSubscriptionsPolicy = ManagedSubscriptionsPolicy.readFromXml(parser);
+            } else if (TAG_CREDENTIAL_MANAGER_POLICY.equals(tag)) {
+                mCredentialManagerPolicy = readPackagePolicy(parser);
+            } else if (TAG_DIALER_PACKAGE.equals(tag)) {
+                mDialerPackage = parser.getAttributeValue(null, ATTR_VALUE);
+            } else if (TAG_SMS_PACKAGE.equals(tag)) {
+                mSmsPackage = parser.getAttributeValue(null, ATTR_VALUE);
             } else {
                 Slogf.w(LOG_TAG, "Unknown admin tag: %s", tag);
                 XmlUtils.skipCurrentTag(parser);
             }
         }
+    }
+
+    private PackagePolicy readPackagePolicy(TypedXmlPullParser parser)
+            throws XmlPullParserException, IOException {
+        int policy = parser.getAttributeInt(null, ATTR_PACKAGE_POLICY_MODE);
+        Set<String> packageNames = new ArraySet<>(
+                readPackageList(parser, TAG_PACKAGE_POLICY_PACKAGE_NAMES));
+        return new PackagePolicy(policy, packageNames);
+    }
+
+    private List<WifiSsid> readWifiSsids(TypedXmlPullParser parser, String tag)
+            throws XmlPullParserException, IOException {
+        List<String> ssidStrings = new ArrayList<>();
+        readAttributeValues(parser, tag, ssidStrings);
+        List<WifiSsid> ssids = ssidStrings.stream()
+                .map(ssid -> WifiSsid.fromBytes(ssid.getBytes(StandardCharsets.UTF_8)))
+                .collect(Collectors.toList());
+        return ssids;
     }
 
     private List<String> readPackageList(TypedXmlPullParser parser,
@@ -904,19 +1098,43 @@ class ActiveAdmin {
         return result;
     }
 
-    private TrustAgentInfo getTrustAgentInfo(TypedXmlPullParser parser, String tag)
+    private TrustAgentInfo getTrustAgentInfo(TypedXmlPullParser parser, String outerTag)
             throws XmlPullParserException, IOException  {
-        int outerDepthDAM = parser.getDepth();
-        int typeDAM;
+        int outerDepth = parser.getDepth();
+        int type;
         TrustAgentInfo result = new TrustAgentInfo(null);
+        while ((type = parser.next()) != END_DOCUMENT
+                && (type != END_TAG || parser.getDepth() > outerDepth)) {
+            if (type == END_TAG || type == TEXT) {
+                continue;
+            }
+            String tag = parser.getName();
+            if (TAG_TRUST_AGENT_COMPONENT_OPTIONS.equals(tag)) {
+                result.options = PersistableBundle.restoreFromXml(parser);
+            } else {
+                Slogf.w(LOG_TAG, "Unknown tag under %s: %s", outerTag, tag);
+            }
+        }
+        return result;
+    }
+
+    @NonNull
+    private List<PreferentialNetworkServiceConfig> getPreferentialNetworkServiceConfigs(
+            TypedXmlPullParser parser, String tag) throws XmlPullParserException, IOException {
+        int outerDepth = parser.getDepth();
+        int typeDAM;
+        final List<PreferentialNetworkServiceConfig> result = new ArrayList<>();
         while ((typeDAM = parser.next()) != END_DOCUMENT
-                && (typeDAM != END_TAG || parser.getDepth() > outerDepthDAM)) {
+            && (typeDAM != END_TAG || parser.getDepth() > outerDepth)) {
             if (typeDAM == END_TAG || typeDAM == TEXT) {
                 continue;
             }
             String tagDAM = parser.getName();
-            if (TAG_TRUST_AGENT_COMPONENT_OPTIONS.equals(tagDAM)) {
-                result.options = PersistableBundle.restoreFromXml(parser);
+            if (TAG_PREFERENTIAL_NETWORK_SERVICE_CONFIG.equals(tagDAM)) {
+                final PreferentialNetworkServiceConfig preferentialNetworkServiceConfig =
+                        PreferentialNetworkServiceConfig.getPreferentialNetworkServiceConfig(
+                                parser, tag);
+                result.add(preferentialNetworkServiceConfig);
             } else {
                 Slogf.w(LOG_TAG, "Unknown tag under %s: %s", tag, tagDAM);
             }
@@ -987,6 +1205,21 @@ class ActiveAdmin {
                 key -> UserRestrictionsUtils.isGlobal(adminType, key));
     }
 
+    void dumpPackagePolicy(IndentingPrintWriter pw, String name, PackagePolicy policy) {
+        pw.print(name);
+        pw.println(":");
+        if (policy != null) {
+            pw.increaseIndent();
+            pw.print("policyType=");
+            pw.println(policy.getPolicyType());
+            pw.println("packageNames:");
+            pw.increaseIndent();
+            policy.getPackageNames().forEach(item -> pw.println(item));
+            pw.decreaseIndent();
+            pw.decreaseIndent();
+        }
+    }
+
     void dump(IndentingPrintWriter pw) {
         pw.print("uid=");
         pw.println(getUid());
@@ -994,14 +1227,16 @@ class ActiveAdmin {
         pw.print("testOnlyAdmin=");
         pw.println(testOnlyAdmin);
 
-        pw.println("policies:");
-        ArrayList<DeviceAdminInfo.PolicyInfo> pols = info.getUsedPolicies();
-        if (pols != null) {
-            pw.increaseIndent();
-            for (int i = 0; i < pols.size(); i++) {
-                pw.println(pols.get(i).tag);
+        if (info != null) {
+            pw.println("policies:");
+            ArrayList<DeviceAdminInfo.PolicyInfo> pols = info.getUsedPolicies();
+            if (pols != null) {
+                pw.increaseIndent();
+                for (int i = 0; i < pols.size(); i++) {
+                    pw.println(pols.get(i).tag);
+                }
+                pw.decreaseIndent();
             }
-            pw.decreaseIndent();
         }
 
         pw.print("passwordQuality=0x");
@@ -1110,6 +1345,21 @@ class ActiveAdmin {
             pw.println(keepUninstalledPackages);
         }
 
+        if (meteredDisabledPackages != null) {
+            pw.print("meteredDisabledPackages=");
+            pw.println(meteredDisabledPackages);
+        }
+
+        if (protectedPackages != null) {
+            pw.print("protectedPackages=");
+            pw.println(protectedPackages);
+        }
+
+        if (suspendedPackages != null) {
+            pw.print("suspendedPackages=");
+            pw.println(suspendedPackages);
+        }
+
         pw.print("organizationColor=");
         pw.println(organizationColor);
 
@@ -1123,6 +1373,16 @@ class ActiveAdmin {
 
         pw.print("defaultEnabledRestrictionsAlreadySet=");
         pw.println(defaultEnabledRestrictionsAlreadySet);
+
+
+        dumpPackagePolicy(pw, "managedProfileCallerIdPolicy",
+                mManagedProfileCallerIdAccess);
+
+        dumpPackagePolicy(pw, "managedProfileContactsPolicy",
+                mManagedProfileContactsAccess);
+
+        dumpPackagePolicy(pw, "credentialManagerPolicy",
+                mCredentialManagerPolicy);
 
         pw.print("isParent=");
         pw.println(isParent);
@@ -1157,9 +1417,6 @@ class ActiveAdmin {
         pw.print("mAlwaysOnVpnLockdown=");
         pw.println(mAlwaysOnVpnLockdown);
 
-        pw.print("mPreferentialNetworkServiceEnabled=");
-        pw.println(mPreferentialNetworkServiceEnabled);
-
         pw.print("mCommonCriteriaMode=");
         pw.println(mCommonCriteriaMode);
 
@@ -1187,5 +1444,51 @@ class ActiveAdmin {
 
         pw.print("mUsbDataSignaling=");
         pw.println(mUsbDataSignalingEnabled);
+
+        pw.print("mWifiMinimumSecurityLevel=");
+        pw.println(mWifiMinimumSecurityLevel);
+
+        if (mWifiSsidPolicy != null) {
+            if (mWifiSsidPolicy.getPolicyType() == WIFI_SSID_POLICY_TYPE_ALLOWLIST) {
+                pw.print("mSsidAllowlist=");
+            } else {
+                pw.print("mSsidDenylist=");
+            }
+            pw.println(ssidsToStrings(mWifiSsidPolicy.getSsids()));
+        }
+
+        if (mFactoryResetProtectionPolicy != null) {
+            pw.println("mFactoryResetProtectionPolicy:");
+            pw.increaseIndent();
+            mFactoryResetProtectionPolicy.dump(pw);
+            pw.decreaseIndent();
+        }
+
+        if (mPreferentialNetworkServiceConfigs != null) {
+            pw.println("mPreferentialNetworkServiceConfigs:");
+            pw.increaseIndent();
+            for (PreferentialNetworkServiceConfig config : mPreferentialNetworkServiceConfigs) {
+                config.dump(pw);
+            }
+            pw.decreaseIndent();
+        }
+
+        pw.print("mtePolicy=");
+        pw.println(mtePolicy);
+
+        pw.print("accountTypesWithManagementDisabled=");
+        pw.println(accountTypesWithManagementDisabled);
+
+        if (mManagedSubscriptionsPolicy != null) {
+            pw.println("mManagedSubscriptionsPolicy:");
+            pw.increaseIndent();
+            pw.println(mManagedSubscriptionsPolicy);
+            pw.decreaseIndent();
+        }
+
+        pw.print("mDialerPackage=");
+        pw.println(mDialerPackage);
+        pw.print("mSmsPackage=");
+        pw.println(mSmsPackage);
     }
 }

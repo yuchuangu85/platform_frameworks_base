@@ -44,14 +44,13 @@ import androidx.slice.core.SliceQuery;
 import androidx.slice.widget.RowContent;
 import androidx.slice.widget.SliceContent;
 
+import com.android.app.animation.Interpolators;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.graphics.ColorUtils;
 import com.android.settingslib.Utils;
 import com.android.systemui.R;
-import com.android.systemui.animation.Interpolators;
 import com.android.systemui.util.wakelock.KeepAwakeAnimationListener;
 
-import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -279,7 +278,7 @@ public class KeyguardSliceView extends LinearLayout {
             }
         }
     }
-    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+    public void dump(PrintWriter pw, String[] args) {
         pw.println("KeyguardSliceView:");
         pw.println("  mTitle: " + (mTitle == null ? "null" : mTitle.getVisibility() == VISIBLE));
         pw.println("  mRow: " + (mRow == null ? "null" : mRow.getVisibility() == VISIBLE));

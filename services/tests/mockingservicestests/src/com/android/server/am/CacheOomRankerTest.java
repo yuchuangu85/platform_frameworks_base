@@ -38,10 +38,10 @@ import android.provider.DeviceConfig;
 
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import com.android.modules.utils.testing.TestableDeviceConfig;
 import com.android.server.LocalServices;
 import com.android.server.ServiceThread;
 import com.android.server.appop.AppOpsService;
-import com.android.server.testables.TestableDeviceConfig;
 import com.android.server.wm.ActivityTaskManagerService;
 
 import org.junit.Before;
@@ -793,7 +793,8 @@ public class CacheOomRankerTest {
         }
 
         @Override
-        public AppOpsService getAppOpsService(File file, Handler handler) {
+        public AppOpsService getAppOpsService(File recentAccessesFile, File storageFile,
+                Handler handler) {
             return mAppOpsService;
         }
 

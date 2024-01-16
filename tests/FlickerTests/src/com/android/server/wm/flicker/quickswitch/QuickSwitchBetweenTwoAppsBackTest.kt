@@ -16,31 +16,21 @@
 
 package com.android.server.wm.flicker.quickswitch
 
-import android.app.Instrumentation
-import android.platform.test.annotations.Postsubmit
-import android.platform.test.annotations.RequiresDevice
-import android.view.Surface
-import android.view.WindowManagerPolicyConstants
-import androidx.test.platform.app.InstrumentationRegistry
-import com.android.server.wm.flicker.FlickerBuilderProvider
-import com.android.server.wm.flicker.FlickerParametersRunnerFactory
-import com.android.server.wm.flicker.FlickerTestParameter
-import com.android.server.wm.flicker.FlickerTestParameterFactory
-import com.android.server.wm.flicker.LAUNCHER_COMPONENT
-import com.android.server.wm.flicker.annotation.Group1
-import com.android.server.wm.flicker.dsl.FlickerBuilder
+import android.platform.test.annotations.FlakyTest
+import android.platform.test.annotations.Presubmit
+import android.tools.common.NavBar
+import android.tools.common.datatypes.Rect
+import android.tools.common.traces.component.ComponentNameMatcher
+import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.device.flicker.legacy.FlickerBuilder
+import android.tools.device.flicker.legacy.LegacyFlickerTest
+import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import androidx.test.filters.RequiresDevice
+import com.android.server.wm.flicker.BaseTest
 import com.android.server.wm.flicker.helpers.NonResizeableAppHelper
 import com.android.server.wm.flicker.helpers.SimpleAppHelper
-import com.android.server.wm.flicker.helpers.WindowUtils
-import com.android.server.wm.flicker.helpers.isRotated
-import com.android.server.wm.flicker.navBarLayerIsVisible
-import com.android.server.wm.flicker.navBarLayerRotatesAndScales
-import com.android.server.wm.flicker.navBarWindowIsVisible
-import com.android.server.wm.flicker.startRotation
-import com.android.server.wm.flicker.statusBarLayerIsVisible
-import com.android.server.wm.flicker.statusBarWindowIsVisible
-import com.android.server.wm.traces.common.FlickerComponentName
 import org.junit.FixMethodOrder
+import org.junit.Ignore
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.junit.runners.MethodSorters
@@ -52,59 +42,43 @@ import org.junit.runners.Parameterized
  * To run this test: `atest FlickerTests:QuickSwitchBetweenTwoAppsBackTest`
  *
  * Actions:
+ * ```
  *     Launch an app [testApp1]
  *     Launch another app [testApp2]
  *     Swipe right from the bottom of the screen to quick switch back to the first app [testApp1]
- *
+ * ```
  */
 @RequiresDevice
 @RunWith(Parameterized::class)
 @Parameterized.UseParametersRunnerFactory(FlickerParametersRunnerFactory::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
-@Group1
-class QuickSwitchBetweenTwoAppsBackTest(private val testSpec: FlickerTestParameter) {
-    private val instrumentation: Instrumentation = InstrumentationRegistry.getInstrumentation()
-
+open class QuickSwitchBetweenTwoAppsBackTest(flicker: LegacyFlickerTest) : BaseTest(flicker) {
     private val testApp1 = SimpleAppHelper(instrumentation)
     private val testApp2 = NonResizeableAppHelper(instrumentation)
 
-    private val startDisplayBounds = WindowUtils.getDisplayBounds(testSpec.config.startRotation)
+    /** {@inheritDoc} */
+    override val transition: FlickerBuilder.() -> Unit = {
+        setup {
+            tapl.setExpectedRotation(flicker.scenario.startRotation.value)
+            tapl.setIgnoreTaskbarVisibility(true)
+            testApp1.launchViaIntent(wmHelper)
+            testApp2.launchViaIntent(wmHelper)
+            startDisplayBounds =
+                wmHelper.currentState.layerState.physicalDisplayBounds ?: error("Display not found")
+        }
+        transitions {
+            tapl.launchedAppState.quickSwitchToPreviousApp()
+            wmHelper
+                .StateSyncBuilder()
+                .withFullScreenApp(testApp1)
+                .withNavOrTaskBarVisible()
+                .withStatusBarVisible()
+                .waitForAndVerify()
+        }
 
-    @FlickerBuilderProvider
-    fun buildFlicker(): FlickerBuilder {
-        return FlickerBuilder(instrumentation).apply {
-            setup {
-                eachRun {
-                    testApp1.launchViaIntent(wmHelper)
-                    wmHelper.waitForFullScreenApp(testApp1.component)
-
-                    testApp2.launchViaIntent(wmHelper)
-                    wmHelper.waitForFullScreenApp(testApp2.component)
-                }
-            }
-            transitions {
-                // Swipe right from bottom to quick switch back
-                // NOTE: We don't perform an edge-to-edge swipe but instead only swipe in the middle
-                // as to not accidentally trigger a swipe back or forward action which would result
-                // in the same behavior but not testing quick swap.
-                device.swipe(
-                        startDisplayBounds.bounds.right / 3,
-                        startDisplayBounds.bounds.bottom,
-                        2 * startDisplayBounds.bounds.right / 3,
-                        startDisplayBounds.bounds.bottom,
-                        if (testSpec.config.startRotation.isRotated()) 75 else 30
-                )
-
-                wmHelper.waitForFullScreenApp(testApp1.component)
-                wmHelper.waitForAppTransitionIdle()
-            }
-
-            teardown {
-                test {
-                    testApp1.exit()
-                    testApp2.exit()
-                }
-            }
+        teardown {
+            testApp1.exit(wmHelper)
+            testApp2.exit(wmHelper)
         }
     }
 
@@ -112,86 +86,72 @@ class QuickSwitchBetweenTwoAppsBackTest(private val testSpec: FlickerTestParamet
      * Checks that the transition starts with [testApp2]'s windows filling/covering exactly the
      * entirety of the display.
      */
-    @Postsubmit
+    @Presubmit
     @Test
-    fun startsWithApp2WindowsCoverFullScreen() {
-        testSpec.assertWmStart {
-            this.frameRegion(testApp2.component).coversExactly(startDisplayBounds)
-        }
+    open fun startsWithApp2WindowsCoverFullScreen() {
+        flicker.assertWmStart { this.visibleRegion(testApp2).coversExactly(startDisplayBounds) }
     }
 
     /**
      * Checks that the transition starts with [testApp2]'s layers filling/covering exactly the
      * entirety of the display.
      */
-    @Postsubmit
+    @FlakyTest(bugId = 250520840)
     @Test
-    fun startsWithApp2LayersCoverFullScreen() {
-        testSpec.assertLayersStart {
-            this.visibleRegion(testApp2.component).coversExactly(startDisplayBounds)
-        }
+    open fun startsWithApp2LayersCoverFullScreen() {
+        flicker.assertLayersStart { this.visibleRegion(testApp2).coversExactly(startDisplayBounds) }
+    }
+
+    /** Checks that the transition starts with [testApp2] being the top window. */
+    @Presubmit
+    @Test
+    open fun startsWithApp2WindowBeingOnTop() {
+        flicker.assertWmStart { this.isAppWindowOnTop(testApp2) }
     }
 
     /**
-     * Checks that the transition starts with [testApp2] being the top window.
+     * Checks that [testApp1] windows fill the entire screen (i.e. is "fullscreen") at the end of
+     * the transition once we have fully quick switched from [testApp2] back to the [testApp1].
      */
-    @Postsubmit
+    @Presubmit
     @Test
-    fun startsWithApp2WindowBeingOnTop() {
-        testSpec.assertWmStart {
-            this.isAppWindowOnTop(testApp2.component)
-        }
-    }
-
-    /**
-     * Checks that [testApp1] windows fill the entire screen (i.e. is "fullscreen") at the end of the
-     * transition once we have fully quick switched from [testApp2] back to the [testApp1].
-     */
-    @Postsubmit
-    @Test
-    fun endsWithApp1WindowsCoveringFullScreen() {
-        testSpec.assertWmEnd {
-            this.frameRegion(testApp1.component).coversExactly(startDisplayBounds)
-        }
+    open fun endsWithApp1WindowsCoveringFullScreen() {
+        flicker.assertWmEnd { this.visibleRegion(testApp1).coversExactly(startDisplayBounds) }
     }
 
     /**
      * Checks that [testApp1] layers fill the entire screen (i.e. is "fullscreen") at the end of the
      * transition once we have fully quick switched from [testApp2] back to the [testApp1].
      */
-    @Postsubmit
+    @Presubmit
     @Test
     fun endsWithApp1LayersCoveringFullScreen() {
-        testSpec.assertLayersEnd {
-            this.visibleRegion(testApp1.component).coversExactly(startDisplayBounds)
-        }
+        flicker.assertLayersEnd { this.visibleRegion(testApp1).coversExactly(startDisplayBounds) }
     }
 
     /**
-     * Checks that [testApp1] is the top window at the end of the transition once we have fully quick
-     * switched from [testApp2] back to the [testApp1].
+     * Checks that [testApp1] is the top window at the end of the transition once we have fully
+     * quick switched from [testApp2] back to the [testApp1].
      */
-    @Postsubmit
+    @Presubmit
     @Test
-    fun endsWithApp1BeingOnTop() {
-        testSpec.assertWmEnd {
-            this.isAppWindowOnTop(testApp1.component)
-        }
+    open fun endsWithApp1BeingOnTop() {
+        flicker.assertWmEnd { this.isAppWindowOnTop(testApp1) }
     }
 
     /**
      * Checks that [testApp1]'s window starts off invisible and becomes visible at some point before
      * the end of the transition and then stays visible until the end of the transition.
      */
-    @Postsubmit
+    @Presubmit
     @Test
-    fun app1WindowBecomesAndStaysVisible() {
-        testSpec.assertWm {
-            this.isAppWindowInvisible(testApp1.component)
-                    .then()
-                    .isAppWindowVisible(FlickerComponentName.SNAPSHOT, isOptional = true)
-                    .then()
-                    .isAppWindowVisible(testApp1.component)
+    open fun app1WindowBecomesAndStaysVisible() {
+        flicker.assertWm {
+            this.isAppWindowInvisible(testApp1)
+                .then()
+                .isAppWindowVisible(ComponentNameMatcher.SNAPSHOT, isOptional = true)
+                .then()
+                .isAppWindowVisible(testApp1)
         }
     }
 
@@ -199,42 +159,30 @@ class QuickSwitchBetweenTwoAppsBackTest(private val testSpec: FlickerTestParamet
      * Checks that [testApp1]'s layer starts off invisible and becomes visible at some point before
      * the end of the transition and then stays visible until the end of the transition.
      */
-    @Postsubmit
+    @Presubmit
     @Test
-    fun app1LayerBecomesAndStaysVisible() {
-        testSpec.assertLayers {
-            this.isInvisible(testApp1.component)
-                    .then()
-                    .isVisible(testApp1.component)
-        }
+    open fun app1LayerBecomesAndStaysVisible() {
+        flicker.assertLayers { this.isInvisible(testApp1).then().isVisible(testApp1) }
     }
 
     /**
      * Checks that [testApp2]'s window starts off visible and becomes invisible at some point before
      * the end of the transition and then stays invisible until the end of the transition.
      */
-    @Postsubmit
+    @Presubmit
     @Test
-    fun app2WindowBecomesAndStaysInvisible() {
-        testSpec.assertWm {
-            this.isAppWindowVisible(testApp2.component)
-                    .then()
-                    .isAppWindowInvisible(testApp2.component)
-        }
+    open fun app2WindowBecomesAndStaysInvisible() {
+        flicker.assertWm { this.isAppWindowVisible(testApp2).then().isAppWindowInvisible(testApp2) }
     }
 
     /**
      * Checks that [testApp2]'s layer starts off visible and becomes invisible at some point before
      * the end of the transition and then stays invisible until the end of the transition.
      */
-    @Postsubmit
+    @Presubmit
     @Test
-    fun app2LayerBecomesAndStaysInvisible() {
-        testSpec.assertLayers {
-            this.isVisible(testApp2.component)
-                    .then()
-                    .isInvisible(testApp2.component)
-        }
+    open fun app2LayerBecomesAndStaysInvisible() {
+        flicker.assertLayers { this.isVisible(testApp2).then().isInvisible(testApp2) }
     }
 
     /**
@@ -242,18 +190,18 @@ class QuickSwitchBetweenTwoAppsBackTest(private val testSpec: FlickerTestParamet
      * Ensures that at any point, either [testApp1] or [testApp2]'s windows are at least partially
      * visible.
      */
-    @Postsubmit
+    @Presubmit
     @Test
-    fun app1WindowIsVisibleOnceApp2WindowIsInvisible() {
-        testSpec.assertWm {
-            this.isAppWindowVisible(testApp2.component)
-                    .then()
-                    // TODO: Do we actually want to test this? Seems too implementation specific...
-                    .isAppWindowVisible(LAUNCHER_COMPONENT, isOptional = true)
-                    .then()
-                    .isAppWindowVisible(FlickerComponentName.SNAPSHOT, isOptional = true)
-                    .then()
-                    .isAppWindowVisible(testApp1.component)
+    open fun app1WindowIsVisibleOnceApp2WindowIsInvisible() {
+        flicker.assertWm {
+            this.isAppWindowVisible(testApp2)
+                .then()
+                // TODO: Do we actually want to test this? Seems too implementation specific...
+                .isAppWindowVisible(ComponentNameMatcher.LAUNCHER, isOptional = true)
+                .then()
+                .isAppWindowVisible(ComponentNameMatcher.SNAPSHOT, isOptional = true)
+                .then()
+                .isAppWindowVisible(testApp1)
         }
     }
 
@@ -262,69 +210,42 @@ class QuickSwitchBetweenTwoAppsBackTest(private val testSpec: FlickerTestParamet
      * Ensures that at any point, either [testApp1] or [testApp2]'s windows are at least partially
      * visible.
      */
-    @Postsubmit
+    @Presubmit
     @Test
-    fun app1LayerIsVisibleOnceApp2LayerIsInvisible() {
-        testSpec.assertLayers {
-            this.isVisible(testApp2.component)
-                    .then()
-                    .isVisible(LAUNCHER_COMPONENT, isOptional = true)
-                    .then()
-                    .isVisible(FlickerComponentName.SNAPSHOT, isOptional = true)
-                    .then()
-                    .isVisible(testApp1.component)
+    open fun app1LayerIsVisibleOnceApp2LayerIsInvisible() {
+        flicker.assertLayers {
+            this.isVisible(testApp2)
+                .then()
+                .isVisible(ComponentNameMatcher.LAUNCHER, isOptional = true)
+                .then()
+                .isVisible(ComponentNameMatcher.SNAPSHOT, isOptional = true)
+                .then()
+                .isVisible(testApp1)
         }
     }
 
-    /**
-     * Checks that the navbar window is visible throughout the entire transition.
-     */
-    @Postsubmit
+    /** {@inheritDoc} */
+    @Ignore("Nav bar window becomes invisible during quick switch")
     @Test
-    fun navBarWindowIsAlwaysVisible() = testSpec.navBarWindowIsVisible()
+    override fun navBarWindowIsAlwaysVisible() = super.navBarWindowIsAlwaysVisible()
 
-    /**
-     * Checks that the navbar layer is visible throughout the entire transition.
-     */
-    @Postsubmit
+    @FlakyTest(bugId = 246284708)
     @Test
-    fun navBarLayerAlwaysIsVisible() = testSpec.navBarLayerIsVisible()
+    override fun visibleLayersShownMoreThanOneConsecutiveEntry() =
+        super.visibleLayersShownMoreThanOneConsecutiveEntry()
 
-    /**
-     * Checks that the navbar is always in the right position and covers the expected region.
-     *
-     * NOTE: This doesn't check that the navbar is visible or not.
-     */
-    @Postsubmit
+    @FlakyTest(bugId = 250518877)
     @Test
-    fun navbarIsAlwaysInRightPosition() = testSpec.navBarLayerRotatesAndScales()
-
-    /**
-     * Checks that the status bar window is visible throughout the entire transition.
-     */
-    @Postsubmit
-    @Test
-    fun statusBarWindowIsAlwaysVisible() = testSpec.statusBarWindowIsVisible()
-
-    /**
-     * Checks that the status bar layer is visible throughout the entire transition.
-     */
-    @Postsubmit
-    @Test
-    fun statusBarLayerIsAlwaysVisible() = testSpec.statusBarLayerIsVisible()
+    override fun navBarLayerPositionAtStartAndEnd() = super.navBarLayerPositionAtStartAndEnd()
 
     companion object {
+        private var startDisplayBounds = Rect.EMPTY
+
         @Parameterized.Parameters(name = "{0}")
         @JvmStatic
-        fun getParams(): Collection<FlickerTestParameter> {
-            return FlickerTestParameterFactory.getInstance()
-                    .getConfigNonRotationTests(
-                            repetitions = 5,
-                            supportedNavigationModes = listOf(
-                                    WindowManagerPolicyConstants.NAV_BAR_MODE_GESTURAL_OVERLAY
-                            ),
-                            supportedRotations = listOf(Surface.ROTATION_0, Surface.ROTATION_90)
-                    )
-        }
+        fun getParams() =
+            LegacyFlickerTestFactory.nonRotationTests(
+                supportedNavigationModes = listOf(NavBar.MODE_GESTURAL)
+            )
     }
 }

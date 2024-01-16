@@ -47,6 +47,7 @@ import org.junit.Assert;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executor;
 
 /**
  * Context used throughout DPMS tests.
@@ -170,10 +171,15 @@ public class DpmMockContext extends MockContext {
     public ApplicationInfo applicationInfo = null;
 
     public DpmMockContext(MockSystemServices mockSystemServices, Context context) {
+        this(mockSystemServices, context, new MockBinder());
+    }
+
+    public DpmMockContext(MockSystemServices mockSystemServices, Context context,
+            @NonNull MockBinder mockBinder) {
         mMockSystemServices = mockSystemServices;
         realTestContext = context;
+        binder = mockBinder;
 
-        binder = new MockBinder();
         resources = mock(Resources.class);
         spiedContext = mock(Context.class);
 
@@ -199,6 +205,11 @@ public class DpmMockContext extends MockContext {
             return packageName;
         }
         return super.getPackageName();
+    }
+
+    @Override
+    public String getOpPackageName() {
+        return getPackageName();
     }
 
     @Override
@@ -232,6 +243,14 @@ public class DpmMockContext extends MockContext {
                 return mMockSystemServices.crossProfileApps;
             case Context.VPN_MANAGEMENT_SERVICE:
                 return mMockSystemServices.vpnManager;
+            case Context.DEVICE_POLICY_SERVICE:
+                return mMockSystemServices.devicePolicyManager;
+            case Context.LOCATION_SERVICE:
+                return mMockSystemServices.locationManager;
+            case Context.ROLE_SERVICE:
+                return mMockSystemServices.roleManager;
+            case Context.TELEPHONY_SUBSCRIPTION_SERVICE:
+                return mMockSystemServices.subscriptionManager;
         }
         throw new UnsupportedOperationException();
     }
@@ -435,7 +454,14 @@ public class DpmMockContext extends MockContext {
     @Override
     public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter) {
         mMockSystemServices.registerReceiver(receiver, filter, null);
-        return spiedContext.registerReceiver(receiver, filter);
+        return spiedContext.registerReceiver(receiver, filter,
+                Context.RECEIVER_EXPORTED_UNAUDITED);
+    }
+
+    @Override
+    public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter, int flags) {
+        mMockSystemServices.registerReceiver(receiver, filter, null);
+        return spiedContext.registerReceiver(receiver, filter, flags);
     }
 
     @Override
@@ -482,6 +508,11 @@ public class DpmMockContext extends MockContext {
     @Override
     public int getUserId() {
         return UserHandle.getUserId(binder.getCallingUid());
+    }
+
+    @Override
+    public Executor getMainExecutor() {
+        return mMockSystemServices.executor;
     }
 
     @Override

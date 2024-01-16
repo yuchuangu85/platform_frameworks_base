@@ -21,7 +21,9 @@ import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.content.ComponentName;
 import android.content.Intent;
+import android.os.Bundle;
 import android.os.UserHandle;
+import android.os.UserManager.EnforcingUser;
 
 import java.util.List;
 import java.util.Set;
@@ -205,34 +207,40 @@ public abstract class DevicePolicyManagerInternal {
      *
      * @hide
      */
-    public abstract List<String> getAllCrossProfilePackages();
+    public abstract List<String> getAllCrossProfilePackages(int userId);
 
     /**
-     * Returns the default package names set by the OEM that are allowed to request user consent for
-     * cross-profile communication without being explicitly enabled by the admin, via
-     * {@link com.android.internal.R.array#cross_profile_apps} and
-     * {@link com.android.internal.R.array#vendor_cross_profile_apps}.
+     * Returns the default package names set by the OEM that are allowed to communicate
+     * cross-profile without being explicitly enabled by the admin, via {@link
+     * com.android.internal.R.array#cross_profile_apps} and {@link
+     * com.android.internal.R.array#vendor_cross_profile_apps}.
      *
      * @hide
      */
     public abstract List<String> getDefaultCrossProfilePackages();
 
     /**
-     * Sends the {@code intent} to the packages with cross profile capabilities.
+     * Sends the {@code intent} to the package holding the
+     * {@link android.app.role.RoleManager#ROLE_DEVICE_MANAGER} role and packages with cross
+     * profile capabilities, meaning the application must have the {@code crossProfile}
+     * property and at least one of the following permissions:
      *
-     * <p>This means the application must have the {@code crossProfile} property and the
-     * corresponding permissions, defined by
-     * {@link
-     * android.content.pm.CrossProfileAppsInternal#verifyPackageHasInteractAcrossProfilePermission}.
+     * <ul>
+     *     <li>{@link android.Manifest.permission.INTERACT_ACROSS_PROFILES}
+     *     <li>{@link android.Manifest.permission.INTERACT_ACROSS_USERS}
+     *     <li>{@link android.Manifest.permission.INTERACT_ACROSS_USERS_FULL}
+     *     <li>{@link AppOpsManager.OP_INTERACT_ACROSS_PROFILES} appop
+     * </ul>
      *
-     * <p>Note: This method doesn't modify {@code intent} but copies it before use.
-     *
-     * @param intent Template for the intent sent to the package.
+     * <p>Note: The intent itself is not modified but copied before use.
+     *`
+     * @param intent Template for the intent sent to the packages.
      * @param parentHandle Handle of the user that will receive the intents.
      * @param requiresPermission If false, all packages with the {@code crossProfile} property
-     *                           will receive the intent.
+     *                           will receive the intent without requiring the additional
+     *                           permissions.
      */
-    public abstract void broadcastIntentToCrossProfileManifestReceiversAsUser(Intent intent,
+    public abstract void broadcastIntentToManifestReceivers(Intent intent,
             UserHandle parentHandle, boolean requiresPermission);
 
     /**
@@ -240,6 +248,16 @@ public abstract class DevicePolicyManagerInternal {
      */
     @Nullable
     public abstract ComponentName getProfileOwnerAsUser(@UserIdInt int userId);
+
+    /**
+     * Returns the device owner component for the device, or {@code null} if there is not one.
+     *
+     * @deprecated added temporarily to support Android Role permission granting.
+     * Please contact Android Enterprise Device Policy team before calling this function.
+     */
+    @Deprecated
+    @Nullable
+    public abstract ComponentName getDeviceOwnerComponent(boolean callingUserOnly);
 
     /**
      * Returns the user id of the device owner, or {@link UserHandle#USER_NULL} if there is not one.
@@ -263,4 +281,66 @@ public abstract class DevicePolicyManagerInternal {
      * {@link #supportsResetOp(int)} is true.
      */
     public abstract void resetOp(int op, String packageName, @UserIdInt int userId);
+
+    /**
+     * Checks if the calling process has been granted permission to apply a device policy on a
+     * specific user.
+     *
+     * The given permission will be checked along with its associated cross-user permission, if it
+     * exists and the target user is different to the calling user.
+     *
+     * @param callerPackage the package of the calling application.
+     * @param permission The name of the permission being checked.
+     * @param targetUserId The userId of the user which the caller needs permission to act on.
+     * @throws SecurityException If the calling process has not been granted the permission.
+     */
+    public abstract void enforcePermission(String callerPackage, String permission,
+            int targetUserId);
+
+    /**
+     * Return whether the calling process has been granted permission to apply a device policy on
+     * a specific user.
+     *
+     * The given permission will be checked along with its associated cross-user
+     * permission, if it exists and the target user is different to the calling user.
+     *
+     * @param callerPackage the package of the calling application.
+     * @param permission The name of the permission being checked.
+     * @param targetUserId The userId of the user which the caller needs permission to act on.
+     */
+    public abstract boolean hasPermission(String callerPackage, String permission,
+            int targetUserId);
+
+    /**
+     * Returns whether new "turn off work" behavior is enabled via feature flag.
+     */
+    public abstract boolean isKeepProfilesRunningEnabled();
+
+    /**
+     * True if either the entire device or the user is organization managed.
+     */
+    public abstract boolean isUserOrganizationManaged(@UserIdInt int userId);
+
+    /**
+     * Returns the list of packages suspended by admin on a given user.
+     */
+    public abstract Set<String> getPackagesSuspendedByAdmin(@UserIdInt int userId);
+
+    /**
+     * Returns whether the application exemptions feature flag is enabled.
+     */
+    public abstract boolean isApplicationExemptionsFlagEnabled();
+
+    /**
+     * Returns a map of admin to {@link Bundle} map of restrictions set by the admins for the
+     * provided {@code packageName} in the provided {@code userId}
+     */
+    public abstract List<Bundle> getApplicationRestrictionsPerAdminForUser(
+            String packageName, @UserIdInt int userId);
+
+    /**
+     *  Returns a list of users who set a user restriction on a given user.
+     */
+    public abstract List<EnforcingUser> getUserRestrictionSources(String restriction,
+                @UserIdInt int userId);
 }

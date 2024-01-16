@@ -22,6 +22,7 @@ import android.annotation.TestApi;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.VibrationEffect;
+import android.os.Vibrator;
 
 import com.android.internal.util.Preconditions;
 
@@ -67,18 +68,33 @@ public final class PrimitiveSegment extends VibrationEffectSegment {
         return -1;
     }
 
+    /** @hide */
+    @Override
+    public boolean areVibrationFeaturesSupported(@NonNull Vibrator vibrator) {
+        return vibrator.areAllPrimitivesSupported(mPrimitiveId);
+    }
+
+    /** @hide */
+    @Override
+    public boolean isHapticFeedbackCandidate() {
+        return true;
+    }
+
+    /** @hide */
     @Override
     public boolean hasNonZeroAmplitude() {
         // Every primitive plays a vibration with a non-zero amplitude, even at scale == 0.
         return true;
     }
 
+    /** @hide */
     @NonNull
     @Override
     public PrimitiveSegment resolve(int defaultAmplitude) {
         return this;
     }
 
+    /** @hide */
     @NonNull
     @Override
     public PrimitiveSegment scale(float scaleFactor) {
@@ -86,18 +102,20 @@ public final class PrimitiveSegment extends VibrationEffectSegment {
                 mDelay);
     }
 
+    /** @hide */
     @NonNull
     @Override
     public PrimitiveSegment applyEffectStrength(int effectStrength) {
         return this;
     }
 
+    /** @hide */
     @Override
     public void validate() {
         Preconditions.checkArgumentInRange(mPrimitiveId, VibrationEffect.Composition.PRIMITIVE_NOOP,
                 VibrationEffect.Composition.PRIMITIVE_LOW_TICK, "primitiveId");
         Preconditions.checkArgumentInRange(mScale, 0f, 1f, "scale");
-        Preconditions.checkArgumentNonnegative(mDelay, "primitive delay should be >= 0");
+        VibrationEffectSegment.checkDurationArgument(mDelay, "delay");
     }
 
     @Override

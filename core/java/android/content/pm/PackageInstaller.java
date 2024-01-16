@@ -19,62 +19,98 @@ package android.content.pm;
 import static android.app.AppOpsManager.MODE_ALLOWED;
 import static android.app.AppOpsManager.MODE_DEFAULT;
 import static android.app.AppOpsManager.MODE_IGNORED;
+import static android.content.pm.Checksum.TYPE_PARTIAL_MERKLE_ROOT_1M_SHA256;
+import static android.content.pm.Checksum.TYPE_PARTIAL_MERKLE_ROOT_1M_SHA512;
+import static android.content.pm.Checksum.TYPE_WHOLE_MD5;
+import static android.content.pm.Checksum.TYPE_WHOLE_MERKLE_ROOT_4K_SHA256;
+import static android.content.pm.Checksum.TYPE_WHOLE_SHA1;
+import static android.content.pm.Checksum.TYPE_WHOLE_SHA256;
+import static android.content.pm.Checksum.TYPE_WHOLE_SHA512;
+import static android.content.pm.PackageInfo.INSTALL_LOCATION_AUTO;
+import static android.content.pm.PackageInfo.INSTALL_LOCATION_INTERNAL_ONLY;
+import static android.content.pm.PackageInfo.INSTALL_LOCATION_PREFER_EXTERNAL;
 
 import android.Manifest;
+import android.annotation.CallbackExecutor;
 import android.annotation.CurrentTimeMillisLong;
+import android.annotation.DurationMillisLong;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SdkConstant;
 import android.annotation.SdkConstant.SdkConstantType;
+import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.app.ActivityManager;
+import android.app.ActivityThread;
 import android.app.AppGlobals;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.IIntentReceiver;
+import android.content.IIntentSender;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.content.pm.PackageManager.DeleteFlags;
 import android.content.pm.PackageManager.InstallReason;
 import android.content.pm.PackageManager.InstallScenario;
+import android.content.pm.parsing.ApkLiteParseUtils;
+import android.content.pm.parsing.PackageLite;
+import android.content.pm.parsing.result.ParseResult;
+import android.content.pm.parsing.result.ParseTypeImpl;
 import android.graphics.Bitmap;
+import android.icu.util.ULocale;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.FileBridge;
 import android.os.Handler;
 import android.os.HandlerExecutor;
+import android.os.IBinder;
 import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
 import android.os.Parcelable;
 import android.os.ParcelableException;
+import android.os.PersistableBundle;
+import android.os.RemoteCallback;
 import android.os.RemoteException;
 import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.text.TextUtils;
+import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.ExceptionUtils;
 
+import com.android.internal.content.InstallLocationUtils;
+import com.android.internal.util.ArrayUtils;
+import com.android.internal.util.DataClass;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.Preconditions;
 import com.android.internal.util.function.pooled.PooledLambda;
 
 import java.io.Closeable;
+import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.security.MessageDigest;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateEncodingException;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 /**
  * Offers the ability to install, upgrade, and remove applications on the
@@ -153,8 +189,24 @@ public class PackageInstaller {
     public static final String ACTION_SESSION_UPDATED =
             "android.content.pm.action.SESSION_UPDATED";
 
-    /** {@hide} */
+    /**
+     * Intent action to indicate that user action is required for current install. This action can
+     * be used only by system apps.
+     *
+     * @hide
+     */
+    @SystemApi
     public static final String ACTION_CONFIRM_INSTALL = "android.content.pm.action.CONFIRM_INSTALL";
+
+    /**
+     * Activity Action: Intent sent to the installer when a session for requesting
+     * user pre-approval, and user needs to confirm the installation.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final String ACTION_CONFIRM_PRE_APPROVAL =
+            "android.content.pm.action.CONFIRM_PRE_APPROVAL";
 
     /**
      * An integer session ID that an operation is working with.
@@ -182,8 +234,8 @@ public class PackageInstaller {
      * {@link #STATUS_PENDING_USER_ACTION}, {@link #STATUS_SUCCESS},
      * {@link #STATUS_FAILURE}, {@link #STATUS_FAILURE_ABORTED},
      * {@link #STATUS_FAILURE_BLOCKED}, {@link #STATUS_FAILURE_CONFLICT},
-     * {@link #STATUS_FAILURE_INCOMPATIBLE}, {@link #STATUS_FAILURE_INVALID}, or
-     * {@link #STATUS_FAILURE_STORAGE}.
+     * {@link #STATUS_FAILURE_INCOMPATIBLE}, {@link #STATUS_FAILURE_INVALID},
+     * {@link #STATUS_FAILURE_STORAGE}, or {@link #STATUS_FAILURE_TIMEOUT}.
      * <p>
      * More information about a status may be available through additional
      * extras; see the individual status documentation for details.
@@ -191,6 +243,17 @@ public class PackageInstaller {
      * @see Intent#getIntExtra(String, int)
      */
     public static final String EXTRA_STATUS = "android.content.pm.extra.STATUS";
+
+    /**
+     * Indicate if the status is for a pre-approval request.
+     *
+     * If callers use the same {@link IntentSender} for both
+     * {@link Session#requestUserPreapproval(PreapprovalDetails, IntentSender)} and
+     * {@link Session#commit(IntentSender)}, they can use this to differentiate between them.
+     *
+     * @see Intent#getBooleanExtra(String, boolean)
+     */
+    public static final String EXTRA_PRE_APPROVAL = "android.content.pm.extra.PRE_APPROVAL";
 
     /**
      * Detailed string representation of the status, including raw details that
@@ -216,15 +279,45 @@ public class PackageInstaller {
      */
     public static final String EXTRA_STORAGE_PATH = "android.content.pm.extra.STORAGE_PATH";
 
+    /**
+     * The {@link InstallConstraints} object.
+     *
+     * @see Intent#getParcelableExtra(String, Class)
+     * @see #waitForInstallConstraints(List, InstallConstraints, IntentSender, long)
+     */
+    public static final String EXTRA_INSTALL_CONSTRAINTS =
+            "android.content.pm.extra.INSTALL_CONSTRAINTS";
+
+    /**
+     * The {@link InstallConstraintsResult} object.
+     *
+     * @see Intent#getParcelableExtra(String, Class)
+     * @see #waitForInstallConstraints(List, InstallConstraints, IntentSender, long)
+     */
+    public static final String EXTRA_INSTALL_CONSTRAINTS_RESULT =
+            "android.content.pm.extra.INSTALL_CONSTRAINTS_RESULT";
+
     /** {@hide} */
     @Deprecated
     public static final String EXTRA_PACKAGE_NAMES = "android.content.pm.extra.PACKAGE_NAMES";
 
-    /** {@hide} */
+    /**
+     * The status as used internally in the package manager. Refer to {@link PackageManager} for
+     * a list of all valid legacy statuses.
+     *
+     * @hide
+     */
+    @SystemApi
     public static final String EXTRA_LEGACY_STATUS = "android.content.pm.extra.LEGACY_STATUS";
     /** {@hide} */
     public static final String EXTRA_LEGACY_BUNDLE = "android.content.pm.extra.LEGACY_BUNDLE";
-    /** {@hide} */
+    /**
+     * The callback to execute once an uninstall is completed (used for both successful and
+     * unsuccessful uninstalls).
+     *
+     * @hide
+     */
+    @SystemApi
     public static final String EXTRA_CALLBACK = "android.content.pm.extra.CALLBACK";
 
     /**
@@ -239,6 +332,24 @@ public class PackageInstaller {
      */
     @SystemApi
     public static final String EXTRA_DATA_LOADER_TYPE = "android.content.pm.extra.DATA_LOADER_TYPE";
+
+    /**
+     * Path to the validated base APK for this session, which may point at an
+     * APK inside the session (when the session defines the base), or it may
+     * point at the existing base APK (when adding splits to an existing app).
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final String EXTRA_RESOLVED_BASE_PATH =
+            "android.content.pm.extra.RESOLVED_BASE_PATH";
+
+    /**
+     * A list of warnings that occurred during installation.
+     *
+     * @hide
+     */
+    public static final String EXTRA_WARNINGS = "android.content.pm.extra.WARNINGS";
 
     /**
      * Streaming installation pending.
@@ -340,9 +451,20 @@ public class PackageInstaller {
      * exist, it may be missing native code for the ABIs supported by the
      * device, or it requires a newer SDK version, etc.
      *
+     * Starting in {@link Build.VERSION_CODES#UPSIDE_DOWN_CAKE}, an app with only 32-bit native
+     * code can still be installed on a device that supports both 64-bit and 32-bit ABIs.
+     * However, a warning dialog will be displayed when the app is launched.
+     *
      * @see #EXTRA_STATUS_MESSAGE
      */
     public static final int STATUS_FAILURE_INCOMPATIBLE = 7;
+
+    /**
+     * The operation failed because it didn't complete within the specified timeout.
+     *
+     * @see #EXTRA_STATUS_MESSAGE
+     */
+    public static final int STATUS_FAILURE_TIMEOUT = 8;
 
     /**
      * Default value, non-streaming installation session.
@@ -406,6 +528,95 @@ public class PackageInstaller {
     @Retention(RetentionPolicy.SOURCE)
     public @interface FileLocation{}
 
+    /**
+     * The installer did not call {@link PackageInstaller.SessionParams#setPackageSource(int)} to
+     * specify the package source.
+     */
+    public static final int PACKAGE_SOURCE_UNSPECIFIED = 0;
+
+    /**
+     * Code indicating that the package being installed is from a source not reflected by any
+     * other package source constant.
+     */
+    public static final int PACKAGE_SOURCE_OTHER = 1;
+
+    /**
+     * Code indicating that the package being installed is from a store. An app store that
+     * installs an app for the user would use this.
+     */
+    public static final int PACKAGE_SOURCE_STORE = 2;
+
+    /**
+     * Code indicating that the package being installed comes from a local file on the device. A
+     * file manager that is facilitating the installation of an APK file would use this.
+     */
+    public static final int PACKAGE_SOURCE_LOCAL_FILE = 3;
+
+    /**
+     * Code indicating that the package being installed comes from a file that was downloaded to
+     * the device by the user. For use in place of {@link #PACKAGE_SOURCE_LOCAL_FILE} when the
+     * installer knows the package was downloaded.
+     */
+    public static final int PACKAGE_SOURCE_DOWNLOADED_FILE = 4;
+
+    /** @hide */
+    @IntDef(prefix = { "PACKAGE_SOURCE_" }, value = {
+            PACKAGE_SOURCE_UNSPECIFIED,
+            PACKAGE_SOURCE_STORE,
+            PACKAGE_SOURCE_LOCAL_FILE,
+            PACKAGE_SOURCE_DOWNLOADED_FILE,
+            PACKAGE_SOURCE_OTHER
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    @interface PackageSourceType{}
+
+    /**
+     * Indicate the user intervention is required when the installer attempts to commit the session.
+     * This is the default case.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static final int REASON_CONFIRM_PACKAGE_CHANGE = 0;
+
+    /**
+     * Indicate the user intervention is required because the update ownership enforcement is
+     * enabled, and the update owner will change.
+     *
+     * @see PackageInstaller.SessionParams#setRequestUpdateOwnership
+     * @see InstallSourceInfo#getUpdateOwnerPackageName
+     * @hide
+     */
+    @SystemApi
+    public static final int REASON_OWNERSHIP_CHANGED = 1;
+
+    /**
+     * Indicate the user intervention is required because the update ownership enforcement is
+     * enabled, and remind the update owner is a different package.
+     *
+     * @see PackageInstaller.SessionParams#setRequestUpdateOwnership
+     * @see InstallSourceInfo#getUpdateOwnerPackageName
+     * @hide
+     */
+    @SystemApi
+    public static final int REASON_REMIND_OWNERSHIP = 2;
+
+    /** @hide */
+    @IntDef(prefix = { "REASON_" }, value = {
+            REASON_CONFIRM_PACKAGE_CHANGE,
+            REASON_OWNERSHIP_CHANGED,
+            REASON_REMIND_OWNERSHIP,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface UserActionReason {}
+
+    /** Default set of checksums - includes all available checksums.
+     * @see Session#requestChecksums  */
+    private static final int DEFAULT_CHECKSUMS =
+            TYPE_WHOLE_MERKLE_ROOT_4K_SHA256 | TYPE_WHOLE_MD5 | TYPE_WHOLE_SHA1 | TYPE_WHOLE_SHA256
+                    | TYPE_WHOLE_SHA512 | TYPE_PARTIAL_MERKLE_ROOT_1M_SHA256
+                    | TYPE_PARTIAL_MERKLE_ROOT_1M_SHA512;
+
     private final IPackageInstaller mInstaller;
     private final int mUserId;
     private final String mInstallerPackageName;
@@ -416,6 +627,7 @@ public class PackageInstaller {
     /** {@hide} */
     public PackageInstaller(IPackageInstaller installer,
             String installerPackageName, String installerAttributionTag, int userId) {
+        Objects.requireNonNull(installer, "installer cannot be null");
         mInstaller = installer;
         mInstallerPackageName = installerPackageName;
         mAttributionTag = installerAttributionTag;
@@ -524,8 +736,9 @@ public class PackageInstaller {
     }
 
     /**
-     * Return details for a specific session. No special permissions are
-     * required to retrieve these details.
+     * Return details for a specific session. Callers need to either declare &lt;queries&gt;
+     * element with the specific package name in the app's manifest, have the
+     * android.permission.QUERY_ALL_PACKAGES, or be the session owner to retrieve these details.
      *
      * @return details for the requested session, or {@code null} if the session
      *         does not exist.
@@ -539,7 +752,10 @@ public class PackageInstaller {
     }
 
     /**
-     * Return list of all known install sessions, regardless of the installer.
+     * Return list of all known install sessions, regardless of the installer. Callers need to
+     * either declare &lt;queries&gt; element with the specific  package name in the app's manifest,
+     * have the android.permission.QUERY_ALL_PACKAGES, or be the session owner to retrieve these
+     * details.
      */
     public @NonNull List<SessionInfo> getAllSessions() {
         try {
@@ -561,7 +777,9 @@ public class PackageInstaller {
     }
 
     /**
-     * Return list of all staged install sessions.
+     * Return list of all staged install sessions. Callers need to either declare &lt;queries&gt;
+     * element with the specific package name in the app's manifest, have the
+     * android.permission.QUERY_ALL_PACKAGES, or be the session owner to retrieve these details.
      */
     public @NonNull List<SessionInfo> getStagedSessions() {
         try {
@@ -615,7 +833,9 @@ public class PackageInstaller {
      * </ul>
      *
      * @param packageName The package to uninstall.
-     * @param statusReceiver Where to deliver the result.
+     * @param statusReceiver Where to deliver the result of the operation indicated by the extra
+     *                       {@link #EXTRA_STATUS}. Refer to the individual status codes
+     *                       on how to handle them.
      *
      * @see android.app.admin.DevicePolicyManager
      */
@@ -633,7 +853,9 @@ public class PackageInstaller {
      *
      * @param packageName The package to uninstall.
      * @param flags Flags for uninstall.
-     * @param statusReceiver Where to deliver the result.
+     * @param statusReceiver Where to deliver the result of the operation indicated by the extra
+     *                       {@link #EXTRA_STATUS}. Refer to the individual status codes
+     *                       on how to handle them.
      *
      * @hide
      */
@@ -658,7 +880,9 @@ public class PackageInstaller {
      * </ul>
      *
      * @param versionedPackage The versioned package to uninstall.
-     * @param statusReceiver Where to deliver the result.
+     * @param statusReceiver Where to deliver the result of the operation indicated by the extra
+     *                       {@link #EXTRA_STATUS}. Refer to the individual status codes
+     *                       on how to handle them.
      *
      * @see android.app.admin.DevicePolicyManager
      */
@@ -680,9 +904,9 @@ public class PackageInstaller {
      *
      * @param versionedPackage The versioned package to uninstall.
      * @param flags Flags for uninstall.
-     * @param statusReceiver Where to deliver the result.
-     *
-     * @hide
+     * @param statusReceiver Where to deliver the result of the operation indicated by the extra
+     *                       {@link #EXTRA_STATUS}. Refer to the individual status codes
+     *                       on how to handle them.
      */
     @RequiresPermission(anyOf = {
             Manifest.permission.DELETE_PACKAGES,
@@ -708,7 +932,9 @@ public class PackageInstaller {
      *
      * @param packageName The package to install.
      * @param installReason Reason for install.
-     * @param statusReceiver Where to deliver the result.
+     * @param statusReceiver Where to deliver the result of the operation indicated by the extra
+     *                       {@link #EXTRA_STATUS}. Refer to the individual status codes
+     *                       on how to handle them.
      */
     @RequiresPermission(allOf = {
             Manifest.permission.INSTALL_PACKAGES,
@@ -730,8 +956,10 @@ public class PackageInstaller {
      * Uninstall the given package for the user for which this installer was created if the package
      * will still exist for other users on the device.
      *
-     * @param packageName The package to install.
-     * @param statusReceiver Where to deliver the result.
+     * @param packageName The package to uninstall.
+     * @param statusReceiver Where to deliver the result of the operation indicated by the extra
+     *                       {@link #EXTRA_STATUS}. Refer to the individual status codes
+     *                       on how to handle them.
      */
     @RequiresPermission(Manifest.permission.DELETE_PACKAGES)
     public void uninstallExistingPackage(@NonNull String packageName,
@@ -752,6 +980,133 @@ public class PackageInstaller {
     public void setPermissionsResult(int sessionId, boolean accepted) {
         try {
             mInstaller.setPermissionsResult(sessionId, accepted);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Check if install constraints are satisfied for the given packages.
+     *
+     * Note this query result is just a hint and subject to race because system states could
+     * change anytime in-between this query and committing the session.
+     *
+     * The result is returned by a callback because some constraints might take a long time
+     * to evaluate.
+     *
+     * @param packageNames a list of package names to check the constraints for installation
+     * @param constraints the constraints for installation.
+     * @param executor the {@link Executor} on which to invoke the callback
+     * @param callback called when the {@link InstallConstraintsResult} is ready
+     *
+     * @throws SecurityException if the given packages' installer of record doesn't match the
+     *             caller's own package name or the installerPackageName set by the caller doesn't
+     *             match the caller's own package name.
+     */
+    public void checkInstallConstraints(@NonNull List<String> packageNames,
+            @NonNull InstallConstraints constraints,
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull Consumer<InstallConstraintsResult> callback) {
+        Objects.requireNonNull(executor);
+        Objects.requireNonNull(callback);
+        try {
+            var remoteCallback = new RemoteCallback(b -> {
+                executor.execute(() -> {
+                    callback.accept(b.getParcelable("result", InstallConstraintsResult.class));
+                });
+            });
+            mInstaller.checkInstallConstraints(
+                    mInstallerPackageName, packageNames, constraints, remoteCallback);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Similar to {@link #checkInstallConstraints(List, InstallConstraints, Executor, Consumer)},
+     * but the callback is invoked only when the constraints are satisfied or after timeout.
+     * <p>
+     * Note: the device idle constraint might take a long time to evaluate. The system will
+     * ensure the constraint is evaluated completely before handling timeout.
+     *
+     * @param packageNames a list of package names to check the constraints for installation
+     * @param constraints the constraints for installation.
+     * @param callback Called when the constraints are satisfied or after timeout.
+     *                 Intents sent to this callback contain:
+     *                 {@link Intent#EXTRA_PACKAGES} for the input package names,
+     *                 {@link #EXTRA_INSTALL_CONSTRAINTS} for the input constraints,
+     *                 {@link #EXTRA_INSTALL_CONSTRAINTS_RESULT} for the result.
+     * @param timeoutMillis The maximum time to wait, in milliseconds until the constraints are
+     *                      satisfied. Valid range is from 0 to one week. {@code 0} means the
+     *                      callback will be invoked immediately no matter constraints are
+     *                      satisfied or not.
+     * @throws SecurityException if the given packages' installer of record doesn't match the
+     *             caller's own package name or the installerPackageName set by the caller doesn't
+     *             match the caller's own package name.
+     */
+    public void waitForInstallConstraints(@NonNull List<String> packageNames,
+            @NonNull InstallConstraints constraints,
+            @NonNull IntentSender callback,
+            @DurationMillisLong long timeoutMillis) {
+        try {
+            mInstaller.waitForInstallConstraints(
+                    mInstallerPackageName, packageNames, constraints, callback, timeoutMillis);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Commit the session when all constraints are satisfied. This is a convenient method to
+     * combine {@link #waitForInstallConstraints(List, InstallConstraints, IntentSender, long)}
+     * and {@link Session#commit(IntentSender)}.
+     * <p>
+     * Once this method is called, the session is sealed and no additional mutations
+     * may be performed on the session. In the case of timeout, you may commit the
+     * session again using this method or {@link Session#commit(IntentSender)} for retries.
+     *
+     * @param sessionId the session ID to commit when all constraints are satisfied.
+     * @param statusReceiver Called when the state of the session changes. Intents
+     *                       sent to this receiver contain {@link #EXTRA_STATUS}.
+     *                       Refer to the individual status codes on how to handle them.
+     * @param constraints The requirements to satisfy before committing the session.
+     * @param timeoutMillis The maximum time to wait, in milliseconds until the
+     *                      constraints are satisfied. The caller will be notified via
+     *                      {@code statusReceiver} if timeout happens before commit.
+     */
+    public void commitSessionAfterInstallConstraintsAreMet(int sessionId,
+            @NonNull IntentSender statusReceiver, @NonNull InstallConstraints constraints,
+            @DurationMillisLong long timeoutMillis) {
+        try {
+            var session = mInstaller.openSession(sessionId);
+            session.seal();
+            var packageNames = session.fetchPackageNames();
+            var intentSender = new IntentSender((IIntentSender) new IIntentSender.Stub() {
+                @Override
+                public void send(int code, Intent intent, String resolvedType,
+                        IBinder allowlistToken, IIntentReceiver finishedReceiver,
+                        String requiredPermission, Bundle options)  {
+                    var result = intent.getParcelableExtra(
+                            PackageInstaller.EXTRA_INSTALL_CONSTRAINTS_RESULT,
+                            InstallConstraintsResult.class);
+                    try {
+                        if (result.areAllConstraintsSatisfied()) {
+                            session.commit(statusReceiver, false);
+                        } else {
+                            // timeout
+                            final Intent fillIn = new Intent();
+                            fillIn.putExtra(PackageInstaller.EXTRA_SESSION_ID, sessionId);
+                            fillIn.putExtra(PackageInstaller.EXTRA_STATUS, STATUS_FAILURE_TIMEOUT);
+                            fillIn.putExtra(PackageInstaller.EXTRA_STATUS_MESSAGE,
+                                    "Install constraints not satisfied within timeout");
+                            statusReceiver.sendIntent(
+                                    ActivityThread.currentApplication(), 0, fillIn, null, null);
+                        }
+                    } catch (Exception ignore) {
+                    }
+                }
+            });
+            waitForInstallConstraints(packageNames, constraints, intentSender, timeoutMillis);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -870,8 +1225,8 @@ public class PackageInstaller {
     }
 
     /**
-     * Register to watch for session lifecycle events. No special permissions
-     * are required to watch for these events.
+     * Register to watch for session lifecycle events. The callers need to be the session
+     * owner or have the android.permission.QUERY_ALL_PACKAGES to watch for these events.
      */
     public void registerSessionCallback(@NonNull SessionCallback callback) {
         registerSessionCallback(callback, new Handler());
@@ -1250,7 +1605,7 @@ public class PackageInstaller {
          * @param name      previously written as part of this session.
          *                  {@link #openWrite}
          * @param checksums installer intends to make available via
-         *                  {@link PackageManager#requestChecksums}.
+         *                  {@link PackageManager#requestChecksums} or {@link #requestChecksums}.
          * @param signature DER PKCS#7 detached signature bytes over binary serialized checksums
          *                  to enable integrity checking for the checksums or null for no integrity
          *                  checking. {@link PackageManager#requestChecksums} will return
@@ -1287,6 +1642,93 @@ public class PackageInstaller {
             }
         }
 
+        private static List<byte[]> encodeCertificates(List<Certificate> certs) throws
+                CertificateEncodingException {
+            if (certs == null) {
+                return null;
+            }
+            List<byte[]> result = new ArrayList<>(certs.size());
+            for (Certificate cert : certs) {
+                if (!(cert instanceof X509Certificate)) {
+                    throw new CertificateEncodingException("Only X509 certificates supported.");
+                }
+                result.add(cert.getEncoded());
+            }
+            return result;
+        }
+
+        /**
+         * Requests checksums for the APK file in session.
+         * <p>
+         * A possible use case is replying to {@link Intent#ACTION_PACKAGE_NEEDS_VERIFICATION}
+         * broadcast.
+         * The checksums will be returned asynchronously via onChecksumsReadyListener.
+         * <p>
+         * By default returns all readily available checksums:
+         * <ul>
+         * <li>enforced by platform,
+         * <li>enforced by the installer.
+         * </ul>
+         * If the caller needs a specific checksum type, they can specify it as required.
+         * <p>
+         * <b>Caution: Android can not verify installer-provided checksums. Make sure you specify
+         * trusted installers.</b>
+         * <p>
+         * @param name      previously written as part of this session.
+         *                  {@link #openWrite}
+         * @param required to explicitly request the checksum types. Will incur significant
+         *                 CPU/memory/disk usage.
+         * @param trustedInstallers for checksums enforced by installer, which installers are to be
+         *                          trusted.
+         *                          {@link PackageManager#TRUST_ALL} will return checksums from any
+         *                          installer,
+         *                          {@link PackageManager#TRUST_NONE} disables optimized
+         *                          installer-enforced checksums, otherwise the list has to be
+         *                          a non-empty list of certificates.
+         * @param executor the {@link Executor} on which to invoke the callback
+         * @param onChecksumsReadyListener called once when the results are available.
+         * @throws CertificateEncodingException if an encoding error occurs for trustedInstallers.
+         * @throws FileNotFoundException if the file does not exist.
+         * @throws IllegalArgumentException if the list of trusted installer certificates is empty.
+         */
+        public void requestChecksums(@NonNull String name, @Checksum.TypeMask int required,
+                @NonNull List<Certificate> trustedInstallers,
+                @NonNull @CallbackExecutor Executor executor,
+                @NonNull PackageManager.OnChecksumsReadyListener onChecksumsReadyListener)
+                throws CertificateEncodingException, FileNotFoundException {
+            Objects.requireNonNull(name);
+            Objects.requireNonNull(trustedInstallers);
+            Objects.requireNonNull(executor);
+            Objects.requireNonNull(onChecksumsReadyListener);
+            if (trustedInstallers == PackageManager.TRUST_ALL) {
+                trustedInstallers = null;
+            } else if (trustedInstallers == PackageManager.TRUST_NONE) {
+                trustedInstallers = Collections.emptyList();
+            } else if (trustedInstallers.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "trustedInstallers has to be one of TRUST_ALL/TRUST_NONE or a non-empty "
+                                + "list of certificates.");
+            }
+            try {
+                IOnChecksumsReadyListener onChecksumsReadyListenerDelegate =
+                        new IOnChecksumsReadyListener.Stub() {
+                            @Override
+                            public void onChecksumsReady(List<ApkChecksum> checksums)
+                                    throws RemoteException {
+                                executor.execute(
+                                        () -> onChecksumsReadyListener.onChecksumsReady(checksums));
+                            }
+                        };
+                mSession.requestChecksums(name, DEFAULT_CHECKSUMS, required,
+                        encodeCertificates(trustedInstallers), onChecksumsReadyListenerDelegate);
+            } catch (ParcelableException e) {
+                e.maybeRethrow(FileNotFoundException.class);
+                throw new RuntimeException(e);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+
         /**
          * Attempt to commit everything staged in this session. This may require
          * user intervention, and so it may not happen immediately. The final
@@ -1296,8 +1738,8 @@ public class PackageInstaller {
          * performed on the session. In case of device reboot or data loader transient failure
          * before the session has been finalized, you may commit the session again.
          * <p>
-         * If the installer is the device owner or the affiliated profile owner, there will be no
-         * user intervention.
+         * If the installer is the device owner, the affiliated profile owner, or has received
+         * user pre-approval of this session, there will be no user intervention.
          *
          * @param statusReceiver Called when the state of the session changes. Intents
          *                       sent to this receiver contain {@link #EXTRA_STATUS}. Refer to the
@@ -1307,6 +1749,7 @@ public class PackageInstaller {
          *             {@link #openWrite(String, long, long)} are still open.
          *
          * @see android.app.admin.DevicePolicyManager
+         * @see #requestUserPreapproval
          */
         public void commit(@NonNull IntentSender statusReceiver) {
             try {
@@ -1432,6 +1875,18 @@ public class PackageInstaller {
         }
 
         /**
+         * @return Session's {@link SessionParams#installFlags}.
+         * @hide
+         */
+        public int getInstallFlags() {
+            try {
+                return mSession.getInstallFlags();
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+
+        /**
          * @return the session ID of the multi-package session that this belongs to or
          * {@link SessionInfo#INVALID_ID} if it does not belong to a multi-package session.
          */
@@ -1487,6 +1942,270 @@ public class PackageInstaller {
                 e.rethrowFromSystemServer();
             }
         }
+
+        /**
+         * @return A PersistableBundle containing the app metadata set with
+         * {@link Session#setAppMetadata(PersistableBundle)}. In the case where this data does not
+         * exist, an empty PersistableBundle is returned.
+         */
+        @NonNull
+        public PersistableBundle getAppMetadata() {
+            PersistableBundle data = null;
+            try {
+                ParcelFileDescriptor pfd = mSession.getAppMetadataFd();
+                if (pfd != null) {
+                    try (InputStream inputStream =
+                            new ParcelFileDescriptor.AutoCloseInputStream(pfd)) {
+                        data = PersistableBundle.readFromStream(inputStream);
+                    }
+                }
+            } catch (RemoteException e) {
+                e.rethrowFromSystemServer();
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+            return data != null ? data : new PersistableBundle();
+        }
+
+        private OutputStream openWriteAppMetadata() throws IOException {
+            try {
+                if (ENABLE_REVOCABLE_FD) {
+                    return new ParcelFileDescriptor.AutoCloseOutputStream(
+                            mSession.openWriteAppMetadata());
+                } else {
+                    final ParcelFileDescriptor clientSocket = mSession.openWriteAppMetadata();
+                    return new FileBridge.FileBridgeOutputStream(clientSocket);
+                }
+            } catch (RuntimeException e) {
+                ExceptionUtils.maybeUnwrapIOException(e);
+                throw e;
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+
+        /**
+         * Optionally set the app metadata. The size of this data cannot exceed the maximum allowed.
+         * Any existing data from the previous install will not be retained even if no data is set
+         * for the current install session. Setting data to null or an empty PersistableBundle will
+         * remove any metadata that has previously been set in the same session.
+         *
+         * @param data a PersistableBundle containing the app metadata.
+         * @throws IOException if writing the data fails.
+         */
+        public void setAppMetadata(@Nullable PersistableBundle data) throws IOException {
+            if (data == null || data.isEmpty()) {
+                try {
+                    mSession.removeAppMetadata();
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                }
+                return;
+            }
+            Objects.requireNonNull(data);
+            try (OutputStream outputStream = openWriteAppMetadata()) {
+                data.writeToStream(outputStream);
+            }
+        }
+
+        /**
+         * Attempt to request the approval before committing this session.
+         *
+         * For installers that have been granted the
+         * {@link android.Manifest.permission#REQUEST_INSTALL_PACKAGES REQUEST_INSTALL_PACKAGES}
+         * permission, they can request the approval from users before
+         * {@link Session#commit(IntentSender)} is called. This may require user intervention as
+         * well. When user intervention is required, installers will receive a
+         * {@link #STATUS_PENDING_USER_ACTION} callback, and {@link #STATUS_SUCCESS} otherwise.
+         * In case that requesting user pre-approval is not available, installers will receive
+         * {@link #STATUS_FAILURE_BLOCKED} instead. Note that if the users decline the request,
+         * this session will be abandoned.
+         *
+         * If user intervention is required but never resolved, or requesting user
+         * pre-approval is not available, you may still call {@link Session#commit(IntentSender)}
+         * as the typical installation.
+         *
+         * @param details the adequate context to this session for requesting the approval from
+         *                users prior to commit.
+         * @param statusReceiver called when the state of the session changes.
+         *                       Intents sent to this receiver contain {@link #EXTRA_STATUS}
+         *                       and the {@link #EXTRA_PRE_APPROVAL} would be {@code true}.
+         *                       Refer to the individual status codes on how to handle them.
+         *
+         * @throws IllegalArgumentException when {@link PreapprovalDetails} is {@code null}.
+         * @throws IllegalArgumentException if {@link IntentSender} is {@code null}.
+         * @throws IllegalStateException if called on a multi-package session (no matter
+         *                               the parent session or any of the children sessions).
+         * @throws IllegalStateException if called again after this method has been called on
+         *                               this session.
+         * @throws SecurityException when the caller does not own this session.
+         * @throws SecurityException if called after the session has been committed or abandoned.
+         */
+        public void requestUserPreapproval(@NonNull PreapprovalDetails details,
+                @NonNull IntentSender statusReceiver) {
+            Preconditions.checkArgument(details != null, "preapprovalDetails cannot be null.");
+            Preconditions.checkArgument(statusReceiver != null, "statusReceiver cannot be null.");
+            try {
+                mSession.requestUserPreapproval(details, statusReceiver);
+            } catch (RemoteException e) {
+                e.rethrowFromSystemServer();
+            }
+        }
+
+        /**
+         * @return {@code true} if this session will keep the existing application enabled setting
+         * after installation.
+         */
+        public boolean isApplicationEnabledSettingPersistent() {
+            try {
+                return mSession.isApplicationEnabledSettingPersistent();
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+
+        /**
+         * @return {@code true} if the installer requested the update ownership enforcement
+         * for the packages in this session.
+         *
+         * @see PackageInstaller.SessionParams#setRequestUpdateOwnership
+         */
+        public boolean isRequestUpdateOwnership() {
+            try {
+                return mSession.isRequestUpdateOwnership();
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
+        }
+    }
+
+    /**
+     * Parse a single APK or a directory of APKs to get install relevant information about
+     * the package wrapped in {@link InstallInfo}.
+     * @throws PackageParsingException if the package source file(s) provided is(are) not valid,
+     * or the parser isn't able to parse the supplied source(s).
+     * @hide
+     */
+    @SystemApi
+    @NonNull
+    public InstallInfo readInstallInfo(@NonNull File file, int flags)
+            throws PackageParsingException {
+        final ParseTypeImpl input = ParseTypeImpl.forDefaultParsing();
+        final ParseResult<PackageLite> result = ApkLiteParseUtils.parsePackageLite(
+                input.reset(), file, flags);
+        if (result.isError()) {
+            throw new PackageParsingException(result.getErrorCode(), result.getErrorMessage());
+        }
+        return new InstallInfo(result);
+    }
+
+    /**
+     * Parse a single APK file passed as an FD to get install relevant information about
+     * the package wrapped in {@link InstallInfo}.
+     * @throws PackageParsingException if the package source file(s) provided is(are) not valid,
+     * or the parser isn't able to parse the supplied source(s).
+     * @hide
+     */
+    @NonNull
+    public InstallInfo readInstallInfo(@NonNull ParcelFileDescriptor pfd,
+            @Nullable String debugPathName, int flags) throws PackageParsingException {
+        final ParseTypeImpl input = ParseTypeImpl.forDefaultParsing();
+        final ParseResult<PackageLite> result = ApkLiteParseUtils.parseMonolithicPackageLite(input,
+                pfd.getFileDescriptor(), debugPathName, flags);
+        if (result.isError()) {
+            throw new PackageParsingException(result.getErrorCode(), result.getErrorMessage());
+        }
+        return new InstallInfo(result);
+    }
+
+    // (b/239722738) This class serves as a bridge between the PackageLite class, which
+    // is a hidden class, and the consumers of this class. (e.g. InstallInstalling.java)
+    // This is a part of an effort to remove dependency on hidden APIs and use SystemAPIs or
+    // public APIs.
+    /**
+     * Install related details from an APK or a folder of APK(s).
+     *
+     * @hide
+     */
+    @SystemApi
+    public static class InstallInfo {
+
+        /** @hide */
+        @IntDef(prefix = { "INSTALL_LOCATION_" }, value = {
+                INSTALL_LOCATION_AUTO,
+                INSTALL_LOCATION_INTERNAL_ONLY,
+                INSTALL_LOCATION_PREFER_EXTERNAL
+        })
+        @Retention(RetentionPolicy.SOURCE)
+        public @interface InstallLocation{}
+
+        private PackageLite mPkg;
+
+        InstallInfo(ParseResult<PackageLite> result) {
+            mPkg = result.getResult();
+        }
+
+        /**
+         * See {@link PackageLite#getPackageName()}
+         */
+        @NonNull
+        public String getPackageName() {
+            return mPkg.getPackageName();
+        }
+
+        /**
+         * @return The default install location defined by an application in
+         * {@link android.R.attr#installLocation} attribute.
+         */
+        public @InstallLocation int getInstallLocation() {
+            return mPkg.getInstallLocation();
+        }
+
+        /**
+         * @param params {@link SessionParams} of the installation
+         * @return Total disk space occupied by an application after installation.
+         * Includes the size of the raw APKs, possibly unpacked resources, raw dex metadata files,
+         * and all relevant native code.
+         * @throws IOException when size of native binaries cannot be calculated.
+         */
+        public long calculateInstalledSize(@NonNull SessionParams params) throws IOException {
+            return InstallLocationUtils.calculateInstalledSize(mPkg, params.abiOverride);
+        }
+
+        /**
+         * @param params {@link SessionParams} of the installation
+         * @param pfd of an APK opened for read
+         * @return Total disk space occupied by an application after installation.
+         * Includes the size of the raw APKs, possibly unpacked resources, raw dex metadata files,
+         * and all relevant native code.
+         * @throws IOException when size of native binaries cannot be calculated.
+         * @hide
+         */
+        public long calculateInstalledSize(@NonNull SessionParams params,
+                @NonNull ParcelFileDescriptor pfd) throws IOException {
+            return InstallLocationUtils.calculateInstalledSize(mPkg, params.abiOverride,
+                    pfd.getFileDescriptor());
+        }
+    }
+
+    /**
+     * Generic exception class for using with parsing operations.
+     *
+     * @hide
+     */
+    @SystemApi
+    public static class PackageParsingException extends Exception {
+        private final int mErrorCode;
+
+        /** {@hide} */
+        public PackageParsingException(int errorCode, @Nullable String detailedMessage) {
+            super(detailedMessage);
+            mErrorCode = errorCode;
+        }
+
+        public int getErrorCode() {
+            return mErrorCode;
+        }
     }
 
     /**
@@ -1539,22 +2258,56 @@ public class PackageInstaller {
         public @interface UserActionRequirement {}
 
         /**
-         * The installer did not call {@link SessionParams#setRequireUserAction(int)} to
-         * specify whether user action should be required for the install.
+         * This value is passed by the installer to {@link SessionParams#setRequireUserAction(int)}
+         * to indicate that user action is unspecified for this install.
+         * {@code requireUserAction} also defaults to this value unless modified by
+         * {@link SessionParams#setRequireUserAction(int)}
          */
         public static final int USER_ACTION_UNSPECIFIED = 0;
 
         /**
-         * The installer called {@link SessionParams#setRequireUserAction(int)} with
-         * {@code true} to require user action for the install to complete.
+         * This value is passed by the installer to {@link SessionParams#setRequireUserAction(int)}
+         * to indicate that user action is required for this install.
          */
         public static final int USER_ACTION_REQUIRED = 1;
 
         /**
-         * The installer called {@link SessionParams#setRequireUserAction(int)} with
-         * {@code false} to request that user action not be required for this install.
+         * This value is passed by the installer to {@link SessionParams#setRequireUserAction(int)}
+         * to indicate that user action is not required for this install.
          */
         public static final int USER_ACTION_NOT_REQUIRED = 2;
+
+        /** @hide */
+        @IntDef(prefix = {"PERMISSION_STATE_"}, value = {
+                PERMISSION_STATE_DEFAULT,
+                PERMISSION_STATE_GRANTED,
+                PERMISSION_STATE_DENIED,
+        })
+        @Retention(RetentionPolicy.SOURCE)
+        public @interface PermissionState {}
+
+        /**
+         * Value is passed by the installer to {@link #setPermissionState(String, int)} to set
+         * the state of a permission. This indicates no preference by the installer, relying on
+         * the device's default policy to set the grant state of the permission.
+         */
+        public static final int PERMISSION_STATE_DEFAULT = 0;
+
+        /**
+         * Value is passed by the installer to {@link #setPermissionState(String, int)} to set
+         * the state of a permission. This indicates the installers wants to automatically grant
+         * the permission to the package being installed. The user and other actors in the system
+         * may still be able to deny the permission after installation.
+         */
+        public static final int PERMISSION_STATE_GRANTED = 1;
+
+        /**
+         * Value is passed by the installer to {@link #setPermissionState(String, int)} to set
+         * the state of a permission. This indicates the installers wants to deny the permission
+         * by default to the package being installed. The user and other actors in the system may
+         * still be able to grant the permission after installation.
+         */
+        public static final int PERMISSION_STATE_DENIED = 2;
 
         /** {@hide} */
         @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
@@ -1600,8 +2353,6 @@ public class PackageInstaller {
         /** {@hide} */
         public String volumeUuid;
         /** {@hide} */
-        public String[] grantedRuntimePermissions;
-        /** {@hide} */
         public List<String> whitelistedRestrictedPermissions;
         /** {@hide} */
         public int autoRevokePermissionsMode = MODE_DEFAULT;
@@ -1610,17 +2361,25 @@ public class PackageInstaller {
         /** {@hide} */
         public boolean isMultiPackage;
         /** {@hide} */
+        public int packageSource = PACKAGE_SOURCE_UNSPECIFIED;
+        /** {@hide} */
         public boolean isStaged;
         /** {@hide} */
         public long requiredInstalledVersionCode = PackageManager.VERSION_CODE_HIGHEST;
         /** {@hide} */
         public DataLoaderParams dataLoaderParams;
         /** {@hide} */
-        public int rollbackDataPolicy = PackageManager.RollbackDataPolicy.RESTORE;
+        public int rollbackDataPolicy = PackageManager.ROLLBACK_DATA_POLICY_RESTORE;
         /** {@hide} */
         public boolean forceQueryableOverride;
         /** {@hide} */
         public int requireUserAction = USER_ACTION_UNSPECIFIED;
+        /** {@hide} */
+        public boolean applicationEnabledSettingPersistent = false;
+        /** {@hide} */
+        public int developmentInstallFlags = 0;
+
+        private final ArrayMap<String, Integer> mPermissionStates;
 
         /**
          * Construct parameters for a new package install session.
@@ -1631,6 +2390,7 @@ public class PackageInstaller {
          */
         public SessionParams(int mode) {
             this.mode = mode;
+            mPermissionStates = new ArrayMap<>();
         }
 
         /** {@hide} */
@@ -1642,14 +2402,15 @@ public class PackageInstaller {
             installScenario = source.readInt();
             sizeBytes = source.readLong();
             appPackageName = source.readString();
-            appIcon = source.readParcelable(null);
+            appIcon = source.readParcelable(null, android.graphics.Bitmap.class);
             appLabel = source.readString();
-            originatingUri = source.readParcelable(null);
+            originatingUri = source.readParcelable(null, android.net.Uri.class);
             originatingUid = source.readInt();
-            referrerUri = source.readParcelable(null);
+            referrerUri = source.readParcelable(null, android.net.Uri.class);
             abiOverride = source.readString();
             volumeUuid = source.readString();
-            grantedRuntimePermissions = source.readStringArray();
+            mPermissionStates = new ArrayMap<>();
+            source.readMap(mPermissionStates, null, String.class, Integer.class);
             whitelistedRestrictedPermissions = source.createStringArrayList();
             autoRevokePermissionsMode = source.readInt();
             installerPackageName = source.readString();
@@ -1658,12 +2419,15 @@ public class PackageInstaller {
             forceQueryableOverride = source.readBoolean();
             requiredInstalledVersionCode = source.readLong();
             DataLoaderParamsParcel dataLoaderParamsParcel = source.readParcelable(
-                    DataLoaderParamsParcel.class.getClassLoader());
+                    DataLoaderParamsParcel.class.getClassLoader(), android.content.pm.DataLoaderParamsParcel.class);
             if (dataLoaderParamsParcel != null) {
                 dataLoaderParams = new DataLoaderParams(dataLoaderParamsParcel);
             }
             rollbackDataPolicy = source.readInt();
             requireUserAction = source.readInt();
+            packageSource = source.readInt();
+            applicationEnabledSettingPersistent = source.readBoolean();
+            developmentInstallFlags = source.readInt();
         }
 
         /** {@hide} */
@@ -1682,7 +2446,7 @@ public class PackageInstaller {
             ret.referrerUri = referrerUri;  // not a copy, but immutable.
             ret.abiOverride = abiOverride;
             ret.volumeUuid = volumeUuid;
-            ret.grantedRuntimePermissions = grantedRuntimePermissions;
+            ret.mPermissionStates.putAll(mPermissionStates);
             ret.whitelistedRestrictedPermissions = whitelistedRestrictedPermissions;
             ret.autoRevokePermissionsMode = autoRevokePermissionsMode;
             ret.installerPackageName = installerPackageName;
@@ -1693,6 +2457,9 @@ public class PackageInstaller {
             ret.dataLoaderParams = dataLoaderParams;
             ret.rollbackDataPolicy = rollbackDataPolicy;
             ret.requireUserAction = requireUserAction;
+            ret.packageSource = packageSource;
+            ret.applicationEnabledSettingPersistent = applicationEnabledSettingPersistent;
+            ret.developmentInstallFlags = developmentInstallFlags;
             return ret;
         }
 
@@ -1804,13 +2571,101 @@ public class PackageInstaller {
          * @param permissions The permissions to grant or null to grant all runtime
          *     permissions.
          *
+         * @deprecated Prefer {@link #setPermissionState(String, int)} instead starting in
+         * {@link Build.VERSION_CODES#UPSIDE_DOWN_CAKE}.
          * @hide
          */
+        @Deprecated
         @SystemApi
         @RequiresPermission(android.Manifest.permission.INSTALL_GRANT_RUNTIME_PERMISSIONS)
         public void setGrantedRuntimePermissions(String[] permissions) {
-            installFlags |= PackageManager.INSTALL_GRANT_RUNTIME_PERMISSIONS;
-            this.grantedRuntimePermissions = permissions;
+            if (permissions == null) {
+                // The new API has no mechanism to grant all requested permissions
+                installFlags |= PackageManager.INSTALL_GRANT_ALL_REQUESTED_PERMISSIONS;
+                mPermissionStates.clear();
+            } else {
+                installFlags &= ~PackageManager.INSTALL_GRANT_ALL_REQUESTED_PERMISSIONS;
+                // Otherwise call the new API to grant the permissions specified
+                for (String permission : permissions) {
+                    setPermissionState(permission, PERMISSION_STATE_GRANTED);
+                }
+            }
+        }
+
+        /**
+         * Sets the state of permissions for the package at installation.
+         * <p/>
+         * Granting any runtime permissions require the
+         * {@link android.Manifest.permission#INSTALL_GRANT_RUNTIME_PERMISSIONS
+         * INSTALL_GRANT_RUNTIME_PERMISSIONS} permission to be held by the caller. Revoking runtime
+         * permissions is not allowed, even during app update sessions.
+         * <p/>
+         * Holders without the permission are allowed to change the following special permissions:
+         * <p/>
+         * On platform {@link Build.VERSION_CODES#UPSIDE_DOWN_CAKE UPSIDE_DOWN_CAKE}:
+         * <ul>
+         *     <li>{@link Manifest.permission#USE_FULL_SCREEN_INTENT}</li>
+         * </ul>
+         * Install time permissions, which cannot be revoked by the user, cannot be changed by the
+         * installer.
+         * <p/>
+         * See <a href="https://developer.android.com/guide/topics/permissions/overview">
+         * Permissions on Android</a> for more information.
+         *
+         * @param permissionName The permission to change state for.
+         * @param state          Either {@link #PERMISSION_STATE_DEFAULT},
+         *                       {@link #PERMISSION_STATE_GRANTED},
+         *                       or {@link #PERMISSION_STATE_DENIED} to set the permission to.
+         *
+         * @return This object for easier chaining.
+         */
+        @RequiresPermission(value = android.Manifest.permission.INSTALL_GRANT_RUNTIME_PERMISSIONS,
+                conditional = true)
+        @NonNull
+        public SessionParams setPermissionState(@NonNull String permissionName,
+                @PermissionState int state) {
+            if (TextUtils.isEmpty(permissionName)) {
+                throw new IllegalArgumentException("Provided permissionName cannot be "
+                        + (permissionName == null ? "null" : "empty"));
+            }
+
+            switch (state) {
+                case PERMISSION_STATE_DEFAULT:
+                    mPermissionStates.remove(permissionName);
+                    break;
+                case PERMISSION_STATE_GRANTED:
+                case PERMISSION_STATE_DENIED:
+                    mPermissionStates.put(permissionName, state);
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unexpected permission state int: " + state);
+            }
+
+            return this;
+        }
+
+        /** @hide */
+        public void setPermissionStates(Collection<String> grantPermissions,
+                Collection<String> denyPermissions) {
+            for (String grantPermission : grantPermissions) {
+                mPermissionStates.put(grantPermission, PERMISSION_STATE_GRANTED);
+            }
+            for (String denyPermission : denyPermissions) {
+                mPermissionStates.put(denyPermission, PERMISSION_STATE_DENIED);
+            }
+        }
+
+        /**
+         * Optionally indicate the package source of the app being installed. This is
+         * informational and may be used as a signal by the system.
+         *
+         * An installer should specify {@link #PACKAGE_SOURCE_OTHER} if no other package source
+         * constant adequately reflects the source for this session.
+         *
+         * The default value is {@link #PACKAGE_SOURCE_UNSPECIFIED}.
+         */
+        public void setPackageSource(@PackageSourceType int packageSource) {
+            this.packageSource = packageSource;
         }
 
         /**
@@ -1887,7 +2742,7 @@ public class PackageInstaller {
             } else {
                 installFlags &= ~PackageManager.INSTALL_ENABLE_ROLLBACK;
             }
-            rollbackDataPolicy = PackageManager.RollbackDataPolicy.RESTORE;
+            rollbackDataPolicy = PackageManager.ROLLBACK_DATA_POLICY_RESTORE;
         }
 
         /**
@@ -1954,8 +2809,17 @@ public class PackageInstaller {
             installFlags |= PackageManager.INSTALL_FORCE_PERMISSION_PROMPT;
         }
 
-        /** {@hide} */
-        @SystemApi
+        /**
+         * Requests that the system not kill any of the package's running
+         * processes as part of a {@link SessionParams#MODE_INHERIT_EXISTING}
+         * session in which splits being added. By default, all installs will
+         * result in the package's running processes being killed before the
+         * install completes.
+         *
+         * @param dontKillApp set to {@code true} to request that the processes
+         *                    belonging to the package not be killed as part of
+         *                    this install.
+         */
         public void setDontKillApp(boolean dontKillApp) {
             if (dontKillApp) {
                 installFlags |= PackageManager.INSTALL_DONT_KILL_APP;
@@ -2027,9 +2891,7 @@ public class PackageInstaller {
          * By default this is the app that created the {@link PackageInstaller} object.
          *
          * @param installerPackageName name of the installer package
-         * {@hide}
          */
-        @TestApi
         public void setInstallerPackageName(@Nullable String installerPackageName) {
             this.installerPackageName = installerPackageName;
         }
@@ -2125,11 +2987,29 @@ public class PackageInstaller {
          *
          * <ul>
          *     <li>{@code requireUserAction} is set to {@link #USER_ACTION_NOT_REQUIRED}.</li>
-         *     <li>The app being installed targets {@link android.os.Build.VERSION_CODES#Q API 29}
-         *     or higher.</li>
-         *     <li>The installer is the {@link InstallSourceInfo#getInstallingPackageName()
-         *     installer of record} of an existing version of the app (in other words, this install
-         *     session is an app update) or the installer is updating itself.</li>
+         *     <li>The app being installed targets:
+         *          <ul>
+         *              <li>{@link android.os.Build.VERSION_CODES#Q API 29} or higher on
+         *              Android S  ({@link android.os.Build.VERSION_CODES#S API 31})</li>
+         *              <li>{@link android.os.Build.VERSION_CODES#R API 30} or higher on
+         *              Android T ({@link android.os.Build.VERSION_CODES#TIRAMISU API 33})</li>
+         *              <li>{@link android.os.Build.VERSION_CODES#S API 31} or higher <b>after</b>
+         *              Android T ({@link android.os.Build.VERSION_CODES#TIRAMISU API 33})</li>
+         *          </ul>
+         *     </li>
+         *     <li>The installer is:
+         *         <ul>
+         *             <li>The {@link InstallSourceInfo#getUpdateOwnerPackageName() update owner}
+         *             of an existing version of the app (in other words, this install session is
+         *             an app update) if the update ownership enforcement is enabled.</li>
+         *             <li>The
+         *             {@link InstallSourceInfo#getInstallingPackageName() installer of record}
+         *             of an existing version of the app (in other words, this install
+         *             session is an app update) if the update ownership enforcement isn't
+         *             enabled.</li>
+         *             <li>Updating itself.</li>
+         *         </ul>
+         *     </li>
          *     <li>The installer declares the
          *     {@link android.Manifest.permission#UPDATE_PACKAGES_WITHOUT_USER_ACTION
          *     UPDATE_PACKAGES_WITHOUT_USER_ACTION} permission.</li>
@@ -2160,6 +3040,62 @@ public class PackageInstaller {
             this.installScenario = installScenario;
         }
 
+        /**
+         * Request to keep the original application enabled setting. This will prevent the
+         * application from being enabled if it was previously in a disabled state.
+         */
+        public void setApplicationEnabledSettingPersistent() {
+            this.applicationEnabledSettingPersistent = true;
+        }
+
+        /**
+         * Optionally indicate whether the package being installed needs the update ownership
+         * enforcement. Once the update ownership enforcement is enabled, the other installers
+         * will need the user action to update the package even if the installers have been
+         * granted the {@link android.Manifest.permission#INSTALL_PACKAGES INSTALL_PACKAGES}
+         * permission. Default to {@code false}.
+         *
+         * The update ownership enforcement can only be enabled on initial installation. Set
+         * this to {@code true} on package update is a no-op.
+         *
+         * Note: To enable the update ownership enforcement, the installer must have the
+         * {@link android.Manifest.permission#ENFORCE_UPDATE_OWNERSHIP ENFORCE_UPDATE_OWNERSHIP}
+         * permission.
+         */
+        @RequiresPermission(Manifest.permission.ENFORCE_UPDATE_OWNERSHIP)
+        public void setRequestUpdateOwnership(boolean enable) {
+            if (enable) {
+                this.installFlags |= PackageManager.INSTALL_REQUEST_UPDATE_OWNERSHIP;
+            } else {
+                this.installFlags &= ~PackageManager.INSTALL_REQUEST_UPDATE_OWNERSHIP;
+            }
+        }
+
+        /** @hide */
+        @NonNull
+        public ArrayMap<String, Integer> getPermissionStates() {
+            return mPermissionStates;
+        }
+
+        /** @hide */
+        @Nullable
+        public String[] getLegacyGrantedRuntimePermissions() {
+            if ((installFlags & PackageManager.INSTALL_GRANT_ALL_REQUESTED_PERMISSIONS) != 0) {
+                return null;
+            }
+
+            var grantedPermissions = new ArrayList<String>();
+            for (int index = 0; index < mPermissionStates.size(); index++) {
+                var permissionName = mPermissionStates.keyAt(index);
+                var state = mPermissionStates.valueAt(index);
+                if (state == PERMISSION_STATE_GRANTED) {
+                    grantedPermissions.add(permissionName);
+                }
+            }
+
+            return grantedPermissions.toArray(ArrayUtils.emptyArray(String.class));
+        }
+
         /** {@hide} */
         public void dump(IndentingPrintWriter pw) {
             pw.printPair("mode", mode);
@@ -2176,7 +3112,8 @@ public class PackageInstaller {
             pw.printPair("referrerUri", referrerUri);
             pw.printPair("abiOverride", abiOverride);
             pw.printPair("volumeUuid", volumeUuid);
-            pw.printPair("grantedRuntimePermissions", grantedRuntimePermissions);
+            pw.printPair("mPermissionStates", mPermissionStates);
+            pw.printPair("packageSource", packageSource);
             pw.printPair("whitelistedRestrictedPermissions", whitelistedRestrictedPermissions);
             pw.printPair("autoRevokePermissions", autoRevokePermissionsMode);
             pw.printPair("installerPackageName", installerPackageName);
@@ -2187,6 +3124,9 @@ public class PackageInstaller {
             pw.printPair("requiredInstalledVersionCode", requiredInstalledVersionCode);
             pw.printPair("dataLoaderParams", dataLoaderParams);
             pw.printPair("rollbackDataPolicy", rollbackDataPolicy);
+            pw.printPair("applicationEnabledSettingPersistent",
+                    applicationEnabledSettingPersistent);
+            pw.printHexPair("developmentInstallFlags", developmentInstallFlags);
             pw.println();
         }
 
@@ -2211,7 +3151,7 @@ public class PackageInstaller {
             dest.writeParcelable(referrerUri, flags);
             dest.writeString(abiOverride);
             dest.writeString(volumeUuid);
-            dest.writeStringArray(grantedRuntimePermissions);
+            dest.writeMap(mPermissionStates);
             dest.writeStringList(whitelistedRestrictedPermissions);
             dest.writeInt(autoRevokePermissionsMode);
             dest.writeString(installerPackageName);
@@ -2226,6 +3166,9 @@ public class PackageInstaller {
             }
             dest.writeInt(rollbackDataPolicy);
             dest.writeInt(requireUserAction);
+            dest.writeInt(packageSource);
+            dest.writeBoolean(applicationEnabledSettingPersistent);
+            dest.writeInt(developmentInstallFlags);
         }
 
         public static final Parcelable.Creator<SessionParams>
@@ -2254,43 +3197,64 @@ public class PackageInstaller {
         /** {@hide} */
         private static final int[] NO_SESSIONS = {};
 
-        /** @hide */
-        @IntDef(prefix = { "STAGED_SESSION_" }, value = {
-                STAGED_SESSION_NO_ERROR,
-                STAGED_SESSION_VERIFICATION_FAILED,
-                STAGED_SESSION_ACTIVATION_FAILED,
-                STAGED_SESSION_UNKNOWN,
-                STAGED_SESSION_CONFLICT})
-        @Retention(RetentionPolicy.SOURCE)
-        public @interface StagedSessionErrorCode{}
         /**
-         * Constant indicating that no error occurred during the preparation or the activation of
-         * this staged session.
+         * @deprecated use {@link #SESSION_NO_ERROR}.
          */
+        @Deprecated
         public static final int STAGED_SESSION_NO_ERROR = 0;
 
         /**
-         * Constant indicating that an error occurred during the verification phase (pre-reboot) of
-         * this staged session.
+         * @deprecated use {@link #SESSION_VERIFICATION_FAILED}.
          */
+        @Deprecated
         public static final int STAGED_SESSION_VERIFICATION_FAILED = 1;
 
         /**
-         * Constant indicating that an error occurred during the activation phase (post-reboot) of
-         * this staged session.
+         * @deprecated use {@link #SESSION_ACTIVATION_FAILED}.
          */
+        @Deprecated
         public static final int STAGED_SESSION_ACTIVATION_FAILED = 2;
 
         /**
-         * Constant indicating that an unknown error occurred while processing this staged session.
+         * @deprecated use {@link #SESSION_UNKNOWN_ERROR}.
          */
+        @Deprecated
         public static final int STAGED_SESSION_UNKNOWN = 3;
 
         /**
-         * Constant indicating that the session was in conflict with another staged session and had
+         * @deprecated use {@link #SESSION_CONFLICT}.
+         */
+        @Deprecated
+        public static final int STAGED_SESSION_CONFLICT = 4;
+
+        /**
+         * Constant indicating that no error occurred during the preparation or the activation of
+         * this session.
+         */
+        public static final int SESSION_NO_ERROR = 0;
+
+        /**
+         * Constant indicating that an error occurred during the verification phase of
+         * this session.
+         */
+        public static final int SESSION_VERIFICATION_FAILED = 1;
+
+        /**
+         * Constant indicating that an error occurred during the activation phase of
+         * this session.
+         */
+        public static final int SESSION_ACTIVATION_FAILED = 2;
+
+        /**
+         * Constant indicating that an unknown error occurred while processing this session.
+         */
+        public static final int SESSION_UNKNOWN_ERROR = 3;
+
+        /**
+         * Constant indicating that the session was in conflict with another session and had
          * to be sacrificed for resolution.
          */
-        public static final int STAGED_SESSION_CONFLICT = 4;
+        public static final int SESSION_CONFLICT = 4;
 
         private static String userActionToString(int requireUserAction) {
             switch(requireUserAction) {
@@ -2374,13 +3338,13 @@ public class PackageInstaller {
         public int[] childSessionIds = NO_SESSIONS;
 
         /** {@hide} */
-        public boolean isStagedSessionApplied;
+        public boolean isSessionApplied;
         /** {@hide} */
-        public boolean isStagedSessionReady;
+        public boolean isSessionReady;
         /** {@hide} */
-        public boolean isStagedSessionFailed;
-        private int mStagedSessionErrorCode;
-        private String mStagedSessionErrorMessage;
+        public boolean isSessionFailed;
+        private int mSessionErrorCode;
+        private String mSessionErrorMessage;
 
         /** {@hide} */
         public boolean isCommitted;
@@ -2396,6 +3360,21 @@ public class PackageInstaller {
 
         /** {@hide} */
         public int requireUserAction;
+
+        /** {@hide} */
+        public int packageSource = PACKAGE_SOURCE_UNSPECIFIED;
+
+        /** {@hide} */
+        public int installerUid;
+
+        /** @hide */
+        public boolean isPreapprovalRequested;
+
+        /** @hide */
+        public boolean applicationEnabledSettingPersistent;
+
+        /** @hide */
+        public int pendingUserActionReason;
 
         /** {@hide} */
         @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
@@ -2418,13 +3397,13 @@ public class PackageInstaller {
             installScenario = source.readInt();
             sizeBytes = source.readLong();
             appPackageName = source.readString();
-            appIcon = source.readParcelable(null);
+            appIcon = source.readParcelable(null, android.graphics.Bitmap.class);
             appLabel = source.readString();
 
             installLocation = source.readInt();
-            originatingUri = source.readParcelable(null);
+            originatingUri = source.readParcelable(null, android.net.Uri.class);
             originatingUid = source.readInt();
-            referrerUri = source.readParcelable(null);
+            referrerUri = source.readParcelable(null, android.net.Uri.class);
             grantedRuntimePermissions = source.readStringArray();
             whitelistedRestrictedPermissions = source.createStringArrayList();
             autoRevokePermissionsMode = source.readInt();
@@ -2438,15 +3417,20 @@ public class PackageInstaller {
             if (childSessionIds == null) {
                 childSessionIds = NO_SESSIONS;
             }
-            isStagedSessionApplied = source.readBoolean();
-            isStagedSessionReady = source.readBoolean();
-            isStagedSessionFailed = source.readBoolean();
-            mStagedSessionErrorCode = source.readInt();
-            mStagedSessionErrorMessage = source.readString();
+            isSessionApplied = source.readBoolean();
+            isSessionReady = source.readBoolean();
+            isSessionFailed = source.readBoolean();
+            mSessionErrorCode = source.readInt();
+            mSessionErrorMessage = source.readString();
             isCommitted = source.readBoolean();
+            isPreapprovalRequested = source.readBoolean();
             rollbackDataPolicy = source.readInt();
             createdMillis = source.readLong();
             requireUserAction = source.readInt();
+            installerUid = source.readInt();
+            packageSource = source.readInt();
+            applicationEnabledSettingPersistent = source.readBoolean();
+            pendingUserActionReason = source.readInt();
         }
 
         /**
@@ -2635,6 +3619,18 @@ public class PackageInstaller {
         }
 
         /**
+         * @return the path to the validated base APK for this session, which may point at an
+         * APK inside the session (when the session defines the base), or it may
+         * point at the existing base APK (when adding splits to an existing app).
+         *
+         * @hide
+         */
+        @RequiresPermission(Manifest.permission.READ_INSTALLED_SESSION_PATHS)
+        public @Nullable String getResolvedBaseApkPath() {
+            return resolvedBaseCodePath;
+        }
+
+        /**
          * Get the value set in {@link SessionParams#setGrantedRuntimePermissions(String[])}.
          *
          * @hide
@@ -2703,10 +3699,7 @@ public class PackageInstaller {
 
         /**
          * Get the value set in {@link SessionParams#setDontKillApp(boolean)}.
-         *
-         * @hide
          */
-        @SystemApi
         public boolean getDontKillApp() {
             return (installFlags & PackageManager.INSTALL_DONT_KILL_APP) != 0;
         }
@@ -2783,6 +3776,14 @@ public class PackageInstaller {
         }
 
         /**
+         * Get the package source that was set in
+         * {@link PackageInstaller.SessionParams#setPackageSource(int)}.
+         */
+        public @PackageSourceType int getPackageSource() {
+            return packageSource;
+        }
+
+        /**
          * Returns true if this session is a multi-package session containing references to other
          * sessions.
          */
@@ -2835,7 +3836,7 @@ public class PackageInstaller {
          * since that is the one that should have been {@link Session#commit committed}.
          */
         public boolean isStagedSessionActive() {
-            return isStaged && isCommitted && !isStagedSessionApplied && !isStagedSessionFailed
+            return isStaged && isCommitted && !isSessionApplied && !isSessionFailed
                     && !hasParentSessionId();
         }
 
@@ -2855,7 +3856,7 @@ public class PackageInstaller {
         }
 
         /**
-         * Returns the set of session IDs that will be committed when this session is commited if
+         * Returns the set of session IDs that will be committed when this session is committed if
          * this session is a multi-package session.
          */
         @NonNull
@@ -2876,7 +3877,7 @@ public class PackageInstaller {
          */
         public boolean isStagedSessionApplied() {
             checkSessionIsStaged();
-            return isStagedSessionApplied;
+            return isSessionApplied;
         }
 
         /**
@@ -2885,7 +3886,7 @@ public class PackageInstaller {
          */
         public boolean isStagedSessionReady() {
             checkSessionIsStaged();
-            return isStagedSessionReady;
+            return isSessionReady;
         }
 
         /**
@@ -2894,16 +3895,16 @@ public class PackageInstaller {
          */
         public boolean isStagedSessionFailed() {
             checkSessionIsStaged();
-            return isStagedSessionFailed;
+            return isSessionFailed;
         }
 
         /**
          * If something went wrong with a staged session, clients can check this error code to
          * understand which kind of failure happened. Only meaningful if {@code isStaged} is true.
          */
-        public @StagedSessionErrorCode int getStagedSessionErrorCode() {
+        public int getStagedSessionErrorCode() {
             checkSessionIsStaged();
-            return mStagedSessionErrorCode;
+            return mSessionErrorCode;
         }
 
         /**
@@ -2912,14 +3913,13 @@ public class PackageInstaller {
          */
         public @NonNull String getStagedSessionErrorMessage() {
             checkSessionIsStaged();
-            return mStagedSessionErrorMessage;
+            return mSessionErrorMessage;
         }
 
         /** {@hide} */
-        public void setStagedSessionErrorCode(@StagedSessionErrorCode int errorCode,
-                                              String errorMessage) {
-            mStagedSessionErrorCode = errorCode;
-            mStagedSessionErrorMessage = errorMessage;
+        public void setSessionErrorCode(int errorCode, String errorMessage) {
+            mSessionErrorCode = errorCode;
+            mSessionErrorMessage = errorMessage;
         }
 
         /**
@@ -2962,6 +3962,47 @@ public class PackageInstaller {
             return requireUserAction;
         }
 
+        /**
+         * Returns the Uid of the owner of the session.
+         */
+        public int getInstallerUid() {
+            return installerUid;
+        }
+
+        /**
+         * Returns {@code true} if this session will keep the existing application enabled setting
+         * after installation.
+         */
+        public boolean isApplicationEnabledSettingPersistent() {
+            return applicationEnabledSettingPersistent;
+        }
+
+        /**
+         * Returns whether this session has requested user pre-approval.
+         */
+        public boolean isPreApprovalRequested() {
+            return isPreapprovalRequested;
+        }
+
+        /**
+         * @return {@code true} if the installer requested the update ownership enforcement
+         * for the packages in this session.
+         *
+         * @see PackageInstaller.SessionParams#setRequestUpdateOwnership
+         */
+        public boolean isRequestUpdateOwnership() {
+            return (installFlags & PackageManager.INSTALL_REQUEST_UPDATE_OWNERSHIP) != 0;
+        }
+
+        /**
+         * Return the reason for requiring the user action.
+         * @hide
+         */
+        @SystemApi
+        public @UserActionReason int getPendingUserActionReason() {
+            return pendingUserActionReason;
+        }
+
         @Override
         public int describeContents() {
             return 0;
@@ -2999,15 +4040,20 @@ public class PackageInstaller {
             dest.writeBoolean(forceQueryable);
             dest.writeInt(parentSessionId);
             dest.writeIntArray(childSessionIds);
-            dest.writeBoolean(isStagedSessionApplied);
-            dest.writeBoolean(isStagedSessionReady);
-            dest.writeBoolean(isStagedSessionFailed);
-            dest.writeInt(mStagedSessionErrorCode);
-            dest.writeString(mStagedSessionErrorMessage);
+            dest.writeBoolean(isSessionApplied);
+            dest.writeBoolean(isSessionReady);
+            dest.writeBoolean(isSessionFailed);
+            dest.writeInt(mSessionErrorCode);
+            dest.writeString(mSessionErrorMessage);
             dest.writeBoolean(isCommitted);
+            dest.writeBoolean(isPreapprovalRequested);
             dest.writeInt(rollbackDataPolicy);
             dest.writeLong(createdMillis);
             dest.writeInt(requireUserAction);
+            dest.writeInt(installerUid);
+            dest.writeInt(packageSource);
+            dest.writeBoolean(applicationEnabledSettingPersistent);
+            dest.writeInt(pendingUserActionReason);
         }
 
         public static final Parcelable.Creator<SessionInfo>
@@ -3023,4 +4069,652 @@ public class PackageInstaller {
                     }
                 };
     }
+
+    /**
+     * Details for requesting the pre-commit install approval.
+     */
+    @DataClass(genConstructor = false, genToString = true)
+    public static final class PreapprovalDetails implements Parcelable {
+        /**
+         * The icon representing the app to be installed.
+         */
+        private final @Nullable Bitmap mIcon;
+        /**
+         * The label representing the app to be installed.
+         */
+        private final @NonNull CharSequence mLabel;
+        /**
+         * The locale of the app label being used.
+         */
+        private final @NonNull ULocale mLocale;
+        /**
+         * The package name of the app to be installed.
+         */
+        private final @NonNull String mPackageName;
+
+        /**
+         * Creates a new PreapprovalDetails.
+         *
+         * @param icon
+         *   The icon representing the app to be installed.
+         * @param label
+         *   The label representing the app to be installed.
+         * @param locale
+         *   The locale of the app label being used.
+         * @param packageName
+         *   The package name of the app to be installed.
+         * @hide
+         */
+        public PreapprovalDetails(
+                @Nullable Bitmap icon,
+                @NonNull CharSequence label,
+                @NonNull ULocale locale,
+                @NonNull String packageName) {
+            mIcon = icon;
+            mLabel = label;
+            Preconditions.checkArgument(!TextUtils.isEmpty(mLabel),
+                    "App label cannot be empty.");
+            mLocale = locale;
+            Preconditions.checkArgument(!Objects.isNull(mLocale),
+                    "Locale cannot be null.");
+            mPackageName = packageName;
+            Preconditions.checkArgument(!TextUtils.isEmpty(mPackageName),
+                    "Package name cannot be empty.");
+        }
+
+        @Override
+        public void writeToParcel(@NonNull Parcel dest, int flags) {
+            byte flg = 0;
+            if (mIcon != null) flg |= 0x1;
+            dest.writeByte(flg);
+            if (mIcon != null) mIcon.writeToParcel(dest, flags);
+            dest.writeCharSequence(mLabel);
+            dest.writeString8(mLocale.toString());
+            dest.writeString8(mPackageName);
+        }
+
+        @Override
+        public int describeContents() { return 0; }
+
+        /** @hide */
+        /* package-private */ PreapprovalDetails(@NonNull Parcel in) {
+            byte flg = in.readByte();
+            final Bitmap icon = (flg & 0x1) == 0 ? null : Bitmap.CREATOR.createFromParcel(in);
+            final CharSequence label = in.readCharSequence();
+            final ULocale locale = new ULocale(in.readString8());
+            final String packageName = in.readString8();
+
+            mIcon = icon;
+            mLabel = label;
+            Preconditions.checkArgument(!TextUtils.isEmpty(mLabel),
+                    "App label cannot be empty.");
+            mLocale = locale;
+            Preconditions.checkArgument(!Objects.isNull(mLocale),
+                    "Locale cannot be null.");
+            mPackageName = packageName;
+            Preconditions.checkArgument(!TextUtils.isEmpty(mPackageName),
+                    "Package name cannot be empty.");
+        }
+
+        public static final @NonNull Parcelable.Creator<PreapprovalDetails> CREATOR
+                = new Parcelable.Creator<PreapprovalDetails>() {
+            @Override
+            public PreapprovalDetails[] newArray(int size) {
+                return new PreapprovalDetails[size];
+            }
+
+            @Override
+            public PreapprovalDetails createFromParcel(@NonNull Parcel in) {
+                return new PreapprovalDetails(in);
+            }
+        };
+
+        /**
+         * A builder for {@link PreapprovalDetails}
+         */
+        public static final class Builder {
+
+            private @Nullable Bitmap mIcon;
+            private @NonNull CharSequence mLabel;
+            private @NonNull ULocale mLocale;
+            private @NonNull String mPackageName;
+
+            private long mBuilderFieldsSet = 0L;
+
+            /**
+             * Creates a new Builder.
+             */
+            public Builder() {}
+
+            /**
+             * The icon representing the app to be installed.
+             */
+            public @NonNull Builder setIcon(@NonNull Bitmap value) {
+                checkNotUsed();
+                mBuilderFieldsSet |= 0x1;
+                mIcon = value;
+                return this;
+            }
+
+            /**
+             * The label representing the app to be installed.
+             */
+            public @NonNull Builder setLabel(@NonNull CharSequence value) {
+                checkNotUsed();
+                mBuilderFieldsSet |= 0x2;
+                mLabel = value;
+                return this;
+            }
+
+            /**
+             * The locale of the app label being used.
+             */
+            public @NonNull Builder setLocale(@NonNull ULocale value) {
+                checkNotUsed();
+                mBuilderFieldsSet |= 0x4;
+                mLocale = value;
+                return this;
+            }
+
+            /**
+             * The package name of the app to be installed.
+             */
+            public @NonNull Builder setPackageName(@NonNull String value) {
+                checkNotUsed();
+                mBuilderFieldsSet |= 0x8;
+                mPackageName = value;
+                return this;
+            }
+
+            /** Builds the instance. This builder should not be touched after calling this! */
+            public @NonNull PreapprovalDetails build() {
+                checkNotUsed();
+                mBuilderFieldsSet |= 0x10; // Mark builder used
+
+                PreapprovalDetails o = new PreapprovalDetails(
+                        mIcon,
+                        mLabel,
+                        mLocale,
+                        mPackageName);
+                return o;
+            }
+
+            private void checkNotUsed() {
+                if ((mBuilderFieldsSet & 0x10) != 0) {
+                    throw new IllegalStateException("This Builder should not be reused. "
+                            + "Use a new Builder instance instead");
+                }
+            }
+        }
+
+
+
+
+        // Code below generated by codegen v1.0.23.
+        //
+        // DO NOT MODIFY!
+        // CHECKSTYLE:OFF Generated code
+        //
+        // To regenerate run:
+        // $ codegen $ANDROID_BUILD_TOP/frameworks/base/core/java/android/content/pm/PackageInstaller.java
+        //
+        // To exclude the generated code from IntelliJ auto-formatting enable (one-time):
+        //   Settings > Editor > Code Style > Formatter Control
+        //@formatter:off
+
+
+        /**
+         * The icon representing the app to be installed.
+         */
+        @DataClass.Generated.Member
+        public @Nullable Bitmap getIcon() {
+            return mIcon;
+        }
+
+        /**
+         * The label representing the app to be installed.
+         */
+        @DataClass.Generated.Member
+        public @NonNull CharSequence getLabel() {
+            return mLabel;
+        }
+
+        /**
+         * The locale of the app label being used.
+         */
+        @DataClass.Generated.Member
+        public @NonNull ULocale getLocale() {
+            return mLocale;
+        }
+
+        /**
+         * The package name of the app to be installed.
+         */
+        @DataClass.Generated.Member
+        public @NonNull String getPackageName() {
+            return mPackageName;
+        }
+
+        @Override
+        @DataClass.Generated.Member
+        public String toString() {
+            // You can override field toString logic by defining methods like:
+            // String fieldNameToString() { ... }
+
+            return "PreapprovalDetails { " +
+                    "icon = " + mIcon + ", " +
+                    "label = " + mLabel + ", " +
+                    "locale = " + mLocale + ", " +
+                    "packageName = " + mPackageName +
+            " }";
+        }
+
+        @DataClass.Generated(
+                time = 1676970504308L,
+                codegenVersion = "1.0.23",
+                sourceFile = "frameworks/base/core/java/android/content/pm/PackageInstaller.java",
+                inputSignatures = "private final @android.annotation.Nullable android.graphics.Bitmap mIcon\nprivate final @android.annotation.NonNull java.lang.CharSequence mLabel\nprivate final @android.annotation.NonNull android.icu.util.ULocale mLocale\nprivate final @android.annotation.NonNull java.lang.String mPackageName\npublic static final @android.annotation.NonNull android.os.Parcelable.Creator<android.content.pm.PackageInstaller.PreapprovalDetails> CREATOR\npublic @java.lang.Override void writeToParcel(android.os.Parcel,int)\npublic @java.lang.Override int describeContents()\nclass PreapprovalDetails extends java.lang.Object implements [android.os.Parcelable]\nprivate @android.annotation.Nullable android.graphics.Bitmap mIcon\nprivate @android.annotation.NonNull java.lang.CharSequence mLabel\nprivate @android.annotation.NonNull android.icu.util.ULocale mLocale\nprivate @android.annotation.NonNull java.lang.String mPackageName\nprivate  long mBuilderFieldsSet\npublic @android.annotation.NonNull android.content.pm.PackageInstaller.PreapprovalDetails.Builder setIcon(android.graphics.Bitmap)\npublic @android.annotation.NonNull android.content.pm.PackageInstaller.PreapprovalDetails.Builder setLabel(java.lang.CharSequence)\npublic @android.annotation.NonNull android.content.pm.PackageInstaller.PreapprovalDetails.Builder setLocale(android.icu.util.ULocale)\npublic @android.annotation.NonNull android.content.pm.PackageInstaller.PreapprovalDetails.Builder setPackageName(java.lang.String)\npublic @android.annotation.NonNull android.content.pm.PackageInstaller.PreapprovalDetails build()\nprivate  void checkNotUsed()\nclass Builder extends java.lang.Object implements []\n@com.android.internal.util.DataClass(genConstructor=false, genToString=true)")
+        @Deprecated
+        private void __metadata() {}
+
+
+        //@formatter:on
+        // End of generated code
+
+    }
+
+    /**
+     * The callback result of {@link #checkInstallConstraints(List, InstallConstraints, Executor, Consumer)}.
+     */
+    @DataClass(genParcelable = true, genHiddenConstructor = true)
+    @DataClass.Suppress("isAllConstraintsSatisfied")
+    public static final class InstallConstraintsResult implements Parcelable {
+        /**
+         * True if all constraints are satisfied.
+         */
+        private boolean mAllConstraintsSatisfied;
+
+        /**
+         * True if all constraints are satisfied.
+         */
+        public boolean areAllConstraintsSatisfied() {
+            return mAllConstraintsSatisfied;
+        }
+
+
+
+        // Code below generated by codegen v1.0.23.
+        //
+        // DO NOT MODIFY!
+        // CHECKSTYLE:OFF Generated code
+        //
+        // To regenerate run:
+        // $ codegen $ANDROID_BUILD_TOP/frameworks/base/core/java/android/content/pm/PackageInstaller.java
+        //
+        // To exclude the generated code from IntelliJ auto-formatting enable (one-time):
+        //   Settings > Editor > Code Style > Formatter Control
+        //@formatter:off
+
+
+        /**
+         * Creates a new InstallConstraintsResult.
+         *
+         * @param allConstraintsSatisfied
+         *   True if all constraints are satisfied.
+         * @hide
+         */
+        @DataClass.Generated.Member
+        public InstallConstraintsResult(
+                boolean allConstraintsSatisfied) {
+            this.mAllConstraintsSatisfied = allConstraintsSatisfied;
+
+            // onConstructed(); // You can define this method to get a callback
+        }
+
+        @Override
+        @DataClass.Generated.Member
+        public void writeToParcel(@NonNull Parcel dest, int flags) {
+            // You can override field parcelling by defining methods like:
+            // void parcelFieldName(Parcel dest, int flags) { ... }
+
+            byte flg = 0;
+            if (mAllConstraintsSatisfied) flg |= 0x1;
+            dest.writeByte(flg);
+        }
+
+        @Override
+        @DataClass.Generated.Member
+        public int describeContents() { return 0; }
+
+        /** @hide */
+        @SuppressWarnings({"unchecked", "RedundantCast"})
+        @DataClass.Generated.Member
+        /* package-private */ InstallConstraintsResult(@NonNull Parcel in) {
+            // You can override field unparcelling by defining methods like:
+            // static FieldType unparcelFieldName(Parcel in) { ... }
+
+            byte flg = in.readByte();
+            boolean allConstraintsSatisfied = (flg & 0x1) != 0;
+
+            this.mAllConstraintsSatisfied = allConstraintsSatisfied;
+
+            // onConstructed(); // You can define this method to get a callback
+        }
+
+        @DataClass.Generated.Member
+        public static final @NonNull Parcelable.Creator<InstallConstraintsResult> CREATOR
+                = new Parcelable.Creator<InstallConstraintsResult>() {
+            @Override
+            public InstallConstraintsResult[] newArray(int size) {
+                return new InstallConstraintsResult[size];
+            }
+
+            @Override
+            public InstallConstraintsResult createFromParcel(@NonNull Parcel in) {
+                return new InstallConstraintsResult(in);
+            }
+        };
+
+        @DataClass.Generated(
+                time = 1676970504336L,
+                codegenVersion = "1.0.23",
+                sourceFile = "frameworks/base/core/java/android/content/pm/PackageInstaller.java",
+                inputSignatures = "private  boolean mAllConstraintsSatisfied\npublic  boolean areAllConstraintsSatisfied()\nclass InstallConstraintsResult extends java.lang.Object implements [android.os.Parcelable]\n@com.android.internal.util.DataClass(genParcelable=true, genHiddenConstructor=true)")
+        @Deprecated
+        private void __metadata() {}
+
+
+        //@formatter:on
+        // End of generated code
+
+    }
+
+    /**
+     * A class to encapsulate constraints for installation.
+     *
+     * When used with {@link #checkInstallConstraints(List, InstallConstraints, Executor, Consumer)}, it
+     * specifies the conditions to check against for the packages in question. This can be used
+     * by app stores to deliver auto updates without disrupting the user experience (referred as
+     * gentle update) - for example, an app store might hold off updates when it find out the
+     * app to update is interacting with the user.
+     *
+     * Use {@link Builder} to create a new instance and call mutator methods to add constraints.
+     * If no mutators were called, default constraints will be generated which implies no
+     * constraints. It is recommended to use preset constraints which are useful in most
+     * cases.
+     *
+     * For the purpose of gentle update, it is recommended to always use {@link #GENTLE_UPDATE}
+     * for the system knows best how to do it. It will also benefits the installer as the
+     * platform evolves and add more constraints to improve the accuracy and efficiency of
+     * gentle update.
+     *
+     * Note the constraints are applied transitively. If app Foo is used by app Bar (via shared
+     * library or bounded service), the constraints will also be applied to Bar.
+     */
+    @DataClass(genParcelable = true, genHiddenConstructor = true, genEqualsHashCode=true)
+    public static final class InstallConstraints implements Parcelable {
+        /**
+         * Preset constraints suitable for gentle update.
+         */
+        @NonNull
+        public static final InstallConstraints GENTLE_UPDATE =
+                new Builder().setAppNotInteractingRequired().build();
+
+        private final boolean mDeviceIdleRequired;
+        private final boolean mAppNotForegroundRequired;
+        private final boolean mAppNotInteractingRequired;
+        private final boolean mAppNotTopVisibleRequired;
+        private final boolean mNotInCallRequired;
+
+        /**
+         * Builder class for constructing {@link InstallConstraints}.
+         */
+        public static final class Builder {
+            private boolean mDeviceIdleRequired;
+            private boolean mAppNotForegroundRequired;
+            private boolean mAppNotInteractingRequired;
+            private boolean mAppNotTopVisibleRequired;
+            private boolean mNotInCallRequired;
+
+            /**
+             * This constraint requires the device is idle.
+             */
+            @SuppressLint("MissingGetterMatchingBuilder")
+            @NonNull
+            public Builder setDeviceIdleRequired() {
+                mDeviceIdleRequired = true;
+                return this;
+            }
+
+            /**
+             * This constraint requires the app in question is not in the foreground.
+             */
+            @SuppressLint("MissingGetterMatchingBuilder")
+            @NonNull
+            public Builder setAppNotForegroundRequired() {
+                mAppNotForegroundRequired = true;
+                return this;
+            }
+
+            /**
+             * This constraint requires the app in question is not interacting with the user.
+             * User interaction includes:
+             * <ul>
+             *     <li>playing or recording audio/video</li>
+             *     <li>sending or receiving network data</li>
+             *     <li>being visible to the user</li>
+             * </ul>
+             */
+            @SuppressLint("MissingGetterMatchingBuilder")
+            @NonNull
+            public Builder setAppNotInteractingRequired() {
+                mAppNotInteractingRequired = true;
+                return this;
+            }
+
+            /**
+             * This constraint requires the app in question is not top-visible to the user.
+             * A top-visible app is showing UI at the top of the screen that the user is
+             * interacting with.
+             *
+             * Note this constraint is a subset of {@link #setAppNotForegroundRequired()}
+             * because a top-visible app is also a foreground app. This is also a subset
+             * of {@link #setAppNotInteractingRequired()} because a top-visible app is interacting
+             * with the user.
+             *
+             * @see ActivityManager.RunningAppProcessInfo#IMPORTANCE_FOREGROUND
+             */
+            @SuppressLint("MissingGetterMatchingBuilder")
+            @NonNull
+            public Builder setAppNotTopVisibleRequired() {
+                mAppNotTopVisibleRequired = true;
+                return this;
+            }
+
+            /**
+             * This constraint requires there is no ongoing call in the device.
+             */
+            @SuppressLint("MissingGetterMatchingBuilder")
+            @NonNull
+            public Builder setNotInCallRequired() {
+                mNotInCallRequired = true;
+                return this;
+            }
+
+            /**
+             * Builds a new {@link InstallConstraints} instance.
+             */
+            @NonNull
+            public InstallConstraints build() {
+                return new InstallConstraints(mDeviceIdleRequired, mAppNotForegroundRequired,
+                        mAppNotInteractingRequired, mAppNotTopVisibleRequired, mNotInCallRequired);
+            }
+        }
+
+
+
+        // Code below generated by codegen v1.0.23.
+        //
+        // DO NOT MODIFY!
+        // CHECKSTYLE:OFF Generated code
+        //
+        // To regenerate run:
+        // $ codegen $ANDROID_BUILD_TOP/frameworks/base/core/java/android/content/pm/PackageInstaller.java
+        //
+        // To exclude the generated code from IntelliJ auto-formatting enable (one-time):
+        //   Settings > Editor > Code Style > Formatter Control
+        //@formatter:off
+
+
+        /**
+         * Creates a new InstallConstraints.
+         *
+         * @hide
+         */
+        @DataClass.Generated.Member
+        public InstallConstraints(
+                boolean deviceIdleRequired,
+                boolean appNotForegroundRequired,
+                boolean appNotInteractingRequired,
+                boolean appNotTopVisibleRequired,
+                boolean notInCallRequired) {
+            this.mDeviceIdleRequired = deviceIdleRequired;
+            this.mAppNotForegroundRequired = appNotForegroundRequired;
+            this.mAppNotInteractingRequired = appNotInteractingRequired;
+            this.mAppNotTopVisibleRequired = appNotTopVisibleRequired;
+            this.mNotInCallRequired = notInCallRequired;
+
+            // onConstructed(); // You can define this method to get a callback
+        }
+
+        @DataClass.Generated.Member
+        public boolean isDeviceIdleRequired() {
+            return mDeviceIdleRequired;
+        }
+
+        @DataClass.Generated.Member
+        public boolean isAppNotForegroundRequired() {
+            return mAppNotForegroundRequired;
+        }
+
+        @DataClass.Generated.Member
+        public boolean isAppNotInteractingRequired() {
+            return mAppNotInteractingRequired;
+        }
+
+        @DataClass.Generated.Member
+        public boolean isAppNotTopVisibleRequired() {
+            return mAppNotTopVisibleRequired;
+        }
+
+        @DataClass.Generated.Member
+        public boolean isNotInCallRequired() {
+            return mNotInCallRequired;
+        }
+
+        @Override
+        @DataClass.Generated.Member
+        public boolean equals(@Nullable Object o) {
+            // You can override field equality logic by defining either of the methods like:
+            // boolean fieldNameEquals(InstallConstraints other) { ... }
+            // boolean fieldNameEquals(FieldType otherValue) { ... }
+
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            @SuppressWarnings("unchecked")
+            InstallConstraints that = (InstallConstraints) o;
+            //noinspection PointlessBooleanExpression
+            return true
+                    && mDeviceIdleRequired == that.mDeviceIdleRequired
+                    && mAppNotForegroundRequired == that.mAppNotForegroundRequired
+                    && mAppNotInteractingRequired == that.mAppNotInteractingRequired
+                    && mAppNotTopVisibleRequired == that.mAppNotTopVisibleRequired
+                    && mNotInCallRequired == that.mNotInCallRequired;
+        }
+
+        @Override
+        @DataClass.Generated.Member
+        public int hashCode() {
+            // You can override field hashCode logic by defining methods like:
+            // int fieldNameHashCode() { ... }
+
+            int _hash = 1;
+            _hash = 31 * _hash + Boolean.hashCode(mDeviceIdleRequired);
+            _hash = 31 * _hash + Boolean.hashCode(mAppNotForegroundRequired);
+            _hash = 31 * _hash + Boolean.hashCode(mAppNotInteractingRequired);
+            _hash = 31 * _hash + Boolean.hashCode(mAppNotTopVisibleRequired);
+            _hash = 31 * _hash + Boolean.hashCode(mNotInCallRequired);
+            return _hash;
+        }
+
+        @Override
+        @DataClass.Generated.Member
+        public void writeToParcel(@NonNull Parcel dest, int flags) {
+            // You can override field parcelling by defining methods like:
+            // void parcelFieldName(Parcel dest, int flags) { ... }
+
+            byte flg = 0;
+            if (mDeviceIdleRequired) flg |= 0x1;
+            if (mAppNotForegroundRequired) flg |= 0x2;
+            if (mAppNotInteractingRequired) flg |= 0x4;
+            if (mAppNotTopVisibleRequired) flg |= 0x8;
+            if (mNotInCallRequired) flg |= 0x10;
+            dest.writeByte(flg);
+        }
+
+        @Override
+        @DataClass.Generated.Member
+        public int describeContents() { return 0; }
+
+        /** @hide */
+        @SuppressWarnings({"unchecked", "RedundantCast"})
+        @DataClass.Generated.Member
+        /* package-private */ InstallConstraints(@NonNull Parcel in) {
+            // You can override field unparcelling by defining methods like:
+            // static FieldType unparcelFieldName(Parcel in) { ... }
+
+            byte flg = in.readByte();
+            boolean deviceIdleRequired = (flg & 0x1) != 0;
+            boolean appNotForegroundRequired = (flg & 0x2) != 0;
+            boolean appNotInteractingRequired = (flg & 0x4) != 0;
+            boolean appNotTopVisibleRequired = (flg & 0x8) != 0;
+            boolean notInCallRequired = (flg & 0x10) != 0;
+
+            this.mDeviceIdleRequired = deviceIdleRequired;
+            this.mAppNotForegroundRequired = appNotForegroundRequired;
+            this.mAppNotInteractingRequired = appNotInteractingRequired;
+            this.mAppNotTopVisibleRequired = appNotTopVisibleRequired;
+            this.mNotInCallRequired = notInCallRequired;
+
+            // onConstructed(); // You can define this method to get a callback
+        }
+
+        @DataClass.Generated.Member
+        public static final @NonNull Parcelable.Creator<InstallConstraints> CREATOR
+                = new Parcelable.Creator<InstallConstraints>() {
+            @Override
+            public InstallConstraints[] newArray(int size) {
+                return new InstallConstraints[size];
+            }
+
+            @Override
+            public InstallConstraints createFromParcel(@NonNull Parcel in) {
+                return new InstallConstraints(in);
+            }
+        };
+
+        @DataClass.Generated(
+                time = 1676970504352L,
+                codegenVersion = "1.0.23",
+                sourceFile = "frameworks/base/core/java/android/content/pm/PackageInstaller.java",
+                inputSignatures = "public static final @android.annotation.NonNull android.content.pm.PackageInstaller.InstallConstraints GENTLE_UPDATE\nprivate final  boolean mDeviceIdleRequired\nprivate final  boolean mAppNotForegroundRequired\nprivate final  boolean mAppNotInteractingRequired\nprivate final  boolean mAppNotTopVisibleRequired\nprivate final  boolean mNotInCallRequired\nclass InstallConstraints extends java.lang.Object implements [android.os.Parcelable]\nprivate  boolean mDeviceIdleRequired\nprivate  boolean mAppNotForegroundRequired\nprivate  boolean mAppNotInteractingRequired\nprivate  boolean mAppNotTopVisibleRequired\nprivate  boolean mNotInCallRequired\npublic @android.annotation.SuppressLint @android.annotation.NonNull android.content.pm.PackageInstaller.InstallConstraints.Builder setDeviceIdleRequired()\npublic @android.annotation.SuppressLint @android.annotation.NonNull android.content.pm.PackageInstaller.InstallConstraints.Builder setAppNotForegroundRequired()\npublic @android.annotation.SuppressLint @android.annotation.NonNull android.content.pm.PackageInstaller.InstallConstraints.Builder setAppNotInteractingRequired()\npublic @android.annotation.SuppressLint @android.annotation.NonNull android.content.pm.PackageInstaller.InstallConstraints.Builder setAppNotTopVisibleRequired()\npublic @android.annotation.SuppressLint @android.annotation.NonNull android.content.pm.PackageInstaller.InstallConstraints.Builder setNotInCallRequired()\npublic @android.annotation.NonNull android.content.pm.PackageInstaller.InstallConstraints build()\nclass Builder extends java.lang.Object implements []\n@com.android.internal.util.DataClass(genParcelable=true, genHiddenConstructor=true, genEqualsHashCode=true)")
+        @Deprecated
+        private void __metadata() {}
+
+
+        //@formatter:on
+        // End of generated code
+
+    }
+
 }

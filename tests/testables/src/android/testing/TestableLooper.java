@@ -30,7 +30,9 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.lang.reflect.Field;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * This is a wrapper around {@link TestLooperManager} to make it easier to manage
@@ -45,14 +47,29 @@ public class TestableLooper {
      * catch crashes.
      */
     public static final boolean HOLD_MAIN_THREAD = false;
+    private static final Field MESSAGE_QUEUE_MESSAGES_FIELD;
+    private static final Field MESSAGE_NEXT_FIELD;
+    private static final Field MESSAGE_WHEN_FIELD;
 
     private Looper mLooper;
     private MessageQueue mQueue;
     private MessageHandler mMessageHandler;
 
     private Handler mHandler;
-    private Runnable mEmptyMessage;
     private TestLooperManager mQueueWrapper;
+
+    static {
+        try {
+            MESSAGE_QUEUE_MESSAGES_FIELD = MessageQueue.class.getDeclaredField("mMessages");
+            MESSAGE_QUEUE_MESSAGES_FIELD.setAccessible(true);
+            MESSAGE_NEXT_FIELD = Message.class.getDeclaredField("next");
+            MESSAGE_NEXT_FIELD.setAccessible(true);
+            MESSAGE_WHEN_FIELD = Message.class.getDeclaredField("when");
+            MESSAGE_WHEN_FIELD.setAccessible(true);
+        } catch (NoSuchFieldException e) {
+            throw new RuntimeException("Failed to initialize TestableLooper", e);
+        }
+    }
 
     public TestableLooper(Looper l) throws Exception {
         this(acquireLooperManager(l), l);
@@ -104,12 +121,37 @@ public class TestableLooper {
      * @param num Number of messages to parse
      */
     public int processMessages(int num) {
+        return processMessagesInternal(num, null);
+    }
+
+    private int processMessagesInternal(int num, Runnable barrierRunnable) {
         for (int i = 0; i < num; i++) {
-            if (!parseMessageInt()) {
+            if (!processSingleMessage(barrierRunnable)) {
                 return i + 1;
             }
         }
         return num;
+    }
+
+    /**
+     * Process up to a certain number of messages, not blocking if the queue has less messages than
+     * that
+     * @param num the maximum number of messages to process
+     * @return the number of messages processed. This will be at most {@code num}.
+     */
+
+    public int processMessagesNonBlocking(int num) {
+        final AtomicBoolean reachedBarrier = new AtomicBoolean(false);
+        Runnable barrierRunnable = () -> {
+            reachedBarrier.set(true);
+        };
+        mHandler.post(barrierRunnable);
+        waitForMessage(mQueueWrapper, mHandler, barrierRunnable);
+        try {
+            return processMessagesInternal(num, barrierRunnable) + (reachedBarrier.get() ? -1 : 0);
+        } finally {
+            mHandler.removeCallbacks(barrierRunnable);
+        }
     }
 
     /**
@@ -119,21 +161,49 @@ public class TestableLooper {
         while (processQueuedMessages() != 0) ;
     }
 
+    public void moveTimeForward(long milliSeconds) {
+        try {
+            Message msg = getMessageLinkedList();
+            while (msg != null) {
+                long updatedWhen = msg.getWhen() - milliSeconds;
+                if (updatedWhen < 0) {
+                    updatedWhen = 0;
+                }
+                MESSAGE_WHEN_FIELD.set(msg, updatedWhen);
+                msg = (Message) MESSAGE_NEXT_FIELD.get(msg);
+            }
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException("Access failed in TestableLooper: set - Message.when", e);
+        }
+    }
+
+    private Message getMessageLinkedList() {
+        try {
+            MessageQueue queue = mLooper.getQueue();
+            return (Message) MESSAGE_QUEUE_MESSAGES_FIELD.get(queue);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException(
+                    "Access failed in TestableLooper: get - MessageQueue.mMessages",
+                    e);
+        }
+    }
+
     private int processQueuedMessages() {
         int count = 0;
-        mEmptyMessage = () -> { };
-        mHandler.post(mEmptyMessage);
-        waitForMessage(mQueueWrapper, mHandler, mEmptyMessage);
-        while (parseMessageInt()) count++;
+        Runnable barrierRunnable = () -> { };
+        mHandler.post(barrierRunnable);
+        waitForMessage(mQueueWrapper, mHandler, barrierRunnable);
+        while (processSingleMessage(barrierRunnable)) count++;
         return count;
     }
 
-    private boolean parseMessageInt() {
+    private boolean processSingleMessage(Runnable barrierRunnable) {
         try {
             Message result = mQueueWrapper.next();
             if (result != null) {
                 // This is a break message.
-                if (result.getCallback() == mEmptyMessage) {
+                if (result.getCallback() == barrierRunnable) {
+                    mQueueWrapper.execute(result);
                     mQueueWrapper.recycle(result);
                     return false;
                 }

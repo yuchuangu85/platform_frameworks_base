@@ -29,40 +29,33 @@ using ::android::StringPiece;
 
 namespace android {
 
-void LocaleValue::set_language(const char* language_chars) {
+template <size_t N, class Transformer>
+static void safe_transform_copy(const char* source, char (&dest)[N], Transformer t) {
   size_t i = 0;
-  while ((*language_chars) != '\0') {
-    language[i++] = ::tolower(*language_chars);
-    language_chars++;
+  while (i < N && (*source) != '\0') {
+    dest[i++] = t(i, *source);
+    source++;
   }
+  while (i < N) {
+    dest[i++] = '\0';
+  }
+}
+
+void LocaleValue::set_language(const char* language_chars) {
+  safe_transform_copy(language_chars, language, [](size_t, char c) { return ::tolower(c); });
 }
 
 void LocaleValue::set_region(const char* region_chars) {
-  size_t i = 0;
-  while ((*region_chars) != '\0') {
-    region[i++] = ::toupper(*region_chars);
-    region_chars++;
-  }
+  safe_transform_copy(region_chars, region, [](size_t, char c) { return ::toupper(c); });
 }
 
 void LocaleValue::set_script(const char* script_chars) {
-  size_t i = 0;
-  while ((*script_chars) != '\0') {
-    if (i == 0) {
-      script[i++] = ::toupper(*script_chars);
-    } else {
-      script[i++] = ::tolower(*script_chars);
-    }
-    script_chars++;
-  }
+  safe_transform_copy(script_chars, script,
+                      [](size_t i, char c) { return i ? ::tolower(c) : ::toupper(c); });
 }
 
 void LocaleValue::set_variant(const char* variant_chars) {
-  size_t i = 0;
-  while ((*variant_chars) != '\0') {
-    variant[i++] = *variant_chars;
-    variant_chars++;
-  }
+  safe_transform_copy(variant_chars, variant, [](size_t, char c) { return c; });
 }
 
 static inline bool is_alpha(const std::string& str) {
@@ -73,7 +66,7 @@ static inline bool is_number(const std::string& str) {
   return std::all_of(std::begin(str), std::end(str), ::isdigit);
 }
 
-bool LocaleValue::InitFromFilterString(const StringPiece& str) {
+bool LocaleValue::InitFromFilterString(StringPiece str) {
   // A locale (as specified in the filter) is an underscore separated name such
   // as "en_US", "en_Latn_US", or "en_US_POSIX".
   std::vector<std::string> parts = util::SplitAndLowercase(str, '_');
@@ -139,11 +132,11 @@ bool LocaleValue::InitFromFilterString(const StringPiece& str) {
   return true;
 }
 
-bool LocaleValue::InitFromBcp47Tag(const StringPiece& bcp47tag) {
+bool LocaleValue::InitFromBcp47Tag(StringPiece bcp47tag) {
   return InitFromBcp47TagImpl(bcp47tag, '-');
 }
 
-bool LocaleValue::InitFromBcp47TagImpl(const StringPiece& bcp47tag, const char separator) {
+bool LocaleValue::InitFromBcp47TagImpl(StringPiece bcp47tag, const char separator) {
   std::vector<std::string> subtags = util::SplitAndLowercase(bcp47tag, separator);
   if (subtags.size() == 1) {
     set_language(subtags[0].c_str());
@@ -233,6 +226,10 @@ ssize_t LocaleValue::InitFromParts(std::vector<std::string>::iterator iter,
   }
   return static_cast<ssize_t>(iter - start_iter);
 }
+
+// Make sure the following memcpy's are properly sized.
+static_assert(sizeof(ResTable_config::localeScript) == sizeof(LocaleValue::script));
+static_assert(sizeof(ResTable_config::localeVariant) == sizeof(LocaleValue::variant));
 
 void LocaleValue::InitFromResTable(const ResTable_config& config) {
   config.unpackLanguage(language);

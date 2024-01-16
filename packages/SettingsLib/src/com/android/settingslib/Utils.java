@@ -1,7 +1,10 @@
 package com.android.settingslib;
 
+import static android.app.admin.DevicePolicyResources.Strings.Settings.WORK_PROFILE_USER_LABEL;
+
 import android.annotation.ColorInt;
 import android.annotation.Nullable;
+import android.app.admin.DevicePolicyManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
@@ -19,8 +22,10 @@ import android.graphics.Color;
 import android.graphics.ColorFilter;
 import android.graphics.ColorMatrix;
 import android.graphics.ColorMatrixColorFilter;
-import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
+import android.hardware.usb.UsbManager;
+import android.hardware.usb.UsbPort;
+import android.hardware.usb.UsbPortStatus;
 import android.location.LocationManager;
 import android.media.AudioManager;
 import android.net.NetworkCapabilities;
@@ -28,6 +33,7 @@ import android.net.TetheringManager;
 import android.net.vcn.VcnTransportInfo;
 import android.net.wifi.WifiInfo;
 import android.os.BatteryManager;
+import android.os.Build;
 import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.UserManager;
@@ -37,24 +43,33 @@ import android.telephony.AccessNetworkConstants;
 import android.telephony.NetworkRegistrationInfo;
 import android.telephony.ServiceState;
 import android.telephony.TelephonyManager;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.RequiresApi;
 import androidx.core.graphics.drawable.RoundedBitmapDrawable;
 import androidx.core.graphics.drawable.RoundedBitmapDrawableFactory;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.UserIcons;
+import com.android.launcher3.icons.BaseIconFactory.IconOptions;
 import com.android.launcher3.icons.IconFactory;
 import com.android.settingslib.drawable.UserIconDrawable;
 import com.android.settingslib.fuelgauge.BatteryStatus;
+import com.android.settingslib.utils.BuildCompatUtils;
 
 import java.text.NumberFormat;
+import java.util.List;
 
 public class Utils {
 
     @VisibleForTesting
     static final String STORAGE_MANAGER_ENABLED_PROPERTY =
             "ro.storage_manager.enabled";
+
+    @VisibleForTesting
+    static final String INCOMPATIBLE_CHARGER_WARNING_DISABLED =
+            "incompatible_charger_warning_disabled";
 
     private static Signature[] sSystemSignature;
     private static String sPermissionControllerPackageName;
@@ -124,9 +139,11 @@ public class Utils {
         String name = info != null ? info.name : null;
         if (info.isManagedProfile()) {
             // We use predefined values for managed profiles
-            return context.getString(R.string.managed_user_title);
+            return  BuildCompatUtils.isAtLeastT()
+                    ? getUpdatableManagedUserTitle(context)
+                    : context.getString(R.string.managed_user_title);
         } else if (info.isGuest()) {
-            name = context.getString(R.string.user_guest);
+            name = context.getString(com.android.internal.R.string.guest_name);
         }
         if (name == null && info != null) {
             name = Integer.toString(info.id);
@@ -136,11 +153,18 @@ public class Utils {
         return context.getResources().getString(R.string.running_process_item_user_label, name);
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private static String getUpdatableManagedUserTitle(Context context) {
+        return context.getSystemService(DevicePolicyManager.class).getResources().getString(
+                WORK_PROFILE_USER_LABEL,
+                () -> context.getString(R.string.managed_user_title));
+    }
+
     /**
      * Returns a circular icon for a user.
      */
     public static Drawable getUserIcon(Context context, UserManager um, UserInfo user) {
-        final int iconSize = UserIconDrawable.getSizeForList(context);
+        final int iconSize = UserIconDrawable.getDefaultSize(context);
         if (user.isManagedProfile()) {
             Drawable drawable = UserIconDrawable.getManagedUserDrawable(context);
             drawable.setBounds(0, 0, iconSize, iconSize);
@@ -190,9 +214,11 @@ public class Utils {
      * @param context the context
      * @param batteryChangedIntent battery broadcast intent received from {@link
      *                             Intent.ACTION_BATTERY_CHANGED}.
+     * @param compactStatus to present compact battery charging string if {@code true}
      * @return battery status string
      */
-    public static String getBatteryStatus(Context context, Intent batteryChangedIntent) {
+    public static String getBatteryStatus(Context context, Intent batteryChangedIntent,
+            boolean compactStatus) {
         final int status = batteryChangedIntent.getIntExtra(BatteryManager.EXTRA_STATUS,
                 BatteryManager.BATTERY_STATUS_UNKNOWN);
         final Resources res = context.getResources();
@@ -201,10 +227,14 @@ public class Utils {
         final BatteryStatus batteryStatus = new BatteryStatus(batteryChangedIntent);
 
         if (batteryStatus.isCharged()) {
-            statusString = res.getString(R.string.battery_info_status_full);
+            statusString = res.getString(compactStatus
+                    ? R.string.battery_info_status_full_charged
+                    : R.string.battery_info_status_full);
         } else {
             if (status == BatteryManager.BATTERY_STATUS_CHARGING) {
-                if (batteryStatus.isPluggedInWired()) {
+                if (compactStatus) {
+                    statusString = res.getString(R.string.battery_info_status_charging);
+                } else if (batteryStatus.isPluggedInWired()) {
                     switch (batteryStatus.getChargingSpeed(context)) {
                         case BatteryStatus.CHARGING_FAST:
                             statusString = res.getString(
@@ -218,6 +248,8 @@ public class Utils {
                             statusString = res.getString(R.string.battery_info_status_charging);
                             break;
                     }
+                } else if (batteryStatus.isPluggedInDock()) {
+                    statusString = res.getString(R.string.battery_info_status_charging_dock);
                 } else {
                     statusString = res.getString(R.string.battery_info_status_charging_wireless);
                 }
@@ -285,8 +317,16 @@ public class Utils {
 
     @ColorInt
     public static int getColorAttrDefaultColor(Context context, int attr) {
+        return getColorAttrDefaultColor(context, attr, 0);
+    }
+
+    /**
+     * Get color styled attribute {@code attr}, default to {@code defValue} if not found.
+     */
+    @ColorInt
+    public static int getColorAttrDefaultColor(Context context, int attr, @ColorInt int defValue) {
         TypedArray ta = context.obtainStyledAttributes(new int[]{attr});
-        @ColorInt int colorAccent = ta.getColor(0, 0);
+        @ColorInt int colorAccent = ta.getColor(0, defValue);
         ta.recycle();
         return colorAccent;
     }
@@ -353,27 +393,19 @@ public class Utils {
     /**
      * Determine whether a package is a "system package", in which case certain things (like
      * disabling notifications or disabling the package altogether) should be disallowed.
+     * <p>
+     * Note: This function is just for UI treatment, and should not be used for security purposes.
+     *
+     * @deprecated Use {@link ApplicationInfo#isSignedWithPlatformKey()} and
+     * {@link #isEssentialPackage} instead.
      */
+    @Deprecated
     public static boolean isSystemPackage(Resources resources, PackageManager pm, PackageInfo pkg) {
         if (sSystemSignature == null) {
             sSystemSignature = new Signature[]{getSystemSignature(pm)};
         }
-        if (sPermissionControllerPackageName == null) {
-            sPermissionControllerPackageName = pm.getPermissionControllerPackageName();
-        }
-        if (sServicesSystemSharedLibPackageName == null) {
-            sServicesSystemSharedLibPackageName = pm.getServicesSystemSharedLibraryPackageName();
-        }
-        if (sSharedSystemSharedLibPackageName == null) {
-            sSharedSystemSharedLibPackageName = pm.getSharedSystemSharedLibraryPackageName();
-        }
-        return (sSystemSignature[0] != null
-                && sSystemSignature[0].equals(getFirstSignature(pkg)))
-                || pkg.packageName.equals(sPermissionControllerPackageName)
-                || pkg.packageName.equals(sServicesSystemSharedLibPackageName)
-                || pkg.packageName.equals(sSharedSystemSharedLibPackageName)
-                || pkg.packageName.equals(PrintManager.PRINT_SPOOLER_PACKAGE_NAME)
-                || isDeviceProvisioningPackage(resources, pkg.packageName);
+        return (sSystemSignature[0] != null && sSystemSignature[0].equals(getFirstSignature(pkg)))
+                || isEssentialPackage(resources, pm, pkg.packageName);
     }
 
     private static Signature getFirstSignature(PackageInfo pkg) {
@@ -390,6 +422,29 @@ public class Utils {
         } catch (NameNotFoundException e) {
         }
         return null;
+    }
+
+    /**
+     * Determine whether a package is a "essential package".
+     * <p>
+     * In which case certain things (like disabling the package) should be disallowed.
+     */
+    public static boolean isEssentialPackage(
+            Resources resources, PackageManager pm, String packageName) {
+        if (sPermissionControllerPackageName == null) {
+            sPermissionControllerPackageName = pm.getPermissionControllerPackageName();
+        }
+        if (sServicesSystemSharedLibPackageName == null) {
+            sServicesSystemSharedLibPackageName = pm.getServicesSystemSharedLibraryPackageName();
+        }
+        if (sSharedSystemSharedLibPackageName == null) {
+            sSharedSystemSharedLibPackageName = pm.getSharedSystemSharedLibraryPackageName();
+        }
+        return packageName.equals(sPermissionControllerPackageName)
+                || packageName.equals(sServicesSystemSharedLibPackageName)
+                || packageName.equals(sSharedSystemSharedLibPackageName)
+                || packageName.equals(PrintManager.PRINT_SPOOLER_PACKAGE_NAME)
+                || isDeviceProvisioningPackage(resources, packageName);
     }
 
     /**
@@ -524,10 +579,16 @@ public class Utils {
 
     /** Get the corresponding adaptive icon drawable. */
     public static Drawable getBadgedIcon(Context context, Drawable icon, UserHandle user) {
+        UserManager um = context.getSystemService(UserManager.class);
+        boolean isClone = um.getProfiles(user.getIdentifier()).stream()
+                .anyMatch(profile ->
+                        profile.isCloneProfile() && profile.id == user.getIdentifier());
         try (IconFactory iconFactory = IconFactory.obtain(context)) {
-            final Bitmap iconBmp = iconFactory.createBadgedIconBitmap(icon, user,
-                    true /* shrinkNonAdaptiveIcons */).icon;
-            return new BitmapDrawable(context.getResources(), iconBmp);
+            return iconFactory
+                    .createBadgedIconBitmap(
+                            icon,
+                            new IconOptions().setUser(user).setIsCloneProfile(isClone))
+                    .newIcon(context);
         }
     }
 
@@ -577,6 +638,9 @@ public class Utils {
      * Returns the WifiInfo for the underlying WiFi network of the VCN network, returns null if the
      * input NetworkCapabilities is not for a VCN network with underlying WiFi network.
      *
+     * TODO(b/238425913): Move this method to be inside systemui not settingslib once we've migrated
+     *   off of {@link WifiStatusTracker} and {@link NetworkControllerImpl}.
+     *
      * @param networkCapabilities NetworkCapabilities of the network.
      */
     @Nullable
@@ -589,4 +653,51 @@ public class Utils {
                 (VcnTransportInfo) networkCapabilities.getTransportInfo();
         return vcnTransportInfo.getWifiInfo();
     }
+
+    /** Whether there is any incompatible chargers in the current UsbPort? */
+    public static boolean containsIncompatibleChargers(Context context, String tag) {
+        // Avoid the caller doesn't have permission to read the "Settings.Secure" data.
+        try {
+            // Whether the incompatible charger warning is disabled or not
+            if (Settings.Secure.getInt(context.getContentResolver(),
+                    INCOMPATIBLE_CHARGER_WARNING_DISABLED, 0) == 1) {
+                Log.d(tag, "containsIncompatibleChargers: disabled");
+                return false;
+            }
+        } catch (Exception e) {
+            Log.e(tag, "containsIncompatibleChargers()", e);
+            return false;
+        }
+
+        final List<UsbPort> usbPortList =
+                context.getSystemService(UsbManager.class).getPorts();
+        if (usbPortList == null || usbPortList.isEmpty()) {
+            return false;
+        }
+        for (UsbPort usbPort : usbPortList) {
+            Log.d(tag, "usbPort: " + usbPort);
+            if (!usbPort.supportsComplianceWarnings()) {
+                continue;
+            }
+            final UsbPortStatus usbStatus = usbPort.getStatus();
+            if (usbStatus == null || !usbStatus.isConnected()) {
+                continue;
+            }
+            final int[] complianceWarnings = usbStatus.getComplianceWarnings();
+            if (complianceWarnings == null || complianceWarnings.length == 0) {
+                continue;
+            }
+            for (int complianceWarningType : complianceWarnings) {
+                switch (complianceWarningType) {
+                    case UsbPortStatus.COMPLIANCE_WARNING_OTHER:
+                    case UsbPortStatus.COMPLIANCE_WARNING_DEBUG_ACCESSORY:
+                        return true;
+                    default:
+                        break;
+                }
+            }
+        }
+        return false;
+    }
+
 }

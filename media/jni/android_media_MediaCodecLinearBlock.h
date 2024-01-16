@@ -25,6 +25,8 @@
 namespace android {
 
 struct JMediaCodecLinearBlock {
+    std::vector<std::string> mCodecNames;
+
     std::shared_ptr<C2Buffer> mBuffer;
     std::shared_ptr<C2ReadView> mReadonlyMapping;
 
@@ -40,14 +42,21 @@ struct JMediaCodecLinearBlock {
 
     std::once_flag mCopyWarningFlag;
 
-    std::shared_ptr<C2Buffer> toC2Buffer(size_t offset, size_t size) {
+    std::shared_ptr<C2Buffer> toC2Buffer(size_t offset, size_t size) const {
         if (mBuffer) {
+            // TODO: if returned C2Buffer is different from mBuffer, we should
+            // find a way to connect the life cycle between this C2Buffer and
+            // mBuffer.
             if (mBuffer->data().type() != C2BufferData::LINEAR) {
                 return nullptr;
             }
             C2ConstLinearBlock block = mBuffer->data().linearBlocks().front();
             if (offset == 0 && size == block.capacity()) {
-                return mBuffer;
+                // Let C2Buffer be new one to queue to MediaCodec. It will allow
+                // the related input slot to be released by onWorkDone from C2
+                // Component. Currently, the life cycle of mBuffer should be
+                // protected by different flows.
+                return std::make_shared<C2Buffer>(*mBuffer);
             }
 
             std::shared_ptr<C2Buffer> buffer =
@@ -64,11 +73,21 @@ struct JMediaCodecLinearBlock {
         return nullptr;
     }
 
-    sp<hardware::HidlMemory> toHidlMemory() {
+    sp<hardware::HidlMemory> toHidlMemory() const {
         if (mHidlMemory) {
             return mHidlMemory;
         }
         return nullptr;
+    }
+
+    size_t capacity() const {
+        if (mBlock) {
+            return mBlock->capacity();
+        }
+        if (mMemory) {
+            return mMemory->size();
+        }
+        return 0;
     }
 };
 

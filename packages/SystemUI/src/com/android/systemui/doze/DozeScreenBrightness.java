@@ -41,9 +41,9 @@ import com.android.systemui.doze.dagger.DozeScope;
 import com.android.systemui.doze.dagger.WrappedService;
 import com.android.systemui.keyguard.WakefulnessLifecycle;
 import com.android.systemui.statusbar.phone.DozeParameters;
-import com.android.systemui.statusbar.phone.UnlockedScreenOffAnimationController;
 import com.android.systemui.statusbar.policy.DevicePostureController;
 import com.android.systemui.util.sensors.AsyncSensorManager;
+import com.android.systemui.util.settings.SystemSettings;
 
 import java.io.PrintWriter;
 import java.util.Objects;
@@ -79,6 +79,7 @@ public class DozeScreenBrightness extends BroadcastReceiver implements DozeMachi
     private final DozeParameters mDozeParameters;
     private final DevicePostureController mDevicePostureController;
     private final DozeLog mDozeLog;
+    private final SystemSettings mSystemSettings;
     private final int[] mSensorToBrightness;
     private final int[] mSensorToScrimOpacity;
     private final int mScreenBrightnessDim;
@@ -90,6 +91,7 @@ public class DozeScreenBrightness extends BroadcastReceiver implements DozeMachi
     private boolean mPaused = false;
     private boolean mScreenOff = false;
     private int mLastSensorValue = -1;
+    private DozeMachine.State mState = DozeMachine.State.UNINITIALIZED;
 
     /**
      * Debug value used for emulating various display brightness buckets:
@@ -98,8 +100,6 @@ public class DozeScreenBrightness extends BroadcastReceiver implements DozeMachi
      * --ei brightness_bucket 1}
      */
     private int mDebugBrightnessBucket = -1;
-
-    private UnlockedScreenOffAnimationController mUnlockedScreenOffAnimationController;
 
     @Inject
     public DozeScreenBrightness(
@@ -113,7 +113,7 @@ public class DozeScreenBrightness extends BroadcastReceiver implements DozeMachi
             DozeParameters dozeParameters,
             DevicePostureController devicePostureController,
             DozeLog dozeLog,
-            UnlockedScreenOffAnimationController unlockedScreenOffAnimationController) {
+            SystemSettings systemSettings) {
         mContext = context;
         mDozeService = service;
         mSensorManager = sensorManager;
@@ -125,7 +125,7 @@ public class DozeScreenBrightness extends BroadcastReceiver implements DozeMachi
         mDozeHost = host;
         mHandler = handler;
         mDozeLog = dozeLog;
-        mUnlockedScreenOffAnimationController = unlockedScreenOffAnimationController;
+        mSystemSettings = systemSettings;
 
         mScreenBrightnessMinimumDimAmountFloat = context.getResources().getFloat(
                 R.dimen.config_screenBrightnessMinimumDimAmountFloat);
@@ -140,6 +140,7 @@ public class DozeScreenBrightness extends BroadcastReceiver implements DozeMachi
 
     @Override
     public void transitionTo(DozeMachine.State oldState, DozeMachine.State newState) {
+        mState = newState;
         switch (newState) {
             case INITIALIZED:
                 resetBrightnessToDefault();
@@ -150,8 +151,12 @@ public class DozeScreenBrightness extends BroadcastReceiver implements DozeMachi
                 setLightSensorEnabled(true);
                 break;
             case DOZE:
+            case DOZE_SUSPEND_TRIGGERS:
                 setLightSensorEnabled(false);
                 resetBrightnessToDefault();
+                break;
+            case DOZE_AOD_PAUSED:
+                setLightSensorEnabled(false);
                 break;
             case FINISH:
                 onDestroy();
@@ -170,7 +175,10 @@ public class DozeScreenBrightness extends BroadcastReceiver implements DozeMachi
 
     @Override
     public void onSensorChanged(SensorEvent event) {
-        Trace.beginSection("DozeScreenBrightness.onSensorChanged" + event.values[0]);
+        if (Trace.isEnabled()) {
+            Trace.traceBegin(
+                    Trace.TRACE_TAG_APP, "DozeScreenBrightness.onSensorChanged" + event.values[0]);
+        }
         try {
             if (mRegistered) {
                 mLastSensorValue = (int) event.values[0];
@@ -253,7 +261,7 @@ public class DozeScreenBrightness extends BroadcastReceiver implements DozeMachi
     }
     //TODO: brightnessfloat change usages to float.
     private int clampToUserSetting(int brightness) {
-        int userSetting = Settings.System.getIntForUser(mContext.getContentResolver(),
+        int userSetting = mSystemSettings.getIntForUser(
                 Settings.System.SCREEN_BRIGHTNESS, Integer.MAX_VALUE,
                 UserHandle.USER_CURRENT);
         return Math.min(brightness, userSetting);
@@ -267,8 +275,9 @@ public class DozeScreenBrightness extends BroadcastReceiver implements DozeMachi
      */
     private int clampToDimBrightnessForScreenOff(int brightness) {
         final boolean screenTurningOff =
-                mUnlockedScreenOffAnimationController.isScreenOffAnimationPlaying()
-                        || mWakefulnessLifecycle.getWakefulness() == WAKEFULNESS_GOING_TO_SLEEP;
+                (mDozeParameters.shouldClampToDimBrightness()
+                        || mWakefulnessLifecycle.getWakefulness() == WAKEFULNESS_GOING_TO_SLEEP)
+                && mState == DozeMachine.State.INITIALIZED;
         if (screenTurningOff
                 && mWakefulnessLifecycle.getLastSleepReason() == GO_TO_SLEEP_REASON_TIMEOUT) {
             return Math.max(

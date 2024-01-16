@@ -17,7 +17,6 @@
 package com.android.settingslib.users;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.Intent;
@@ -25,6 +24,7 @@ import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
@@ -36,7 +36,10 @@ import androidx.annotation.VisibleForTesting;
 
 import com.android.internal.util.UserIcons;
 import com.android.settingslib.R;
+import com.android.settingslib.RestrictedLockUtils;
+import com.android.settingslib.RestrictedLockUtilsInternal;
 import com.android.settingslib.drawable.CircleFramedDrawable;
+import com.android.settingslib.utils.CustomDialogHelper;
 
 import java.io.File;
 import java.util.function.BiConsumer;
@@ -51,6 +54,7 @@ public class EditUserInfoController {
 
     private Dialog mEditUserInfoDialog;
     private Bitmap mSavedPhoto;
+    private Drawable mSavedDrawable;
     private EditUserPhotoController mEditUserPhotoController;
     private boolean mWaitingForActivityResult = false;
     private final String mFileAuthority;
@@ -65,6 +69,7 @@ public class EditUserInfoController {
         }
         mEditUserInfoDialog = null;
         mSavedPhoto = null;
+        mSavedDrawable = null;
     }
 
     /**
@@ -122,7 +127,7 @@ public class EditUserInfoController {
      *                        codes to take photo/choose photo/crop photo.
      */
     public Dialog createDialog(Activity activity, ActivityStarter activityStarter,
-            @Nullable Drawable oldUserIcon, String defaultUserName, String title,
+            @Nullable Drawable oldUserIcon, String defaultUserName,
             BiConsumer<String, Drawable> successCallback, Runnable cancelCallback) {
         LayoutInflater inflater = LayoutInflater.from(activity);
         View content = inflater.inflate(R.layout.edit_user_info_dialog_content, null);
@@ -139,17 +144,23 @@ public class EditUserInfoController {
         Drawable userIcon = getUserIcon(activity, defaultUserIcon);
         userPhotoView.setImageDrawable(userIcon);
 
-        if (canChangePhoto(activity)) {
-            mEditUserPhotoController = createEditUserPhotoController(activity, activityStarter,
-                    userPhotoView);
+        if (isChangePhotoRestrictedByBase(activity)) {
+            // some users can't change their photos so we need to remove the suggestive icon
+            content.findViewById(R.id.add_a_photo_icon).setVisibility(View.GONE);
         } else {
-            // some users can't change their photos so we need to remove suggestive
-            // background from the photoView
-            userPhotoView.setBackground(null);
+            RestrictedLockUtils.EnforcedAdmin adminRestriction =
+                    getChangePhotoAdminRestriction(activity);
+            if (adminRestriction != null) {
+                userPhotoView.setOnClickListener(view ->
+                        RestrictedLockUtils.sendShowAdminSupportDetailsIntent(
+                                activity, adminRestriction));
+            } else {
+                mEditUserPhotoController = createEditUserPhotoController(activity, activityStarter,
+                        userPhotoView);
+            }
         }
-
         mEditUserInfoDialog = buildDialog(activity, content, userNameView, oldUserIcon,
-                defaultUserName, title, successCallback, cancelCallback);
+                defaultUserName, successCallback, cancelCallback);
 
         // Make sure the IME is up.
         mEditUserInfoDialog.getWindow()
@@ -160,19 +171,20 @@ public class EditUserInfoController {
 
     private Drawable getUserIcon(Activity activity, Drawable defaultUserIcon) {
         if (mSavedPhoto != null) {
-            return CircleFramedDrawable.getInstance(activity, mSavedPhoto);
+            mSavedDrawable = CircleFramedDrawable.getInstance(activity, mSavedPhoto);
+            return mSavedDrawable;
         }
         return defaultUserIcon;
     }
 
     private Dialog buildDialog(Activity activity, View content, EditText userNameView,
-            @Nullable Drawable oldUserIcon, String defaultUserName, String title,
+            @Nullable Drawable oldUserIcon, String defaultUserName,
             BiConsumer<String, Drawable> successCallback, Runnable cancelCallback) {
-        return new AlertDialog.Builder(activity)
-                .setTitle(title)
-                .setView(content)
-                .setCancelable(true)
-                .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+        CustomDialogHelper dialogHelper = new CustomDialogHelper(activity);
+        dialogHelper
+                .setTitle(R.string.user_info_settings_title)
+                .addCustomView(content)
+                .setPositiveButton(android.R.string.ok, view -> {
                     Drawable newUserIcon = mEditUserPhotoController != null
                             ? mEditUserPhotoController.getNewUserPhotoDrawable()
                             : null;
@@ -187,33 +199,41 @@ public class EditUserInfoController {
                     if (successCallback != null) {
                         successCallback.accept(userName, userIcon);
                     }
+                    dialogHelper.getDialog().dismiss();
                 })
-                .setNegativeButton(android.R.string.cancel, (dialog, which) -> {
+                .setBackButton(android.R.string.cancel, view -> {
                     clear();
                     if (cancelCallback != null) {
                         cancelCallback.run();
                     }
-                })
-                .setOnCancelListener(dialog -> {
-                    clear();
-                    if (cancelCallback != null) {
-                        cancelCallback.run();
-                    }
-                })
-                .create();
+                    dialogHelper.getDialog().dismiss();
+                });
+        dialogHelper.getDialog().setOnCancelListener(dialog -> {
+            clear();
+            if (cancelCallback != null) {
+                cancelCallback.run();
+            }
+            dialogHelper.getDialog().dismiss();
+        });
+        return dialogHelper.getDialog();
     }
 
     @VisibleForTesting
-    boolean canChangePhoto(Context context) {
-        return (PhotoCapabilityUtils.canCropPhoto(context)
-                && PhotoCapabilityUtils.canChoosePhoto(context))
-                || PhotoCapabilityUtils.canTakePhoto(context);
+    boolean isChangePhotoRestrictedByBase(Context context) {
+        return RestrictedLockUtilsInternal.hasBaseUserRestriction(
+                context, UserManager.DISALLOW_SET_USER_ICON, UserHandle.myUserId());
+    }
+
+    @VisibleForTesting
+    RestrictedLockUtils.EnforcedAdmin getChangePhotoAdminRestriction(Context context) {
+        return RestrictedLockUtilsInternal.checkIfRestrictionEnforced(
+                context, UserManager.DISALLOW_SET_USER_ICON, UserHandle.myUserId());
     }
 
     @VisibleForTesting
     EditUserPhotoController createEditUserPhotoController(Activity activity,
             ActivityStarter activityStarter, ImageView userPhotoView) {
         return new EditUserPhotoController(activity, activityStarter, userPhotoView,
-                mSavedPhoto, mWaitingForActivityResult, mFileAuthority);
+                mSavedPhoto, mSavedDrawable, mFileAuthority);
     }
 }

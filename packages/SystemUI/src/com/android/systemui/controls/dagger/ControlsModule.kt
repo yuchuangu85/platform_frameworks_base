@@ -20,29 +20,41 @@ import android.app.Activity
 import android.content.pm.PackageManager
 import com.android.systemui.controls.ControlsMetricsLogger
 import com.android.systemui.controls.ControlsMetricsLoggerImpl
+import com.android.systemui.controls.settings.ControlsSettingsRepository
+import com.android.systemui.controls.settings.ControlsSettingsRepositoryImpl
 import com.android.systemui.controls.controller.ControlsBindingController
 import com.android.systemui.controls.controller.ControlsBindingControllerImpl
 import com.android.systemui.controls.controller.ControlsController
 import com.android.systemui.controls.controller.ControlsControllerImpl
 import com.android.systemui.controls.controller.ControlsFavoritePersistenceWrapper
+import com.android.systemui.controls.controller.ControlsTileResourceConfiguration
 import com.android.systemui.controls.management.ControlsEditingActivity
 import com.android.systemui.controls.management.ControlsFavoritingActivity
 import com.android.systemui.controls.management.ControlsListingController
 import com.android.systemui.controls.management.ControlsListingControllerImpl
 import com.android.systemui.controls.management.ControlsProviderSelectorActivity
 import com.android.systemui.controls.management.ControlsRequestDialog
+import com.android.systemui.controls.panels.AuthorizedPanelsRepository
+import com.android.systemui.controls.panels.AuthorizedPanelsRepositoryImpl
+import com.android.systemui.controls.panels.SelectedComponentRepository
+import com.android.systemui.controls.panels.SelectedComponentRepositoryImpl
+import com.android.systemui.controls.settings.ControlsSettingsDialogManager
+import com.android.systemui.controls.settings.ControlsSettingsDialogManagerImpl
 import com.android.systemui.controls.ui.ControlActionCoordinator
 import com.android.systemui.controls.ui.ControlActionCoordinatorImpl
 import com.android.systemui.controls.ui.ControlsActivity
 import com.android.systemui.controls.ui.ControlsUiController
 import com.android.systemui.controls.ui.ControlsUiControllerImpl
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.qs.tileimpl.QSTileImpl
+import com.android.systemui.qs.tiles.DeviceControlsTile
 import dagger.Binds
 import dagger.BindsOptionalOf
 import dagger.Module
 import dagger.Provides
 import dagger.multibindings.ClassKey
 import dagger.multibindings.IntoMap
+import dagger.multibindings.StringKey
 
 /**
  * Module for injecting classes in `com.android.systemui.controls`-
@@ -82,6 +94,16 @@ abstract class ControlsModule {
     abstract fun provideUiController(controller: ControlsUiControllerImpl): ControlsUiController
 
     @Binds
+    abstract fun provideSettingsManager(
+            manager: ControlsSettingsRepositoryImpl
+    ): ControlsSettingsRepository
+
+    @Binds
+    abstract fun provideDialogManager(
+            manager: ControlsSettingsDialogManagerImpl
+    ): ControlsSettingsDialogManager
+
+    @Binds
     abstract fun provideMetricsLogger(logger: ControlsMetricsLoggerImpl): ControlsMetricsLogger
 
     @Binds
@@ -89,8 +111,21 @@ abstract class ControlsModule {
         coordinator: ControlActionCoordinatorImpl
     ): ControlActionCoordinator
 
+    @Binds
+    abstract fun provideAuthorizedPanelsRepository(
+        repository: AuthorizedPanelsRepositoryImpl
+    ): AuthorizedPanelsRepository
+
+    @Binds
+    abstract fun providePreferredPanelRepository(
+        repository: SelectedComponentRepositoryImpl
+    ): SelectedComponentRepository
+
     @BindsOptionalOf
     abstract fun optionalPersistenceWrapper(): ControlsFavoritePersistenceWrapper
+
+    @BindsOptionalOf
+    abstract fun provideControlsTileResourceConfiguration(): ControlsTileResourceConfiguration
 
     @Binds
     @IntoMap
@@ -124,4 +159,9 @@ abstract class ControlsModule {
     @IntoMap
     @ClassKey(ControlsActivity::class)
     abstract fun provideControlsActivity(activity: ControlsActivity): Activity
+
+    @Binds
+    @IntoMap
+    @StringKey(DeviceControlsTile.TILE_SPEC)
+    abstract fun bindDeviceControlsTile(controlsTile: DeviceControlsTile): QSTileImpl<*>
 }

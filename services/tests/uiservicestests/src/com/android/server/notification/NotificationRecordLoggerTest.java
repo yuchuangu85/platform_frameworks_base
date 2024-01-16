@@ -16,10 +16,24 @@
 
 package com.android.server.notification;
 
+import static android.app.Notification.FLAG_FOREGROUND_SERVICE;
 import static android.app.NotificationManager.IMPORTANCE_DEFAULT;
+import static android.service.notification.NotificationListenerService.REASON_CANCEL;
+import static android.service.notification.NotificationListenerService.REASON_GROUP_SUMMARY_CANCELED;
+import static android.service.notification.NotificationStats.DISMISSAL_BUBBLE;
+import static android.service.notification.NotificationStats.DISMISSAL_OTHER;
+
+import static com.android.server.notification.NotificationRecordLogger.NotificationCancelledEvent.NOTIFICATION_CANCEL_CLICK;
+import static com.android.server.notification.NotificationRecordLogger.NotificationCancelledEvent.NOTIFICATION_CANCEL_GROUP_SUMMARY_CANCELED;
+import static com.android.server.notification.NotificationRecordLogger.NotificationCancelledEvent.NOTIFICATION_CANCEL_USER_OTHER;
+import static com.android.server.notification.NotificationRecordLogger.NotificationReportedEvent.NOTIFICATION_POSTED;
+import static com.android.server.notification.NotificationRecordLogger.NotificationReportedEvent.NOTIFICATION_UPDATED;
+import static com.google.common.truth.Truth.assertThat;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertTrue;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -30,9 +44,12 @@ import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.server.UiServiceTestCase;
+import com.android.internal.util.FrameworkStatsLog;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
+
+import java.time.Duration;
 
 
 @SmallTest
@@ -115,5 +132,113 @@ public class NotificationRecordLoggerTest extends UiServiceTestCase {
         assertEquals(
                 SmallHash.hash(group.hashCode()),
                 p.getGroupIdHash());
+    }
+
+    @Test
+    public void testIsForegroundService() {
+        NotificationRecordLogger.NotificationRecordPair p = getNotificationRecordPair(
+                0, null);
+        assertFalse(NotificationRecordLogger.isForegroundService(p.r));
+
+        // Set foreground service
+        p.r.getSbn().getNotification().flags |= FLAG_FOREGROUND_SERVICE;
+        assertTrue(NotificationRecordLogger.isForegroundService(p.r));
+    }
+
+
+    @Test
+    public void testIsNonDismissible_hasFlagNoDismiss_shouldReturnTrue() {
+        // Given: a notification pair's notification has flag FLAG_NO_DISMISS
+        NotificationRecordLogger.NotificationRecordPair p = getNotificationRecordPair(
+                0, null);
+        p.r.getNotification().flags |= Notification.FLAG_NO_DISMISS;
+
+        // When: check the value of isNonDismissible()
+        // Then: should return true
+        assertTrue(NotificationRecordLogger.isNonDismissible(p.r));
+    }
+
+    @Test
+    public void testIsNonDismissible_noFlagNoDismiss_shouldReturnFalse() {
+        // Given: a notification pair's notification doesn't have flag FLAG_NO_DISMISS
+        NotificationRecordLogger.NotificationRecordPair p = getNotificationRecordPair(
+                0, null);
+        p.r.getNotification().flags &= ~Notification.FLAG_NO_DISMISS;
+
+        // When: check the value of isNonDismissible()
+        // Then: should return false
+        assertFalse(NotificationRecordLogger.isNonDismissible(p.r));
+    }
+
+    @Test
+    public void testGetFsiState_stickyHunFlagDisabled_zero() {
+        final int fsiState = NotificationRecordLogger.getFsiState(
+                /* isStickyHunFlagEnabled= */ false,
+                /* hasFullScreenIntent= */ true,
+                /* hasFsiRequestedButDeniedFlag= */ true,
+                /* eventType= */ NOTIFICATION_POSTED);
+        assertEquals(0, fsiState);
+    }
+
+    @Test
+    public void testGetFsiState_isUpdate_zero() {
+        final int fsiState = NotificationRecordLogger.getFsiState(
+                /* isStickyHunFlagEnabled= */ true,
+                /* hasFullScreenIntent= */ true,
+                /* hasFsiRequestedButDeniedFlag= */ true,
+                /* eventType= */ NOTIFICATION_UPDATED);
+        assertEquals(0, fsiState);
+    }
+
+    @Test
+    public void testGetFsiState_hasFsi_allowedEnum() {
+        final int fsiState = NotificationRecordLogger.getFsiState(
+                /* isStickyHunFlagEnabled= */ true,
+                /* hasFullScreenIntent= */ true,
+                /* hasFsiRequestedButDeniedFlag= */ false,
+                /* eventType= */ NOTIFICATION_POSTED);
+        assertEquals(FrameworkStatsLog.NOTIFICATION_REPORTED__FSI_STATE__FSI_ALLOWED, fsiState);
+    }
+
+    @Test
+    public void testGetFsiState_fsiPermissionDenied_deniedEnum() {
+        final int fsiState = NotificationRecordLogger.getFsiState(
+                /* isStickyHunFlagEnabled= */ true,
+                /* hasFullScreenIntent= */ false,
+                /* hasFsiRequestedButDeniedFlag= */ true,
+                /* eventType= */ NOTIFICATION_POSTED);
+        assertEquals(FrameworkStatsLog.NOTIFICATION_REPORTED__FSI_STATE__FSI_DENIED, fsiState);
+    }
+
+    @Test
+    public void testGetFsiState_noFsi_noFsiEnum() {
+        final int fsiState = NotificationRecordLogger.getFsiState(
+                /* isStickyHunFlagEnabled= */ true,
+                /* hasFullScreenIntent= */ false,
+                /* hasFsiRequestedButDeniedFlag= */ false,
+                /* eventType= */ NOTIFICATION_POSTED);
+        assertEquals(FrameworkStatsLog.NOTIFICATION_REPORTED__FSI_STATE__NO_FSI, fsiState);
+    }
+
+    @Test
+    public void testBubbleGroupSummaryDismissal() {
+        assertEquals(NOTIFICATION_CANCEL_GROUP_SUMMARY_CANCELED,
+                NotificationRecordLogger.NotificationCancelledEvent.fromCancelReason(
+                REASON_GROUP_SUMMARY_CANCELED, DISMISSAL_BUBBLE));
+    }
+
+    @Test
+    public void testOtherNotificationCancel() {
+        assertEquals(NOTIFICATION_CANCEL_USER_OTHER,
+                NotificationRecordLogger.NotificationCancelledEvent.fromCancelReason(
+                        REASON_CANCEL, DISMISSAL_OTHER));
+    }
+
+    @Test
+    public void testGetAgeInMinutes() {
+        long postTimeMs = Duration.ofMinutes(5).toMillis();
+        long whenMs = Duration.ofMinutes(2).toMillis();
+        int age = NotificationRecordLogger.getAgeInMinutes(postTimeMs, whenMs);
+        assertThat(age).isEqualTo(3);
     }
 }

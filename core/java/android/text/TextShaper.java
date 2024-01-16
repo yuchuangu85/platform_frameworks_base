@@ -173,7 +173,7 @@ public class TextShaper {
     private TextShaper() {}
 
     /**
-     * An consumer interface for accepting text shape result.
+     * A consumer interface for accepting text shape result.
      */
     public interface GlyphsConsumer {
         /**
@@ -222,7 +222,8 @@ public class TextShaper {
                     mp.getDirections(0, count),
                     false /* tabstop is not supported */,
                     null,
-                    -1, -1 // ellipsis is not supported.
+                    -1, -1, // ellipsis is not supported.
+                    false /* fallback line spacing is not used */
             );
             tl.shape(consumer);
         } finally {

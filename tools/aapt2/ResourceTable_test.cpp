@@ -15,14 +15,15 @@
  */
 
 #include "ResourceTable.h"
-#include "Diagnostics.h"
-#include "ResourceValues.h"
-#include "test/Test.h"
-#include "util/Util.h"
 
 #include <algorithm>
 #include <ostream>
 #include <string>
+
+#include "ResourceValues.h"
+#include "androidfw/IDiagnostics.h"
+#include "test/Test.h"
+#include "util/Util.h"
 
 using ::android::ConfigDescription;
 using ::android::StringPiece;
@@ -162,7 +163,7 @@ TEST(ResourceTableTest, ProductVaryingValues) {
   EXPECT_THAT(test::GetValueForConfigAndProduct<Id>(&table, "android:string/foo",test::ParseConfigOrDie("land"), "tablet"), NotNull());
   EXPECT_THAT(test::GetValueForConfigAndProduct<Id>(&table, "android:string/foo",test::ParseConfigOrDie("land"), "phone"), NotNull());
 
-  Maybe<ResourceTable::SearchResult> sr =
+  std::optional<ResourceTable::SearchResult> sr =
       table.FindResource(test::ParseNameOrDie("android:string/foo"));
   ASSERT_TRUE(sr);
   std::vector<ResourceConfigValue*> values =
@@ -186,8 +187,8 @@ static StringPiece LevelToString(Visibility::Level level) {
 static ::testing::AssertionResult VisibilityOfResource(const ResourceTable& table,
                                                        const ResourceNameRef& name,
                                                        Visibility::Level level,
-                                                       const StringPiece& comment) {
-  Maybe<ResourceTable::SearchResult> result = table.FindResource(name);
+                                                       StringPiece comment) {
+  std::optional<ResourceTable::SearchResult> result = table.FindResource(name);
   if (!result) {
     return ::testing::AssertionFailure() << "no resource '" << name << "' found in table";
   }
@@ -242,7 +243,7 @@ TEST(ResourceTableTest, SetAllowNew) {
   const ResourceName name = test::ParseNameOrDie("android:string/foo");
 
   AllowNew allow_new;
-  Maybe<ResourceTable::SearchResult> result;
+  std::optional<ResourceTable::SearchResult> result;
 
   allow_new.comment = "first";
   ASSERT_TRUE(table.AddResource(NewResourceBuilder(name).SetAllowNew(allow_new).Build(),
@@ -263,18 +264,18 @@ TEST(ResourceTableTest, SetAllowNew) {
 
 TEST(ResourceTableTest, SetOverlayable) {
   ResourceTable table;
-  auto overlayable = std::make_shared<Overlayable>("Name", "overlay://theme",
-                                                   Source("res/values/overlayable.xml", 40));
+  auto overlayable = std::make_shared<Overlayable>(
+      "Name", "overlay://theme", android::Source("res/values/overlayable.xml", 40));
   OverlayableItem overlayable_item(overlayable);
   overlayable_item.policies |= PolicyFlags::PRODUCT_PARTITION;
   overlayable_item.policies |= PolicyFlags::VENDOR_PARTITION;
   overlayable_item.comment = "comment";
-  overlayable_item.source = Source("res/values/overlayable.xml", 42);
+  overlayable_item.source = android::Source("res/values/overlayable.xml", 42);
 
   const ResourceName name = test::ParseNameOrDie("android:string/foo");
   ASSERT_TRUE(table.AddResource(NewResourceBuilder(name).SetOverlayable(overlayable_item).Build(),
                                 test::GetDiagnostics()));
-  Maybe<ResourceTable::SearchResult> search_result = table.FindResource(name);
+  std::optional<ResourceTable::SearchResult> search_result = table.FindResource(name);
 
   ASSERT_TRUE(search_result);
   ASSERT_TRUE(search_result.value().entry->overlayable_item);

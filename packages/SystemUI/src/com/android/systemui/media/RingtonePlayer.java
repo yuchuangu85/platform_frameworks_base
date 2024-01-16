@@ -37,20 +37,24 @@ import android.os.UserHandle;
 import android.provider.MediaStore;
 import android.util.Log;
 
-import com.android.systemui.SystemUI;
+import com.android.systemui.CoreStartable;
+import com.android.systemui.dagger.SysUISingleton;
 
-import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.HashMap;
+
+import javax.inject.Inject;
 
 /**
  * Service that offers to play ringtones by {@link Uri}, since our process has
  * {@link android.Manifest.permission#READ_EXTERNAL_STORAGE}.
  */
-public class RingtonePlayer extends SystemUI {
+@SysUISingleton
+public class RingtonePlayer implements CoreStartable {
     private static final String TAG = "RingtonePlayer";
     private static final boolean LOGD = false;
+    private final Context mContext;
 
     // TODO: support Uri switching under same IBinder
 
@@ -59,8 +63,9 @@ public class RingtonePlayer extends SystemUI {
     private final NotificationPlayer mAsyncPlayer = new NotificationPlayer(TAG);
     private final HashMap<IBinder, Client> mClients = new HashMap<IBinder, Client>();
 
+    @Inject
     public RingtonePlayer(Context context) {
-        super(context);
+        mContext = context;
     }
 
     @Override
@@ -83,17 +88,9 @@ public class RingtonePlayer extends SystemUI {
         private final IBinder mToken;
         private final Ringtone mRingtone;
 
-        public Client(IBinder token, Uri uri, UserHandle user, AudioAttributes aa) {
-            this(token, uri, user, aa, null);
-        }
-
-        Client(IBinder token, Uri uri, UserHandle user, AudioAttributes aa,
-                @Nullable VolumeShaper.Configuration volumeShaperConfig) {
+        Client(IBinder token, Ringtone ringtone) {
             mToken = token;
-
-            mRingtone = new Ringtone(getContextForUser(user), false);
-            mRingtone.setAudioAttributes(aa);
-            mRingtone.setUri(uri, volumeShaperConfig);
+            mRingtone = ringtone;
         }
 
         @Override
@@ -123,11 +120,28 @@ public class RingtonePlayer extends SystemUI {
             Client client;
             synchronized (mClients) {
                 client = mClients.get(token);
-                if (client == null) {
-                    final UserHandle user = Binder.getCallingUserHandle();
-                    client = new Client(token, uri, user, aa, volumeShaperConfig);
-                    token.linkToDeath(client, 0);
-                    mClients.put(token, client);
+            }
+            // Don't hold the lock while constructing the ringtone, since it can be slow. The caller
+            // shouldn't call play on the same ringtone from 2 threads, so this shouldn't race and
+            // waste the build.
+            if (client == null) {
+                final UserHandle user = Binder.getCallingUserHandle();
+                Ringtone ringtone = new Ringtone(getContextForUser(user), false);
+                ringtone.setAudioAttributesField(aa);
+                ringtone.setUri(uri, volumeShaperConfig);
+                ringtone.createLocalMediaPlayer();
+                synchronized (mClients) {
+                    client = mClients.get(token);
+                    if (client == null) {
+                        client = new Client(token, ringtone);
+                        token.linkToDeath(client, 0);
+                        mClients.put(token, client);
+                        ringtone = null;  // "owned" by the client now.
+                    }
+                }
+                // Clean up ringtone if it was abandoned (a client already existed).
+                if (ringtone != null) {
+                    ringtone.stop();
                 }
             }
             client.mRingtone.setLooping(looping);
@@ -243,7 +257,7 @@ public class RingtonePlayer extends SystemUI {
     }
 
     @Override
-    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+    public void dump(PrintWriter pw, String[] args) {
         pw.println("Clients:");
         synchronized (mClients) {
             for (Client client : mClients.values()) {

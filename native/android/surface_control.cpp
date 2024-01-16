@@ -17,19 +17,20 @@
 #include <android/hardware/configstore/1.0/ISurfaceFlingerConfigs.h>
 #include <android/native_window.h>
 #include <android/surface_control.h>
-#include <surface_control_private.h>
-
+#include <android/surface_control_jni.h>
+#include <android_runtime/android_view_SurfaceControl.h>
 #include <configstore/Utils.h>
-
 #include <gui/HdrMetadata.h>
 #include <gui/ISurfaceComposer.h>
 #include <gui/Surface.h>
 #include <gui/SurfaceComposerClient.h>
 #include <gui/SurfaceControl.h>
-
+#include <private/android/choreographer.h>
+#include <surface_control_private.h>
 #include <ui/DynamicDisplayInfo.h>
-
 #include <utils/Timers.h>
+
+#include <utility>
 
 using namespace android::hardware::configstore;
 using namespace android::hardware::configstore::V1_0;
@@ -83,7 +84,7 @@ ASurfaceControl* ASurfaceControl_createFromWindow(ANativeWindow* window, const c
     Surface* surface = static_cast<Surface*>(window);
     sp<IBinder> parentHandle = surface->getSurfaceControlHandle();
 
-    uint32_t flags = ISurfaceComposerClient::eFXSurfaceBufferState;
+    int32_t flags = ISurfaceComposerClient::eFXSurfaceBufferState;
     sp<SurfaceControl> surfaceControl;
     if (parentHandle) {
         surfaceControl =
@@ -91,11 +92,8 @@ ASurfaceControl* ASurfaceControl_createFromWindow(ANativeWindow* window, const c
                                       // Format is only relevant for buffer queue layers.
                                       PIXEL_FORMAT_UNKNOWN /* format */, flags, parentHandle);
     } else {
-        surfaceControl =
-                client->createWithSurfaceParent(String8(debug_name), 0 /* width */, 0 /* height */,
-                                                // Format is only relevant for buffer queue layers.
-                                                PIXEL_FORMAT_UNKNOWN /* format */, flags,
-                                                static_cast<Surface*>(window));
+        // deprecated, this should no longer be used
+        surfaceControl = nullptr;
     }
 
     if (!surfaceControl) {
@@ -140,33 +138,41 @@ void ASurfaceControl_release(ASurfaceControl* aSurfaceControl) {
     SurfaceControl_release(surfaceControl);
 }
 
+ASurfaceControl* ASurfaceControl_fromJava(JNIEnv* env, jobject surfaceControlObj) {
+    LOG_ALWAYS_FATAL_IF(!env, "nullptr passed to ASurfaceControl_fromJava as env argument");
+    LOG_ALWAYS_FATAL_IF(!surfaceControlObj,
+                        "nullptr passed to ASurfaceControl_fromJava as surfaceControlObj argument");
+    SurfaceControl* surfaceControl =
+            android_view_SurfaceControl_getNativeSurfaceControl(env, surfaceControlObj);
+    LOG_ALWAYS_FATAL_IF(!surfaceControl,
+                        "surfaceControlObj passed to ASurfaceControl_fromJava is not valid");
+    SurfaceControl_acquire(surfaceControl);
+    return reinterpret_cast<ASurfaceControl*>(surfaceControl);
+}
+
 struct ASurfaceControlStats {
-    int64_t acquireTime;
+    std::variant<int64_t, sp<Fence>> acquireTimeOrFence;
     sp<Fence> previousReleaseFence;
     uint64_t frameNumber;
 };
 
-void ASurfaceControl_registerSurfaceStatsListener(ASurfaceControl* control, void* context,
-        ASurfaceControl_SurfaceStatsListener func) {
-    SurfaceStatsCallback callback = [func](void* callback_context,
-                                                               nsecs_t,
-                                                               const sp<Fence>&,
-                                                               const SurfaceStats& surfaceStats) {
-
+void ASurfaceControl_registerSurfaceStatsListener(ASurfaceControl* control, int32_t id,
+                                                  void* context,
+                                                  ASurfaceControl_SurfaceStatsListener func) {
+    SurfaceStatsCallback callback = [func, id](void* callback_context, nsecs_t, const sp<Fence>&,
+                                               const SurfaceStats& surfaceStats) {
         ASurfaceControlStats aSurfaceControlStats;
 
-        ASurfaceControl* aSurfaceControl =
-                reinterpret_cast<ASurfaceControl*>(surfaceStats.surfaceControl.get());
-        aSurfaceControlStats.acquireTime = surfaceStats.acquireTime;
+        aSurfaceControlStats.acquireTimeOrFence = surfaceStats.acquireTimeOrFence;
         aSurfaceControlStats.previousReleaseFence = surfaceStats.previousReleaseFence;
         aSurfaceControlStats.frameNumber = surfaceStats.eventStats.frameNumber;
 
-        (*func)(callback_context, aSurfaceControl, &aSurfaceControlStats);
+        (*func)(callback_context, id, &aSurfaceControlStats);
     };
+
     TransactionCompletedListener::getInstance()->addSurfaceStatsListener(context,
             reinterpret_cast<void*>(func), ASurfaceControl_to_SurfaceControl(control), callback);
 }
-
 
 void ASurfaceControl_unregisterSurfaceStatsListener(void* context,
         ASurfaceControl_SurfaceStatsListener func) {
@@ -174,8 +180,28 @@ void ASurfaceControl_unregisterSurfaceStatsListener(void* context,
             reinterpret_cast<void*>(func));
 }
 
+AChoreographer* ASurfaceControl_getChoreographer(ASurfaceControl* aSurfaceControl) {
+    LOG_ALWAYS_FATAL_IF(aSurfaceControl == nullptr, "aSurfaceControl should not be nullptr");
+    SurfaceControl* surfaceControl =
+            ASurfaceControl_to_SurfaceControl(reinterpret_cast<ASurfaceControl*>(aSurfaceControl));
+    if (!surfaceControl->isValid()) {
+        ALOGE("Attempted to get choreographer from invalid surface control");
+        return nullptr;
+    }
+    SurfaceControl_acquire(surfaceControl);
+    return reinterpret_cast<AChoreographer*>(surfaceControl->getChoreographer().get());
+}
+
 int64_t ASurfaceControlStats_getAcquireTime(ASurfaceControlStats* stats) {
-    return stats->acquireTime;
+    if (const auto* fence = std::get_if<sp<Fence>>(&stats->acquireTimeOrFence)) {
+        // We got a fence instead of the acquire time due to latch unsignaled.
+        // Ideally the client could just get the acquire time dericly from
+        // the fence instead of calling this function which needs to block.
+        (*fence)->waitForever("ASurfaceControlStats_getAcquireTime");
+        return (*fence)->getSignalTime();
+    }
+
+    return std::get<int64_t>(stats->acquireTimeOrFence);
 }
 
 uint64_t ASurfaceControlStats_getFrameNumber(ASurfaceControlStats* stats) {
@@ -190,6 +216,18 @@ ASurfaceTransaction* ASurfaceTransaction_create() {
 void ASurfaceTransaction_delete(ASurfaceTransaction* aSurfaceTransaction) {
     Transaction* transaction = ASurfaceTransaction_to_Transaction(aSurfaceTransaction);
     delete transaction;
+}
+
+ASurfaceTransaction* ASurfaceTransaction_fromJava(JNIEnv* env, jobject transactionObj) {
+    LOG_ALWAYS_FATAL_IF(!env, "nullptr passed to ASurfaceTransaction_fromJava as env argument");
+    LOG_ALWAYS_FATAL_IF(!transactionObj,
+                        "nullptr passed to ASurfaceTransaction_fromJava as transactionObj "
+                        "argument");
+    Transaction* transaction =
+            android_view_SurfaceTransaction_getNativeSurfaceTransaction(env, transactionObj);
+    LOG_ALWAYS_FATAL_IF(!transaction,
+                        "surfaceControlObj passed to ASurfaceTransaction_fromJava is not valid");
+    return reinterpret_cast<ASurfaceTransaction*>(transaction);
 }
 
 void ASurfaceTransaction_apply(ASurfaceTransaction* aSurfaceTransaction) {
@@ -254,7 +292,7 @@ int64_t ASurfaceTransactionStats_getAcquireTime(ASurfaceTransactionStats* aSurfa
             aSurfaceControlStats == aSurfaceTransactionStats->aSurfaceControlStats.end(),
             "ASurfaceControl not found");
 
-    return aSurfaceControlStats->second.acquireTime;
+    return ASurfaceControlStats_getAcquireTime(&aSurfaceControlStats->second);
 }
 
 int ASurfaceTransactionStats_getPreviousReleaseFenceFd(
@@ -298,9 +336,10 @@ void ASurfaceTransaction_setOnComplete(ASurfaceTransaction* aSurfaceTransaction,
 
         auto& aSurfaceControlStats = aSurfaceTransactionStats.aSurfaceControlStats;
 
-        for (const auto& [surfaceControl, latchTime, acquireTime, presentFence, previousReleaseFence, transformHint, frameEvents, ignore] : surfaceControlStats) {
+        for (const auto& [surfaceControl, latchTime, acquireTimeOrFence, presentFence,
+                  previousReleaseFence, transformHint, frameEvents, ignore] : surfaceControlStats) {
             ASurfaceControl* aSurfaceControl = reinterpret_cast<ASurfaceControl*>(surfaceControl.get());
-            aSurfaceControlStats[aSurfaceControl].acquireTime = acquireTime;
+            aSurfaceControlStats[aSurfaceControl].acquireTimeOrFence = acquireTimeOrFence;
             aSurfaceControlStats[aSurfaceControl].previousReleaseFence = previousReleaseFence;
         }
 
@@ -368,13 +407,13 @@ void ASurfaceTransaction_setBuffer(ASurfaceTransaction* aSurfaceTransaction,
     sp<SurfaceControl> surfaceControl = ASurfaceControl_to_SurfaceControl(aSurfaceControl);
     Transaction* transaction = ASurfaceTransaction_to_Transaction(aSurfaceTransaction);
 
-    sp<GraphicBuffer> graphic_buffer(reinterpret_cast<GraphicBuffer*>(buffer));
+    sp<GraphicBuffer> graphic_buffer(GraphicBuffer::fromAHardwareBuffer(buffer));
 
-    transaction->setBuffer(surfaceControl, graphic_buffer);
+    std::optional<sp<Fence>> fence = std::nullopt;
     if (acquire_fence_fd != -1) {
-        sp<Fence> fence = new Fence(acquire_fence_fd);
-        transaction->setAcquireFence(surfaceControl, fence);
+        fence = new Fence(acquire_fence_fd);
     }
+    transaction->setBuffer(surfaceControl, graphic_buffer, fence);
 }
 
 void ASurfaceTransaction_setGeometry(ASurfaceTransaction* aSurfaceTransaction,
@@ -582,6 +621,31 @@ void ASurfaceTransaction_setHdrMetadata_cta861_3(ASurfaceTransaction* aSurfaceTr
     transaction->setHdrMetadata(surfaceControl, hdrMetadata);
 }
 
+void ASurfaceTransaction_setExtendedRangeBrightness(ASurfaceTransaction* aSurfaceTransaction,
+                                                    ASurfaceControl* aSurfaceControl,
+                                                    float currentBufferRatio, float desiredRatio) {
+    CHECK_NOT_NULL(aSurfaceTransaction);
+    CHECK_NOT_NULL(aSurfaceControl);
+
+    if (!isfinite(currentBufferRatio) || currentBufferRatio < 1.0f) {
+        LOG_ALWAYS_FATAL("setExtendedRangeBrightness, currentBufferRatio %f isn't finite or >= "
+                         "1.0f",
+                         currentBufferRatio);
+        return;
+    }
+
+    if (!isfinite(desiredRatio) || desiredRatio < 1.0f) {
+        LOG_ALWAYS_FATAL("setExtendedRangeBrightness, desiredRatio %f isn't finite or >= 1.0f",
+                         desiredRatio);
+        return;
+    }
+
+    sp<SurfaceControl> surfaceControl = ASurfaceControl_to_SurfaceControl(aSurfaceControl);
+    Transaction* transaction = ASurfaceTransaction_to_Transaction(aSurfaceTransaction);
+
+    transaction->setExtendedRangeBrightness(surfaceControl, currentBufferRatio, desiredRatio);
+}
+
 void ASurfaceTransaction_setColor(ASurfaceTransaction* aSurfaceTransaction,
                                   ASurfaceControl* aSurfaceControl,
                                   float r, float g, float b, float alpha,
@@ -620,6 +684,16 @@ void ASurfaceTransaction_setFrameRateWithChangeStrategy(ASurfaceTransaction* aSu
     transaction->setFrameRate(surfaceControl, frameRate, compatibility, changeFrameRateStrategy);
 }
 
+void ASurfaceTransaction_clearFrameRate(ASurfaceTransaction* aSurfaceTransaction,
+                                        ASurfaceControl* aSurfaceControl) {
+    CHECK_NOT_NULL(aSurfaceTransaction);
+    CHECK_NOT_NULL(aSurfaceControl);
+    Transaction* transaction = ASurfaceTransaction_to_Transaction(aSurfaceTransaction);
+    sp<SurfaceControl> surfaceControl = ASurfaceControl_to_SurfaceControl(aSurfaceControl);
+    transaction->setFrameRate(surfaceControl, 0, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT,
+                              ANATIVEWINDOW_CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS);
+}
+
 void ASurfaceTransaction_setEnableBackPressure(ASurfaceTransaction* aSurfaceTransaction,
                                                ASurfaceControl* aSurfaceControl,
                                                bool enableBackpressure) {
@@ -647,13 +721,12 @@ void ASurfaceTransaction_setOnCommit(ASurfaceTransaction* aSurfaceTransaction, v
                 aSurfaceTransactionStats.transactionCompleted = false;
 
                 auto& aSurfaceControlStats = aSurfaceTransactionStats.aSurfaceControlStats;
-                for (const auto&
-                             [surfaceControl, latchTime, acquireTime, presentFence,
-                              previousReleaseFence, transformHint,
-                              frameEvents, ignore] : surfaceControlStats) {
+                for (const auto& [surfaceControl, latchTime, acquireTimeOrFence, presentFence,
+                              previousReleaseFence, transformHint, frameEvents, ignore] :
+                     surfaceControlStats) {
                     ASurfaceControl* aSurfaceControl =
                             reinterpret_cast<ASurfaceControl*>(surfaceControl.get());
-                    aSurfaceControlStats[aSurfaceControl].acquireTime = acquireTime;
+                    aSurfaceControlStats[aSurfaceControl].acquireTimeOrFence = acquireTimeOrFence;
                 }
 
                 (*func)(callback_context, &aSurfaceTransactionStats);
@@ -662,4 +735,14 @@ void ASurfaceTransaction_setOnCommit(ASurfaceTransaction* aSurfaceTransaction, v
     Transaction* transaction = ASurfaceTransaction_to_Transaction(aSurfaceTransaction);
 
     transaction->addTransactionCommittedCallback(callback, context);
+}
+
+void ASurfaceTransaction_setFrameTimeline(ASurfaceTransaction* aSurfaceTransaction,
+                                          AVsyncId vsyncId) {
+    CHECK_NOT_NULL(aSurfaceTransaction);
+    const auto startTime = AChoreographer_getStartTimeNanosForVsyncId(vsyncId);
+    FrameTimelineInfo ftInfo;
+    ftInfo.vsyncId = vsyncId;
+    ftInfo.startTimeNanos = startTime;
+    ASurfaceTransaction_to_Transaction(aSurfaceTransaction)->setFrameTimelineInfo(ftInfo);
 }

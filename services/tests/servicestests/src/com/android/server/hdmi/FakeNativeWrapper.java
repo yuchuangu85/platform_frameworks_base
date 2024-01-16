@@ -25,11 +25,12 @@ import com.android.server.hdmi.HdmiCecController.NativeWrapper;
 import com.google.common.collect.Iterables;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Fake {@link NativeWrapper} useful for testing. */
+/** Fake {@link NativeWrapper} for the HDMI CEC HAL, useful for testing. */
 final class FakeNativeWrapper implements NativeWrapper {
     private static final String TAG = "FakeNativeWrapper";
 
@@ -56,6 +57,7 @@ final class FakeNativeWrapper implements NativeWrapper {
     private final Map<Integer, Boolean> mPortConnectionStatus = new HashMap<>();
     private final HashMap<Integer, Integer> mMessageSendResult = new HashMap<>();
     private int mMyPhysicalAddress = 0;
+    private int mVendorId = 0;
     private HdmiPortInfo[] mHdmiPortInfo = null;
     private HdmiCecController.HdmiCecCallback mCallback = null;
     private int mCecVersion = HdmiControlManager.HDMI_CEC_VERSION_2_0;
@@ -76,7 +78,8 @@ final class FakeNativeWrapper implements NativeWrapper {
         if (body.length == 0) {
             return mPollAddressResponse[dstAddress];
         } else {
-            HdmiCecMessage message = HdmiCecMessageBuilder.of(srcAddress, dstAddress, body);
+            HdmiCecMessage message = HdmiCecMessage.build(srcAddress, dstAddress, body[0],
+                    Arrays.copyOfRange(body, 1, body.length));
             mResultMessages.add(message);
             return mMessageSendResult.getOrDefault(message.getOpcode(), SendMessageResult.SUCCESS);
         }
@@ -102,20 +105,30 @@ final class FakeNativeWrapper implements NativeWrapper {
 
     @Override
     public int nativeGetVendorId() {
-        return 0;
+        return mVendorId;
     }
 
     @Override
     public HdmiPortInfo[] nativeGetPortInfos() {
         if (mHdmiPortInfo == null) {
             mHdmiPortInfo = new HdmiPortInfo[1];
-            mHdmiPortInfo[0] = new HdmiPortInfo(1, 1, 0x1000, true, true, true);
+            mHdmiPortInfo[0] = new HdmiPortInfo.Builder(1, 1, 0x1000)
+                    .setCecSupported(true)
+                    .setMhlSupported(true)
+                    .setArcSupported(true)
+                    .build();
         }
         return mHdmiPortInfo;
     }
 
     @Override
-    public void nativeSetOption(int flag, boolean enabled) {}
+    public void enableWakeupByOtp(boolean enabled) {}
+
+    @Override
+    public void enableCec(boolean enabled) {}
+
+    @Override
+    public void enableSystemCecControl(boolean enabled) {}
 
     @Override
     public void nativeSetLanguage(String language) {}
@@ -127,6 +140,14 @@ final class FakeNativeWrapper implements NativeWrapper {
     public boolean nativeIsConnected(int port) {
         Boolean isConnected = mPortConnectionStatus.get(port);
         return isConnected == null ? false : isConnected;
+    }
+
+    @Override
+    public void nativeSetHpdSignalType(int signal, int portId) {}
+
+    @Override
+    public int nativeGetHpdSignalType(int portId) {
+        return Constants.HDMI_HPD_TYPE_PHYSICAL;
     }
 
     public void setPortConnectionStatus(int port, boolean connected) {
@@ -178,6 +199,11 @@ final class FakeNativeWrapper implements NativeWrapper {
 
     public void setMessageSendResult(int opcode, int result) {
         mMessageSendResult.put(opcode, result);
+    }
+
+    @VisibleForTesting
+    protected void setVendorId(int vendorId) {
+        mVendorId = vendorId;
     }
 
     @VisibleForTesting

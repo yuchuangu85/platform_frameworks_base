@@ -18,6 +18,7 @@ package com.android.internal.app;
 
 import static junit.framework.Assert.assertEquals;
 
+import android.app.Instrumentation;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -27,11 +28,32 @@ import android.os.Message;
 
 import androidx.test.InstrumentationRegistry;
 
+import com.android.internal.app.chooser.TargetInfo;
+
+import com.google.android.collect.Lists;
+
 import org.junit.Test;
 
 import java.util.List;
 
 public class AbstractResolverComparatorTest {
+
+    @Test
+    public void testPositionFixed() {
+        ResolverActivity.ResolvedComponentInfo r1 = new ResolverActivity.ResolvedComponentInfo(
+                new ComponentName("package", "class"), new Intent(), new ResolveInfo()
+        );
+        r1.setFixedAtTop(true);
+
+        ResolverActivity.ResolvedComponentInfo r2 = new ResolverActivity.ResolvedComponentInfo(
+                new ComponentName("zackage", "zlass"), new Intent(), new ResolveInfo()
+        );
+        r2.setPinned(true);
+        Context context = InstrumentationRegistry.getTargetContext();
+        AbstractResolverComparator comparator = getTestComparator(context);
+        assertEquals("FixedAtTop ranks over pinned", -1, comparator.compare(r1, r2));
+        assertEquals("Pinned ranks under fixedAtTop", 1, comparator.compare(r2, r1));
+    }
 
     @Test
     public void testPinned() {
@@ -79,7 +101,8 @@ public class AbstractResolverComparatorTest {
         Intent intent = new Intent();
 
         AbstractResolverComparator testComparator =
-                new AbstractResolverComparator(context, intent) {
+                new AbstractResolverComparator(context, intent,
+                        Lists.newArrayList(context.getUser())) {
 
             @Override
             int compare(ResolveInfo lhs, ResolveInfo rhs) {
@@ -92,17 +115,12 @@ public class AbstractResolverComparatorTest {
             void doCompute(List<ResolverActivity.ResolvedComponentInfo> targets) {}
 
             @Override
-            float getScore(ComponentName name) {
+            float getScore(TargetInfo targetInfo) {
                 return 0;
             }
 
             @Override
             void handleResultMessage(Message message) {}
-
-            @Override
-            List<ComponentName> getTopComponentNames(int topK) {
-                return null;
-            }
         };
         return testComparator;
     }

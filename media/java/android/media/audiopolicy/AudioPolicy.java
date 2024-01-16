@@ -19,6 +19,7 @@ package android.media.audiopolicy;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.annotation.UserIdInt;
@@ -74,11 +75,13 @@ public class AudioPolicy {
      */
     public static final int POLICY_STATUS_REGISTERED = 2;
 
+    @GuardedBy("mLock")
     private int mStatus;
+    @GuardedBy("mLock")
     private String mRegistrationId;
-    private AudioPolicyStatusListener mStatusListener;
-    private boolean mIsFocusPolicy;
-    private boolean mIsTestFocusPolicy;
+    private final AudioPolicyStatusListener mStatusListener;
+    private final boolean mIsFocusPolicy;
+    private final boolean mIsTestFocusPolicy;
 
     /**
      * The list of AudioTrack instances created to inject audio into the associated mixes
@@ -114,6 +117,7 @@ public class AudioPolicy {
 
     private Context mContext;
 
+    @GuardedBy("mLock")
     private AudioPolicyConfig mConfig;
 
     private final MediaProjection mProjection;
@@ -230,7 +234,7 @@ public class AudioPolicy {
          * If set to {@code true}, it is mandatory to set an
          * {@link AudioPolicy.AudioPolicyFocusListener} in order to successfully build
          * an {@code AudioPolicy} instance.
-         * @param enforce true if the policy will govern audio focus decisions.
+         * @param isFocusPolicy true if the policy will govern audio focus decisions.
          * @return the same Builder instance.
          */
         @NonNull
@@ -551,7 +555,6 @@ public class AudioPolicy {
     /** @hide */
     public void reset() {
         setRegistration(null);
-        mConfig.reset();
     }
 
     public void setRegistration(String regId) {
@@ -562,6 +565,7 @@ public class AudioPolicy {
                 mStatus = POLICY_STATUS_REGISTERED;
             } else {
                 mStatus = POLICY_STATUS_UNREGISTERED;
+                mConfig.reset();
             }
         }
         sendMsg(MSG_POLICY_STATUS_CHANGE);
@@ -588,6 +592,10 @@ public class AudioPolicy {
         boolean canModifyAudioRouting = PackageManager.PERMISSION_GRANTED
                 == checkCallingOrSelfPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING);
 
+        boolean canInterceptCallAudio = PackageManager.PERMISSION_GRANTED
+                == checkCallingOrSelfPermission(
+                        android.Manifest.permission.CALL_AUDIO_INTERCEPTION);
+
         boolean canProjectAudio;
         try {
             canProjectAudio = mProjection != null && mProjection.getProjection().canProjectAudio();
@@ -596,7 +604,9 @@ public class AudioPolicy {
             throw e.rethrowFromSystemServer();
         }
 
-        if (!((isLoopbackRenderPolicy() && canProjectAudio) || canModifyAudioRouting)) {
+        if (!((isLoopbackRenderPolicy() && canProjectAudio)
+                || (isCallRedirectionPolicy() && canInterceptCallAudio)
+                || canModifyAudioRouting)) {
             Slog.w(TAG, "Cannot use AudioPolicy for pid " + Binder.getCallingPid() + " / uid "
                     + Binder.getCallingUid() + ", needs MODIFY_AUDIO_ROUTING or "
                     + "MediaProjection that can project audio.");
@@ -609,6 +619,17 @@ public class AudioPolicy {
         synchronized (mLock) {
             return mConfig.mMixes.stream().allMatch(mix -> mix.getRouteFlags()
                     == (mix.ROUTE_FLAG_RENDER | mix.ROUTE_FLAG_LOOP_BACK));
+        }
+    }
+
+    private boolean isCallRedirectionPolicy() {
+        synchronized (mLock) {
+            for (AudioMix mix : mConfig.mMixes) {
+                if (mix.isForCallRedirection()) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
@@ -706,6 +727,45 @@ public class AudioPolicy {
     }
 
     /**
+     * Returns the list of entries in the focus stack.
+     * The list is ordered with increasing rank of focus ownership, where the last entry is at the
+     * top of the focus stack and is the current focus owner.
+     * @return the ordered list of focus owners
+     * @see AudioManager#registerAudioPolicy(AudioPolicy)
+     */
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public @NonNull List<AudioFocusInfo> getFocusStack() {
+        try {
+            return getService().getFocusStack();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Send AUDIOFOCUS_LOSS to a specific stack entry, causing it to be notified of the focus
+     * loss, and for it to exit the focus stack (its focus listener will not be invoked after that).
+     * This operation is only valid for a registered policy (with
+     * {@link AudioManager#registerAudioPolicy(AudioPolicy)}) that is also set as the policy focus
+     * listener (with {@link Builder#setAudioPolicyFocusListener(AudioPolicyFocusListener)}.
+     * @param focusLoser the stack entry that is exiting the stack through a focus loss
+     * @return false if the focusLoser wasn't found in the stack, true otherwise
+     * @throws IllegalStateException if used on an unregistered policy, or a registered policy
+     *     with no {@link AudioPolicyFocusListener} set
+     * @see AudioManager#registerAudioPolicy(AudioPolicy)
+     * @see Builder#setAudioPolicyStatusListener(AudioPolicyStatusListener)
+     */
+    @RequiresPermission(android.Manifest.permission.MODIFY_AUDIO_ROUTING)
+    public boolean sendFocusLoss(@NonNull AudioFocusInfo focusLoser) throws IllegalStateException {
+        Objects.requireNonNull(focusLoser);
+        try {
+            return getService().sendFocusLoss(focusLoser, cb());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Create an {@link AudioRecord} instance that is associated with the given {@link AudioMix}.
      * Audio buffers recorded through the created instance will contain the mix of the audio
      * streams that fed the given mixer.
@@ -728,13 +788,16 @@ public class AudioPolicy {
                 .setChannelMask(AudioFormat.inChannelMaskFromOutChannelMask(
                         mix.getFormat().getChannelMask()))
                 .build();
+
+        AudioAttributes.Builder ab = new AudioAttributes.Builder()
+                .setInternalCapturePreset(MediaRecorder.AudioSource.REMOTE_SUBMIX)
+                .addTag(addressForTag(mix))
+                .addTag(AudioRecord.SUBMIX_FIXED_VOLUME);
+        if (mix.isForCallRedirection()) {
+            ab.setForCallRedirection();
+        }
         // create the AudioRecord, configured for loop back, using the same format as the mix
-        AudioRecord ar = new AudioRecord(
-                new AudioAttributes.Builder()
-                        .setInternalCapturePreset(MediaRecorder.AudioSource.REMOTE_SUBMIX)
-                        .addTag(addressForTag(mix))
-                        .addTag(AudioRecord.SUBMIX_FIXED_VOLUME)
-                        .build(),
+        AudioRecord ar = new AudioRecord(ab.build(),
                 mixFormat,
                 AudioRecord.getMinBufferSize(mix.getFormat().getSampleRate(),
                         // using stereo for buffer size to avoid the current poor support for masks
@@ -768,11 +831,13 @@ public class AudioPolicy {
         }
         checkMixReadyToUse(mix, true/*for an AudioTrack*/);
         // create the AudioTrack, configured for loop back, using the same format as the mix
-        AudioTrack at = new AudioTrack(
-                new AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_VIRTUAL_SOURCE)
-                        .addTag(addressForTag(mix))
-                        .build(),
+        AudioAttributes.Builder ab = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_VIRTUAL_SOURCE)
+                .addTag(addressForTag(mix));
+        if (mix.isForCallRedirection()) {
+            ab.setForCallRedirection();
+        }
+        AudioTrack at = new AudioTrack(ab.build(),
                 mix.getFormat(),
                 AudioTrack.getMinBufferSize(mix.getFormat().getSampleRate(),
                         mix.getFormat().getChannelMask(), mix.getFormat().getEncoding()),
@@ -878,14 +943,9 @@ public class AudioPolicy {
     }
 
     private void onPolicyStatusChange() {
-        AudioPolicyStatusListener l;
-        synchronized (mLock) {
-            if (mStatusListener == null) {
-                return;
-            }
-            l = mStatusListener;
+        if (mStatusListener != null) {
+            mStatusListener.onStatusChange();
         }
-        l.onStatusChange();
     }
 
     //==================================================

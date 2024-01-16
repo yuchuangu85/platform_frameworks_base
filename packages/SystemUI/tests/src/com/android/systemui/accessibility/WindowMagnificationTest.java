@@ -16,19 +16,26 @@
 
 package com.android.systemui.accessibility;
 
+import static android.provider.Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN;
+import static android.provider.Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW;
+
+import static com.android.systemui.accessibility.AccessibilityLogger.MagnificationSettingsEvent;
+import static com.android.systemui.accessibility.WindowMagnificationSettings.MagnificationSize;
 import static com.android.systemui.recents.OverviewProxyService.OverviewProxyListener;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_MAGNIFICATION_OVERLAP;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
-import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
 import android.os.RemoteException;
@@ -44,7 +51,9 @@ import androidx.test.filters.SmallTest;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.model.SysUiState;
 import com.android.systemui.recents.OverviewProxyService;
+import com.android.systemui.settings.FakeDisplayTracker;
 import com.android.systemui.statusbar.CommandQueue;
+import com.android.systemui.util.settings.SecureSettings;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -69,10 +78,21 @@ public class WindowMagnificationTest extends SysuiTestCase {
     private IWindowMagnificationConnectionCallback mConnectionCallback;
     @Mock
     private OverviewProxyService mOverviewProxyService;
+    @Mock
+    private SecureSettings mSecureSettings;
 
     private CommandQueue mCommandQueue;
     private WindowMagnification mWindowMagnification;
     private OverviewProxyListener mOverviewProxyListener;
+    private FakeDisplayTracker mDisplayTracker = new FakeDisplayTracker(mContext);
+
+    @Mock
+    private WindowMagnificationController mWindowMagnificationController;
+    @Mock
+    private MagnificationSettingsController mMagnificationSettingsController;
+    @Mock
+    private AccessibilityLogger mA11yLogger;
+
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
@@ -86,10 +106,26 @@ public class WindowMagnificationTest extends SysuiTestCase {
 
         when(mSysUiState.setFlag(anyInt(), anyBoolean())).thenReturn(mSysUiState);
 
-        mCommandQueue = new CommandQueue(getContext());
+        doAnswer(invocation -> {
+            mWindowMagnification.mMagnificationSettingsControllerCallback
+                    .onSettingsPanelVisibilityChanged(TEST_DISPLAY, /* shown= */ true);
+            return null;
+        }).when(mMagnificationSettingsController).toggleSettingsPanelVisibility();
+        doAnswer(invocation -> {
+            mWindowMagnification.mMagnificationSettingsControllerCallback
+                    .onSettingsPanelVisibilityChanged(TEST_DISPLAY, /* shown= */ false);
+            return null;
+        }).when(mMagnificationSettingsController).closeMagnificationSettings();
+
+        mCommandQueue = new CommandQueue(getContext(), mDisplayTracker);
         mWindowMagnification = new WindowMagnification(getContext(),
                 getContext().getMainThreadHandler(), mCommandQueue, mModeSwitchesController,
-                mSysUiState, mOverviewProxyService);
+                mSysUiState, mOverviewProxyService, mSecureSettings, mDisplayTracker,
+                getContext().getSystemService(DisplayManager.class), mA11yLogger);
+        mWindowMagnification.mMagnificationControllerSupplier = new FakeControllerSupplier(
+                mContext.getSystemService(DisplayManager.class), mWindowMagnificationController);
+        mWindowMagnification.mMagnificationSettingsSupplier = new FakeSettingsSupplier(
+                mContext.getSystemService(DisplayManager.class), mMagnificationSettingsController);
         mWindowMagnification.start();
 
         final ArgumentCaptor<OverviewProxyListener> listenerArgumentCaptor =
@@ -99,7 +135,7 @@ public class WindowMagnificationTest extends SysuiTestCase {
     }
 
     @Test
-    public void requestWindowMagnificationConnection_setWindowMagnificationConnection() {
+    public void requestWindowMagnificationConnection_setConnectionAndListener() {
         mCommandQueue.requestWindowMagnificationConnection(true);
         waitForIdleSync();
 
@@ -109,7 +145,7 @@ public class WindowMagnificationTest extends SysuiTestCase {
         mCommandQueue.requestWindowMagnificationConnection(false);
         waitForIdleSync();
 
-        verify(mAccessibilityManager).setWindowMagnificationConnection(null);
+        verify(mAccessibilityManager).setWindowMagnificationConnection(isNull());
     }
 
     @Test
@@ -118,7 +154,8 @@ public class WindowMagnificationTest extends SysuiTestCase {
         mCommandQueue.requestWindowMagnificationConnection(true);
         waitForIdleSync();
 
-        mWindowMagnification.onWindowMagnifierBoundsChanged(TEST_DISPLAY, testBounds);
+        mWindowMagnification.mWindowMagnifierCallback
+                .onWindowMagnifierBoundsChanged(TEST_DISPLAY, testBounds);
 
         verify(mConnectionCallback).onWindowMagnifierBoundsChanged(TEST_DISPLAY, testBounds);
     }
@@ -126,12 +163,15 @@ public class WindowMagnificationTest extends SysuiTestCase {
     @Test
     public void onPerformScaleAction_enabled_notifyCallback() throws RemoteException {
         final float newScale = 4.0f;
+        final boolean updatePersistence = true;
         mCommandQueue.requestWindowMagnificationConnection(true);
         waitForIdleSync();
 
-        mWindowMagnification.onPerformScaleAction(TEST_DISPLAY, newScale);
+        mWindowMagnification.mWindowMagnifierCallback
+                .onPerformScaleAction(TEST_DISPLAY, newScale, updatePersistence);
 
-        verify(mConnectionCallback).onPerformScaleAction(TEST_DISPLAY, newScale);
+        verify(mConnectionCallback).onPerformScaleAction(
+                eq(TEST_DISPLAY), eq(newScale), eq(updatePersistence));
     }
 
     @Test
@@ -139,18 +179,131 @@ public class WindowMagnificationTest extends SysuiTestCase {
         mCommandQueue.requestWindowMagnificationConnection(true);
         waitForIdleSync();
 
-        mWindowMagnification.onAccessibilityActionPerformed(TEST_DISPLAY);
+        mWindowMagnification.mWindowMagnifierCallback
+                .onAccessibilityActionPerformed(TEST_DISPLAY);
 
         verify(mConnectionCallback).onAccessibilityActionPerformed(TEST_DISPLAY);
     }
 
     @Test
-    public void onConfigurationChanged_updateModeSwitches() {
-        final Configuration config = new Configuration();
-        config.densityDpi = Configuration.DENSITY_DPI_ANY;
-        mWindowMagnification.onConfigurationChanged(config);
+    public void onMove_enabled_notifyCallback() throws RemoteException {
+        mCommandQueue.requestWindowMagnificationConnection(true);
+        waitForIdleSync();
 
-        verify(mModeSwitchesController).onConfigurationChanged(anyInt());
+        mWindowMagnification.mWindowMagnifierCallback.onMove(TEST_DISPLAY);
+
+        verify(mConnectionCallback).onMove(TEST_DISPLAY);
+    }
+
+    @Test
+    public void onClickSettingsButton_enabled_showPanelForWindowMode() {
+        mWindowMagnification.mWindowMagnifierCallback.onClickSettingsButton(TEST_DISPLAY);
+        waitForIdleSync();
+
+        verify(mMagnificationSettingsController).toggleSettingsPanelVisibility();
+        verify(mA11yLogger).log(
+                eq(MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_PANEL_OPENED));
+    }
+
+    @Test
+    public void onSetMagnifierSize_delegateToMagnifier() {
+        final @MagnificationSize int index = MagnificationSize.SMALL;
+        mWindowMagnification.mMagnificationSettingsControllerCallback.onSetMagnifierSize(
+                TEST_DISPLAY, index);
+        waitForIdleSync();
+
+        verify(mWindowMagnificationController).changeMagnificationSize(eq(index));
+        verify(mA11yLogger).log(
+                eq(MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_WINDOW_SIZE_SELECTED));
+    }
+
+    @Test
+    public void onSetDiagonalScrolling_delegateToMagnifier() {
+        mWindowMagnification.mMagnificationSettingsControllerCallback.onSetDiagonalScrolling(
+                TEST_DISPLAY, /* enable= */ true);
+        waitForIdleSync();
+
+        verify(mWindowMagnificationController).setDiagonalScrolling(eq(true));
+    }
+
+    @Test
+    public void onEditMagnifierSizeMode_windowActivated_delegateToMagnifier() {
+        when(mWindowMagnificationController.isActivated()).thenReturn(true);
+        mWindowMagnification.mMagnificationSettingsControllerCallback.onEditMagnifierSizeMode(
+                TEST_DISPLAY, /* enable= */ true);
+        waitForIdleSync();
+
+        verify(mWindowMagnificationController).setEditMagnifierSizeMode(eq(true));
+        verify(mA11yLogger).log(
+                eq(MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_SIZE_EDITING_ACTIVATED));
+
+        mWindowMagnification.mMagnificationSettingsControllerCallback.onEditMagnifierSizeMode(
+                TEST_DISPLAY, /* enable= */ false);
+        waitForIdleSync();
+        verify(mA11yLogger).log(
+                eq(MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_SIZE_EDITING_ACTIVATED));
+        verify(mA11yLogger).log(
+                eq(MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_SIZE_EDITING_DEACTIVATED));
+    }
+
+    @Test
+    public void onMagnifierScale_notifyCallback() throws RemoteException {
+        mCommandQueue.requestWindowMagnificationConnection(true);
+        waitForIdleSync();
+        final float scale = 3.0f;
+        final boolean updatePersistence = false;
+        mWindowMagnification.mMagnificationSettingsControllerCallback.onMagnifierScale(
+                TEST_DISPLAY, scale, updatePersistence);
+
+        verify(mConnectionCallback).onPerformScaleAction(
+                eq(TEST_DISPLAY), eq(scale), eq(updatePersistence));
+    }
+
+    @Test
+    public void onModeSwitch_windowEnabledAndSwitchToFullscreen_hidePanelAndNotifyCallback()
+            throws RemoteException {
+        when(mWindowMagnificationController.isActivated()).thenReturn(true);
+        mCommandQueue.requestWindowMagnificationConnection(true);
+        waitForIdleSync();
+
+        mWindowMagnification.mMagnificationSettingsControllerCallback.onModeSwitch(
+                TEST_DISPLAY, ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
+        waitForIdleSync();
+
+        verify(mMagnificationSettingsController).closeMagnificationSettings();
+        verify(mA11yLogger).log(
+                eq(MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_PANEL_CLOSED));
+        verify(mConnectionCallback).onChangeMagnificationMode(eq(TEST_DISPLAY),
+                eq(ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN));
+    }
+
+    @Test
+    public void onModeSwitch_switchToSameMode_doNothing()
+            throws RemoteException {
+        when(mWindowMagnificationController.isActivated()).thenReturn(true);
+        mCommandQueue.requestWindowMagnificationConnection(true);
+        waitForIdleSync();
+
+        mWindowMagnification.mMagnificationSettingsControllerCallback.onModeSwitch(
+                TEST_DISPLAY, ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW);
+        waitForIdleSync();
+
+        verify(mMagnificationSettingsController, never()).closeMagnificationSettings();
+        verify(mConnectionCallback, never()).onChangeMagnificationMode(eq(TEST_DISPLAY),
+                /* magnificationMode = */ anyInt());
+    }
+
+    @Test
+    public void onSettingsPanelVisibilityChanged_windowActivated_delegateToMagnifier() {
+        when(mWindowMagnificationController.isActivated()).thenReturn(true);
+        final boolean shown = false;
+        mWindowMagnification.mMagnificationSettingsControllerCallback
+                .onSettingsPanelVisibilityChanged(TEST_DISPLAY, shown);
+        waitForIdleSync();
+
+        verify(mWindowMagnificationController).updateDragHandleResourcesIfNeeded(eq(shown));
+        verify(mA11yLogger).log(
+                eq(MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_PANEL_CLOSED));
     }
 
     @Test
@@ -163,30 +316,46 @@ public class WindowMagnificationTest extends SysuiTestCase {
 
     @Test
     public void overviewProxyIsConnected_controllerIsAvailable_updateSysUiStateFlag() {
-        final WindowMagnificationAnimationController mController = mock(
-                WindowMagnificationAnimationController.class);
-        mWindowMagnification.mAnimationControllerSupplier = new FakeAnimationControllerSupplier(
+        final WindowMagnificationController mController = mock(WindowMagnificationController.class);
+        mWindowMagnification.mMagnificationControllerSupplier = new FakeControllerSupplier(
                 mContext.getSystemService(DisplayManager.class), mController);
-        mWindowMagnification.mAnimationControllerSupplier.get(TEST_DISPLAY);
+        mWindowMagnification.mMagnificationControllerSupplier.get(TEST_DISPLAY);
 
         mOverviewProxyListener.onConnectionChanged(true);
 
-        verify(mController).updateSysUiStateFlag();
+        verify(mController).updateSysUIStateFlag();
     }
 
-    private static class FakeAnimationControllerSupplier extends
-            DisplayIdIndexSupplier<WindowMagnificationAnimationController> {
+    private static class FakeControllerSupplier extends
+            DisplayIdIndexSupplier<WindowMagnificationController> {
 
-        private final WindowMagnificationAnimationController mController;
+        private final WindowMagnificationController mController;
 
-        FakeAnimationControllerSupplier(DisplayManager displayManager,
-                WindowMagnificationAnimationController controller) {
+        FakeControllerSupplier(DisplayManager displayManager,
+                WindowMagnificationController controller) {
             super(displayManager);
             mController = controller;
         }
 
         @Override
-        protected WindowMagnificationAnimationController createInstance(Display display) {
+        protected WindowMagnificationController createInstance(Display display) {
+            return mController;
+        }
+    }
+
+    private static class FakeSettingsSupplier extends
+            DisplayIdIndexSupplier<MagnificationSettingsController> {
+
+        private final MagnificationSettingsController mController;
+
+        FakeSettingsSupplier(DisplayManager displayManager,
+                MagnificationSettingsController controller) {
+            super(displayManager);
+            mController = controller;
+        }
+
+        @Override
+        protected MagnificationSettingsController createInstance(Display display) {
             return mController;
         }
     }

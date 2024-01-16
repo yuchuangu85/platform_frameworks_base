@@ -14,6 +14,8 @@
 
 package com.android.systemui.qs.tiles;
 
+import static com.android.systemui.flags.Flags.SIGNAL_CALLBACK_DEPRECATION;
+
 import static junit.framework.Assert.assertTrue;
 import static junit.framework.TestCase.assertEquals;
 
@@ -37,22 +39,32 @@ import androidx.lifecycle.LifecycleOwner;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.logging.MetricsLogger;
+import com.android.keyguard.TestScopeProvider;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.animation.DialogLaunchAnimator;
 import com.android.systemui.classifier.FalsingManagerFake;
+import com.android.systemui.flags.FakeFeatureFlags;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
-import com.android.systemui.qs.QSTileHost;
+import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.QsEventLogger;
 import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.statusbar.connectivity.IconState;
 import com.android.systemui.statusbar.connectivity.NetworkController;
 import com.android.systemui.statusbar.connectivity.SignalCallback;
 import com.android.systemui.statusbar.connectivity.WifiIndicators;
+import com.android.systemui.statusbar.pipeline.shared.data.repository.FakeConnectivityRepository;
+import com.android.systemui.statusbar.pipeline.wifi.data.repository.FakeWifiRepository;
+import com.android.systemui.statusbar.pipeline.wifi.domain.interactor.WifiInteractor;
+import com.android.systemui.statusbar.pipeline.wifi.domain.interactor.WifiInteractorImpl;
+import com.android.systemui.statusbar.pipeline.wifi.shared.model.WifiNetworkModel;
+import com.android.systemui.statusbar.pipeline.wifi.shared.model.WifiNetworkModel.Inactive;
 import com.android.systemui.statusbar.policy.CastController;
 import com.android.systemui.statusbar.policy.CastController.CastDevice;
 import com.android.systemui.statusbar.policy.HotspotController;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -63,6 +75,7 @@ import org.mockito.MockitoAnnotations;
 import java.util.ArrayList;
 import java.util.List;
 
+import kotlinx.coroutines.test.TestScope;
 
 @RunWith(AndroidTestingRunner.class)
 @TestableLooper.RunWithLooper(setAsMainLooper = true)
@@ -78,7 +91,7 @@ public class CastTileTest extends SysuiTestCase {
     @Mock
     private NetworkController mNetworkController;
     @Mock
-    private QSTileHost mHost;
+    private QSHost mHost;
     @Mock
     SignalCallback mSignalCallback;
     @Mock
@@ -93,6 +106,14 @@ public class CastTileTest extends SysuiTestCase {
     private QSLogger mQSLogger;
     @Mock
     private DialogLaunchAnimator mDialogLaunchAnimator;
+    @Mock
+    private QsEventLogger mUiEventLogger;
+
+    private WifiInteractor mWifiInteractor;
+    private final TileJavaAdapter mJavaAdapter = new TileJavaAdapter();
+    private final FakeWifiRepository mWifiRepository = new FakeWifiRepository();
+    private final FakeFeatureFlags mFeatureFlags = new FakeFeatureFlags();
+    private final TestScope mTestScope = TestScopeProvider.getTestScope();
 
     private TestableLooper mTestableLooper;
     private CastTile mCastTile;
@@ -104,51 +125,28 @@ public class CastTileTest extends SysuiTestCase {
 
         when(mHost.getContext()).thenReturn(mContext);
 
-        mCastTile = new CastTile(
-                mHost,
-                mTestableLooper.getLooper(),
-                new Handler(mTestableLooper.getLooper()),
-                new FalsingManagerFake(),
-                mMetricsLogger,
-                mStatusBarStateController,
-                mActivityStarter,
-                mQSLogger,
-                mController,
-                mKeyguard,
-                mNetworkController,
-                mHotspotController,
-                mDialogLaunchAnimator
+        mWifiInteractor = new WifiInteractorImpl(
+                new FakeConnectivityRepository(),
+                mWifiRepository,
+                mTestScope
         );
-        mCastTile.initialize();
+    }
 
-        // We are not setting the mocks to listening, so we trigger a first refresh state to
-        // set the initial state
-        mCastTile.refreshState();
-
+    @After
+    public void tearDown() {
+        mCastTile.destroy();
         mTestableLooper.processAllMessages();
-
-        mCastTile.handleSetListening(true);
-        ArgumentCaptor<SignalCallback> signalCallbackArgumentCaptor =
-                ArgumentCaptor.forClass(SignalCallback.class);
-        verify(mNetworkController).observe(any(LifecycleOwner.class),
-                signalCallbackArgumentCaptor.capture());
-        mSignalCallback = signalCallbackArgumentCaptor.getValue();
-
-        ArgumentCaptor<HotspotController.Callback> hotspotCallbackArgumentCaptor =
-                ArgumentCaptor.forClass(HotspotController.Callback.class);
-        verify(mHotspotController).observe(any(LifecycleOwner.class),
-                hotspotCallbackArgumentCaptor.capture());
-        mHotspotCallback = hotspotCallbackArgumentCaptor.getValue();
     }
 
     // -------------------------------------------------
     // All these tests for enabled/disabled wifi have hotspot not enabled
     @Test
     public void testStateUnavailable_wifiDisabled() {
+        createAndStartTileOldImpl();
         IconState qsIcon = new IconState(false, 0, "");
         WifiIndicators indicators = new WifiIndicators(
                 false, mock(IconState.class),
-                qsIcon, false,false, "",
+                qsIcon, false, false, "",
                 false, "");
         mSignalCallback.setWifiIndicators(indicators);
         mTestableLooper.processAllMessages();
@@ -158,10 +156,11 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testStateUnavailable_wifiNotConnected() {
+        createAndStartTileOldImpl();
         IconState qsIcon = new IconState(false, 0, "");
         WifiIndicators indicators = new WifiIndicators(
                 true, mock(IconState.class),
-                qsIcon, false,false, "",
+                qsIcon, false, false, "",
                 false, "");
         mSignalCallback.setWifiIndicators(indicators);
         mTestableLooper.processAllMessages();
@@ -173,7 +172,7 @@ public class CastTileTest extends SysuiTestCase {
         IconState qsIcon = new IconState(true, 0, "");
         WifiIndicators indicators = new WifiIndicators(
                 true, mock(IconState.class),
-                qsIcon, false,false, "",
+                qsIcon, false, false, "",
                 false, "");
         mSignalCallback.setWifiIndicators(indicators);
         mTestableLooper.processAllMessages();
@@ -181,6 +180,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testStateActive_wifiEnabledAndCasting() {
+        createAndStartTileOldImpl();
         CastController.CastDevice device = new CastController.CastDevice();
         device.state = CastController.CastDevice.STATE_CONNECTED;
         List<CastDevice> devices = new ArrayList<>();
@@ -193,15 +193,87 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testStateInactive_wifiEnabledNotCasting() {
+        createAndStartTileOldImpl();
         enableWifiAndProcessMessages();
         assertEquals(Tile.STATE_INACTIVE, mCastTile.getState().state);
     }
     // -------------------------------------------------
 
     // -------------------------------------------------
+    // All these tests for enabled/disabled wifi have hotspot not enabled, and have the
+    // SIGNAL_CALLBACK_DEPRECATION flag set to true
+
+    @Test
+    public void stateUnavailable_wifiDisabled_newPipeline() {
+        createAndStartTileNewImpl();
+        mWifiRepository.setIsWifiEnabled(false);
+        mTestableLooper.processAllMessages();
+
+        assertEquals(Tile.STATE_UNAVAILABLE, mCastTile.getState().state);
+    }
+
+    @Test
+    public void stateUnavailable_wifiEnabled_notConnected_newPipeline() {
+        createAndStartTileNewImpl();
+        mWifiRepository.setIsWifiEnabled(true);
+        mWifiRepository.setWifiNetwork(Inactive.INSTANCE);
+        mTestableLooper.processAllMessages();
+
+        assertEquals(Tile.STATE_UNAVAILABLE, mCastTile.getState().state);
+    }
+
+    @Test
+    public void stateActive_wifiConnectedAndCasting_newPipeline() {
+        createAndStartTileNewImpl();
+        CastController.CastDevice device = new CastController.CastDevice();
+        device.state = CastDevice.STATE_CONNECTED;
+        List<CastDevice> devices = new ArrayList<>();
+        devices.add(device);
+        when(mController.getCastDevices()).thenReturn(devices);
+
+        mWifiRepository.setWifiNetwork(
+                new WifiNetworkModel.Active(
+                        1 /* networkId */,
+                        true /* isValidated */,
+                        3 /* level */,
+                        "test" /* ssid */,
+                        WifiNetworkModel.HotspotDeviceType.NONE,
+                        false /* isPasspointAccessPoint */,
+                        false /* isOnlineSignUpforPasspointAccessPoint */,
+                        null /* passpointProviderFriendlyName */
+                ));
+        mTestableLooper.processAllMessages();
+
+        assertEquals(Tile.STATE_ACTIVE, mCastTile.getState().state);
+    }
+
+    @Test
+    public void stateInactive_wifiConnectedNotCasting_newPipeline() {
+        createAndStartTileNewImpl();
+
+        mWifiRepository.setWifiNetwork(
+                new WifiNetworkModel.Active(
+                        1 /* networkId */,
+                        true /* isValidated */,
+                        3 /* level */,
+                        "test" /* ssid */,
+                        WifiNetworkModel.HotspotDeviceType.NONE,
+                        false /* isPasspointAccessPoint */,
+                        false /* isOnlineSignUpforPasspointAccessPoint */,
+                        null /* passpointProviderFriendlyName */
+                ));
+        mTestableLooper.processAllMessages();
+
+        assertEquals(Tile.STATE_INACTIVE, mCastTile.getState().state);
+    }
+
+    // -------------------------------------------------
+
+    // -------------------------------------------------
     // All these tests for enabled/disabled hotspot have wifi not enabled
     @Test
     public void testStateUnavailable_hotspotDisabled() {
+        createAndStartTileOldImpl();
         mHotspotCallback.onHotspotChanged(false, 0);
         mTestableLooper.processAllMessages();
 
@@ -210,6 +282,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testStateUnavailable_hotspotEnabledNotConnected() {
+        createAndStartTileOldImpl();
         mHotspotCallback.onHotspotChanged(true, 0);
         mTestableLooper.processAllMessages();
 
@@ -218,6 +291,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testStateActive_hotspotEnabledAndConnectedAndCasting() {
+        createAndStartTileOldImpl();
         CastController.CastDevice device = new CastController.CastDevice();
         device.state = CastController.CastDevice.STATE_CONNECTED;
         List<CastDevice> devices = new ArrayList<>();
@@ -231,6 +305,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testStateInactive_hotspotEnabledAndConnectedAndNotCasting() {
+        createAndStartTileOldImpl();
         mHotspotCallback.onHotspotChanged(true, 1);
         mTestableLooper.processAllMessages();
         assertEquals(Tile.STATE_INACTIVE, mCastTile.getState().state);
@@ -239,6 +314,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testHandleClick_castDevicePresent() {
+        createAndStartTileOldImpl();
         CastController.CastDevice device = new CastController.CastDevice();
         device.state = CastDevice.STATE_CONNECTED;
         device.tag = mock(MediaRouter.RouteInfo.class);
@@ -256,6 +332,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testHandleClick_projectionOnly() {
+        createAndStartTileOldImpl();
         CastController.CastDevice device = new CastController.CastDevice();
         device.state = CastDevice.STATE_CONNECTED;
         device.tag = mock(MediaProjectionInfo.class);
@@ -272,6 +349,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testUpdateState_projectionOnly() {
+        createAndStartTileOldImpl();
         CastController.CastDevice device = new CastController.CastDevice();
         device.state = CastDevice.STATE_CONNECTED;
         device.tag = mock(MediaProjectionInfo.class);
@@ -287,6 +365,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testUpdateState_castingAndProjection() {
+        createAndStartTileOldImpl();
         CastController.CastDevice casting = new CastController.CastDevice();
         casting.state = CastDevice.STATE_CONNECTED;
         casting.tag = mock(RouteInfo.class);
@@ -311,6 +390,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testUpdateState_connectedAndConnecting() {
+        createAndStartTileOldImpl();
         CastController.CastDevice connecting = new CastController.CastDevice();
         connecting.state = CastDevice.STATE_CONNECTING;
         connecting.tag = mock(RouteInfo.class);
@@ -335,6 +415,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testExpandView_wifiNotConnected() {
+        createAndStartTileOldImpl();
         mCastTile.refreshState();
         mTestableLooper.processAllMessages();
 
@@ -343,6 +424,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testExpandView_wifiEnabledNotCasting() {
+        createAndStartTileOldImpl();
         enableWifiAndProcessMessages();
 
         assertTrue(mCastTile.getState().forceExpandIcon);
@@ -350,6 +432,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testExpandView_casting_projection() {
+        createAndStartTileOldImpl();
         CastController.CastDevice device = new CastController.CastDevice();
         device.state = CastController.CastDevice.STATE_CONNECTED;
         List<CastDevice> devices = new ArrayList<>();
@@ -363,6 +446,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testExpandView_connecting_projection() {
+        createAndStartTileOldImpl();
         CastController.CastDevice connecting = new CastController.CastDevice();
         connecting.state = CastDevice.STATE_CONNECTING;
         connecting.name = "Test Casting Device";
@@ -378,6 +462,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testExpandView_casting_mediaRoute() {
+        createAndStartTileOldImpl();
         CastController.CastDevice device = new CastController.CastDevice();
         device.state = CastDevice.STATE_CONNECTED;
         device.tag = mock(MediaRouter.RouteInfo.class);
@@ -392,6 +477,7 @@ public class CastTileTest extends SysuiTestCase {
 
     @Test
     public void testExpandView_connecting_mediaRoute() {
+        createAndStartTileOldImpl();
         CastController.CastDevice connecting = new CastController.CastDevice();
         connecting.state = CastDevice.STATE_CONNECTING;
         connecting.tag = mock(RouteInfo.class);
@@ -404,5 +490,87 @@ public class CastTileTest extends SysuiTestCase {
         enableWifiAndProcessMessages();
 
         assertTrue(mCastTile.getState().forceExpandIcon);
+    }
+
+    /**
+     * For simplicity, let this method still set the field even though that's kind of gross
+     */
+    private void createAndStartTileOldImpl() {
+        mFeatureFlags.set(SIGNAL_CALLBACK_DEPRECATION, false);
+        mCastTile = new CastTile(
+                mHost,
+                mUiEventLogger,
+                mTestableLooper.getLooper(),
+                new Handler(mTestableLooper.getLooper()),
+                new FalsingManagerFake(),
+                mMetricsLogger,
+                mStatusBarStateController,
+                mActivityStarter,
+                mQSLogger,
+                mController,
+                mKeyguard,
+                mNetworkController,
+                mHotspotController,
+                mDialogLaunchAnimator,
+                mWifiInteractor,
+                mJavaAdapter,
+                mFeatureFlags
+        );
+        mCastTile.initialize();
+
+        // We are not setting the mocks to listening, so we trigger a first refresh state to
+        // set the initial state
+        mCastTile.refreshState();
+
+        mTestableLooper.processAllMessages();
+
+        mCastTile.handleSetListening(true);
+        ArgumentCaptor<SignalCallback> signalCallbackArgumentCaptor =
+                ArgumentCaptor.forClass(SignalCallback.class);
+        verify(mNetworkController).observe(any(LifecycleOwner.class),
+                signalCallbackArgumentCaptor.capture());
+        mSignalCallback = signalCallbackArgumentCaptor.getValue();
+
+        ArgumentCaptor<HotspotController.Callback> hotspotCallbackArgumentCaptor =
+                ArgumentCaptor.forClass(HotspotController.Callback.class);
+        verify(mHotspotController).observe(any(LifecycleOwner.class),
+                hotspotCallbackArgumentCaptor.capture());
+        mHotspotCallback = hotspotCallbackArgumentCaptor.getValue();
+    }
+
+    private void createAndStartTileNewImpl() {
+        mFeatureFlags.set(SIGNAL_CALLBACK_DEPRECATION, true);
+        mCastTile = new CastTile(
+                mHost,
+                mUiEventLogger,
+                mTestableLooper.getLooper(),
+                new Handler(mTestableLooper.getLooper()),
+                new FalsingManagerFake(),
+                mMetricsLogger,
+                mStatusBarStateController,
+                mActivityStarter,
+                mQSLogger,
+                mController,
+                mKeyguard,
+                mNetworkController,
+                mHotspotController,
+                mDialogLaunchAnimator,
+                mWifiInteractor,
+                mJavaAdapter,
+                mFeatureFlags
+        );
+        mCastTile.initialize();
+
+        // Since we do not capture the callbacks like in the old impl, set the state to RESUMED
+        // So that TileJavaAdapter is collecting on flows
+        mCastTile.setListening(new Object(), true);
+
+        mTestableLooper.processAllMessages();
+
+        ArgumentCaptor<HotspotController.Callback> hotspotCallbackArgumentCaptor =
+                ArgumentCaptor.forClass(HotspotController.Callback.class);
+        verify(mHotspotController).observe(any(LifecycleOwner.class),
+                hotspotCallbackArgumentCaptor.capture());
+        mHotspotCallback = hotspotCallbackArgumentCaptor.getValue();
     }
 }

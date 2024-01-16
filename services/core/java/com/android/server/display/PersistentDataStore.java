@@ -20,23 +20,26 @@ import android.annotation.Nullable;
 import android.graphics.Point;
 import android.hardware.display.BrightnessConfiguration;
 import android.hardware.display.WifiDisplay;
+import android.os.Handler;
 import android.util.AtomicFile;
 import android.util.Slog;
 import android.util.SparseArray;
 import android.util.SparseLongArray;
 import android.util.TimeUtils;
-import android.util.TypedXmlPullParser;
-import android.util.TypedXmlSerializer;
 import android.util.Xml;
 import android.view.Display;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.os.BackgroundThread;
 import com.android.internal.util.XmlUtils;
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
 
 import libcore.io.IoUtils;
 
 import org.xmlpull.v1.XmlPullParserException;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -72,6 +75,11 @@ import java.util.Objects;
  *                  &lt;/brightness-curve>
  *              &lt;/brightness-configuration>
  *          &lt;/brightness-configurations>
+ *          &lt;display-mode>0&lt;
+ *              &lt;resolution-width>1080&lt;/resolution-width>
+ *              &lt;resolution-height>1920&lt;/resolution-height>
+ *              &lt;refresh-rate>60&lt;/refresh-rate>
+ *          &lt;/display-mode>
  *      &lt;/display>
  *  &lt;/display-states>
  *  &lt;stable-device-values>
@@ -86,6 +94,7 @@ import java.util.Objects;
  *          &lt;/brightness-curve>
  *      &lt;/brightness-configuration>
  *  &lt;/brightness-configurations>
+ *  &lt;brightness-nits-for-default-display>600&lt;/brightness-nits-for-default-display>
  * &lt;/display-manager-state>
  * </code>
  *
@@ -118,12 +127,22 @@ final class PersistentDataStore {
     private static final String ATTR_PACKAGE_NAME = "package-name";
     private static final String ATTR_TIME_STAMP = "timestamp";
 
+    private static final String TAG_RESOLUTION_WIDTH = "resolution-width";
+    private static final String TAG_RESOLUTION_HEIGHT = "resolution-height";
+    private static final String TAG_REFRESH_RATE = "refresh-rate";
+
+    private static final String TAG_BRIGHTNESS_NITS_FOR_DEFAULT_DISPLAY =
+            "brightness-nits-for-default-display";
+    public static final int DEFAULT_USER_ID = -1;
+
     // Remembered Wifi display devices.
     private ArrayList<WifiDisplay> mRememberedWifiDisplays = new ArrayList<WifiDisplay>();
 
     // Display state by unique id.
     private final HashMap<String, DisplayState> mDisplayStates =
             new HashMap<String, DisplayState>();
+
+    private float mBrightnessNitsForDefaultDisplay = -1;
 
     // Display values which should be stable across the device's lifetime.
     private final StableDeviceValues mStableDeviceValues = new StableDeviceValues();
@@ -141,13 +160,22 @@ final class PersistentDataStore {
     // The interface for methods which should be replaced by the test harness.
     private Injector mInjector;
 
+    private final Handler mHandler;
+    private final Object mFileAccessLock = new Object();
+
     public PersistentDataStore() {
         this(new Injector());
     }
 
     @VisibleForTesting
     PersistentDataStore(Injector injector) {
+        this(injector, new Handler(BackgroundThread.getHandler().getLooper()));
+    }
+
+    @VisibleForTesting
+    PersistentDataStore(Injector injector, Handler handler) {
         mInjector = injector;
+        mHandler = handler;
     }
 
     public void saveIfNeeded() {
@@ -267,7 +295,7 @@ final class PersistentDataStore {
         return false;
     }
 
-    public float getBrightness(DisplayDevice device) {
+    public float getBrightness(DisplayDevice device, int userSerial) {
         if (device == null || !device.hasStableUniqueId()) {
             return Float.NaN;
         }
@@ -275,20 +303,84 @@ final class PersistentDataStore {
         if (state == null) {
             return Float.NaN;
         }
-        return state.getBrightness();
+        return state.getBrightness(userSerial);
     }
 
-    public boolean setBrightness(DisplayDevice displayDevice, float brightness) {
+    public boolean setBrightness(DisplayDevice displayDevice, float brightness, int userSerial) {
+        if (displayDevice == null || !displayDevice.hasStableUniqueId()) {
+            return false;
+        }
         final String displayDeviceUniqueId = displayDevice.getUniqueId();
-        if (!displayDevice.hasStableUniqueId() || displayDeviceUniqueId == null) {
+        if (displayDeviceUniqueId == null) {
             return false;
         }
         final DisplayState state = getDisplayState(displayDeviceUniqueId, true);
-        if (state.setBrightness(brightness)) {
+        if (state.setBrightness(brightness, userSerial)) {
             setDirty();
             return true;
         }
         return false;
+    }
+
+    public float getBrightnessNitsForDefaultDisplay() {
+        return mBrightnessNitsForDefaultDisplay;
+    }
+
+    public boolean setBrightnessNitsForDefaultDisplay(float nits) {
+        if (nits != mBrightnessNitsForDefaultDisplay) {
+            mBrightnessNitsForDefaultDisplay = nits;
+            setDirty();
+            return true;
+        }
+        return false;
+    }
+
+    public boolean setUserPreferredRefreshRate(DisplayDevice displayDevice, float refreshRate) {
+        final String displayDeviceUniqueId = displayDevice.getUniqueId();
+        if (!displayDevice.hasStableUniqueId() || displayDeviceUniqueId == null) {
+            return false;
+        }
+        DisplayState state = getDisplayState(displayDevice.getUniqueId(), true);
+        if (state.setRefreshRate(refreshRate)) {
+            setDirty();
+            return true;
+        }
+        return false;
+    }
+
+    public float getUserPreferredRefreshRate(DisplayDevice device) {
+        if (device == null || !device.hasStableUniqueId()) {
+            return Float.NaN;
+        }
+        final DisplayState state = getDisplayState(device.getUniqueId(), false);
+        if (state == null) {
+            return Float.NaN;
+        }
+        return state.getRefreshRate();
+    }
+
+    public boolean setUserPreferredResolution(DisplayDevice displayDevice, int width, int height) {
+        final String displayDeviceUniqueId = displayDevice.getUniqueId();
+        if (!displayDevice.hasStableUniqueId() || displayDeviceUniqueId == null) {
+            return false;
+        }
+        DisplayState state = getDisplayState(displayDevice.getUniqueId(), true);
+        if (state.setResolution(width, height)) {
+            setDirty();
+            return true;
+        }
+        return false;
+    }
+
+    public Point getUserPreferredResolution(DisplayDevice displayDevice) {
+        if (displayDevice == null || !displayDevice.hasStableUniqueId()) {
+            return null;
+        }
+        final DisplayState state = getDisplayState(displayDevice.getUniqueId(), false);
+        if (state == null) {
+            return null;
+        }
+        return state.getResolution();
     }
 
     public Point getStableDisplaySize() {
@@ -370,45 +462,60 @@ final class PersistentDataStore {
     }
 
     private void load() {
-        clearState();
-
-        final InputStream is;
-        try {
-            is = mInjector.openRead();
-        } catch (FileNotFoundException ex) {
-            return;
-        }
-
-        TypedXmlPullParser parser;
-        try {
-            parser = Xml.resolvePullParser(is);
-            loadFromXml(parser);
-        } catch (IOException ex) {
-            Slog.w(TAG, "Failed to load display manager persistent store data.", ex);
+        synchronized (mFileAccessLock) {
             clearState();
-        } catch (XmlPullParserException ex) {
-            Slog.w(TAG, "Failed to load display manager persistent store data.", ex);
-            clearState();
-        } finally {
-            IoUtils.closeQuietly(is);
+
+            final InputStream is;
+            try {
+                is = mInjector.openRead();
+            } catch (FileNotFoundException ex) {
+                return;
+            }
+
+            TypedXmlPullParser parser;
+            try {
+                parser = Xml.resolvePullParser(is);
+                loadFromXml(parser);
+            } catch (IOException ex) {
+                Slog.w(TAG, "Failed to load display manager persistent store data.", ex);
+                clearState();
+            } catch (XmlPullParserException ex) {
+                Slog.w(TAG, "Failed to load display manager persistent store data.", ex);
+                clearState();
+            } finally {
+                IoUtils.closeQuietly(is);
+            }
         }
     }
 
     private void save() {
-        final OutputStream os;
+        final ByteArrayOutputStream os;
         try {
-            os = mInjector.startWrite();
-            boolean success = false;
-            try {
-                TypedXmlSerializer serializer = Xml.resolveSerializer(os);
-                saveToXml(serializer);
-                serializer.flush();
-                success = true;
-            } finally {
-                mInjector.finishWrite(os, success);
-            }
+            os = new ByteArrayOutputStream();
+
+            TypedXmlSerializer serializer = Xml.resolveSerializer(os);
+            saveToXml(serializer);
+            serializer.flush();
+
+            mHandler.removeCallbacksAndMessages(/* token */ null);
+            mHandler.post(() -> {
+                synchronized (mFileAccessLock) {
+                    OutputStream fileOutput = null;
+                    try {
+                        fileOutput = mInjector.startWrite();
+                        os.writeTo(fileOutput);
+                        fileOutput.flush();
+                    } catch (IOException ex) {
+                        Slog.w(TAG, "Failed to save display manager persistent store data.", ex);
+                    } finally {
+                        if (fileOutput != null) {
+                            mInjector.finishWrite(fileOutput, true);
+                        }
+                    }
+                }
+            });
         } catch (IOException ex) {
-            Slog.w(TAG, "Failed to save display manager persistent store data.", ex);
+            Slog.w(TAG, "Failed to process the XML serializer.", ex);
         }
     }
 
@@ -428,6 +535,10 @@ final class PersistentDataStore {
             }
             if (parser.getName().equals(TAG_BRIGHTNESS_CONFIGURATIONS)) {
                 mGlobalBrightnessConfigurations.loadFromXml(parser);
+            }
+            if (parser.getName().equals(TAG_BRIGHTNESS_NITS_FOR_DEFAULT_DISPLAY)) {
+                String value = parser.nextText();
+                mBrightnessNitsForDefaultDisplay = Float.parseFloat(value);
             }
         }
     }
@@ -501,6 +612,7 @@ final class PersistentDataStore {
             state.saveToXml(serializer);
             serializer.endTag(null, TAG_DISPLAY);
         }
+
         serializer.endTag(null, TAG_DISPLAY_STATES);
         serializer.startTag(null, TAG_STABLE_DEVICE_VALUES);
         mStableDeviceValues.saveToXml(serializer);
@@ -508,6 +620,9 @@ final class PersistentDataStore {
         serializer.startTag(null, TAG_BRIGHTNESS_CONFIGURATIONS);
         mGlobalBrightnessConfigurations.saveToXml(serializer);
         serializer.endTag(null, TAG_BRIGHTNESS_CONFIGURATIONS);
+        serializer.startTag(null, TAG_BRIGHTNESS_NITS_FOR_DEFAULT_DISPLAY);
+        serializer.text(Float.toString(mBrightnessNitsForDefaultDisplay));
+        serializer.endTag(null, TAG_BRIGHTNESS_NITS_FOR_DEFAULT_DISPLAY);
         serializer.endTag(null, TAG_DISPLAY_MANAGER_STATE);
         serializer.endDocument();
     }
@@ -531,11 +646,16 @@ final class PersistentDataStore {
         mStableDeviceValues.dump(pw, "      ");
         pw.println("  GlobalBrightnessConfigurations:");
         mGlobalBrightnessConfigurations.dump(pw, "      ");
+        pw.println("  mBrightnessNitsForDefaultDisplay=" + mBrightnessNitsForDefaultDisplay);
     }
 
     private static final class DisplayState {
         private int mColorMode;
-        private float mBrightness;
+
+        private SparseArray<Float> mPerUserBrightness = new SparseArray<>();
+        private int mWidth;
+        private int mHeight;
+        private float mRefreshRate;
 
         // Brightness configuration by user
         private BrightnessConfigurations mDisplayBrightnessConfigurations =
@@ -553,16 +673,25 @@ final class PersistentDataStore {
             return mColorMode;
         }
 
-        public boolean setBrightness(float brightness) {
-            if (brightness == mBrightness) {
+        public boolean setBrightness(float brightness, int userSerial) {
+            // Remove the default user brightness, before setting a new user-specific value.
+            // This is a one-time operation, required to restructure the config after user-specific
+            // brightness was introduced.
+            mPerUserBrightness.remove(DEFAULT_USER_ID);
+
+            if (getBrightness(userSerial) == brightness) {
                 return false;
             }
-            mBrightness = brightness;
+            mPerUserBrightness.set(userSerial, brightness);
             return true;
         }
 
-        public float getBrightness() {
-            return mBrightness;
+        public float getBrightness(int userSerial) {
+            float brightness = mPerUserBrightness.get(userSerial, Float.NaN);
+            if (Float.isNaN(brightness)) {
+                brightness = mPerUserBrightness.get(DEFAULT_USER_ID, Float.NaN);
+            }
+            return brightness;
         }
 
         public boolean setBrightnessConfiguration(BrightnessConfiguration configuration,
@@ -576,6 +705,31 @@ final class PersistentDataStore {
             return mDisplayBrightnessConfigurations.mConfigurations.get(userSerial);
         }
 
+        public boolean setResolution(int width, int height) {
+            if (width == mWidth && height == mHeight) {
+                return false;
+            }
+            mWidth = width;
+            mHeight = height;
+            return true;
+        }
+
+        public Point getResolution() {
+            return new Point(mWidth, mHeight);
+        }
+
+        public boolean setRefreshRate(float refreshRate) {
+            if (refreshRate == mRefreshRate) {
+                return false;
+            }
+            mRefreshRate = refreshRate;
+            return true;
+        }
+
+        public float getRefreshRate() {
+            return mRefreshRate;
+        }
+
         public void loadFromXml(TypedXmlPullParser parser)
                 throws IOException, XmlPullParserException {
             final int outerDepth = parser.getDepth();
@@ -587,11 +741,22 @@ final class PersistentDataStore {
                         mColorMode = Integer.parseInt(value);
                         break;
                     case TAG_BRIGHTNESS_VALUE:
-                        String brightness = parser.nextText();
-                        mBrightness = Float.parseFloat(brightness);
+                        loadBrightnessFromXml(parser);
                         break;
                     case TAG_BRIGHTNESS_CONFIGURATIONS:
                         mDisplayBrightnessConfigurations.loadFromXml(parser);
+                        break;
+                    case TAG_RESOLUTION_WIDTH:
+                        String width = parser.nextText();
+                        mWidth = Integer.parseInt(width);
+                        break;
+                    case TAG_RESOLUTION_HEIGHT:
+                        String height = parser.nextText();
+                        mHeight = Integer.parseInt(height);
+                        break;
+                    case TAG_REFRESH_RATE:
+                        String refreshRate = parser.nextText();
+                        mRefreshRate = Float.parseFloat(refreshRate);
                         break;
                 }
             }
@@ -602,20 +767,58 @@ final class PersistentDataStore {
             serializer.text(Integer.toString(mColorMode));
             serializer.endTag(null, TAG_COLOR_MODE);
 
-            serializer.startTag(null, TAG_BRIGHTNESS_VALUE);
-            serializer.text(Float.toString(mBrightness));
-            serializer.endTag(null, TAG_BRIGHTNESS_VALUE);
+            for (int i = 0; i < mPerUserBrightness.size(); i++) {
+                serializer.startTag(null, TAG_BRIGHTNESS_VALUE);
+                serializer.attributeInt(null, ATTR_USER_SERIAL, mPerUserBrightness.keyAt(i));
+                serializer.text(Float.toString(mPerUserBrightness.valueAt(i)));
+                serializer.endTag(null, TAG_BRIGHTNESS_VALUE);
+            }
 
             serializer.startTag(null, TAG_BRIGHTNESS_CONFIGURATIONS);
             mDisplayBrightnessConfigurations.saveToXml(serializer);
             serializer.endTag(null, TAG_BRIGHTNESS_CONFIGURATIONS);
+
+            serializer.startTag(null, TAG_RESOLUTION_WIDTH);
+            serializer.text(Integer.toString(mWidth));
+            serializer.endTag(null, TAG_RESOLUTION_WIDTH);
+
+            serializer.startTag(null, TAG_RESOLUTION_HEIGHT);
+            serializer.text(Integer.toString(mHeight));
+            serializer.endTag(null, TAG_RESOLUTION_HEIGHT);
+
+            serializer.startTag(null, TAG_REFRESH_RATE);
+            serializer.text(Float.toString(mRefreshRate));
+            serializer.endTag(null, TAG_REFRESH_RATE);
         }
 
         public void dump(final PrintWriter pw, final String prefix) {
             pw.println(prefix + "ColorMode=" + mColorMode);
-            pw.println(prefix + "BrightnessValue=" + mBrightness);
+            pw.println(prefix + "BrightnessValues: ");
+            for (int i = 0; i < mPerUserBrightness.size(); i++) {
+                pw.println("User: " + mPerUserBrightness.keyAt(i)
+                        + " Value: " + mPerUserBrightness.valueAt(i));
+            }
             pw.println(prefix + "DisplayBrightnessConfigurations: ");
             mDisplayBrightnessConfigurations.dump(pw, prefix);
+            pw.println(prefix + "Resolution=" + mWidth + " " + mHeight);
+            pw.println(prefix + "RefreshRate=" + mRefreshRate);
+        }
+
+        private void loadBrightnessFromXml(TypedXmlPullParser parser)
+                throws IOException, XmlPullParserException {
+            int userSerial;
+            try {
+                userSerial = parser.getAttributeInt(null, ATTR_USER_SERIAL);
+            } catch (NumberFormatException | XmlPullParserException e) {
+                userSerial = DEFAULT_USER_ID;
+                Slog.e(TAG, "Failed to read user serial", e);
+            }
+            String brightness = parser.nextText();
+            try {
+                mPerUserBrightness.set(userSerial, Float.parseFloat(brightness));
+            } catch (NumberFormatException nfe) {
+                Slog.e(TAG, "Failed to read brightness", nfe);
+            }
         }
     }
 

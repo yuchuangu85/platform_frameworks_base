@@ -18,6 +18,7 @@ package android.hardware.hdmi;
 
 import android.os.Handler;
 import android.os.test.TestLooper;
+import android.platform.test.annotations.Presubmit;
 import android.util.Log;
 
 import androidx.test.filters.SmallTest;
@@ -34,6 +35,7 @@ import java.util.List;
 /**
  * Tests for {@link HdmiAudioSystemClient}
  */
+@Presubmit
 @RunWith(JUnit4.class)
 @SmallTest
 public class HdmiAudioSystemClientTest {
@@ -373,6 +375,17 @@ public class HdmiAudioSystemClientTest {
         public void removeHdmiCecVolumeControlFeatureListener(
                 IHdmiCecVolumeControlFeatureListener listener) {
         }
+
+        @Override
+        public int getMessageHistorySize() {
+            return 0;
+        }
+
+        @Override
+        public boolean setMessageHistorySize(int newSize) {
+            return true;
+        }
+
 
         @Override
         public List<String> getUserCecSettings() {

@@ -20,6 +20,7 @@ import android.hardware.security.keymint.Algorithm;
 import android.hardware.security.keymint.KeyParameter;
 import android.hardware.security.keymint.KeyPurpose;
 import android.hardware.security.keymint.Tag;
+import android.os.StrictMode;
 import android.security.KeyStoreException;
 import android.security.KeyStoreOperation;
 import android.security.keystore.KeyStoreCryptoOperation;
@@ -31,6 +32,7 @@ import java.security.NoSuchAlgorithmException;
 import java.security.ProviderException;
 import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.security.interfaces.ECKey;
 import java.security.spec.AlgorithmParameterSpec;
 import java.util.ArrayList;
 import java.util.List;
@@ -57,6 +59,17 @@ public class AndroidKeyStoreKeyAgreementSpi extends KeyAgreementSpi
      */
     public static class ECDH extends AndroidKeyStoreKeyAgreementSpi {
         public ECDH() {
+            super(Algorithm.EC);
+        }
+    }
+
+    /**
+     * X25519 key agreement support.
+     *
+     * @hide
+     */
+    public static class XDH extends AndroidKeyStoreKeyAgreementSpi {
+        public XDH() {
             super(Algorithm.EC);
         }
     }
@@ -121,6 +134,20 @@ public class AndroidKeyStoreKeyAgreementSpi extends KeyAgreementSpi
             throw new InvalidKeyException("key == null");
         } else if (!(key instanceof PublicKey)) {
             throw new InvalidKeyException("Only public keys supported. Key: " + key);
+        } else if (mKey instanceof ECKey && !(key instanceof ECKey)
+                /*&& !(mKey instanceof XECKey && key instanceof XECKey)*/) {
+        /** TODO This condition is temporary modified, because OpenSSL implementation does not
+         * implement OpenSSLX25519PublicKey from XECKey interface (b/214203951).
+         * This change has to revert once conscrypt implements OpenSSLX25519PublicKey from
+         * XECKey interface.
+         */
+            throw new InvalidKeyException(
+                    "Public and Private key should be of the same type.");
+        } else if (mKey instanceof ECKey
+                && !((ECKey) key).getParams().getCurve()
+                .equals(((ECKey) mKey).getParams().getCurve())) {
+            throw new InvalidKeyException(
+                    "Public and Private key parameters should be same.");
         } else if (!lastPhase) {
             throw new IllegalStateException(
                     "Only one other party supported. lastPhase must be set to true.");
@@ -148,6 +175,7 @@ public class AndroidKeyStoreKeyAgreementSpi extends KeyAgreementSpi
         }
         byte[] otherPartyKeyEncoded = mOtherPartyKey.getEncoded();
 
+        StrictMode.noteSlowCall("engineGenerateSecret");
         try {
             return mOperation.finish(otherPartyKeyEncoded, null);
         } catch (KeyStoreException e) {
@@ -219,6 +247,7 @@ public class AndroidKeyStoreKeyAgreementSpi extends KeyAgreementSpi
                 Tag.PURPOSE, KeyPurpose.AGREE_KEY
         ));
 
+        StrictMode.noteDiskWrite();
         try {
             mOperation =
                     mKey.getSecurityLevel().createOperation(mKey.getKeyIdDescriptor(), parameters);

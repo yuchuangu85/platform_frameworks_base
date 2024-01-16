@@ -97,7 +97,11 @@ public:
 
     bool setImageFilter(SkImageFilter* imageFilter);
 
+    bool setBackdropImageFilter(SkImageFilter* imageFilter);
+
     SkImageFilter* getImageFilter() const { return mImageFilter.get(); }
+
+    SkImageFilter* getBackdropImageFilter() const { return mBackdropImageFilter.get(); }
 
     const StretchEffect& getStretchEffect() const { return mStretchEffect; }
 
@@ -129,6 +133,7 @@ private:
     SkBlendMode mMode;
     sk_sp<SkColorFilter> mColorFilter;
     sk_sp<SkImageFilter> mImageFilter;
+    sk_sp<SkImageFilter> mBackdropImageFilter;
     StretchEffect mStretchEffect;
 };
 
@@ -165,11 +170,11 @@ public:
     bool prepareForFunctorPresence(bool willHaveFunctor, bool ancestorDictatesFunctorsNeedLayer) {
         // parent may have already dictated that a descendant layer is needed
         bool functorsNeedLayer =
-                ancestorDictatesFunctorsNeedLayer
-                || CC_UNLIKELY(isClipMayBeComplex())
+                ancestorDictatesFunctorsNeedLayer ||
+                CC_UNLIKELY(isClipMayBeComplex())
 
                 // Round rect clipping forces layer for functors
-                || CC_UNLIKELY(getOutline().willRoundRectClip()) ||
+                || CC_UNLIKELY(getOutline().willComplexClip()) ||
                 CC_UNLIKELY(getRevealClip().willClip())
 
                 // Complex matrices forces layer, due to stencil clipping

@@ -18,6 +18,7 @@ package com.android.systemui.shared.system;
 
 import android.annotation.IntDef;
 import android.os.Build;
+import android.text.TextUtils;
 import android.view.View;
 
 import com.android.internal.jank.InteractionJankMonitor;
@@ -27,8 +28,6 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 public final class InteractionJankMonitorWrapper {
-    private static final String TAG = "JankMonitorWrapper";
-
     // Launcher journeys.
     public static final int CUJ_APP_LAUNCH_FROM_RECENTS =
             InteractionJankMonitor.CUJ_LAUNCHER_APP_LAUNCH_FROM_RECENTS;
@@ -36,24 +35,51 @@ public final class InteractionJankMonitorWrapper {
             InteractionJankMonitor.CUJ_LAUNCHER_APP_LAUNCH_FROM_ICON;
     public static final int CUJ_APP_CLOSE_TO_HOME =
             InteractionJankMonitor.CUJ_LAUNCHER_APP_CLOSE_TO_HOME;
+    public static final int CUJ_APP_CLOSE_TO_HOME_FALLBACK =
+            InteractionJankMonitor.CUJ_LAUNCHER_APP_CLOSE_TO_HOME_FALLBACK;
     public static final int CUJ_APP_CLOSE_TO_PIP =
             InteractionJankMonitor.CUJ_LAUNCHER_APP_CLOSE_TO_PIP;
     public static final int CUJ_QUICK_SWITCH =
             InteractionJankMonitor.CUJ_LAUNCHER_QUICK_SWITCH;
     public static final int CUJ_OPEN_ALL_APPS =
             InteractionJankMonitor.CUJ_LAUNCHER_OPEN_ALL_APPS;
+    public static final int CUJ_CLOSE_ALL_APPS_SWIPE =
+            InteractionJankMonitor.CUJ_LAUNCHER_CLOSE_ALL_APPS_SWIPE;
+    public static final int CUJ_CLOSE_ALL_APPS_TO_HOME =
+            InteractionJankMonitor.CUJ_LAUNCHER_CLOSE_ALL_APPS_TO_HOME;
     public static final int CUJ_ALL_APPS_SCROLL =
             InteractionJankMonitor.CUJ_LAUNCHER_ALL_APPS_SCROLL;
     public static final int CUJ_APP_LAUNCH_FROM_WIDGET =
             InteractionJankMonitor.CUJ_LAUNCHER_APP_LAUNCH_FROM_WIDGET;
+    public static final int CUJ_SPLIT_SCREEN_ENTER =
+            InteractionJankMonitor.CUJ_SPLIT_SCREEN_ENTER;
+    public static final int CUJ_LAUNCHER_UNLOCK_ENTRANCE_ANIMATION =
+            InteractionJankMonitor.CUJ_LAUNCHER_UNLOCK_ENTRANCE_ANIMATION;
+    public static final int CUJ_RECENTS_SCROLLING =
+            InteractionJankMonitor.CUJ_RECENTS_SCROLLING;
+    public static final int CUJ_APP_SWIPE_TO_RECENTS =
+            InteractionJankMonitor.CUJ_LAUNCHER_APP_SWIPE_TO_RECENTS;
+    public static final int CUJ_OPEN_SEARCH_RESULT =
+            InteractionJankMonitor.CUJ_LAUNCHER_OPEN_SEARCH_RESULT;
+    public static final int CUJ_SHADE_EXPAND_FROM_STATUS_BAR =
+            InteractionJankMonitor.CUJ_SHADE_EXPAND_FROM_STATUS_BAR;
 
     @IntDef({
             CUJ_APP_LAUNCH_FROM_RECENTS,
             CUJ_APP_LAUNCH_FROM_ICON,
             CUJ_APP_CLOSE_TO_HOME,
+            CUJ_APP_CLOSE_TO_HOME_FALLBACK,
             CUJ_APP_CLOSE_TO_PIP,
             CUJ_QUICK_SWITCH,
             CUJ_APP_LAUNCH_FROM_WIDGET,
+            CUJ_LAUNCHER_UNLOCK_ENTRANCE_ANIMATION,
+            CUJ_RECENTS_SCROLLING,
+            CUJ_APP_SWIPE_TO_RECENTS,
+            CUJ_OPEN_ALL_APPS,
+            CUJ_CLOSE_ALL_APPS_SWIPE,
+            CUJ_CLOSE_ALL_APPS_TO_HOME,
+            CUJ_OPEN_SEARCH_RESULT,
+            CUJ_SHADE_EXPAND_FROM_STATUS_BAR,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface CujType {
@@ -82,6 +108,23 @@ public final class InteractionJankMonitorWrapper {
         Configuration.Builder builder =
                 Configuration.Builder.withView(cujType, v)
                         .setTimeout(timeout);
+        InteractionJankMonitor.getInstance().begin(builder);
+    }
+
+    /**
+     * Begin a trace session.
+     *
+     * @param v       an attached view.
+     * @param cujType the specific {@link InteractionJankMonitor.CujType}.
+     * @param tag the tag to distinguish different flow of same type CUJ.
+     */
+    public static void begin(View v, @CujType int cujType, String tag) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return;
+        Configuration.Builder builder =
+                Configuration.Builder.withView(cujType, v);
+        if (!TextUtils.isEmpty(tag)) {
+            builder.setTag(tag);
+        }
         InteractionJankMonitor.getInstance().begin(builder);
     }
 

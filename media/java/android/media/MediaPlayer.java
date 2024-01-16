@@ -19,7 +19,6 @@ package android.media;
 import static android.Manifest.permission.BIND_IMS_SERVICE;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 
-import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -159,18 +158,13 @@ import java.util.concurrent.Executor;
  *         the user supplied callback method OnErrorListener.onError() will be
  *         invoked by the internal player engine and the object will be
  *         transfered to the <em>Error</em> state. </li>
- *         <li>It is also recommended that once
- *         a MediaPlayer object is no longer being used, call {@link #release()} immediately
- *         so that resources used by the internal player engine associated with the
- *         MediaPlayer object can be released immediately. Resource may include
- *         singleton resources such as hardware acceleration components and
- *         failure to call {@link #release()} may cause subsequent instances of
- *         MediaPlayer objects to fallback to software implementations or fail
- *         altogether. Once the MediaPlayer
- *         object is in the <em>End</em> state, it can no longer be used and
- *         there is no way to bring it back to any other state. </li>
- *         <li>Furthermore,
- *         the MediaPlayer objects created using <code>new</code> is in the
+ *         <li>You must keep a reference to a MediaPlayer instance to prevent it from being garbage
+ *         collected. If a MediaPlayer instance is garbage collected, {@link #release} will be
+ *         called, causing any ongoing playback to stop.
+ *         <li>You must call {@link #release()} once you have finished using an instance to release
+ *         acquired resources, such as memory and codecs. Once you have called {@link #release}, you
+ *         must no longer interact with the released instance.
+ *         <li>MediaPlayer objects created using <code>new</code> is in the
  *         <em>Idle</em> state, while those created with one
  *         of the overloaded convenient <code>create</code> methods are <em>NOT</em>
  *         in the <em>Idle</em> state. In fact, the objects are in the <em>Prepared</em>
@@ -408,7 +402,7 @@ import java.util.concurrent.Executor;
  * <tr><td>release </p></td>
  *     <td>any </p></td>
  *     <td>{} </p></td>
- *     <td>After {@link #release()}, the object is no longer available. </p></td></tr>
+ *     <td>After {@link #release()}, you must not interact with the object. </p></td></tr>
  * <tr><td>reset </p></td>
  *     <td>{Idle, Initialized, Prepared, Started, Paused, Stopped,
  *         PlaybackCompleted, Error}</p></td>
@@ -658,17 +652,35 @@ public class MediaPlayer extends PlayerBase
     private ProvisioningThread mDrmProvisioningThread;
 
     /**
-     * Default constructor. Consider using one of the create() methods for
-     * synchronously instantiating a MediaPlayer from a Uri or resource.
-     * <p>When done with the MediaPlayer, you should call  {@link #release()},
-     * to free the resources. If not released, too many MediaPlayer instances may
-     * result in an exception.</p>
+     * Default constructor.
+     *
+     * <p>Consider using one of the create() methods for synchronously instantiating a MediaPlayer
+     * from a Uri or resource.
+     *
+     * <p>You must call {@link #release()} when you are finished using the instantiated instance.
+     * Doing so frees any resources you have previously acquired.
      */
     public MediaPlayer() {
-        this(AudioSystem.AUDIO_SESSION_ALLOCATE);
+        this(/*context=*/null, AudioSystem.AUDIO_SESSION_ALLOCATE);
     }
 
-    private MediaPlayer(int sessionId) {
+
+    /**
+     * Default constructor with context.
+     *
+     *  <p>Consider using one of the create() methods for synchronously instantiating a
+     *  MediaPlayer from a Uri or resource.
+     *
+     * @param context non-null context. This context will be used to pull information,
+     *  such as {@link android.content.AttributionSource} and device specific session ids, which
+     *  will be associated with the {@link MediaPlayer}.
+     *  However, the context itself will not be retained by the MediaPlayer.
+     */
+    public MediaPlayer(@NonNull Context context) {
+        this(Objects.requireNonNull(context), AudioSystem.AUDIO_SESSION_ALLOCATE);
+    }
+
+    private MediaPlayer(Context context, int sessionId) {
         super(new AudioAttributes.Builder().build(),
                 AudioPlaybackConfiguration.PLAYER_TYPE_JAM_MEDIAPLAYER);
 
@@ -684,7 +696,9 @@ public class MediaPlayer extends PlayerBase
         mTimeProvider = new TimeProvider(this);
         mOpenSubtitleSources = new Vector<InputStream>();
 
-        AttributionSource attributionSource = AttributionSource.myAttributionSource();
+        AttributionSource attributionSource =
+                context == null ? AttributionSource.myAttributionSource()
+                        : context.getAttributionSource();
         // set the package name to empty if it was null
         if (attributionSource.getPackageName() == null) {
             attributionSource = attributionSource.withPackageName("");
@@ -694,10 +708,17 @@ public class MediaPlayer extends PlayerBase
          * It's easier to create it here than in C++.
          */
         try (ScopedParcelState attributionSourceState = attributionSource.asScopedParcelState()) {
-            native_setup(new WeakReference<MediaPlayer>(this), attributionSourceState.getParcel());
+            native_setup(new WeakReference<>(this), attributionSourceState.getParcel(),
+                    resolvePlaybackSessionId(context, sessionId));
         }
+        baseRegisterPlayer(getAudioSessionId());
+    }
 
-        baseRegisterPlayer(sessionId);
+    private Parcel createPlayerIIdParcel() {
+        Parcel parcel = newRequest();
+        parcel.writeInt(INVOKE_ID_SET_PLAYER_IID);
+        parcel.writeInt(mPlayerIId);
+        return parcel;
     }
 
     /*
@@ -716,6 +737,7 @@ public class MediaPlayer extends PlayerBase
     private static final int INVOKE_ID_DESELECT_TRACK = 5;
     private static final int INVOKE_ID_SET_VIDEO_SCALE_MODE = 6;
     private static final int INVOKE_ID_GET_SELECTED_TRACK = 7;
+    private static final int INVOKE_ID_SET_PLAYER_IID = 8;
 
     /**
      * Create a request parcel which can be routed to the native media
@@ -874,9 +896,10 @@ public class MediaPlayer extends PlayerBase
     /**
      * Convenience method to create a MediaPlayer for a given Uri.
      * On success, {@link #prepare()} will already have been called and must not be called again.
-     * <p>When done with the MediaPlayer, you should call  {@link #release()},
-     * to free the resources. If not released, too many MediaPlayer instances will
-     * result in an exception.</p>
+     *
+     * <p>You must call {@link #release()} when you are finished using the created instance. Doing
+     * so frees any resources you have previously acquired.
+     *
      * <p>Note that since {@link #prepare()} is called automatically in this method,
      * you cannot change the audio
      * session ID (see {@link #setAudioSessionId(int)}) or audio attributes
@@ -893,9 +916,10 @@ public class MediaPlayer extends PlayerBase
     /**
      * Convenience method to create a MediaPlayer for a given Uri.
      * On success, {@link #prepare()} will already have been called and must not be called again.
-     * <p>When done with the MediaPlayer, you should call  {@link #release()},
-     * to free the resources. If not released, too many MediaPlayer instances will
-     * result in an exception.</p>
+     *
+     * <p>You must call {@link #release()} when you are finished using the created instance. Doing
+     * so frees any resources you have previously acquired.
+     *
      * <p>Note that since {@link #prepare()} is called automatically in this method,
      * you cannot change the audio
      * session ID (see {@link #setAudioSessionId(int)}) or audio attributes
@@ -926,11 +950,10 @@ public class MediaPlayer extends PlayerBase
             AudioAttributes audioAttributes, int audioSessionId) {
 
         try {
-            MediaPlayer mp = new MediaPlayer(audioSessionId);
+            MediaPlayer mp = new MediaPlayer(context, audioSessionId);
             final AudioAttributes aa = audioAttributes != null ? audioAttributes :
                 new AudioAttributes.Builder().build();
             mp.setAudioAttributes(aa);
-            mp.native_setAudioSessionId(audioSessionId);
             mp.setDataSource(context, uri);
             if (holder != null) {
                 mp.setDisplay(holder);
@@ -956,9 +979,10 @@ public class MediaPlayer extends PlayerBase
     /**
      * Convenience method to create a MediaPlayer for a given resource id.
      * On success, {@link #prepare()} will already have been called and must not be called again.
-     * <p>When done with the MediaPlayer, you should call  {@link #release()},
-     * to free the resources. If not released, too many MediaPlayer instances will
-     * result in an exception.</p>
+     *
+     * <p>You must call {@link #release()} when you are finished using the created instance. Doing
+     * so frees any resources you have previously acquired.
+     *
      * <p>Note that since {@link #prepare()} is called automatically in this method,
      * you cannot change the audio
      * session ID (see {@link #setAudioSessionId(int)}) or audio attributes
@@ -991,13 +1015,11 @@ public class MediaPlayer extends PlayerBase
             AssetFileDescriptor afd = context.getResources().openRawResourceFd(resid);
             if (afd == null) return null;
 
-            MediaPlayer mp = new MediaPlayer(audioSessionId);
+            MediaPlayer mp = new MediaPlayer(context, audioSessionId);
 
             final AudioAttributes aa = audioAttributes != null ? audioAttributes :
                 new AudioAttributes.Builder().build();
             mp.setAudioAttributes(aa);
-            mp.native_setAudioSessionId(audioSessionId);
-
             mp.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
             afd.close();
             mp.prepare();
@@ -1035,7 +1057,7 @@ public class MediaPlayer extends PlayerBase
      * this API to pass the cookies as a list of HttpCookie. If the app has not installed
      * a CookieHandler already, this API creates a CookieManager and populates its CookieStore with
      * the provided cookies. If the app has installed its own handler already, this API requires the
-     * handler to be of CookieManager type such that the API can update the manager’s CookieStore.
+     * handler to be of CookieManager type such that the API can update the manager's CookieStore.
      *
      * <p><strong>Note</strong> that the cross domain redirection is allowed by default,
      * but that can be changed with key/value pairs through the headers parameter with
@@ -1310,16 +1332,26 @@ public class MediaPlayer extends PlayerBase
      * @throws IllegalStateException if it is called in an invalid state
      */
     public void prepare() throws IOException, IllegalStateException {
-        _prepare();
+        Parcel piidParcel = createPlayerIIdParcel();
+        try {
+            int retCode = _prepare(piidParcel);
+            if (retCode != 0) {
+                Log.w(TAG, "prepare(): could not set piid " + mPlayerIId);
+            }
+        } finally {
+            piidParcel.recycle();
+        }
         scanInternalSubtitleTracks();
 
         // DrmInfo, if any, has been resolved by now.
         synchronized (mDrmLock) {
             mDrmInfoResolved = true;
         }
+
     }
 
-    private native void _prepare() throws IOException, IllegalStateException;
+    /** Returns the result of sending the {@code piidParcel} to the MediaPlayerService. */
+    private native int _prepare(Parcel piidParcel) throws IOException, IllegalStateException;
 
     /**
      * Prepares the player for playback, asynchronously.
@@ -1331,7 +1363,20 @@ public class MediaPlayer extends PlayerBase
      *
      * @throws IllegalStateException if it is called in an invalid state
      */
-    public native void prepareAsync() throws IllegalStateException;
+    public void prepareAsync() throws IllegalStateException {
+        Parcel piidParcel = createPlayerIIdParcel();
+        try {
+            int retCode = _prepareAsync(piidParcel);
+            if (retCode != 0) {
+                Log.w(TAG, "prepareAsync(): could not set piid " + mPlayerIId);
+            }
+        } finally {
+            piidParcel.recycle();
+        }
+    }
+
+    /** Returns the result of sending the {@code piidParcel} to the MediaPlayerService. */
+    private native int _prepareAsync(Parcel piidParcel) throws IllegalStateException;
 
     /**
      * Starts or resumes playback. If playback had previously been paused,
@@ -2158,21 +2203,8 @@ public class MediaPlayer extends PlayerBase
 
     /**
      * Releases resources associated with this MediaPlayer object.
-     * It is considered good practice to call this method when you're
-     * done using the MediaPlayer. In particular, whenever an Activity
-     * of an application is paused (its onPause() method is called),
-     * or stopped (its onStop() method is called), this method should be
-     * invoked to release the MediaPlayer object, unless the application
-     * has a special need to keep the object around. In addition to
-     * unnecessary resources (such as memory and instances of codecs)
-     * being held, failure to call this method immediately if a
-     * MediaPlayer object is no longer needed may also lead to
-     * continuous battery consumption for mobile devices, and playback
-     * failure for other applications if no multiple instances of the
-     * same codec are supported on a device. Even if multiple instances
-     * of the same codec are supported, some performance degradation
-     * may be expected when unnecessary multiple instances are used
-     * at the same time.
+     *
+     * <p>You must call this method once the instance is no longer required.
      */
     public void release() {
         baseRelease();
@@ -2385,6 +2417,9 @@ public class MediaPlayer extends PlayerBase
      * However, it is possible to force this player to be part of an already existing audio session
      * by calling this method.
      * This method must be called before one of the overloaded <code> setDataSource </code> methods.
+     * Note that session id set using this method will override device-specific audio session id,
+     * if the {@link MediaPlayer} was instantiated using device-specific {@link Context} -
+     * see {@link MediaPlayer#MediaPlayer(Context)}.
      * @throws IllegalStateException if it is called in an invalid state
      */
     public void setAudioSessionId(int sessionId)
@@ -2482,7 +2517,7 @@ public class MediaPlayer extends PlayerBase
 
     private static native final void native_init();
     private native void native_setup(Object mediaplayerThis,
-            @NonNull Parcel attributionSource);
+            @NonNull Parcel attributionSource, int audioSessionId);
     private native final void native_finalize();
 
     /**
@@ -2490,6 +2525,8 @@ public class MediaPlayer extends PlayerBase
      *
      * @see android.media.MediaPlayer#getTrackInfo
      */
+    // The creator needs to be pulic, which requires removing the @UnsupportedAppUsage
+    @SuppressWarnings("ParcelableCreator")
     static public class TrackInfo implements Parcelable {
         /**
          * Gets the track type.
@@ -2511,10 +2548,20 @@ public class MediaPlayer extends PlayerBase
         }
 
         /**
+         * Returns whether this track contains haptic channels in the audio track.
+         * @hide
+         */
+        public boolean hasHapticChannels() {
+            return mFormat != null && mFormat.containsKey(MediaFormat.KEY_HAPTIC_CHANNEL_COUNT)
+                    && mFormat.getInteger(MediaFormat.KEY_HAPTIC_CHANNEL_COUNT) > 0;
+        }
+
+        /**
          * Gets the {@link MediaFormat} of the track.  If the format is
          * unknown or could not be determined, null is returned.
          */
         public MediaFormat getFormat() {
+            // Note: The format isn't exposed for audio because it is incomplete.
             if (mTrackType == MEDIA_TRACK_TYPE_TIMEDTEXT
                     || mTrackType == MEDIA_TRACK_TYPE_SUBTITLE) {
                 return mFormat;
@@ -2557,6 +2604,11 @@ public class MediaPlayer extends PlayerBase
                 mFormat.setInteger(MediaFormat.KEY_IS_AUTOSELECT, in.readInt());
                 mFormat.setInteger(MediaFormat.KEY_IS_DEFAULT, in.readInt());
                 mFormat.setInteger(MediaFormat.KEY_IS_FORCED_SUBTITLE, in.readInt());
+            } else if (mTrackType == MEDIA_TRACK_TYPE_AUDIO) {
+                boolean hasHapticChannels = in.readBoolean();
+                if (hasHapticChannels) {
+                    mFormat.setInteger(MediaFormat.KEY_HAPTIC_CHANNEL_COUNT, in.readInt());
+                }
             }
         }
 
@@ -2587,6 +2639,13 @@ public class MediaPlayer extends PlayerBase
                 dest.writeInt(mFormat.getInteger(MediaFormat.KEY_IS_AUTOSELECT));
                 dest.writeInt(mFormat.getInteger(MediaFormat.KEY_IS_DEFAULT));
                 dest.writeInt(mFormat.getInteger(MediaFormat.KEY_IS_FORCED_SUBTITLE));
+            } else if (mTrackType == MEDIA_TRACK_TYPE_AUDIO) {
+                boolean hasHapticChannels =
+                        mFormat.containsKey(MediaFormat.KEY_HAPTIC_CHANNEL_COUNT);
+                dest.writeBoolean(hasHapticChannels);
+                if (hasHapticChannels) {
+                    dest.writeInt(mFormat.getInteger(MediaFormat.KEY_HAPTIC_CHANNEL_COUNT));
+                }
             }
         }
 
@@ -4311,7 +4370,7 @@ public class MediaPlayer extends PlayerBase
     @RequiresPermission(BIND_IMS_SERVICE)
     public void setOnRtpRxNoticeListener(
             @NonNull Context context,
-            @NonNull @CallbackExecutor Executor executor,
+            @NonNull Executor executor,
             @NonNull OnRtpRxNoticeListener listener) {
         Objects.requireNonNull(context);
         Preconditions.checkArgument(
@@ -5106,9 +5165,12 @@ public class MediaPlayer extends PlayerBase
             @Nullable Map<String, String> optionalParameters)
             throws NoDrmSchemeException
     {
-        Log.v(TAG, "getKeyRequest: " +
-                " keySetId: " + keySetId + " initData:" + initData + " mimeType: " + mimeType +
-                " keyType: " + keyType + " optionalParameters: " + optionalParameters);
+        Log.v(TAG, "getKeyRequest: "
+                + " keySetId: " + Arrays.toString(keySetId)
+                + " initData:" + Arrays.toString(initData)
+                + " mimeType: " + mimeType
+                + " keyType: " + keyType
+                + " optionalParameters: " + optionalParameters);
 
         synchronized (mDrmLock) {
             if (!mActiveDrmScheme) {
@@ -5167,7 +5229,8 @@ public class MediaPlayer extends PlayerBase
     public byte[] provideKeyResponse(@Nullable byte[] keySetId, @NonNull byte[] response)
             throws NoDrmSchemeException, DeniedByServerException
     {
-        Log.v(TAG, "provideKeyResponse: keySetId: " + keySetId + " response: " + response);
+        Log.v(TAG, "provideKeyResponse: keySetId: " + Arrays.toString(keySetId)
+                + " response: " + Arrays.toString(response));
 
         synchronized (mDrmLock) {
 
@@ -5183,8 +5246,9 @@ public class MediaPlayer extends PlayerBase
 
                 byte[] keySetResult = mDrmObj.provideKeyResponse(scope, response);
 
-                Log.v(TAG, "provideKeyResponse: keySetId: " + keySetId + " response: " + response +
-                        " --> " + keySetResult);
+                Log.v(TAG, "provideKeyResponse: keySetId: " + Arrays.toString(keySetId)
+                        + " response: " + Arrays.toString(response)
+                        + " --> " + Arrays.toString(keySetResult));
 
 
                 return keySetResult;
@@ -5211,7 +5275,7 @@ public class MediaPlayer extends PlayerBase
     public void restoreKeys(@NonNull byte[] keySetId)
             throws NoDrmSchemeException
     {
-        Log.v(TAG, "restoreKeys: keySetId: " + keySetId);
+        Log.v(TAG, "restoreKeys: keySetId: " + Arrays.toString(keySetId));
 
         synchronized (mDrmLock) {
 
@@ -5498,7 +5562,8 @@ public class MediaPlayer extends PlayerBase
         // at prepareDrm/openSession rather than getKeyRequest/provideKeyResponse
         try {
             mDrmSessionId = mDrmObj.openSession();
-            Log.v(TAG, "prepareDrm_openSessionStep: mDrmSessionId=" + mDrmSessionId);
+            Log.v(TAG, "prepareDrm_openSessionStep: mDrmSessionId="
+                    + Arrays.toString(mDrmSessionId));
 
             // Sending it down to native/mediaserver to create the crypto object
             // This call could simply fail due to bad player state, e.g., after start().
@@ -5561,7 +5626,7 @@ public class MediaPlayer extends PlayerBase
                     response = Streams.readFully(connection.getInputStream());
 
                     Log.v(TAG, "HandleProvisioninig: Thread run: response " +
-                            response.length + " " + response);
+                            response.length + " " + Arrays.toString(response));
                 } catch (Exception e) {
                     status = PREPARE_DRM_STATUS_PROVISIONING_NETWORK_ERROR;
                     Log.w(TAG, "HandleProvisioninig: Thread run: connect " + e + " url: " + url);
@@ -5645,8 +5710,9 @@ public class MediaPlayer extends PlayerBase
             return PREPARE_DRM_STATUS_PREPARATION_ERROR;
         }
 
-        Log.v(TAG, "HandleProvisioninig provReq " +
-                " data: " + provReq.getData() + " url: " + provReq.getDefaultUrl());
+        Log.v(TAG, "HandleProvisioninig provReq "
+                + " data: " + Arrays.toString(provReq.getData())
+                + " url: " + provReq.getDefaultUrl());
 
         // networking in a background thread
         mDrmProvisioningInProgress = true;
@@ -5729,7 +5795,8 @@ public class MediaPlayer extends PlayerBase
     private void cleanDrmObj()
     {
         // the caller holds mDrmLock
-        Log.v(TAG, "cleanDrmObj: mDrmObj=" + mDrmObj + " mDrmSessionId=" + mDrmSessionId);
+        Log.v(TAG, "cleanDrmObj: mDrmObj=" + mDrmObj
+                + " mDrmSessionId=" + Arrays.toString(mDrmSessionId));
 
         if (mDrmSessionId != null)    {
             mDrmObj.closeSession(mDrmSessionId);

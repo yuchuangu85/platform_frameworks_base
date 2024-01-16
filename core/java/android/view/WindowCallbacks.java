@@ -28,10 +28,6 @@ import android.graphics.Rect;
  */
 public interface WindowCallbacks {
 
-    public static final int RESIZE_MODE_INVALID = -1;
-    public static final int RESIZE_MODE_FREEFORM = 0;
-    public static final int RESIZE_MODE_DOCKED_DIVIDER = 1;
-
     /**
      * Called by the system when the window got changed by the user, before the layouter got called.
      * It also gets called when the insets changed, or when the window switched between a fullscreen
@@ -57,7 +53,7 @@ public interface WindowCallbacks {
      * @param stableInsets The stable insets for the window.
      */
     void onWindowDragResizeStart(Rect initialBounds, boolean fullscreen, Rect systemInsets,
-            Rect stableInsets, int resizeMode);
+            Rect stableInsets);
 
     /**
      * Called when a drag resize ends.

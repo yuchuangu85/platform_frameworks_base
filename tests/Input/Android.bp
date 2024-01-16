@@ -13,13 +13,19 @@ android_test {
         "src/**/*.java",
         "src/**/*.kt",
     ],
+    kotlincflags: [
+        "-Werror",
+    ],
     platform_apis: true,
     certificate: "platform",
     static_libs: [
         "androidx.test.ext.junit",
         "androidx.test.rules",
-        "truth-prebuilt",
-        "ub-uiautomator",
+        "mockito-target-minus-junit4",
+        "services.core.unboosted",
+        "testables",
+        "truth",
+        "androidx.test.uiautomator_uiautomator",
     ],
     test_suites: ["device-tests"],
 }

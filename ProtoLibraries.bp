@@ -14,7 +14,6 @@
 
 gensrcs {
     name: "framework-javastream-protos",
-    depfile: true,
 
     tools: [
         "aprotoc",
@@ -25,7 +24,6 @@ gensrcs {
     cmd: "mkdir -p $(genDir)/$(in) " +
         "&& $(location aprotoc) " +
         "  --plugin=$(location protoc-gen-javastream) " +
-        "  --dependency_out=$(depfile) " +
         "  --javastream_out=$(genDir)/$(in) " +
         "  -Iexternal/protobuf/src " +
         "  -I . " +
@@ -36,17 +34,19 @@ gensrcs {
         ":ipconnectivity-proto-src",
         ":libstats_atom_enum_protos",
         ":libstats_atom_message_protos",
-        ":libtombstone_proto-src",
         "core/proto/**/*.proto",
         "libs/incident/**/*.proto",
-        ":service-permission-protos",
     ],
+
+    data: [
+        ":libprotobuf-internal-protos",
+    ],
+
     output_extension: "srcjar",
 }
 
 gensrcs {
     name: "framework-cppstream-protos",
-    depfile: true,
 
     tools: [
         "aprotoc",
@@ -56,7 +56,6 @@ gensrcs {
     cmd: "mkdir -p $(genDir) " +
         "&& $(location aprotoc) " +
         "  --plugin=$(location protoc-gen-cppstream) " +
-        "  --dependency_out=$(depfile) " +
         "  --cppstream_out=$(genDir) " +
         "  -Iexternal/protobuf/src " +
         "  -I . " +
@@ -68,10 +67,49 @@ gensrcs {
         ":libstats_atom_message_protos",
         "core/proto/**/*.proto",
         "libs/incident/**/*.proto",
-        ":service-permission-protos",
+    ],
+
+    data: [
+        ":libprotobuf-internal-protos",
     ],
 
     output_extension: "proto.h",
+}
+
+// ====  nfc framework java library  ==============================
+gensrcs {
+    name: "framework-nfc-javastream-protos",
+
+    tools: [
+        "aprotoc",
+        "protoc-gen-javastream",
+        "soong_zip",
+    ],
+
+    cmd: "mkdir -p $(genDir)/$(in) " +
+        "&& $(location aprotoc) " +
+        "  --plugin=$(location protoc-gen-javastream) " +
+        "  --javastream_out=$(genDir)/$(in) " +
+        "  -Iexternal/protobuf/src " +
+        "  -I . " +
+        "  $(in) " +
+        "&& $(location soong_zip) -jar -o $(out) -C $(genDir)/$(in) -D $(genDir)/$(in)",
+
+    srcs: [
+        "core/proto/android/app/pendingintent.proto",
+        "core/proto/android/content/component_name.proto",
+        "core/proto/android/content/intent.proto",
+        "core/proto/android/nfc/*.proto",
+        "core/proto/android/os/patternmatcher.proto",
+        "core/proto/android/os/persistablebundle.proto",
+        "core/proto/android/privacy.proto",
+    ],
+
+    data: [
+        ":libprotobuf-internal-protos",
+    ],
+
+    output_extension: "srcjar",
 }
 
 // ====  java proto host library  ==============================
@@ -79,15 +117,12 @@ java_library_host {
     name: "platformprotos",
     srcs: [
         ":ipconnectivity-proto-src",
-        ":libstats_atom_enum_protos",
-        ":libstats_atom_message_protos",
         ":libstats_internal_protos",
         ":statsd_internal_protos",
         "cmds/am/proto/instrumentation_data.proto",
         "cmds/statsd/src/**/*.proto",
         "core/proto/**/*.proto",
         "libs/incident/proto/**/*.proto",
-        ":service-permission-protos",
     ],
     proto: {
         include_dirs: [
@@ -96,9 +131,11 @@ java_library_host {
         ],
         type: "full",
     },
+    // b/267831518: Pin tradefed and dependencies to Java 11.
+    java_version: "11",
     // Protos have lots of MissingOverride and similar.
     errorprone: {
-        javacflags: ["-XepDisableAllChecks"],
+        enabled: false,
     },
 }
 
@@ -122,8 +159,11 @@ java_library {
         ":libstats_atom_message_protos",
         "core/proto/**/*.proto",
         "libs/incident/proto/android/os/**/*.proto",
-        ":service-permission-protos",
     ],
+    // Protos have lots of MissingOverride and similar.
+    errorprone: {
+        enabled: false,
+    },
 }
 
 // ====  java proto device library (for test only)  ==============================
@@ -140,7 +180,6 @@ java_library {
         ":libstats_atom_message_protos",
         "core/proto/**/*.proto",
         "libs/incident/proto/android/os/**/*.proto",
-        ":service-permission-protos",
     ],
     exclude_srcs: [
         "core/proto/android/privacy.proto",
@@ -150,7 +189,7 @@ java_library {
     sdk_version: "core_current",
     // Protos have lots of MissingOverride and similar.
     errorprone: {
-        javacflags: ["-XepDisableAllChecks"],
+        enabled: false,
     },
 }
 
@@ -176,7 +215,6 @@ cc_defaults {
         ":libstats_atom_enum_protos",
         ":libstats_atom_message_protos",
         "core/proto/**/*.proto",
-        ":service-permission-protos",
     ],
 }
 

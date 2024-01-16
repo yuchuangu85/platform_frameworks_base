@@ -123,7 +123,7 @@ A third party tile is any Quick Settings tile that is provided by an app (that's
 
 ### API classes
 
-The classes that define the public API are in [core/java/android/service/quicksettings](core/java/android/service/quicksettings).
+The classes that define the public API are in [core/java/android/service/quicksettings](/core/java/android/service/quicksettings).
 
 #### Tile
 
@@ -301,9 +301,13 @@ This section describes necessary and recommended steps when implementing a Quick
     * Use only `handleUpdateState` to modify the values of the state to the new ones. This can be done by polling controllers or through the `arg` parameter.
     * If the controller is not a `CallbackController`, respond to `handleSetListening` by attaching/dettaching from controllers.
     * Implement `isAvailable` so the tile will not be created when it's not necessary.
-4. In `QSFactoryImpl`:
-    * Inject a `Provider` for the tile created before.
-    * Add a case to the `switch` with a unique String spec for the chosen tile.
+4. Either create a new feature module or find an existing related feature module and add the following binding method:
+    * ```kotlin
+      @Binds
+      @IntoMap
+      @StringKey(YourNewTile.TILE_SPEC) // A unique word that will map to YourNewTile
+      fun bindYourNewTile(yourNewTile: YourNewTile): QSTileImpl<*>
+      ```
 5. In [SystemUI/res/values/config.xml](/packages/SystemUI/res/values/config.xml), modify `quick_settings_tiles_stock` and add the spec defined in the previous step. If necessary, add it also to `quick_settings_tiles_default`. The first one contains a list of all the tiles that SystemUI knows how to create (to show to the user in the customization screen). The second one contains only the default tiles that the user will experience on a fresh boot or after they reset their tiles.
 6. In [SystemUI/res/values/tiles_states_strings.xml](/packages/SystemUI/res/values/tiles_states_strings.xml), add a new array for your tile. The name has to be `tile_states_<spec>`. Use a good description to help the translators.
 7. In [`SystemUI/src/com/android/systemui/qs/tileimpl/QSTileViewImpl.kt`](/packages/SystemUI/src/com/android/systemui/qs/tileimpl/QSTileViewImpl.kt), add a new element to the map in `SubtitleArrayMapping` corresponding to the resource created in the previous step.
@@ -357,10 +361,12 @@ Following are methods that need to be implemented when creating a new SystemUI t
   Updates the `State` of the Tile based on the state of the device as provided by the respective controller. It will be called every time the Tile becomes visible, is interacted with or `QSTileImpl#refreshState` is called. After this is done, the updated state will be reflected in the UI.
 
 * ```java
+  @Deprecated
   public int getMetricsCategory()
   ```
 
-  Identifier for this Tile, as defined in [proto/src/metrics_constants/metrics_constants.proto](/proto/src/metrics_constants/metrics_constants.proto). This is used to log events related to this Tile.
+  ~~Identifier for this Tile, as defined in [proto/src/metrics_constants/metrics_constants.proto](/proto/src/metrics_constants/metrics_constants.proto). This is used to log events related to this Tile.~~
+  This is now deprecated in favor of `UiEvent` that use the tile spec.
 
 * ```java
   public boolean isAvailable()

@@ -67,7 +67,7 @@ public class WindowMagnificationConnectionWrapperTest {
     @Test
     public void enableWindowMagnification() throws RemoteException {
         mConnectionWrapper.enableWindowMagnification(TEST_DISPLAY, 2, 100f, 200f,
-                mAnimationCallback);
+                0f, 0f, mAnimationCallback);
 
         verify(mAnimationCallback).onResult(true);
     }
@@ -94,6 +94,14 @@ public class WindowMagnificationConnectionWrapperTest {
     }
 
     @Test
+    public void moveWindowMagnifierToPosition() throws RemoteException {
+        mConnectionWrapper.moveWindowMagnifierToPosition(TEST_DISPLAY, 100, 150,
+                mAnimationCallback);
+        verify(mConnection).moveWindowMagnifierToPosition(eq(TEST_DISPLAY),
+                eq(100f), eq(150f), any(IRemoteMagnificationAnimationCallback.class));
+    }
+
+    @Test
     public void showMagnificationButton() throws RemoteException {
         mConnectionWrapper.showMagnificationButton(TEST_DISPLAY,
                 Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
@@ -105,6 +113,21 @@ public class WindowMagnificationConnectionWrapperTest {
     public void removeMagnificationButton() throws RemoteException {
         mConnectionWrapper.removeMagnificationButton(TEST_DISPLAY);
         verify(mConnection).removeMagnificationButton(TEST_DISPLAY);
+    }
+
+    @Test
+    public void removeMagnificationSettingsPanel() throws RemoteException {
+        mConnectionWrapper.removeMagnificationSettingsPanel(TEST_DISPLAY);
+        verify(mConnection).removeMagnificationSettingsPanel(eq(TEST_DISPLAY));
+    }
+
+    @Test
+    public void onUserMagnificationScaleChanged() throws RemoteException {
+        final int testUserId = 1;
+        final float testScale = 3f;
+        mConnectionWrapper.onUserMagnificationScaleChanged(testUserId, TEST_DISPLAY, testScale);
+        verify(mConnection).onUserMagnificationScaleChanged(
+                eq(testUserId), eq(TEST_DISPLAY), eq(testScale));
     }
 
     @Test

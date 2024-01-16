@@ -37,8 +37,7 @@ class StackEducationView constructor(
     context: Context,
     positioner: BubblePositioner,
     controller: BubbleController
-)
-    : LinearLayout(context) {
+) : LinearLayout(context) {
 
     private val TAG = if (BubbleDebugConfig.TAG_WITH_CLASS_NAME) "BubbleStackEducationView"
         else BubbleDebugConfig.TAG_BUBBLES
@@ -49,11 +48,12 @@ class StackEducationView constructor(
     private val positioner: BubblePositioner = positioner
     private val controller: BubbleController = controller
 
-    private val view by lazy { findViewById<View>(R.id.stack_education_layout) }
-    private val titleTextView by lazy { findViewById<TextView>(R.id.stack_education_title) }
-    private val descTextView by lazy { findViewById<TextView>(R.id.stack_education_description) }
+    private val view by lazy { requireViewById<View>(R.id.stack_education_layout) }
+    private val titleTextView by lazy { requireViewById<TextView>(R.id.stack_education_title) }
+    private val descTextView by lazy { requireViewById<TextView>(R.id.stack_education_description) }
 
-    private var isHiding = false
+    var isHiding = false
+        private set
 
     init {
         LayoutInflater.from(context).inflate(R.layout.bubble_stack_user_education, this)
@@ -122,29 +122,36 @@ class StackEducationView constructor(
      * If necessary, shows the user education view for the bubble stack. This appears the first
      * time a user taps on a bubble.
      *
-     * @return true if user education was shown, false otherwise.
+     * @return true if user education was shown and wasn't showing before, false otherwise.
      */
     fun show(stackPosition: PointF): Boolean {
         isHiding = false
         if (visibility == VISIBLE) return false
 
         controller.updateWindowFlagsForBackpress(true /* interceptBack */)
-        layoutParams.width = if (positioner.isLargeScreen)
-            context.resources.getDimensionPixelSize(
-                    R.dimen.bubbles_user_education_width_large_screen)
+        layoutParams.width = if (positioner.isLargeScreen || positioner.isLandscape)
+            context.resources.getDimensionPixelSize(R.dimen.bubbles_user_education_width)
         else ViewGroup.LayoutParams.MATCH_PARENT
 
+        val stackPadding = context.resources.getDimensionPixelSize(
+                R.dimen.bubble_user_education_stack_padding)
         setAlpha(0f)
         setVisibility(View.VISIBLE)
         post {
             requestFocus()
             with(view) {
                 if (resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_LTR) {
-                    setPadding(positioner.bubbleSize + paddingRight, paddingTop, paddingRight,
+                    setPadding(positioner.bubbleSize + stackPadding, paddingTop, paddingRight,
                             paddingBottom)
                 } else {
-                    setPadding(paddingLeft, paddingTop, positioner.bubbleSize + paddingLeft,
+                    setPadding(paddingLeft, paddingTop, positioner.bubbleSize + stackPadding,
                             paddingBottom)
+                    if (positioner.isLargeScreen || positioner.isLandscape) {
+                        translationX = (positioner.screenRect.right - width - stackPadding)
+                                .toFloat()
+                    } else {
+                        translationX = 0f
+                    }
                 }
                 translationY = stackPosition.y + positioner.bubbleSize / 2 - getHeight() / 2
             }

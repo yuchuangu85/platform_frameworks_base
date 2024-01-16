@@ -46,9 +46,9 @@ public final class QosBearerSession implements Parcelable{
 
     private QosBearerSession(Parcel source) {
         qosBearerSessionId = source.readInt();
-        qos = source.readParcelable(Qos.class.getClassLoader());
+        qos = source.readParcelable(Qos.class.getClassLoader(), android.telephony.data.Qos.class);
         qosBearerFilterList = new ArrayList<>();
-        source.readList(qosBearerFilterList, QosBearerFilter.class.getClassLoader());
+        source.readList(qosBearerFilterList, QosBearerFilter.class.getClassLoader(), android.telephony.data.QosBearerFilter.class);
     }
 
     public int getQosBearerSessionId() {
@@ -102,11 +102,10 @@ public final class QosBearerSession implements Parcelable{
 
         QosBearerSession other = (QosBearerSession) o;
         return this.qosBearerSessionId == other.qosBearerSessionId
-                && this.qos.equals(other.qos)
+                && Objects.equals(this.qos, other.qos)
                 && this.qosBearerFilterList.size() == other.qosBearerFilterList.size()
                 && this.qosBearerFilterList.containsAll(other.qosBearerFilterList);
     }
-
 
     public static final @NonNull Parcelable.Creator<QosBearerSession> CREATOR =
             new Parcelable.Creator<QosBearerSession>() {

@@ -56,13 +56,13 @@ import android.view.View.AccessibilityDelegate;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
-import android.view.WindowManager.KeyboardShortcutsReceiver;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RelativeLayout;
 import android.widget.TextView;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.app.AssistUtils;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto;
@@ -80,7 +80,8 @@ import java.util.List;
 public final class KeyboardShortcuts {
     private static final String TAG = KeyboardShortcuts.class.getSimpleName();
     private static final Object sLock = new Object();
-    private static KeyboardShortcuts sInstance;
+    @VisibleForTesting static KeyboardShortcuts sInstance;
+    private WindowManager mWindowManager;
 
     private final SparseArray<String> mSpecialCharacterNames = new SparseArray<>();
     private final SparseArray<String> mModifierNames = new SparseArray<>();
@@ -94,7 +95,7 @@ public final class KeyboardShortcuts {
     };
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
-    private final Context mContext;
+    @VisibleForTesting Context mContext;
     private final IPackageManager mPackageManager;
     private final OnClickListener mDialogCloseListener = new DialogInterface.OnClickListener() {
         public void onClick(DialogInterface dialog, int id) {
@@ -123,20 +124,29 @@ public final class KeyboardShortcuts {
                 }
             };
 
-    private Dialog mKeyboardShortcutsDialog;
+    @VisibleForTesting Dialog mKeyboardShortcutsDialog;
     private KeyCharacterMap mKeyCharacterMap;
     private KeyCharacterMap mBackupKeyCharacterMap;
 
-    private KeyboardShortcuts(Context context) {
+    @Nullable private List<KeyboardShortcutGroup> mReceivedAppShortcutGroups = null;
+    @Nullable private List<KeyboardShortcutGroup> mReceivedImeShortcutGroups = null;
+
+    @VisibleForTesting
+    KeyboardShortcuts(Context context, WindowManager windowManager) {
         this.mContext = new ContextThemeWrapper(
                 context, android.R.style.Theme_DeviceDefault_Settings);
         this.mPackageManager = AppGlobals.getPackageManager();
+        if (windowManager != null) {
+            this.mWindowManager = windowManager;
+        } else {
+            this.mWindowManager = mContext.getSystemService(WindowManager.class);
+        }
         loadResources(context);
     }
 
     private static KeyboardShortcuts getInstance(Context context) {
         if (sInstance == null) {
-            sInstance = new KeyboardShortcuts(context);
+            sInstance = new KeyboardShortcuts(context, null);
         }
         return sInstance;
     }
@@ -316,6 +326,12 @@ public final class KeyboardShortcuts {
         mSpecialCharacterNames.put(KeyEvent.KEYCODE_MUHENKAN, "無変換");
         mSpecialCharacterNames.put(KeyEvent.KEYCODE_HENKAN, "変換");
         mSpecialCharacterNames.put(KeyEvent.KEYCODE_KATAKANA_HIRAGANA, "かな");
+        mSpecialCharacterNames.put(KeyEvent.KEYCODE_ALT_LEFT, "Alt");
+        mSpecialCharacterNames.put(KeyEvent.KEYCODE_ALT_RIGHT, "Alt");
+        mSpecialCharacterNames.put(KeyEvent.KEYCODE_CTRL_LEFT, "Ctrl");
+        mSpecialCharacterNames.put(KeyEvent.KEYCODE_CTRL_RIGHT, "Ctrl");
+        mSpecialCharacterNames.put(KeyEvent.KEYCODE_SHIFT_LEFT, "Shift");
+        mSpecialCharacterNames.put(KeyEvent.KEYCODE_SHIFT_RIGHT, "Shift");
 
         mModifierNames.put(KeyEvent.META_META_ON, "Meta");
         mModifierNames.put(KeyEvent.META_CTRL_ON, "Ctrl");
@@ -348,7 +364,7 @@ public final class KeyboardShortcuts {
      * Keyboard with its default map.
      */
     private void retrieveKeyCharacterMap(int deviceId) {
-        final InputManager inputManager = InputManager.getInstance();
+        final InputManager inputManager = mContext.getSystemService(InputManager.class);
         mBackupKeyCharacterMap = inputManager.getInputDevice(-1).getKeyCharacterMap();
         if (deviceId != -1) {
             final InputDevice inputDevice = inputManager.getInputDevice(deviceId);
@@ -371,21 +387,39 @@ public final class KeyboardShortcuts {
         mKeyCharacterMap = mBackupKeyCharacterMap;
     }
 
-    private void showKeyboardShortcuts(int deviceId) {
+    @VisibleForTesting
+    void showKeyboardShortcuts(int deviceId) {
         retrieveKeyCharacterMap(deviceId);
-        WindowManager wm = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
-        wm.requestAppKeyboardShortcuts(new KeyboardShortcutsReceiver() {
-            @Override
-            public void onKeyboardShortcutsReceived(
-                    final List<KeyboardShortcutGroup> result) {
-                result.add(getSystemShortcuts());
-                final KeyboardShortcutGroup appShortcuts = getDefaultApplicationShortcuts();
-                if (appShortcuts != null) {
-                    result.add(appShortcuts);
-                }
-                showKeyboardShortcutsDialog(result);
-            }
-        }, deviceId);
+        mReceivedAppShortcutGroups = null;
+        mReceivedImeShortcutGroups = null;
+        mWindowManager.requestAppKeyboardShortcuts(
+                result -> {
+                    mReceivedAppShortcutGroups = result;
+                    maybeMergeAndShowKeyboardShortcuts();
+                }, deviceId);
+        mWindowManager.requestImeKeyboardShortcuts(
+                result -> {
+                    mReceivedImeShortcutGroups = result;
+                    maybeMergeAndShowKeyboardShortcuts();
+                }, deviceId);
+    }
+
+    private void maybeMergeAndShowKeyboardShortcuts() {
+        if (mReceivedAppShortcutGroups == null || mReceivedImeShortcutGroups == null) {
+            return;
+        }
+        List<KeyboardShortcutGroup> shortcutGroups = mReceivedAppShortcutGroups;
+        shortcutGroups.addAll(mReceivedImeShortcutGroups);
+        mReceivedAppShortcutGroups = null;
+        mReceivedImeShortcutGroups = null;
+
+        final KeyboardShortcutGroup defaultAppShortcuts =
+                getDefaultApplicationShortcuts();
+        if (defaultAppShortcuts != null) {
+            shortcutGroups.add(defaultAppShortcuts);
+        }
+        shortcutGroups.add(getSystemShortcuts());
+        showKeyboardShortcutsDialog(shortcutGroups);
     }
 
     private void dismissKeyboardShortcuts() {

@@ -19,7 +19,9 @@ package android.speech;
 import android.os.Bundle;
 import android.content.AttributionSource;
 import android.content.Intent;
+import android.speech.IModelDownloadListener;
 import android.speech.IRecognitionListener;
+import android.speech.IRecognitionSupportCallback;
 
 /**
 * A Service interface to speech recognition. Call startListening when
@@ -60,4 +62,26 @@ oneway interface IRecognitionService {
      * @param listener to receive callbacks, note that this must be non-null
      */
     void cancel(in IRecognitionListener listener, boolean isShutdown);
+
+    /**
+     * Checks whether this RecognitionService could {@link #startListening} successfully on the
+     * given recognizerIntent. For more information see {@link #startListening} and
+     * {@link RecognizerIntent}.
+     */
+    void checkRecognitionSupport(
+        in Intent recognizerIntent,
+        in AttributionSource attributionSource,
+        in IRecognitionSupportCallback listener);
+
+    /**
+     * Requests RecognitionService to download the support for the given recognizerIntent. For more
+     * information see {@link #checkRecognitionSupport},  {@link #startListening} and
+     * {@link RecognizerIntent}.
+     *
+     * Progress updates can be received via {@link #IModelDownloadListener}.
+     */
+    void triggerModelDownload(
+        in Intent recognizerIntent,
+        in AttributionSource attributionSource,
+        in IModelDownloadListener listener);
 }

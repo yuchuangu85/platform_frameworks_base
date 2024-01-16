@@ -13,7 +13,7 @@
   ~ See the License for the specific language governing permissions and
   ~ limitations under the License.
   -->
-
+<!-- TODO(b/251476085): inline in biometric_prompt_layout after Biometric*Views are un-flagged -->
 <merge xmlns:android="http://schemas.android.com/apk/res/android">
 
     <TextView
@@ -21,6 +21,10 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="@integer/biometric_dialog_text_gravity"
+        android:singleLine="true"
+        android:marqueeRepeatLimit="1"
+        android:ellipsize="marquee"
+        android:importantForAccessibility="no"
         style="@style/TextAppearance.AuthCredential.Title"/>
 
     <TextView
@@ -28,13 +32,17 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="@integer/biometric_dialog_text_gravity"
+        android:singleLine="true"
+        android:marqueeRepeatLimit="1"
+        android:ellipsize="marquee"
+        android:importantForAccessibility="no"
         style="@style/TextAppearance.AuthCredential.Subtitle"/>
 
     <TextView
         android:id="@+id/description"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="@integer/biometric_dialog_text_gravity"
+        android:scrollbars ="vertical"
         style="@style/TextAppearance.AuthCredential.Description"/>
 
     <Space android:id="@+id/space_above_icon"
@@ -43,18 +51,19 @@
 
     <FrameLayout
         android:id="@+id/biometric_icon_frame"
-        android:layout_width="match_parent"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal">
+        android:layout_gravity="center">
 
-        <ImageView
-            android:id="@+id/biometric_icon"
-            android:layout_width="@dimen/biometric_dialog_biometric_icon_size"
-            android:layout_height="@dimen/biometric_dialog_biometric_icon_size"
+        <include layout="@layout/auth_biometric_icon"/>
+
+        <com.android.systemui.biometrics.BiometricPromptLottieViewWrapper
+            android:id="@+id/biometric_icon_overlay"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:contentDescription="@null"
             android:scaleType="fitXY" />
-
     </FrameLayout>
 
     <!-- For sensors such as UDFPS, this view is used during custom measurement/layout to add extra

@@ -18,16 +18,15 @@
 #define AAPT_RESOURCE_PARSER_H
 
 #include <memory>
+#include <optional>
 
-#include "android-base/macros.h"
-#include "androidfw/ConfigDescription.h"
-#include "androidfw/StringPiece.h"
-
-#include "Diagnostics.h"
 #include "ResourceTable.h"
 #include "ResourceValues.h"
-#include "StringPool.h"
-#include "util/Maybe.h"
+#include "android-base/macros.h"
+#include "androidfw/ConfigDescription.h"
+#include "androidfw/IDiagnostics.h"
+#include "androidfw/StringPiece.h"
+#include "androidfw/StringPool.h"
 #include "xml/XmlPullParser.h"
 
 namespace aapt {
@@ -54,15 +53,15 @@ struct ResourceParserOptions {
 
   // If visibility was forced, we need to use it when creating a new resource and also error if we
   // try to parse the <public>, <public-group>, <java-symbol> or <symbol> tags.
-  Maybe<Visibility::Level> visibility;
+  std::optional<Visibility::Level> visibility;
 };
 
 struct FlattenedXmlSubTree {
   std::string raw_value;
-  StyleString style_string;
+  android::StyleString style_string;
   std::vector<UntranslatableSection> untranslatable_sections;
   xml::IPackageDeclStack* namespace_resolver;
-  Source source;
+  android::Source source;
 };
 
 /*
@@ -70,7 +69,7 @@ struct FlattenedXmlSubTree {
  */
 class ResourceParser {
  public:
-  ResourceParser(IDiagnostics* diag, ResourceTable* table, const Source& source,
+  ResourceParser(android::IDiagnostics* diag, ResourceTable* table, const android::Source& source,
                  const android::ConfigDescription& config,
                  const ResourceParserOptions& options = {});
   bool Parse(xml::XmlPullParser* parser);
@@ -78,7 +77,7 @@ class ResourceParser {
   static std::unique_ptr<Item> ParseXml(const FlattenedXmlSubTree& xmlsub_tree, uint32_t type_mask,
                                         bool allow_raw_value, ResourceTable& table,
                                         const android::ConfigDescription& config,
-                                        IDiagnostics& diag);
+                                        android::IDiagnostics& diag);
 
  private:
   DISALLOW_COPY_AND_ASSIGN(ResourceParser);
@@ -93,7 +92,7 @@ class ResourceParser {
   // `out_untranslatable_sections` contains the sections of the string that should not be
   // translated.
   bool FlattenXmlSubtree(xml::XmlPullParser* parser, std::string* out_raw_string,
-                         StyleString* out_style_string,
+                         android::StyleString* out_style_string,
                          std::vector<UntranslatableSection>* out_untranslatable_sections);
 
   /*
@@ -122,8 +121,8 @@ class ResourceParser {
   bool ParseAddResource(xml::XmlPullParser* parser, ParsedResource* out_resource);
   bool ParseAttr(xml::XmlPullParser* parser, ParsedResource* out_resource);
   bool ParseAttrImpl(xml::XmlPullParser* parser, ParsedResource* out_resource, bool weak);
-  Maybe<Attribute::Symbol> ParseEnumOrFlagItem(xml::XmlPullParser* parser,
-                                               const android::StringPiece& tag);
+  std::optional<Attribute::Symbol> ParseEnumOrFlagItem(xml::XmlPullParser* parser,
+                                                       android::StringPiece tag);
   bool ParseStyle(ResourceType type, xml::XmlPullParser* parser, ParsedResource* out_resource);
   bool ParseStyleItem(xml::XmlPullParser* parser, Style* style);
   bool ParseDeclareStyleable(xml::XmlPullParser* parser, ParsedResource* out_resource);
@@ -133,9 +132,9 @@ class ResourceParser {
   bool ParseArrayImpl(xml::XmlPullParser* parser, ParsedResource* out_resource, uint32_t typeMask);
   bool ParsePlural(xml::XmlPullParser* parser, ParsedResource* out_resource);
 
-  IDiagnostics* diag_;
+  android::IDiagnostics* diag_;
   ResourceTable* table_;
-  Source source_;
+  android::Source source_;
   android::ConfigDescription config_;
   ResourceParserOptions options_;
 };

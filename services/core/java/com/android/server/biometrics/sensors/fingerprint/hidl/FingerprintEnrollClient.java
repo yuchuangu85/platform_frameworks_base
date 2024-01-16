@@ -21,7 +21,8 @@ import android.annotation.Nullable;
 import android.content.Context;
 import android.hardware.biometrics.BiometricAuthenticator;
 import android.hardware.biometrics.BiometricFingerprintConstants;
-import android.hardware.biometrics.BiometricsProtoEnums;
+import android.hardware.biometrics.BiometricStateListener;
+import android.hardware.biometrics.fingerprint.PointerContext;
 import android.hardware.biometrics.fingerprint.V2_1.IBiometricsFingerprint;
 import android.hardware.fingerprint.Fingerprint;
 import android.hardware.fingerprint.FingerprintManager;
@@ -31,13 +32,19 @@ import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Slog;
 
+import com.android.server.biometrics.log.BiometricContext;
+import com.android.server.biometrics.log.BiometricLogger;
 import com.android.server.biometrics.sensors.BiometricNotificationUtils;
 import com.android.server.biometrics.sensors.BiometricUtils;
+import com.android.server.biometrics.sensors.ClientMonitorCallback;
 import com.android.server.biometrics.sensors.ClientMonitorCallbackConverter;
+import com.android.server.biometrics.sensors.ClientMonitorCompositeCallback;
 import com.android.server.biometrics.sensors.EnrollClient;
 import com.android.server.biometrics.sensors.SensorOverlays;
 import com.android.server.biometrics.sensors.fingerprint.Udfps;
 import com.android.server.biometrics.sensors.fingerprint.UdfpsHelper;
+
+import java.util.function.Supplier;
 
 /**
  * Fingerprint-specific enroll client supporting the
@@ -54,28 +61,38 @@ public class FingerprintEnrollClient extends EnrollClient<IBiometricsFingerprint
     private boolean mIsPointerDown;
 
     FingerprintEnrollClient(@NonNull Context context,
-            @NonNull LazyDaemon<IBiometricsFingerprint> lazyDaemon, @NonNull IBinder token,
-            @NonNull ClientMonitorCallbackConverter listener, int userId,
+            @NonNull Supplier<IBiometricsFingerprint> lazyDaemon, @NonNull IBinder token,
+            long requestId, @NonNull ClientMonitorCallbackConverter listener, int userId,
             @NonNull byte[] hardwareAuthToken, @NonNull String owner,
             @NonNull BiometricUtils<Fingerprint> utils, int timeoutSec, int sensorId,
+            @NonNull BiometricLogger biometricLogger, @NonNull BiometricContext biometricContext,
             @Nullable IUdfpsOverlayController udfpsOverlayController,
             @Nullable ISidefpsController sidefpsController,
             @FingerprintManager.EnrollReason int enrollReason) {
         super(context, lazyDaemon, token, listener, userId, hardwareAuthToken, owner, utils,
-                timeoutSec, BiometricsProtoEnums.MODALITY_FINGERPRINT, sensorId,
-                true /* shouldVibrate */);
+                timeoutSec, sensorId, true /* shouldVibrate */, biometricLogger,
+                biometricContext);
+        setRequestId(requestId);
         mSensorOverlays = new SensorOverlays(udfpsOverlayController, sidefpsController);
 
         mEnrollReason = enrollReason;
         if (enrollReason == FingerprintManager.ENROLL_FIND_SENSOR) {
-            setShouldLog(false);
+            getLogger().disableMetrics();
         }
+    }
+
+    @Override
+    public void start(@NonNull ClientMonitorCallback callback) {
+        super.start(callback);
+
+        BiometricNotificationUtils.cancelFingerprintEnrollNotification(getContext());
     }
 
     @NonNull
     @Override
-    protected Callback wrapCallbackForStart(@NonNull Callback callback) {
-        return new CompositeCallback(createALSCallback(true /* startWithClient */), callback);
+    protected ClientMonitorCallback wrapCallbackForStart(@NonNull ClientMonitorCallback callback) {
+        return new ClientMonitorCompositeCallback(
+                getLogger().getAmbientLightProbe(true /* startWithClient */), callback);
     }
 
     @Override
@@ -93,7 +110,8 @@ public class FingerprintEnrollClient extends EnrollClient<IBiometricsFingerprint
 
     @Override
     protected void startHalOperation() {
-        mSensorOverlays.show(getSensorId(), getOverlayReasonFromEnrollReason(mEnrollReason), this);
+        mSensorOverlays.show(getSensorId(), getOverlayReasonFromEnrollReason(mEnrollReason),
+                this);
 
         BiometricNotificationUtils.cancelBadCalibrationNotification(getContext());
         try {
@@ -143,6 +161,8 @@ public class FingerprintEnrollClient extends EnrollClient<IBiometricsFingerprint
                 controller.onEnrollmentHelp(getSensorId());
             }
         });
+
+        mCallback.onBiometricAction(BiometricStateListener.ACTION_SENSOR_TOUCH);
     }
 
     @Override
@@ -153,13 +173,13 @@ public class FingerprintEnrollClient extends EnrollClient<IBiometricsFingerprint
     }
 
     @Override
-    public void onPointerDown(int x, int y, float minor, float major) {
+    public void onPointerDown(PointerContext pc) {
         mIsPointerDown = true;
-        UdfpsHelper.onFingerDown(getFreshDaemon(), x, y, minor, major);
+        UdfpsHelper.onFingerDown(getFreshDaemon(), (int) pc.x, (int) pc.y, pc.minor, pc.major);
     }
 
     @Override
-    public void onPointerUp() {
+    public void onPointerUp(PointerContext pc) {
         mIsPointerDown = false;
         UdfpsHelper.onFingerUp(getFreshDaemon());
     }
@@ -170,7 +190,7 @@ public class FingerprintEnrollClient extends EnrollClient<IBiometricsFingerprint
     }
 
     @Override
-    public void onUiReady() {
+    public void onUdfpsUiEvent(@FingerprintManager.UdfpsUiEvent int event) {
         // Unsupported in HIDL.
     }
 }

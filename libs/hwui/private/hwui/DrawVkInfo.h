@@ -68,6 +68,17 @@ struct VkFunctorDrawParams {
   int clip_top;
   int clip_right;
   int clip_bottom;
+
+  // Input: Whether destination surface is offscreen surface.
+  bool is_layer;
+
+  // The current HDR/SDR ratio that we are rendering to. The transform to SDR will already
+  // be baked into the color_space_ptr, so this is just to indicate the amount of extended
+  // range is available if desired
+  float currentHdrSdrRatio;
+
+  // Whether or not dithering is globally enabled
+  bool shouldDither;
 };
 
 }  // namespace uirenderer

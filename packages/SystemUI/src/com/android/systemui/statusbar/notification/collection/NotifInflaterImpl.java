@@ -16,7 +16,8 @@
 
 package com.android.systemui.statusbar.notification.collection;
 
-import com.android.internal.statusbar.IStatusBarService;
+import androidx.annotation.NonNull;
+
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.statusbar.notification.InflationException;
 import com.android.systemui.statusbar.notification.collection.inflation.NotifInflater;
@@ -34,23 +35,15 @@ import javax.inject.Inject;
 @SysUISingleton
 public class NotifInflaterImpl implements NotifInflater {
 
-    private final IStatusBarService mStatusBarService;
-    private final NotifCollection mNotifCollection;
     private final NotifInflationErrorManager mNotifErrorManager;
-    private final NotifPipeline mNotifPipeline;
+    private final NotifInflaterLogger mLogger;
 
     private NotificationRowBinderImpl mNotificationRowBinder;
 
     @Inject
-    public NotifInflaterImpl(
-            IStatusBarService statusBarService,
-            NotifCollection notifCollection,
-            NotifInflationErrorManager errorManager,
-            NotifPipeline notifPipeline) {
-        mStatusBarService = statusBarService;
-        mNotifCollection = notifCollection;
+    public NotifInflaterImpl(NotifInflationErrorManager errorManager, NotifInflaterLogger logger) {
         mNotifErrorManager = errorManager;
-        mNotifPipeline = notifPipeline;
+        mLogger = logger;
     }
 
     /**
@@ -60,29 +53,51 @@ public class NotifInflaterImpl implements NotifInflater {
         mNotificationRowBinder = rowBinder;
     }
 
-    @Override
-    public void rebindViews(NotificationEntry entry, InflationCallback callback) {
-        inflateViews(entry, callback);
-    }
-
     /**
      * Called to inflate the views of an entry.  Views are not considered inflated until all of its
      * views are bound.
      */
     @Override
-    public void inflateViews(NotificationEntry entry, InflationCallback callback) {
+    public void inflateViews(@NonNull NotificationEntry entry, @NonNull Params params,
+            @NonNull InflationCallback callback) {
+        mLogger.logInflatingViews(entry, params);
+        inflateViewsImpl(entry, params, callback);
+        mLogger.logInflatedViews(entry);
+    }
+    @Override
+    public void rebindViews(@NonNull NotificationEntry entry, @NonNull Params params,
+            @NonNull InflationCallback callback) {
+        mLogger.logRebindingViews(entry, params);
+        inflateViewsImpl(entry, params, callback);
+        mLogger.logReboundViews(entry);
+    }
+
+    private void inflateViewsImpl(@NonNull NotificationEntry entry, @NonNull Params params,
+            @NonNull InflationCallback callback) {
         try {
             requireBinder().inflateViews(
                     entry,
+                    params,
                     wrapInflationCallback(callback));
         } catch (InflationException e) {
+            mLogger.logInflationException(entry, e);
             mNotifErrorManager.setInflationError(entry, e);
         }
     }
 
     @Override
-    public void abortInflation(NotificationEntry entry) {
-        entry.abortTask();
+    public boolean abortInflation(NotificationEntry entry) {
+        final boolean abortedTask = entry.abortTask();
+        if (abortedTask) {
+            mLogger.logAbortInflationAbortedTask(entry);
+        }
+        return abortedTask;
+    }
+
+    @Override
+    public void releaseViews(@NonNull NotificationEntry entry) {
+        mLogger.logReleasingViews(entry);
+        requireBinder().releaseViews(entry);
     }
 
     private NotificationContentInflater.InflationCallback wrapInflationCallback(
@@ -99,7 +114,7 @@ public class NotifInflaterImpl implements NotifInflater {
             public void onAsyncInflationFinished(NotificationEntry entry) {
                 mNotifErrorManager.clearInflationError(entry);
                 if (callback != null) {
-                    callback.onInflationFinished(entry);
+                    callback.onInflationFinished(entry, entry.getRowController());
                 }
             }
         };

@@ -56,6 +56,7 @@ import android.transition.TransitionManager;
 import android.util.Pair;
 import android.view.View.OnApplyWindowInsetsListener;
 import android.view.accessibility.AccessibilityEvent;
+import android.window.OnBackInvokedDispatcher;
 
 import java.util.Collections;
 import java.util.List;
@@ -66,9 +67,7 @@ import java.util.List;
  * window manager. It provides standard UI policies such as a background, title
  * area, default key processing, etc.
  *
- * <p>The only existing implementation of this abstract class is
- * android.view.PhoneWindow, which you should instantiate when needing a
- * Window.
+ * <p>The framework will instantiate an implementation of this class on behalf of the application.
  */
 public abstract class Window {
     /** Flag for the "options panel" feature.  This is enabled by default. */
@@ -295,6 +294,9 @@ public abstract class Window {
     private OnWindowDismissedCallback mOnWindowDismissedCallback;
     private OnWindowSwipeDismissedCallback mOnWindowSwipeDismissedCallback;
     private WindowControllerCallback mWindowControllerCallback;
+    @WindowInsetsController.Appearance
+    private int mSystemBarAppearance;
+    private DecorCallback mDecorCallback;
     private OnRestrictedCaptionAreaChangedListener mOnRestrictedCaptionAreaChangedListener;
     private Rect mRestrictedCaptionAreaRect;
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
@@ -656,9 +658,44 @@ public abstract class Window {
         void updateStatusBarColor(int color);
 
         /**
+         * Update the status bar appearance.
+         */
+
+        void updateStatusBarAppearance(int appearance);
+
+        /**
          * Update the navigation bar color to a forced one.
          */
         void updateNavigationBarColor(int color);
+    }
+
+    /** @hide */
+    public interface DecorCallback {
+        /**
+         * Called from
+         * {@link com.android.internal.policy.DecorView#onSystemBarAppearanceChanged(int)}.
+         *
+         * @param appearance The newly applied appearance.
+         */
+        void onSystemBarAppearanceChanged(@WindowInsetsController.Appearance int appearance);
+
+        /**
+         * Called from
+         * {@link com.android.internal.policy.DecorView#updateColorViews(WindowInsets, boolean)}
+         * when {@link com.android.internal.policy.DecorView#mDrawLegacyNavigationBarBackground} is
+         * being updated.
+         *
+         * @param drawLegacyNavigationBarBackground the new value that is being set to
+         *        {@link com.android.internal.policy.DecorView#mDrawLegacyNavigationBarBackground}.
+         * @return The value to be set to
+         *   {@link com.android.internal.policy.DecorView#mDrawLegacyNavigationBarBackgroundHandled}
+         *         on behalf of the {@link com.android.internal.policy.DecorView}.
+         *         {@code true} to tell that the Window can render the legacy navigation bar
+         *         background on behalf of the {@link com.android.internal.policy.DecorView}.
+         *         {@code false} to let {@link com.android.internal.policy.DecorView} handle it.
+         */
+        boolean onDrawLegacyNavigationBarBackgroundChanged(
+                boolean drawLegacyNavigationBarBackground);
     }
 
     /**
@@ -792,6 +829,11 @@ public abstract class Window {
     /** @hide */
     public final void destroy() {
         mDestroyed = true;
+        onDestroy();
+    }
+
+    /** @hide */
+    protected void onDestroy() {
     }
 
     /** @hide */
@@ -983,6 +1025,39 @@ public abstract class Window {
     /** @hide */
     public final WindowControllerCallback getWindowControllerCallback() {
         return mWindowControllerCallback;
+    }
+
+    /** @hide */
+    public final void setDecorCallback(DecorCallback decorCallback) {
+        mDecorCallback = decorCallback;
+    }
+
+    /** @hide */
+    @WindowInsetsController.Appearance
+    public final int getSystemBarAppearance() {
+        return mSystemBarAppearance;
+    }
+
+    /** @hide */
+    public final void dispatchOnSystemBarAppearanceChanged(
+            @WindowInsetsController.Appearance int appearance) {
+        mSystemBarAppearance = appearance;
+        if (mDecorCallback != null) {
+            mDecorCallback.onSystemBarAppearanceChanged(appearance);
+        }
+        if (mWindowControllerCallback != null) {
+            mWindowControllerCallback.updateStatusBarAppearance(appearance);
+        }
+    }
+
+    /** @hide */
+    public final boolean onDrawLegacyNavigationBarBackgroundChanged(
+            boolean drawLegacyNavigationBarBackground) {
+        if (mDecorCallback == null) {
+            return false;
+        }
+        return mDecorCallback.onDrawLegacyNavigationBarBackgroundChanged(
+                drawLegacyNavigationBarBackground);
     }
 
     /**
@@ -1413,6 +1488,11 @@ public abstract class Window {
             mCloseOnTouchOutside = close;
             mSetCloseOnTouchOutside = true;
         }
+    }
+
+    /** @hide */
+    public boolean shouldCloseOnTouchOutside() {
+        return mCloseOnTouchOutside;
     }
 
     /** @hide */
@@ -2712,13 +2792,6 @@ public abstract class Window {
     public abstract void onPictureInPictureModeChanged(boolean isInPictureInPictureMode);
 
     /**
-     * Called when the activity just relaunched.
-     * @hide
-     */
-    @SuppressWarnings("HiddenAbstractMethod")
-    public abstract void reportActivityRelaunched();
-
-    /**
      * @return The {@link WindowInsetsController} associated with this window
      * @see View#getWindowInsetsController()
      */
@@ -2735,5 +2808,13 @@ public abstract class Window {
      */
     public @Nullable AttachedSurfaceControl getRootSurfaceControl() {
         return null;
+    }
+
+    /**
+     * Returns the {@link OnBackInvokedDispatcher} instance associated with this window.
+     */
+    @NonNull
+    public OnBackInvokedDispatcher getOnBackInvokedDispatcher() {
+        throw new RuntimeException("Not implemented. Must override in a subclass.");
     }
 }

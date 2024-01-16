@@ -16,12 +16,15 @@
 
 package com.android.systemui.doze;
 
+import static android.hardware.biometrics.BiometricAuthenticator.TYPE_FINGERPRINT;
+
 import static com.android.systemui.doze.DozeMachine.State.DOZE;
 import static com.android.systemui.doze.DozeMachine.State.DOZE_AOD;
 import static com.android.systemui.doze.DozeMachine.State.DOZE_AOD_PAUSED;
 import static com.android.systemui.doze.DozeMachine.State.DOZE_AOD_PAUSING;
 import static com.android.systemui.doze.DozeMachine.State.DOZE_PULSE_DONE;
 
+import android.hardware.biometrics.BiometricAuthenticator;
 import android.os.Handler;
 import android.util.Log;
 import android.view.Display;
@@ -105,17 +108,7 @@ public class DozeScreenState implements DozeMachine.Part {
 
         updateUdfpsController();
         if (mUdfpsController == null) {
-            mAuthController.addCallback(new AuthController.Callback() {
-                @Override
-                public void onAllAuthenticatorsRegistered() {
-                    updateUdfpsController();
-                }
-
-                @Override
-                public void onEnrollmentsChanged() {
-                    updateUdfpsController();
-                }
-            });
+            mAuthController.addCallback(mAuthControllerCallback);
         }
     }
 
@@ -125,6 +118,11 @@ public class DozeScreenState implements DozeMachine.Part {
         } else {
             mUdfpsController = null;
         }
+    }
+
+    @Override
+    public void destroy() {
+        mAuthController.removeCallback(mAuthControllerCallback);
     }
 
     @Override
@@ -163,15 +161,11 @@ public class DozeScreenState implements DozeMachine.Part {
 
             // Delay screen state transitions even longer while animations are running.
             boolean shouldDelayTransitionEnteringDoze = newState == DOZE_AOD
-                    && mParameters.shouldControlScreenOff() && !turningOn;
+                    && mParameters.shouldDelayDisplayDozeTransition() && !turningOn;
 
             // Delay screen state transition longer if UDFPS is actively authenticating a fp
             boolean shouldDelayTransitionForUDFPS = newState == DOZE_AOD
                     && mUdfpsController != null && mUdfpsController.isFingerDown();
-
-            if (shouldDelayTransitionEnteringDoze || shouldDelayTransitionForUDFPS) {
-                mWakeLock.setAcquired(true);
-            }
 
             if (!messagePending) {
                 if (DEBUG) {
@@ -180,6 +174,18 @@ public class DozeScreenState implements DozeMachine.Part {
                 }
 
                 if (shouldDelayTransitionEnteringDoze) {
+                    if (justInitialized) {
+                        // If we are delaying transitioning to doze and the display was not
+                        // turned on we set it to 'on' first to make sure that the animation
+                        // is visible before eventually moving it to doze state.
+                        // The display might be off at this point for example on foldable devices
+                        // when we switch displays and go to doze at the same time.
+                        applyScreenState(Display.STATE_ON);
+
+                        // Restore pending screen state as it gets cleared by 'applyScreenState'
+                        mPendingScreenState = screenState;
+                    }
+
                     mHandler.postDelayed(mApplyPendingScreenState, ENTER_DOZE_DELAY);
                 } else if (shouldDelayTransitionForUDFPS) {
                     mDozeLog.traceDisplayStateDelayedByUdfps(mPendingScreenState);
@@ -189,6 +195,10 @@ public class DozeScreenState implements DozeMachine.Part {
                 }
             } else if (DEBUG) {
                 Log.d(TAG, "Pending display state change to " + screenState);
+            }
+
+            if (shouldDelayTransitionEnteringDoze || shouldDelayTransitionForUDFPS) {
+                mWakeLock.setAcquired(true);
             }
         } else if (turningOff) {
             mDozeHost.prepareForGentleSleep(() -> applyScreenState(screenState));
@@ -222,4 +232,20 @@ public class DozeScreenState implements DozeMachine.Part {
             mWakeLock.setAcquired(false);
         }
     }
+
+    private final AuthController.Callback mAuthControllerCallback = new AuthController.Callback() {
+        @Override
+        public void onAllAuthenticatorsRegistered(@BiometricAuthenticator.Modality int modality) {
+            if (modality == TYPE_FINGERPRINT) {
+                updateUdfpsController();
+            }
+        }
+
+        @Override
+        public void onEnrollmentsChanged(@BiometricAuthenticator.Modality int modality) {
+            if (modality == TYPE_FINGERPRINT) {
+                updateUdfpsController();
+            }
+        }
+    };
 }

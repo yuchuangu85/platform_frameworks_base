@@ -16,23 +16,27 @@
 
 package com.android.server.devicepolicy;
 
+import static com.android.server.devicepolicy.DevicePolicyManagerService.DEFAULT_KEEP_PROFILES_RUNNING_FLAG;
+
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.app.admin.DeviceAdminInfo;
 import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.os.FileUtils;
 import android.os.PersistableBundle;
+import android.os.UserHandle;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.DebugUtils;
 import android.util.IndentingPrintWriter;
-import android.util.TypedXmlPullParser;
-import android.util.TypedXmlSerializer;
 import android.util.Xml;
 
 import com.android.internal.util.JournaledFile;
 import com.android.internal.util.XmlUtils;
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
 import com.android.server.utils.Slogf;
 
 import org.xmlpull.v1.XmlPullParser;
@@ -65,9 +69,10 @@ class DevicePolicyData {
     private static final String TAG_CURRENT_INPUT_METHOD_SET = "current-ime-set";
     private static final String TAG_OWNER_INSTALLED_CA_CERT = "owner-installed-ca-cert";
     private static final String TAG_INITIALIZATION_BUNDLE = "initialization-bundle";
-    private static final String TAG_PASSWORD_VALIDITY = "password-validity";
     private static final String TAG_PASSWORD_TOKEN_HANDLE = "password-token";
     private static final String TAG_PROTECTED_PACKAGES = "protected-packages";
+    private static final String TAG_BYPASS_ROLE_QUALIFICATIONS = "bypass-role-qualifications";
+    private static final String TAG_KEEP_PROFILES_RUNNING = "keep-profiles-running";
     private static final String ATTR_VALUE = "value";
     private static final String ATTR_ALIAS = "alias";
     private static final String ATTR_ID = "id";
@@ -83,7 +88,7 @@ class DevicePolicyData {
     private static final String ATTR_NEW_USER_DISCLAIMER = "new-user-disclaimer";
 
     // Values of ATTR_NEW_USER_DISCLAIMER
-    static final String NEW_USER_DISCLAIMER_SHOWN = "shown";
+    static final String NEW_USER_DISCLAIMER_ACKNOWLEDGED = "acked";
     static final String NEW_USER_DISCLAIMER_NOT_NEEDED = "not_needed";
     static final String NEW_USER_DISCLAIMER_NEEDED = "needed";
 
@@ -106,6 +111,8 @@ class DevicePolicyData {
     int mPasswordOwner = -1;
     long mLastMaximumTimeToLock = -1;
     boolean mUserSetupComplete = false;
+    boolean mBypassDevicePolicyManagementRoleQualifications = false;
+    String mCurrentRoleHolder;
     boolean mPaired = false;
     int mUserProvisioningState;
     int mPermissionPolicy;
@@ -119,14 +126,33 @@ class DevicePolicyData {
     final ArrayList<ActiveAdmin> mAdminList = new ArrayList<>();
     final ArrayList<ComponentName> mRemovingAdmins = new ArrayList<>();
 
+    // Some DevicePolicyManager APIs can be called by (1) a DPC or (2) an app with permissions that
+    // isn't a DPC. For the latter, the caller won't have to provide a ComponentName and won't be
+    // mapped to an ActiveAdmin. This permission-based admin should be used to persist policies
+    // set by the permission-based caller. This admin should not be added to mAdminMap or mAdminList
+    // since a lot of methods in DPMS assume the ActiveAdmins here have a valid ComponentName.
+    // Instead, use variants of DPMS active admin getters to include the permission-based admin.
+    ActiveAdmin mPermissionBasedAdmin;
+
+    // Create or get the permission-based admin. The permission-based admin will not have a
+    // DeviceAdminInfo or ComponentName.
+    ActiveAdmin createOrGetPermissionBasedAdmin(int userId) {
+        if (mPermissionBasedAdmin == null) {
+            mPermissionBasedAdmin = new ActiveAdmin(userId, /* permissionBased= */ true);
+        }
+        return mPermissionBasedAdmin;
+    }
+
     // TODO(b/35385311): Keep track of metadata in TrustedCertificateStore instead.
     final ArraySet<String> mAcceptedCaCertificates = new ArraySet<>();
 
     // This is the list of component allowed to start lock task mode.
     List<String> mLockTaskPackages = new ArrayList<>();
 
-    // List of packages protected by device owner
-    List<String> mUserControlDisabledPackages = new ArrayList<>();
+    /** @deprecated moved to {@link ActiveAdmin#protectedPackages}. */
+    @Deprecated
+    @Nullable
+    List<String> mUserControlDisabledPackages;
 
     // Bitfield of feature flags to be enabled during LockTask mode.
     // We default on the power button menu, in order to be consistent with pre-P behaviour.
@@ -170,6 +196,12 @@ class DevicePolicyData {
     // starts.
     String mNewUserDisclaimer = NEW_USER_DISCLAIMER_NOT_NEEDED;
 
+    /**
+     * Effective state of the feature flag. It is updated to the current configuration value
+     * during boot and doesn't change value after than unless overridden by test code.
+     */
+    boolean mEffectiveKeepProfilesRunning = DEFAULT_KEEP_PROFILES_RUNNING_FLAG;
+
     DevicePolicyData(@UserIdInt int userId) {
         mUserId = userId;
     }
@@ -177,7 +209,7 @@ class DevicePolicyData {
     /**
      * Serializes DevicePolicyData object as XML.
      */
-    static boolean store(DevicePolicyData policyData, JournaledFile file, boolean isFdeDevice) {
+    static boolean store(DevicePolicyData policyData, JournaledFile file) {
         FileOutputStream stream = null;
         File chooseForWrite = null;
         try {
@@ -250,6 +282,12 @@ class DevicePolicyData {
                 }
             }
 
+            if (policyData.mPermissionBasedAdmin != null) {
+                out.startTag(null, "permission-based-admin");
+                policyData.mPermissionBasedAdmin.writeToXml(out);
+                out.endTag(null, "permission-based-admin");
+            }
+
             if (policyData.mPasswordOwner >= 0) {
                 out.startTag(null, "password-owner");
                 out.attributeInt(null, "value", policyData.mPasswordOwner);
@@ -260,15 +298,6 @@ class DevicePolicyData {
                 out.startTag(null, "failed-password-attempts");
                 out.attributeInt(null, "value", policyData.mFailedPasswordAttempts);
                 out.endTag(null, "failed-password-attempts");
-            }
-
-            // For FDE devices only, we save this flag so we can report on password sufficiency
-            // before the user enters their password for the first time after a reboot.  For
-            // security reasons, we don't want to store the full set of active password metrics.
-            if (isFdeDevice) {
-                out.startTag(null, TAG_PASSWORD_VALIDITY);
-                out.attributeBoolean(null, ATTR_VALUE, policyData.mPasswordValidAtLastCheckpoint);
-                out.endTag(null, TAG_PASSWORD_VALIDITY);
             }
 
             for (int i = 0; i < policyData.mAcceptedCaCertificates.size(); i++) {
@@ -360,17 +389,22 @@ class DevicePolicyData {
                 out.endTag(null, TAG_OWNER_INSTALLED_CA_CERT);
             }
 
-            for (int i = 0, size = policyData.mUserControlDisabledPackages.size(); i < size; i++) {
-                String packageName = policyData.mUserControlDisabledPackages.get(i);
-                out.startTag(null, TAG_PROTECTED_PACKAGES);
-                out.attribute(null, ATTR_NAME, packageName);
-                out.endTag(null, TAG_PROTECTED_PACKAGES);
-            }
-
             if (policyData.mAppsSuspended) {
                 out.startTag(null, TAG_APPS_SUSPENDED);
                 out.attributeBoolean(null, ATTR_VALUE, policyData.mAppsSuspended);
                 out.endTag(null, TAG_APPS_SUSPENDED);
+            }
+
+            if (policyData.mBypassDevicePolicyManagementRoleQualifications) {
+                out.startTag(null, TAG_BYPASS_ROLE_QUALIFICATIONS);
+                out.attribute(null, ATTR_VALUE, policyData.mCurrentRoleHolder);
+                out.endTag(null, TAG_BYPASS_ROLE_QUALIFICATIONS);
+            }
+
+            if (policyData.mEffectiveKeepProfilesRunning != DEFAULT_KEEP_PROFILES_RUNNING_FLAG) {
+                out.startTag(null, TAG_KEEP_PROFILES_RUNNING);
+                out.attributeBoolean(null, ATTR_VALUE, policyData.mEffectiveKeepProfilesRunning);
+                out.endTag(null, TAG_KEEP_PROFILES_RUNNING);
             }
 
             out.endTag(null, "policies");
@@ -399,7 +433,7 @@ class DevicePolicyData {
      * @param adminInfoSupplier function that queries DeviceAdminInfo from PackageManager
      * @param ownerComponent device or profile owner component if any.
      */
-    static void load(DevicePolicyData policy, boolean isFdeDevice, JournaledFile journaledFile,
+    static void load(DevicePolicyData policy, JournaledFile journaledFile,
             Function<ComponentName, DeviceAdminInfo> adminInfoSupplier,
             ComponentName ownerComponent) {
         FileInputStream stream = null;
@@ -461,9 +495,10 @@ class DevicePolicyData {
             policy.mLockTaskPackages.clear();
             policy.mAdminList.clear();
             policy.mAdminMap.clear();
+            policy.mPermissionBasedAdmin = null;
             policy.mAffiliationIds.clear();
             policy.mOwnerInstalledCaCerts.clear();
-            policy.mUserControlDisabledPackages.clear();
+            policy.mUserControlDisabledPackages = null;
             while ((type = parser.next()) != XmlPullParser.END_DOCUMENT
                    && (type != XmlPullParser.END_TAG || parser.getDepth() > outerDepth)) {
                 if (type == XmlPullParser.END_TAG || type == XmlPullParser.TEXT) {
@@ -488,6 +523,10 @@ class DevicePolicyData {
                     } catch (RuntimeException e) {
                         Slogf.w(TAG, e, "Failed loading admin %s", name);
                     }
+                } else if ("permission-based-admin".equals(tag)) {
+                    ActiveAdmin ap = new ActiveAdmin(policy.mUserId, /* permissionBased= */ true);
+                    ap.readFromXml(parser, /* overwritePolicies= */ false);
+                    policy.mPermissionBasedAdmin = ap;
                 } else if ("delegation".equals(tag)) {
                     // Parse delegation info.
                     final String delegatePackage = parser.getAttributeValue(null,
@@ -539,24 +578,28 @@ class DevicePolicyData {
                     policy.mAdminBroadcastPending = Boolean.toString(true).equals(pending);
                 } else if (TAG_INITIALIZATION_BUNDLE.equals(tag)) {
                     policy.mInitBundle = PersistableBundle.restoreFromXml(parser);
-                } else if (TAG_PASSWORD_VALIDITY.equals(tag)) {
-                    if (isFdeDevice) {
-                        // This flag is only used for FDE devices
-                        policy.mPasswordValidAtLastCheckpoint =
-                                parser.getAttributeBoolean(null, ATTR_VALUE, false);
-                    }
                 } else if (TAG_PASSWORD_TOKEN_HANDLE.equals(tag)) {
                     policy.mPasswordTokenHandle = parser.getAttributeLong(null, ATTR_VALUE);
                 } else if (TAG_CURRENT_INPUT_METHOD_SET.equals(tag)) {
                     policy.mCurrentInputMethodSet = true;
                 } else if (TAG_OWNER_INSTALLED_CA_CERT.equals(tag)) {
                     policy.mOwnerInstalledCaCerts.add(parser.getAttributeValue(null, ATTR_ALIAS));
-                } else if (TAG_PROTECTED_PACKAGES.equals(tag)) {
-                    policy.mUserControlDisabledPackages.add(
-                            parser.getAttributeValue(null, ATTR_NAME));
                 } else if (TAG_APPS_SUSPENDED.equals(tag)) {
                     policy.mAppsSuspended =
                             parser.getAttributeBoolean(null, ATTR_VALUE, false);
+                } else if (TAG_BYPASS_ROLE_QUALIFICATIONS.equals(tag)) {
+                    policy.mBypassDevicePolicyManagementRoleQualifications = true;
+                    policy.mCurrentRoleHolder = parser.getAttributeValue(null, ATTR_VALUE);
+                } else if (TAG_KEEP_PROFILES_RUNNING.equals(tag)) {
+                    policy.mEffectiveKeepProfilesRunning = parser.getAttributeBoolean(
+                            null, ATTR_VALUE, DEFAULT_KEEP_PROFILES_RUNNING_FLAG);
+                // Deprecated tags below
+                } else if (TAG_PROTECTED_PACKAGES.equals(tag)) {
+                    if (policy.mUserControlDisabledPackages == null) {
+                        policy.mUserControlDisabledPackages = new ArrayList<>();
+                    }
+                    policy.mUserControlDisabledPackages.add(
+                            parser.getAttributeValue(null, ATTR_NAME));
                 } else {
                     Slogf.w(TAG, "Unknown tag: %s", tag);
                     XmlUtils.skipCurrentTag(parser);
@@ -613,6 +656,28 @@ class DevicePolicyData {
         }
     }
 
+    boolean isNewUserDisclaimerAcknowledged() {
+        if (mNewUserDisclaimer == null) {
+            if (mUserId == UserHandle.USER_SYSTEM) {
+                return true;
+            }
+            Slogf.w(TAG, "isNewUserDisclaimerAcknowledged(%d): mNewUserDisclaimer is null",
+                    mUserId);
+            return false;
+        }
+        switch (mNewUserDisclaimer) {
+            case NEW_USER_DISCLAIMER_ACKNOWLEDGED:
+            case NEW_USER_DISCLAIMER_NOT_NEEDED:
+                return true;
+            case NEW_USER_DISCLAIMER_NEEDED:
+                return false;
+            default:
+                Slogf.w(TAG, "isNewUserDisclaimerAcknowledged(%d): invalid value %d", mUserId,
+                        mNewUserDisclaimer);
+                return false;
+        }
+    }
+
     void dump(IndentingPrintWriter pw) {
         pw.println();
         pw.println("Enabled Device Admins (User " + mUserId + ", provisioningState: "
@@ -638,8 +703,7 @@ class DevicePolicyData {
         pw.println();
         pw.increaseIndent();
         pw.print("mPasswordOwner="); pw.println(mPasswordOwner);
-        pw.print("mUserControlDisabledPackages=");
-        pw.println(mUserControlDisabledPackages);
+        pw.print("mPasswordTokenHandle="); pw.println(Long.toHexString(mPasswordTokenHandle));
         pw.print("mAppsSuspended="); pw.println(mAppsSuspended);
         pw.print("mUserSetupComplete="); pw.println(mUserSetupComplete);
         pw.print("mAffiliationIds="); pw.println(mAffiliationIds);
@@ -652,6 +716,21 @@ class DevicePolicyData {
         }
         if (mFactoryResetReason != null) {
             pw.print("mFactoryResetReason="); pw.println(mFactoryResetReason);
+        }
+        if (mDelegationMap.size() != 0) {
+            pw.println("mDelegationMap=");
+            pw.increaseIndent();
+            for (int i = 0; i < mDelegationMap.size(); i++) {
+                List<String> delegationScopes = mDelegationMap.valueAt(i);
+                pw.println(mDelegationMap.keyAt(i) + "[size=" + delegationScopes.size()
+                        + "]");
+                pw.increaseIndent();
+                for (int j = 0; j < delegationScopes.size(); j++) {
+                    pw.println(j + ": " + delegationScopes.get(j));
+                }
+                pw.decreaseIndent();
+            }
+            pw.decreaseIndent();
         }
         pw.decreaseIndent();
     }

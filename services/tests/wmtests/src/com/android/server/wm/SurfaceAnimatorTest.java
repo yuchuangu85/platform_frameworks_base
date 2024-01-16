@@ -338,6 +338,11 @@ public class SurfaceAnimatorTest extends WindowTestsBase {
         }
 
         @Override
+        public SurfaceControl.Transaction getSyncTransaction() {
+            return mTransaction;
+        }
+
+        @Override
         public Transaction getPendingTransaction() {
             return mTransaction;
         }
@@ -356,7 +361,7 @@ public class SurfaceAnimatorTest extends WindowTestsBase {
 
         @Override
         public Builder makeAnimationLeash() {
-            return new SurfaceControl.Builder(mSession) {
+            return new Builder(mSession) {
 
                 @Override
                 public SurfaceControl build() {

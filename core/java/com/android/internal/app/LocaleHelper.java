@@ -20,6 +20,7 @@ import android.annotation.IntRange;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.icu.text.CaseMap;
 import android.icu.text.ListFormatter;
+import android.icu.text.NumberingSystem;
 import android.icu.util.ULocale;
 import android.os.LocaleList;
 import android.text.TextUtils;
@@ -173,6 +174,21 @@ public class LocaleHelper {
     }
 
     /**
+     * Returns numbering system value of a locale for display in the provided locale.
+     *
+     * @param locale The locale whose key value is displayed.
+     * @param displayLocale The locale in which to display the key value.
+     * @return The string of numbering system.
+     */
+    public static String getDisplayNumberingSystemKeyValue(
+            Locale locale, Locale displayLocale) {
+        ULocale uLocale = new ULocale.Builder()
+                .setUnicodeLocaleKeyword("nu", NumberingSystem.getInstance(locale).getName())
+                .build();
+        return uLocale.getDisplayKeywordValue("numbers", ULocale.forLocale(displayLocale));
+    }
+
+    /**
      * Adds the likely subtags for a provided locale ID.
      *
      * @param locale the locale to maximize.
@@ -234,7 +250,11 @@ public class LocaleHelper {
         public int compare(LocaleStore.LocaleInfo lhs, LocaleStore.LocaleInfo rhs) {
             // We don't care about the various suggestion types, just "suggested" (!= 0)
             // and "all others" (== 0)
-            if (lhs.isSuggested() == rhs.isSuggested()) {
+            if (lhs.isAppCurrentLocale() || rhs.isAppCurrentLocale()) {
+                return lhs.isAppCurrentLocale() ? -1 : 1;
+            } else if (lhs.isSystemLocale() || rhs.isSystemLocale()) {
+                    return lhs.isSystemLocale() ? -1 : 1;
+            } else if (lhs.isSuggested() == rhs.isSuggested()) {
                 // They are in the same "bucket" (suggested / others), so we compare the text
                 return mCollator.compare(
                         removePrefixForCompare(lhs.getLocale(), lhs.getLabel(mCountryMode)),

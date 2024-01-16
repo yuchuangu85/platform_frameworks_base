@@ -16,14 +16,15 @@
 
 package com.android.systemui.privacy.logging
 
-import android.permission.PermGroupUsage
+import android.icu.text.SimpleDateFormat
+import android.permission.PermissionGroupUsage
 import com.android.systemui.log.LogBuffer
-import com.android.systemui.log.LogLevel
-import com.android.systemui.log.LogMessage
+import com.android.systemui.log.core.LogLevel
+import com.android.systemui.log.core.LogMessage
 import com.android.systemui.log.dagger.PrivacyLog
 import com.android.systemui.privacy.PrivacyDialog
+import com.android.systemui.privacy.PrivacyDialogV2
 import com.android.systemui.privacy.PrivacyItem
-import java.text.SimpleDateFormat
 import java.util.Locale
 import javax.inject.Inject
 
@@ -41,6 +42,16 @@ class PrivacyLogger @Inject constructor(
             bool1 = active
         }, {
             "App Op: $int1 for $str1($int2), active=$bool1"
+        })
+    }
+
+    fun logUpdatedItemFromMediaProjection(uid: Int, packageName: String, active: Boolean) {
+        log(LogLevel.INFO, {
+            int1 = uid
+            str1 = packageName
+            bool1 = active
+        }, {
+            "MediaProjection: $str1($int1), active=$bool1"
         })
     }
 
@@ -100,7 +111,7 @@ class PrivacyLogger @Inject constructor(
         })
     }
 
-    fun logUnfilteredPermGroupUsage(contents: List<PermGroupUsage>) {
+    fun logUnfilteredPermGroupUsage(contents: List<PermissionGroupUsage>) {
         log(LogLevel.DEBUG, {
             str1 = contents.toString()
         }, {
@@ -109,6 +120,14 @@ class PrivacyLogger @Inject constructor(
     }
 
     fun logShowDialogContents(contents: List<PrivacyDialog.PrivacyElement>) {
+        log(LogLevel.INFO, {
+            str1 = contents.toString()
+        }, {
+            "Privacy dialog shown. Contents: $str1"
+        })
+    }
+
+    fun logShowDialogV2Contents(contents: List<PrivacyDialogV2.PrivacyElement>) {
         log(LogLevel.INFO, {
             str1 = contents.toString()
         }, {
@@ -135,6 +154,23 @@ class PrivacyLogger @Inject constructor(
         }, {
             "Start settings activity from dialog for packageName=$str1, userId=$int1 "
         })
+    }
+
+    fun logCloseAppFromDialog(packageName: String, userId: Int) {
+        log(LogLevel.INFO, {
+            str1 = packageName
+            int1 = userId
+        }, {
+            "Close app from dialog for packageName=$str1, userId=$int1"
+        })
+    }
+
+    fun logStartPrivacyDashboardFromDialog() {
+        log(LogLevel.INFO, {}, { "Start privacy dashboard from dialog" })
+    }
+
+    fun logLabelNotFound(packageName: String) {
+        log(LogLevel.WARNING, { str1 = packageName }, { "Label not found for: $str1" })
     }
 
     private fun listToString(list: List<PrivacyItem>): String {

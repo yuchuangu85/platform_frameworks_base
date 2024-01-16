@@ -18,7 +18,6 @@ package android.view.translation;
 
 import static android.view.translation.TranslationManager.STATUS_SYNC_CALL_FAIL;
 import static android.view.translation.TranslationManager.SYNC_CALLS_TIMEOUT_MS;
-import static android.view.translation.UiTranslationController.DEBUG;
 
 import android.annotation.CallbackExecutor;
 import android.annotation.NonNull;
@@ -52,9 +51,6 @@ import java.util.function.Consumer;
 public class Translator {
 
     private static final String TAG = "Translator";
-
-    // TODO: make this configurable and cross the Translation component
-    private static boolean sDEBUG = false;
 
     private final Object mLock = new Object();
 
@@ -405,7 +401,7 @@ public class Translator {
 
         @Override
         public void onTranslationResponse(TranslationResponse response) throws RemoteException {
-            if (DEBUG) {
+            if (Log.isLoggable(UiTranslationManager.LOG_TAG, Log.DEBUG)) {
                 Log.i(TAG, "onTranslationResponse called.");
             }
             final Runnable runnable =

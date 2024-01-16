@@ -40,6 +40,7 @@ public class GlobalActionsPopupMenu extends ListPopupWindow {
     private boolean mIsDropDownMode;
     private int mMenuVerticalPadding = 0;
     private int mGlobalActionsSidePadding = 0;
+    private int mMaximumWidthThresholdDp = 800;
     private ListAdapter mAdapter;
     private AdapterView.OnItemLongClickListener mOnItemLongClickListener;
 
@@ -86,12 +87,14 @@ public class GlobalActionsPopupMenu extends ListPopupWindow {
         if (mIsDropDownMode) {
             // use a divider
             listView.setDividerHeight(res.getDimensionPixelSize(R.dimen.control_list_divider));
-            listView.setDivider(res.getDrawable(R.drawable.controls_list_divider_inset));
+            listView.setDivider(res.getDrawable(R.drawable.global_actions_list_divider_inset));
         } else {
             if (mAdapter == null) return;
 
             // width should be between [.5, .9] of screen
             int parentWidth = res.getSystem().getDisplayMetrics().widthPixels;
+            float parentDensity = res.getSystem().getDisplayMetrics().density;
+            float parentWidthDp = parentWidth / parentDensity;
             int widthSpec = MeasureSpec.makeMeasureSpec(
                     (int) (parentWidth * 0.9), MeasureSpec.AT_MOST);
             int maxWidth = 0;
@@ -101,9 +104,12 @@ public class GlobalActionsPopupMenu extends ListPopupWindow {
                 int w = child.getMeasuredWidth();
                 maxWidth = Math.max(w, maxWidth);
             }
-            int width = Math.max(maxWidth, (int) (parentWidth * 0.5));
-            listView.setPadding(0, mMenuVerticalPadding, 0, mMenuVerticalPadding);
 
+            int width = maxWidth;
+            if (parentWidthDp < mMaximumWidthThresholdDp) {
+                width = Math.max(maxWidth, (int) (parentWidth * 0.5));
+            }
+            listView.setPadding(0, mMenuVerticalPadding, 0, mMenuVerticalPadding);
             setWidth(width);
             if (getAnchorView().getLayoutDirection() == LayoutDirection.LTR) {
                 setHorizontalOffset(getAnchorView().getWidth() - mGlobalActionsSidePadding - width);

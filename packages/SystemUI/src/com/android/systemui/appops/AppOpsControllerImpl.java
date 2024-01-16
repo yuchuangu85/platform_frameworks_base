@@ -48,10 +48,10 @@ import com.android.systemui.statusbar.policy.IndividualSensorPrivacyController;
 import com.android.systemui.util.Assert;
 import com.android.systemui.util.time.SystemClock;
 
-import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import javax.inject.Inject;
@@ -65,7 +65,7 @@ import javax.inject.Inject;
 @SysUISingleton
 public class AppOpsControllerImpl extends BroadcastReceiver implements AppOpsController,
         AppOpsManager.OnOpActiveChangedListener,
-        AppOpsManager.OnOpNotedListener, IndividualSensorPrivacyController.Callback,
+        AppOpsManager.OnOpNotedInternalListener, IndividualSensorPrivacyController.Callback,
         Dumpable {
 
     // This is the minimum time that we will keep AppOps that are noted on record. If multiple
@@ -103,6 +103,8 @@ public class AppOpsControllerImpl extends BroadcastReceiver implements AppOpsCon
             AppOpsManager.OP_PHONE_CALL_CAMERA,
             AppOpsManager.OP_SYSTEM_ALERT_WINDOW,
             AppOpsManager.OP_RECORD_AUDIO,
+            AppOpsManager.OP_RECEIVE_AMBIENT_TRIGGER_AUDIO,
+            AppOpsManager.OP_RECEIVE_EXPLICIT_USER_INTERACTION_AUDIO,
             AppOpsManager.OP_PHONE_CALL_MICROPHONE,
             AppOpsManager.OP_COARSE_LOCATION,
             AppOpsManager.OP_FINE_LOCATION
@@ -144,6 +146,10 @@ public class AppOpsControllerImpl extends BroadcastReceiver implements AppOpsCon
     protected void setListening(boolean listening) {
         mListening = listening;
         if (listening) {
+            // System UI could be restarted while ops are active, so fetch the currently active ops
+            // once System UI starts listening again.
+            fetchCurrentActiveOps();
+
             mAppOps.startWatchingActive(OPS, this);
             mAppOps.startWatchingNoted(OPS, this);
             mAudioManager.registerAudioRecordingCallback(mAudioRecordingCallback, mBGHandler);
@@ -172,6 +178,29 @@ public class AppOpsControllerImpl extends BroadcastReceiver implements AppOpsCon
             }
             synchronized (mNotedItems) {
                 mNotedItems.clear();
+            }
+        }
+    }
+
+    private void fetchCurrentActiveOps() {
+        List<AppOpsManager.PackageOps> packageOps = mAppOps.getPackagesForOps(OPS);
+        for (AppOpsManager.PackageOps op : packageOps) {
+            for (AppOpsManager.OpEntry entry : op.getOps()) {
+                for (Map.Entry<String, AppOpsManager.AttributedOpEntry> attributedOpEntry :
+                        entry.getAttributedOpEntries().entrySet()) {
+                    if (attributedOpEntry.getValue().isRunning()) {
+                        onOpActiveChanged(
+                                entry.getOpStr(),
+                                op.getUid(),
+                                op.getPackageName(),
+                                /* attributionTag= */ attributedOpEntry.getKey(),
+                                /* active= */ true,
+                                // AppOpsManager doesn't have a way to fetch attribution flags or
+                                // chain ID given an op entry, so default them to none.
+                                AppOpsManager.ATTRIBUTION_FLAGS_NONE,
+                                AppOpsManager.ATTRIBUTION_CHAIN_ID_NONE);
+                    }
+                }
             }
         }
     }
@@ -376,7 +405,7 @@ public class AppOpsControllerImpl extends BroadcastReceiver implements AppOpsCon
             Log.w(TAG, String.format("onActiveChanged(%d,%d,%s,%s,%d,%d)", code, uid, packageName,
                     Boolean.toString(active), attributionChainId, attributionFlags));
         }
-        if (attributionChainId != AppOpsManager.ATTRIBUTION_CHAIN_ID_NONE
+        if (active && attributionChainId != AppOpsManager.ATTRIBUTION_CHAIN_ID_NONE
                 && attributionFlags != AppOpsManager.ATTRIBUTION_FLAGS_NONE
                 && (attributionFlags & AppOpsManager.ATTRIBUTION_FLAG_ACCESSOR) == 0
                 && (attributionFlags & AppOpsManager.ATTRIBUTION_FLAG_TRUSTED) == 0) {
@@ -428,7 +457,7 @@ public class AppOpsControllerImpl extends BroadcastReceiver implements AppOpsCon
     }
 
     @Override
-    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+    public void dump(PrintWriter pw, String[] args) {
         pw.println("AppOpsController state:");
         pw.println("  Listening: " + mListening);
         pw.println("  Active Items:");
@@ -536,7 +565,8 @@ public class AppOpsControllerImpl extends BroadcastReceiver implements AppOpsCon
     }
 
     private boolean isOpMicrophone(int op) {
-        return op == AppOpsManager.OP_RECORD_AUDIO || op == AppOpsManager.OP_PHONE_CALL_MICROPHONE;
+        return op == AppOpsManager.OP_RECORD_AUDIO || op == AppOpsManager.OP_PHONE_CALL_MICROPHONE
+                || op == AppOpsManager.OP_RECEIVE_AMBIENT_TRIGGER_AUDIO;
     }
 
     protected class H extends Handler {

@@ -30,22 +30,26 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Process;
 import android.os.UserHandle;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.ScrollCaptureResponse;
 import android.view.View;
-import android.view.ViewTreeObserver;
 import android.widget.ImageView;
 
 import androidx.constraintlayout.widget.ConstraintLayout;
 
 import com.android.internal.app.ChooserActivity;
 import com.android.internal.logging.UiEventLogger;
+import com.android.internal.view.OneShotPreDrawListener;
 import com.android.systemui.R;
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.flags.FeatureFlags;
+import com.android.systemui.screenshot.CropView.CropBoundary;
 import com.android.systemui.screenshot.ScrollCaptureController.LongScreenshot;
+import com.android.systemui.settings.UserTracker;
 
 import com.google.common.util.concurrent.ListenableFuture;
 
@@ -66,6 +70,7 @@ public class LongScreenshotActivity extends Activity {
     private static final String TAG = LogConfig.logTag(LongScreenshotActivity.class);
 
     public static final String EXTRA_CAPTURE_RESPONSE = "capture-response";
+    public static final String EXTRA_SCREENSHOT_USER_HANDLE = "screenshot-userhandle";
     private static final String KEY_SAVED_IMAGE_PATH = "saved-image-path";
 
     private final UiEventLogger mUiEventLogger;
@@ -73,16 +78,21 @@ public class LongScreenshotActivity extends Activity {
     private final Executor mBackgroundExecutor;
     private final ImageExporter mImageExporter;
     private final LongScreenshotData mLongScreenshotHolder;
+    private final ActionIntentExecutor mActionExecutor;
+    private final FeatureFlags mFeatureFlags;
+    private final UserTracker mUserTracker;
 
     private ImageView mPreview;
     private ImageView mTransitionView;
     private ImageView mEnterTransitionView;
     private View mSave;
+    private View mCancel;
     private View mEdit;
     private View mShare;
     private CropView mCropView;
     private MagnifierView mMagnifierView;
     private ScrollCaptureResponse mScrollCaptureResponse;
+    private UserHandle mScreenshotUserHandle;
     private File mSavedImagePath;
 
     private ListenableFuture<File> mCacheSaveFuture;
@@ -101,12 +111,16 @@ public class LongScreenshotActivity extends Activity {
     @Inject
     public LongScreenshotActivity(UiEventLogger uiEventLogger, ImageExporter imageExporter,
             @Main Executor mainExecutor, @Background Executor bgExecutor,
-            LongScreenshotData longScreenshotHolder) {
+            LongScreenshotData longScreenshotHolder, ActionIntentExecutor actionExecutor,
+            FeatureFlags featureFlags, UserTracker userTracker) {
         mUiEventLogger = uiEventLogger;
         mUiExecutor = mainExecutor;
         mBackgroundExecutor = bgExecutor;
         mImageExporter = imageExporter;
         mLongScreenshotHolder = longScreenshotHolder;
+        mActionExecutor = actionExecutor;
+        mFeatureFlags = featureFlags;
+        mUserTracker = userTracker;
     }
 
 
@@ -119,15 +133,15 @@ public class LongScreenshotActivity extends Activity {
         mSave = requireViewById(R.id.save);
         mEdit = requireViewById(R.id.edit);
         mShare = requireViewById(R.id.share);
+        mCancel = requireViewById(R.id.cancel);
         mCropView = requireViewById(R.id.crop_view);
         mMagnifierView = requireViewById(R.id.magnifier);
         mCropView.setCropInteractionListener(mMagnifierView);
         mTransitionView = requireViewById(R.id.transition);
         mEnterTransitionView = requireViewById(R.id.enter_transition);
 
-        requireViewById(R.id.cancel).setOnClickListener(v -> finishAndRemoveTask());
-
         mSave.setOnClickListener(this::onClicked);
+        mCancel.setOnClickListener(this::onClicked);
         mEdit.setOnClickListener(this::onClicked);
         mShare.setOnClickListener(this::onClicked);
 
@@ -137,6 +151,11 @@ public class LongScreenshotActivity extends Activity {
 
         Intent intent = getIntent();
         mScrollCaptureResponse = intent.getParcelableExtra(EXTRA_CAPTURE_RESPONSE);
+        mScreenshotUserHandle = intent.getParcelableExtra(EXTRA_SCREENSHOT_USER_HANDLE,
+                UserHandle.class);
+        if (mScreenshotUserHandle == null) {
+            mScreenshotUserHandle = Process.myUserHandle();
+        }
 
         if (savedInstanceState != null) {
             String savedImagePath = savedInstanceState.getString(KEY_SAVED_IMAGE_PATH);
@@ -197,6 +216,7 @@ public class LongScreenshotActivity extends Activity {
         mPreview.setImageDrawable(drawable);
         mMagnifierView.setDrawable(mLongScreenshot.getDrawable(),
                 mLongScreenshot.getWidth(), mLongScreenshot.getHeight());
+        Log.i(TAG, "Completed: " + longScreenshot);
         // Original boundaries go from the image tile set's y=0 to y=pageSize, so
         // we animate to that as a starting crop position.
         float topFraction = Math.max(0,
@@ -205,31 +225,26 @@ public class LongScreenshotActivity extends Activity {
                 1 - (mLongScreenshot.getBottom() - mLongScreenshot.getPageHeight())
                         / (float) mLongScreenshot.getHeight());
 
+        Log.i(TAG, "topFraction: " + topFraction);
+        Log.i(TAG, "bottomFraction: " + bottomFraction);
+
         mEnterTransitionView.setImageDrawable(drawable);
-        mEnterTransitionView.getViewTreeObserver().addOnPreDrawListener(
-                new ViewTreeObserver.OnPreDrawListener() {
-                    @Override
-                    public boolean onPreDraw() {
-                        mEnterTransitionView.getViewTreeObserver().removeOnPreDrawListener(this);
-                        updateImageDimensions();
-                        mEnterTransitionView.post(() -> {
-                            Rect dest = new Rect();
-                            mEnterTransitionView.getBoundsOnScreen(dest);
-                            mLongScreenshotHolder.takeTransitionDestinationCallback()
-                                    .setTransitionDestination(dest, () -> {
-                                        mPreview.animate().alpha(1f);
-                                        mCropView.setBoundaryPosition(
-                                                CropView.CropBoundary.TOP, topFraction);
-                                        mCropView.setBoundaryPosition(
-                                                CropView.CropBoundary.BOTTOM, bottomFraction);
-                                        mCropView.animateEntrance();
-                                        mCropView.setVisibility(View.VISIBLE);
-                                        setButtonsEnabled(true);
-                                    });
+        OneShotPreDrawListener.add(mEnterTransitionView, () -> {
+            updateImageDimensions();
+            mEnterTransitionView.post(() -> {
+                Rect dest = new Rect();
+                mEnterTransitionView.getBoundsOnScreen(dest);
+                mLongScreenshotHolder.takeTransitionDestinationCallback()
+                        .setTransitionDestination(dest, () -> {
+                            mPreview.animate().alpha(1f);
+                            mCropView.setBoundaryPosition(CropBoundary.TOP, topFraction);
+                            mCropView.setBoundaryPosition(CropBoundary.BOTTOM, bottomFraction);
+                            mCropView.animateEntrance();
+                            mCropView.setVisibility(View.VISIBLE);
+                            setButtonsEnabled(true);
                         });
-                        return true;
-                    }
-                });
+            });
+        });
 
         // Immediately export to temp image file for saved state
         mCacheSaveFuture = mImageExporter.exportToRawFile(mBackgroundExecutor,
@@ -316,36 +331,39 @@ public class LongScreenshotActivity extends Activity {
     }
 
     private void doEdit(Uri uri) {
-        String editorPackage = getString(R.string.config_screenshotEditor);
-        Intent intent = new Intent(Intent.ACTION_EDIT);
-        if (!TextUtils.isEmpty(editorPackage)) {
-            intent.setComponent(ComponentName.unflattenFromString(editorPackage));
-        }
-        intent.setDataAndType(uri, "image/png");
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
-                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        if (mScreenshotUserHandle != Process.myUserHandle()) {
+            // TODO: Fix transition for work profile. Omitting it in the meantime.
+            mActionExecutor.launchIntentAsync(
+                    ActionIntentCreator.INSTANCE.createEdit(uri, this),
+                    null,
+                    mScreenshotUserHandle, false);
+        } else {
+            String editorPackage = getString(R.string.config_screenshotEditor);
+            Intent intent = new Intent(Intent.ACTION_EDIT);
+            intent.setDataAndType(uri, "image/png");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            Bundle options = null;
 
-        mTransitionView.setImageBitmap(mOutputBitmap);
-        mTransitionView.setVisibility(View.VISIBLE);
-        mTransitionView.setTransitionName(
-                ChooserActivity.FIRST_IMAGE_PREVIEW_TRANSITION_NAME);
-        // TODO: listen for transition completing instead of finishing onStop
-        mTransitionStarted = true;
-        startActivity(intent,
-                ActivityOptions.makeSceneTransitionAnimation(this, mTransitionView,
-                        ChooserActivity.FIRST_IMAGE_PREVIEW_TRANSITION_NAME).toBundle());
+            // Skip shared element transition for implicit edit intents
+            if (!TextUtils.isEmpty(editorPackage)) {
+                intent.setComponent(ComponentName.unflattenFromString(editorPackage));
+                mTransitionView.setImageBitmap(mOutputBitmap);
+                mTransitionView.setVisibility(View.VISIBLE);
+                mTransitionView.setTransitionName(
+                        ChooserActivity.FIRST_IMAGE_PREVIEW_TRANSITION_NAME);
+                options = ActivityOptions.makeSceneTransitionAnimation(this, mTransitionView,
+                        ChooserActivity.FIRST_IMAGE_PREVIEW_TRANSITION_NAME).toBundle();
+                // TODO: listen for transition completing instead of finishing onStop
+                mTransitionStarted = true;
+            }
+            startActivity(intent, options);
+        }
     }
 
     private void doShare(Uri uri) {
-        Intent intent = new Intent(Intent.ACTION_SEND);
-        intent.setType("image/png");
-        intent.putExtra(Intent.EXTRA_STREAM, uri);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK
-                | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-        Intent sharingChooserIntent = Intent.createChooser(intent, null)
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-
-        startActivityAsUser(sharingChooserIntent, UserHandle.CURRENT);
+        Intent shareIntent = ActionIntentCreator.INSTANCE.createShare(uri);
+        mActionExecutor.launchIntentAsync(shareIntent, null, mScreenshotUserHandle, false);
     }
 
     private void onClicked(View v) {
@@ -353,6 +371,7 @@ public class LongScreenshotActivity extends Activity {
         v.setPressed(true);
         setButtonsEnabled(false);
         if (id == R.id.save) {
+            mUiEventLogger.log(ScreenshotEvent.SCREENSHOT_LONG_SCREENSHOT_SAVED);
             startExport(PendingAction.SAVE);
         } else if (id == R.id.edit) {
             mUiEventLogger.log(ScreenshotEvent.SCREENSHOT_LONG_SCREENSHOT_EDIT);
@@ -360,6 +379,9 @@ public class LongScreenshotActivity extends Activity {
         } else if (id == R.id.share) {
             mUiEventLogger.log(ScreenshotEvent.SCREENSHOT_LONG_SCREENSHOT_SHARE);
             startExport(PendingAction.SHARE);
+        } else if (id == R.id.cancel) {
+            mUiEventLogger.log(ScreenshotEvent.SCREENSHOT_LONG_SCREENSHOT_EXIT);
+            finishAndRemoveTask();
         }
     }
 
@@ -382,7 +404,8 @@ public class LongScreenshotActivity extends Activity {
 
         mOutputBitmap = renderBitmap(drawable, bounds);
         ListenableFuture<ImageExporter.Result> exportFuture = mImageExporter.export(
-                mBackgroundExecutor, UUID.randomUUID(), mOutputBitmap, ZonedDateTime.now());
+                mBackgroundExecutor, UUID.randomUUID(), mOutputBitmap, ZonedDateTime.now(),
+                mScreenshotUserHandle);
         exportFuture.addListener(() -> onExportCompleted(action, exportFuture), mUiExecutor);
     }
 
@@ -441,7 +464,6 @@ public class LongScreenshotActivity extends Activity {
             mCropView.setExtraPadding(extraPadding + mPreview.getPaddingTop(),
                     extraPadding + mPreview.getPaddingBottom());
             imageTop += (previewHeight - imageHeight) / 2;
-            mCropView.setExtraPadding(extraPadding, extraPadding);
             mCropView.setImageWidth(previewWidth);
             scale = previewWidth / (float) mPreview.getDrawable().getIntrinsicWidth();
         } else {

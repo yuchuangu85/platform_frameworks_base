@@ -15,6 +15,8 @@
  */
 package com.android.server.broadcastradio.hal2;
 
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
+
 import static org.junit.Assert.*;
 import static org.mockito.Matchers.any;
 import static org.mockito.Mockito.doAnswer;
@@ -34,15 +36,14 @@ import android.hardware.radio.ProgramList;
 import android.hardware.radio.ProgramSelector;
 import android.hardware.radio.RadioManager;
 import android.os.RemoteException;
-import android.test.suitebuilder.annotation.MediumTest;
 
-import androidx.test.runner.AndroidJUnit4;
+import com.android.dx.mockito.inline.extended.StaticMockitoSessionBuilder;
+import com.android.server.broadcastradio.ExtendedRadioMockitoTestCase;
+import com.android.server.broadcastradio.RadioServiceUserController;
 
 import org.junit.Before;
 import org.junit.Test;
-import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
 import org.mockito.stubbing.Answer;
 import org.mockito.verification.VerificationWithTimeout;
 
@@ -53,19 +54,16 @@ import java.util.List;
 /**
  * Tests for v2 HAL RadioModule.
  */
-@RunWith(AndroidJUnit4.class)
-@MediumTest
-public class StartProgramListUpdatesFanoutTest {
+public class StartProgramListUpdatesFanoutTest extends ExtendedRadioMockitoTestCase {
     private static final String TAG = "BroadcastRadioTests.hal2.StartProgramListUpdatesFanout";
 
-    private static final VerificationWithTimeout CB_TIMEOUT = timeout(100);
+    private static final VerificationWithTimeout CB_TIMEOUT = timeout(500);
 
     // Mocks
     @Mock IBroadcastRadio mBroadcastRadioMock;
     @Mock ITunerSession mHalTunerSessionMock;
     private android.hardware.radio.ITunerCallback[] mAidlTunerCallbackMocks;
 
-    private final Object mLock = new Object();
     // RadioModule under test
     private RadioModule mRadioModule;
 
@@ -91,13 +89,17 @@ public class StartProgramListUpdatesFanoutTest {
     private final RadioManager.ProgramInfo mDabEnsembleInfo = TestUtils.makeProgramInfo(
             ProgramSelector.PROGRAM_TYPE_DAB, mDabEnsembleIdentifier, 0);
 
+    @Override
+    protected void initializeSession(StaticMockitoSessionBuilder builder) {
+        builder.spyStatic(RadioServiceUserController.class);
+    }
+
     @Before
     public void setup() throws RemoteException {
-        MockitoAnnotations.initMocks(this);
+        doReturn(true).when(() -> RadioServiceUserController.isCurrentOrSystemUser());
 
-        mRadioModule = new RadioModule(mBroadcastRadioMock, new RadioManager.ModuleProperties(0, "",
-                  0, "", "", "", "", 0, 0, false, false, null, false, new int[] {}, new int[] {},
-                  null, null), mLock);
+        mRadioModule = new RadioModule(mBroadcastRadioMock,
+                TestUtils.makeDefaultModuleProperties());
 
         doAnswer((Answer) invocation -> {
             mHalTunerCallback = (ITunerCallback) invocation.getArguments()[0];
@@ -166,7 +168,8 @@ public class StartProgramListUpdatesFanoutTest {
                 new HashSet<ProgramSelector.Identifier>(), true, false);
 
         // Start updates on the clients in order. The HAL filter should get updated after each
-        // client except [2].
+        // client except [2]. Client [2] should update received chunk with an empty program
+        // list
         mTunerSessions[0].startProgramListUpdates(idFilter);
         ProgramFilter halFilter = Convert.programFilterToHal(idFilter);
         verify(mHalTunerSessionMock, times(1)).startProgramListUpdates(halFilter);
@@ -177,6 +180,9 @@ public class StartProgramListUpdatesFanoutTest {
 
         mTunerSessions[2].startProgramListUpdates(typeFilterWithoutModifications);
         verify(mHalTunerSessionMock, times(2)).startProgramListUpdates(any());
+        verifyAidlClientReceivedChunk(mAidlTunerCallbackMocks[2], true, Arrays.asList(),
+                null);
+        verify(mAidlTunerCallbackMocks[2], CB_TIMEOUT.times(1)).onProgramListUpdated(any());
 
         mTunerSessions[3].startProgramListUpdates(typeFilterWithModifications);
         halFilter.excludeModifications = false;
@@ -207,7 +213,7 @@ public class StartProgramListUpdatesFanoutTest {
         updateHalProgramInfo(false, Arrays.asList(mDabEnsembleInfo), null);
         verify(mAidlTunerCallbackMocks[0], CB_TIMEOUT.times(1)).onProgramListUpdated(any());
         verify(mAidlTunerCallbackMocks[1], CB_TIMEOUT.times(2)).onProgramListUpdated(any());
-        verify(mAidlTunerCallbackMocks[2], CB_TIMEOUT.times(1)).onProgramListUpdated(any());
+        verify(mAidlTunerCallbackMocks[2], CB_TIMEOUT.times(2)).onProgramListUpdated(any());
         verify(mAidlTunerCallbackMocks[3], CB_TIMEOUT.times(2)).onProgramListUpdated(any());
     }
 

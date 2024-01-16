@@ -16,8 +16,14 @@
 
 package com.android.server.hdmi;
 
+import static com.android.server.hdmi.Constants.ADDR_AUDIO_SYSTEM;
+import static com.android.server.hdmi.Constants.ADDR_BROADCAST;
+import static com.android.server.hdmi.Constants.ADDR_RECORDER_1;
+import static com.android.server.hdmi.Constants.ADDR_RECORDER_2;
+import static com.android.server.hdmi.Constants.ADDR_RECORDER_3;
 import static com.android.server.hdmi.HdmiCecMessageValidator.ERROR_DESTINATION;
 import static com.android.server.hdmi.HdmiCecMessageValidator.ERROR_PARAMETER;
+import static com.android.server.hdmi.HdmiCecMessageValidator.ERROR_PARAMETER_LONG;
 import static com.android.server.hdmi.HdmiCecMessageValidator.ERROR_PARAMETER_SHORT;
 import static com.android.server.hdmi.HdmiCecMessageValidator.ERROR_SOURCE;
 import static com.android.server.hdmi.HdmiCecMessageValidator.OK;
@@ -37,6 +43,10 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+
 /** Tests for {@link com.android.server.hdmi.HdmiCecMessageValidator} class. */
 @SmallTest
 @Presubmit
@@ -48,11 +58,13 @@ public class HdmiCecMessageValidatorTest {
 
     @Before
     public void setUp() throws Exception {
+        FakeAudioFramework audioFramework = new FakeAudioFramework();
+
         HdmiControlService mHdmiControlService = new HdmiControlService(
-                InstrumentationRegistry.getTargetContext());
+                InstrumentationRegistry.getTargetContext(), Collections.emptyList(),
+                audioFramework.getAudioManager(), audioFramework.getAudioDeviceVolumeManager());
 
         mHdmiControlService.setIoLooper(mTestLooper.getLooper());
-        mHdmiCecMessageValidator = new HdmiCecMessageValidator(mHdmiControlService);
     }
 
     @Test
@@ -143,11 +155,12 @@ public class HdmiCecMessageValidatorTest {
     @Test
     public void isValid_systemAudioModeStatus() {
         assertMessageValidity("40:7E:00").isEqualTo(OK);
-        assertMessageValidity("40:7E:01:01").isEqualTo(OK);
+        assertMessageValidity("40:7E:01").isEqualTo(OK);
 
         assertMessageValidity("0F:7E:00").isEqualTo(ERROR_DESTINATION);
         assertMessageValidity("F0:7E").isEqualTo(ERROR_SOURCE);
         assertMessageValidity("40:7E").isEqualTo(ERROR_PARAMETER_SHORT);
+        assertMessageValidity("40:7E:01:1F:28").isEqualTo(ERROR_PARAMETER_LONG);
         assertMessageValidity("40:7E:02").isEqualTo(ERROR_PARAMETER);
     }
 
@@ -398,16 +411,6 @@ public class HdmiCecMessageValidatorTest {
     }
 
     @Test
-    public void isValid_reportFeatures() {
-        assertMessageValidity("0F:A6:05:80:00:00").isEqualTo(OK);
-
-        assertMessageValidity("04:A6:05:80:00:00").isEqualTo(ERROR_DESTINATION);
-        assertMessageValidity("FF:A6:05:80:00:00").isEqualTo(ERROR_SOURCE);
-
-        assertMessageValidity("0F:A6").isEqualTo(ERROR_PARAMETER_SHORT);
-    }
-
-    @Test
     public void isValid_deckControl() {
         assertMessageValidity("40:42:01:6E").isEqualTo(OK);
         assertMessageValidity("40:42:04").isEqualTo(OK);
@@ -646,7 +649,23 @@ public class HdmiCecMessageValidatorTest {
         assertMessageValidity("4F:80:12:00:50:50").isEqualTo(ERROR_PARAMETER);
     }
 
+    @Test
+    public void isValid_activeSource() {
+        // Only source devices should broadcast <Active Source> messages.
+        List<Integer> nonSourceDevicesAddresses = Arrays.asList(ADDR_RECORDER_1, ADDR_RECORDER_2,
+                ADDR_AUDIO_SYSTEM, ADDR_RECORDER_3);
+
+        for (int i = 0; i < ADDR_BROADCAST; ++i) {
+            String message = Integer.toHexString(i) + "F:82:10:00";
+            if (nonSourceDevicesAddresses.contains(i)) {
+                assertMessageValidity(message).isEqualTo(ERROR_SOURCE);
+            } else {
+                assertMessageValidity(message).isEqualTo(OK);
+            }
+        }
+    }
+
     private IntegerSubject assertMessageValidity(String message) {
-        return assertThat(mHdmiCecMessageValidator.isValid(HdmiUtils.buildMessage(message), false));
+        return assertThat(HdmiUtils.buildMessage(message).getValidationResult());
     }
 }

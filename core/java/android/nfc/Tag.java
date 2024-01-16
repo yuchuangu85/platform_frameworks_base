@@ -118,6 +118,7 @@ public final class Tag implements Parcelable {
     final String[] mTechStringList;
     final Bundle[] mTechExtras;
     final int mServiceHandle;  // for use by NFC service, 0 indicates a mock
+    final long mCookie;        // for accessibility checking
     final INfcTag mTagService; // interface to NFC service, will be null if mock tag
 
     int mConnectedTechnology;
@@ -127,7 +128,7 @@ public final class Tag implements Parcelable {
      * @hide
      */
     public Tag(byte[] id, int[] techList, Bundle[] techListExtras, int serviceHandle,
-            INfcTag tagService) {
+            long cookie, INfcTag tagService) {
         if (techList == null) {
             throw new IllegalArgumentException("rawTargets cannot be null");
         }
@@ -137,9 +138,13 @@ public final class Tag implements Parcelable {
         // Ensure mTechExtras is as long as mTechList
         mTechExtras = Arrays.copyOf(techListExtras, techList.length);
         mServiceHandle = serviceHandle;
+        mCookie = cookie;
         mTagService = tagService;
-
         mConnectedTechnology = -1;
+
+        if (tagService == null) {
+            return;
+        }
     }
 
     /**
@@ -152,9 +157,10 @@ public final class Tag implements Parcelable {
      * @return freshly constructed tag
      * @hide
      */
-    public static Tag createMockTag(byte[] id, int[] techList, Bundle[] techListExtras) {
+    public static Tag createMockTag(byte[] id, int[] techList, Bundle[] techListExtras,
+            long cookie) {
         // set serviceHandle to 0 and tagService to null to indicate mock tag
-        return new Tag(id, techList, techListExtras, 0, null);
+        return new Tag(id, techList, techListExtras, 0, cookie, null);
     }
 
     private String[] generateTechStringList(int[] techList) {
@@ -361,6 +367,22 @@ public final class Tag implements Parcelable {
     /** @hide */
     @UnsupportedAppUsage
     public INfcTag getTagService() {
+        if (mTagService == null) {
+            return null;
+        }
+
+        try {
+            if (!mTagService.isTagUpToDate(mCookie)) {
+                String id_str = "";
+                for (int i = 0; i < mId.length; i++) {
+                    id_str = id_str + String.format("%02X ", mId[i]);
+                }
+                String msg = "Permission Denial: Tag ( ID: " + id_str + ") is out of date";
+                throw new SecurityException(msg);
+            }
+        } catch (RemoteException e) {
+            throw e.rethrowAsRuntimeException();
+        }
         return mTagService;
     }
 
@@ -416,6 +438,7 @@ public final class Tag implements Parcelable {
         dest.writeIntArray(mTechList);
         dest.writeTypedArray(mTechExtras, 0);
         dest.writeInt(mServiceHandle);
+        dest.writeLong(mCookie);
         dest.writeInt(isMock);
         if (isMock == 0) {
             dest.writeStrongBinder(mTagService.asBinder());
@@ -434,6 +457,7 @@ public final class Tag implements Parcelable {
             in.readIntArray(techList);
             Bundle[] techExtras = in.createTypedArray(Bundle.CREATOR);
             int serviceHandle = in.readInt();
+            long cookie = in.readLong();
             int isMock = in.readInt();
             if (isMock == 0) {
                 tagService = INfcTag.Stub.asInterface(in.readStrongBinder());
@@ -442,7 +466,7 @@ public final class Tag implements Parcelable {
                 tagService = null;
             }
 
-            return new Tag(id, techList, techExtras, serviceHandle, tagService);
+            return new Tag(id, techList, techExtras, serviceHandle, cookie, tagService);
         }
 
         @Override

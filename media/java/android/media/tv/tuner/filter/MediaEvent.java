@@ -18,9 +18,14 @@ package android.media.tv.tuner.filter;
 
 import android.annotation.BytesLong;
 import android.annotation.IntRange;
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
+import android.media.AudioPresentation;
 import android.media.MediaCodec.LinearBlock;
+
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Filter event sent from {@link Filter} objects with media type.
@@ -40,6 +45,8 @@ public class MediaEvent extends FilterEvent {
     private final int mStreamId;
     private final boolean mIsPtsPresent;
     private final long mPts;
+    private final boolean mIsDtsPresent;
+    private final long mDts;
     private final long mDataLength;
     private final long mOffset;
     private LinearBlock mLinearBlock;
@@ -47,15 +54,20 @@ public class MediaEvent extends FilterEvent {
     private final long mDataId;
     private final int mMpuSequenceNumber;
     private final boolean mIsPrivateData;
+    private final int mScIndexMask;
     private final AudioDescriptor mExtraMetaData;
+    private final List<AudioPresentation> mAudioPresentations;
 
     // This constructor is used by JNI code only
-    private MediaEvent(int streamId, boolean isPtsPresent, long pts, long dataLength, long offset,
-            LinearBlock buffer, boolean isSecureMemory, long dataId, int mpuSequenceNumber,
-            boolean isPrivateData, AudioDescriptor extraMetaData) {
+    private MediaEvent(int streamId, boolean isPtsPresent, long pts, boolean isDtsPresent, long dts,
+            long dataLength, long offset, LinearBlock buffer, boolean isSecureMemory, long dataId,
+            int mpuSequenceNumber, boolean isPrivateData, int scIndexMask,
+            AudioDescriptor extraMetaData, List<AudioPresentation> audioPresentations) {
         mStreamId = streamId;
         mIsPtsPresent = isPtsPresent;
         mPts = pts;
+        mIsDtsPresent = isDtsPresent;
+        mDts = dts;
         mDataLength = dataLength;
         mOffset = offset;
         mLinearBlock = buffer;
@@ -63,7 +75,9 @@ public class MediaEvent extends FilterEvent {
         mDataId = dataId;
         mMpuSequenceNumber = mpuSequenceNumber;
         mIsPrivateData = isPrivateData;
+        mScIndexMask = scIndexMask;
         mExtraMetaData = extraMetaData;
+        mAudioPresentations = audioPresentations;
     }
 
     /**
@@ -88,6 +102,26 @@ public class MediaEvent extends FilterEvent {
     public long getPts() {
         return mPts;
     }
+
+    /**
+     * Returns whether DTS (Decode Time Stamp) is present.
+     *
+     * <p>This query is only supported in Tuner 2.0 or higher version. Unsupported version will
+     * return {@code false}.
+     * Use {@link TunerVersionChecker#getTunerVersion()} to get the version information.
+     *
+     * @return {@code true} if DTS is present in PES header; {@code false} otherwise.
+     */
+    public boolean isDtsPresent() { return mIsDtsPresent; }
+
+    /**
+     * Gets DTS (Decode Time Stamp) for audio or video frame.
+     *
+     * * <p>This query is only supported in Tuner 2.0 or higher version. Unsupported version will
+     * return {@code -1}.
+     * Use {@link TunerVersionChecker#getTunerVersion()} to get the version information.
+     */
+    public long getDts() { return mDts; }
 
     /**
      * Gets data size in bytes of audio or video frame.
@@ -170,6 +204,17 @@ public class MediaEvent extends FilterEvent {
     }
 
     /**
+     * Gets SC (Start Code) index mask.
+     *
+     * <p>This API is only supported by Tuner HAL 2.0 or higher. Unsupported version would return
+     * {@code 0}. Use {@link TunerVersionChecker#getTunerVersion()} to check the version.
+     */
+    @RecordSettings.ScIndexMask
+    public int getScIndexMask() {
+        return mScIndexMask;
+    }
+
+    /**
      * Gets audio extra metadata.
      */
     @Nullable
@@ -177,6 +222,17 @@ public class MediaEvent extends FilterEvent {
         return mExtraMetaData;
     }
 
+    /**
+     * Gets audio presentations.
+     *
+     * <p>The audio presentation order matters. As specified in ETSI EN 300 468 V1.17.1, all the
+     * audio programme components corresponding to the first audio preselection in the loop are
+     * contained in the main NGA stream.
+     */
+    @NonNull
+    public List<AudioPresentation> getAudioPresentations() {
+        return mAudioPresentations == null ? Collections.emptyList() : mAudioPresentations;
+    }
 
     /**
      * Finalize the MediaEvent object.

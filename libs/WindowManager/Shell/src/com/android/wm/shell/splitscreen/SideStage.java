@@ -16,7 +16,6 @@
 
 package com.android.wm.shell.splitscreen;
 
-import android.annotation.Nullable;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.view.SurfaceSession;
@@ -26,6 +25,9 @@ import android.window.WindowContainerTransaction;
 import com.android.launcher3.icons.IconProvider;
 import com.android.wm.shell.ShellTaskOrganizer;
 import com.android.wm.shell.common.SyncTransactionQueue;
+import com.android.wm.shell.windowdecor.WindowDecorViewModel;
+
+import java.util.Optional;
 
 /**
  * Side stage for split-screen mode. Only tasks that are explicitly pinned to this stage show up
@@ -39,21 +41,18 @@ class SideStage extends StageTaskListener {
     SideStage(Context context, ShellTaskOrganizer taskOrganizer, int displayId,
             StageListenerCallbacks callbacks, SyncTransactionQueue syncQueue,
             SurfaceSession surfaceSession, IconProvider iconProvider,
-            @Nullable StageTaskUnfoldController stageTaskUnfoldController) {
-        super(context, taskOrganizer, displayId, callbacks, syncQueue, surfaceSession, iconProvider,
-                stageTaskUnfoldController);
+            Optional<WindowDecorViewModel> windowDecorViewModel) {
+        super(context, taskOrganizer, displayId, callbacks, syncQueue, surfaceSession,
+                iconProvider, windowDecorViewModel);
     }
 
     boolean removeAllTasks(WindowContainerTransaction wct, boolean toTop) {
-        // No matter if the root task is empty or not, moving the root to bottom because it no
-        // longer preserves visible child task.
-        wct.reorder(mRootTaskInfo.token, false /* onTop */);
         if (mChildrenTaskInfo.size() == 0) return false;
         wct.reparentTasks(
                 mRootTaskInfo.token,
                 null /* newParent */,
-                CONTROLLED_WINDOWING_MODES_WHEN_ACTIVE,
-                CONTROLLED_ACTIVITY_TYPES,
+                null /* windowingModes */,
+                null /* activityTypes */,
                 toTop);
         return true;
     }

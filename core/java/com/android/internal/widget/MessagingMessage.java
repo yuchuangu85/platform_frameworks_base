@@ -20,6 +20,7 @@ import android.app.ActivityManager;
 import android.app.Notification;
 import android.view.View;
 
+import java.util.ArrayList;
 import java.util.Objects;
 
 /**
@@ -33,11 +34,12 @@ public interface MessagingMessage extends MessagingLinearLayout.MessagingChild {
     String IMAGE_MIME_TYPE_PREFIX = "image/";
 
     static MessagingMessage createMessage(IMessagingLayout layout,
-            Notification.MessagingStyle.Message m, ImageResolver resolver) {
+            Notification.MessagingStyle.Message m, ImageResolver resolver,
+            boolean usePrecomputedText) {
         if (hasImage(m) && !ActivityManager.isLowRamDeviceStatic()) {
-            return MessagingImageMessage.createMessage(layout, m, resolver);
+            return MessagingImageMessage.createMessage(layout, m, resolver, usePrecomputedText);
         } else {
-            return MessagingTextMessage.createMessage(layout, m);
+            return MessagingTextMessage.createMessage(layout, m, usePrecomputedText);
         }
     }
 
@@ -54,9 +56,11 @@ public interface MessagingMessage extends MessagingLinearLayout.MessagingChild {
 
     /**
      * Set a message for this view.
+     *
      * @return true if setting the message worked
      */
-    default boolean setMessage(Notification.MessagingStyle.Message message) {
+    default boolean setMessage(Notification.MessagingStyle.Message message,
+            boolean usePrecomputedText) {
         getState().setMessage(message);
         return true;
     }
@@ -67,6 +71,10 @@ public interface MessagingMessage extends MessagingLinearLayout.MessagingChild {
 
     default boolean sameAs(Notification.MessagingStyle.Message message) {
         Notification.MessagingStyle.Message ownMessage = getMessage();
+        // We have to make sure both messages are not null to go further comparison
+        if (message == null || ownMessage == null) {
+            return message == ownMessage;
+        }
         if (!Objects.equals(message.getText(), ownMessage.getText())) {
             return false;
         }
@@ -96,8 +104,8 @@ public interface MessagingMessage extends MessagingLinearLayout.MessagingChild {
         return sameAs(message.getMessage());
     }
 
-    default void removeMessage() {
-        getGroup().removeMessage(this);
+    default void removeMessage(ArrayList<MessagingLinearLayout.MessagingChild> toRecycle) {
+        getGroup().removeMessage(this, toRecycle);
     }
 
     default void setMessagingGroup(MessagingGroup group) {
@@ -146,4 +154,10 @@ public interface MessagingMessage extends MessagingLinearLayout.MessagingChild {
     void setVisibility(int visibility);
 
     int getVisibility();
+
+    /**
+     * Finalize inflation of the MessagingMessages, which should be called on Main Thread.
+     * @hide
+     */
+    void finalizeInflate();
 }

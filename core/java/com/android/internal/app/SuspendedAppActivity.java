@@ -24,6 +24,7 @@ import static android.content.res.Resources.ID_NULL;
 
 import android.Manifest;
 import android.annotation.Nullable;
+import android.app.ActivityOptions;
 import android.app.AlertDialog;
 import android.app.AppGlobals;
 import android.app.KeyguardManager;
@@ -79,7 +80,8 @@ public class SuspendedAppActivity extends AlertActivity
                 // Suspension conditions were modified, dismiss any related visible dialogs.
                 final String[] modified = intent.getStringArrayExtra(
                         Intent.EXTRA_CHANGED_PACKAGE_LIST);
-                if (ArrayUtils.contains(modified, mSuspendedPackage)) {
+                if (ArrayUtils.contains(modified, mSuspendedPackage)
+                        && !isPackageSuspended(mSuspendedPackage)) {
                     if (!isFinishing()) {
                         Slog.w(TAG, "Package " + mSuspendedPackage + " has modified"
                                 + " suspension conditions while dialog was visible. Finishing.");
@@ -90,6 +92,15 @@ public class SuspendedAppActivity extends AlertActivity
             }
         }
     };
+
+    private boolean isPackageSuspended(String packageName) {
+        try {
+            return mPm.isPackageSuspended(packageName);
+        } catch (PackageManager.NameNotFoundException ne) {
+            Slog.e(TAG, "Package " + packageName + " not found", ne);
+        }
+        return false;
+    }
 
     private CharSequence getAppLabel(String packageName) {
         try {
@@ -219,8 +230,8 @@ public class SuspendedAppActivity extends AlertActivity
         }
         mSuspendedPackage = intent.getStringExtra(EXTRA_SUSPENDED_PACKAGE);
         mSuspendingPackage = intent.getStringExtra(EXTRA_SUSPENDING_PACKAGE);
-        mSuppliedDialogInfo = intent.getParcelableExtra(EXTRA_DIALOG_INFO);
-        mOnUnsuspend = intent.getParcelableExtra(EXTRA_UNSUSPEND_INTENT);
+        mSuppliedDialogInfo = intent.getParcelableExtra(EXTRA_DIALOG_INFO, android.content.pm.SuspendDialogInfo.class);
+        mOnUnsuspend = intent.getParcelableExtra(EXTRA_UNSUSPEND_INTENT, android.content.IntentSender.class);
         if (mSuppliedDialogInfo != null) {
             try {
                 mSuspendingAppResources = createContextAsUser(
@@ -314,8 +325,15 @@ public class SuspendedAppActivity extends AlertActivity
                         sendBroadcastAsUser(reportUnsuspend, UserHandle.of(mUserId));
 
                         if (mOnUnsuspend != null) {
+                            Bundle activityOptions =
+                                    ActivityOptions.makeBasic()
+                                            .setPendingIntentBackgroundActivityStartMode(
+                                                    ActivityOptions
+                                                            .MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                                            .toBundle();
                             try {
-                                mOnUnsuspend.sendIntent(this, 0, null, null, null);
+                                mOnUnsuspend.sendIntent(this, 0, null, null, null, null,
+                                        activityOptions);
                             } catch (IntentSender.SendIntentException e) {
                                 Slog.e(TAG, "Error while starting intent " + mOnUnsuspend, e);
                             }

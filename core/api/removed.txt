@@ -213,16 +213,6 @@ package android.hardware {
 
 }
 
-package android.location {
-
-  public class Location implements android.os.Parcelable {
-    method @Deprecated public void removeBearingAccuracy();
-    method @Deprecated public void removeSpeedAccuracy();
-    method @Deprecated public void removeVerticalAccuracy();
-  }
-
-}
-
 package android.media {
 
   public final class AudioFormat implements android.os.Parcelable {
@@ -258,6 +248,22 @@ package android.net {
 
   @Deprecated public class SSLCertificateSocketFactory extends javax.net.ssl.SSLSocketFactory {
     method @Deprecated public static org.apache.http.conn.ssl.SSLSocketFactory getHttpSocketFactory(int, android.net.SSLSessionCache);
+  }
+
+}
+
+package android.nfc {
+
+  public final class NfcAdapter {
+    method @Deprecated public void disableForegroundNdefPush(android.app.Activity);
+    method @Deprecated public void enableForegroundNdefPush(android.app.Activity, android.nfc.NdefMessage);
+    method @Deprecated public boolean invokeBeam(android.app.Activity);
+    method @Deprecated public boolean isNdefPushEnabled();
+    method @Deprecated public void setBeamPushUris(android.net.Uri[], android.app.Activity);
+    method @Deprecated public void setBeamPushUrisCallback(android.nfc.NfcAdapter.CreateBeamUrisCallback, android.app.Activity);
+    method @Deprecated public void setNdefPushMessage(android.nfc.NdefMessage, android.app.Activity, android.app.Activity...);
+    method @Deprecated public void setNdefPushMessageCallback(android.nfc.NfcAdapter.CreateNdefMessageCallback, android.app.Activity, android.app.Activity...);
+    method @Deprecated public void setOnNdefPushCompleteCallback(android.nfc.NfcAdapter.OnNdefPushCompleteCallback, android.app.Activity, android.app.Activity...);
   }
 
 }
@@ -535,6 +541,14 @@ package android.view {
 
 }
 
+package android.view.accessibility {
+
+  public static final class AccessibilityNodeInfo.CollectionItemInfo {
+    method @Deprecated @NonNull public static android.view.accessibility.AccessibilityNodeInfo.CollectionItemInfo obtain(@Nullable String, int, int, @Nullable String, int, int, boolean, boolean);
+  }
+
+}
+
 package android.view.translation {
 
   public final class TranslationManager {
@@ -573,6 +587,16 @@ package android.view.translation {
 }
 
 package android.webkit {
+
+  public class WebChromeClient {
+    method @Deprecated public void onReachedMaxAppCacheSize(long, long, android.webkit.WebStorage.QuotaUpdater);
+  }
+
+  public abstract class WebSettings {
+    method @Deprecated public void setAppCacheEnabled(boolean);
+    method @Deprecated public void setAppCacheMaxSize(long);
+    method @Deprecated public void setAppCachePath(String);
+  }
 
   public class WebViewClient {
     method public void onUnhandledInputEvent(android.webkit.WebView, android.view.InputEvent);

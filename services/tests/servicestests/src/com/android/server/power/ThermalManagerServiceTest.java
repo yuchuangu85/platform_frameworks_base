@@ -16,7 +16,10 @@
 
 package com.android.server.power;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -29,8 +32,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
-import android.hardware.thermal.V2_0.TemperatureThreshold;
-import android.hardware.thermal.V2_0.ThrottlingSeverity;
+import android.content.pm.PackageManager;
+import android.hardware.thermal.TemperatureThreshold;
+import android.hardware.thermal.ThrottlingSeverity;
 import android.os.CoolingDevice;
 import android.os.IBinder;
 import android.os.IPowerManager;
@@ -54,7 +58,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.io.FileDescriptor;
 import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -113,6 +119,7 @@ public class ThermalManagerServiceTest {
             skinThreshold.type = Temperature.TYPE_SKIN;
             skinThreshold.name = "skin1";
             skinThreshold.hotThrottlingThresholds = new float[7 /*ThrottlingSeverity#len*/];
+            skinThreshold.coldThrottlingThresholds = new float[7 /*ThrottlingSeverity#len*/];
             for (int i = 0; i < skinThreshold.hotThrottlingThresholds.length; ++i) {
                 // Sets NONE to 25.0f, SEVERE to 40.0f, and SHUTDOWN to 55.0f
                 skinThreshold.hotThrottlingThresholds[i] = 25.0f + 5.0f * i;
@@ -123,6 +130,7 @@ public class ThermalManagerServiceTest {
             cpuThreshold.type = Temperature.TYPE_CPU;
             cpuThreshold.name = "cpu";
             cpuThreshold.hotThrottlingThresholds = new float[7 /*ThrottlingSeverity#len*/];
+            cpuThreshold.coldThrottlingThresholds = new float[7 /*ThrottlingSeverity#len*/];
             for (int i = 0; i < cpuThreshold.hotThrottlingThresholds.length; ++i) {
                 if (i == ThrottlingSeverity.SEVERE) {
                     cpuThreshold.hotThrottlingThresholds[i] = 95.0f;
@@ -188,7 +196,8 @@ public class ThermalManagerServiceTest {
 
         @Override
         protected void dump(PrintWriter pw, String prefix) {
-            return;
+            pw.print(prefix);
+            pw.println("ThermalHAL AIDL 1  connected: yes");
         }
     }
 
@@ -380,6 +389,7 @@ public class ThermalManagerServiceTest {
         assertEquals(0, Arrays.asList(mService.mService.getCurrentTemperaturesWithType(
                         Temperature.TYPE_SKIN)).size());
         assertEquals(Temperature.THROTTLING_NONE, mService.mService.getCurrentThermalStatus());
+        assertTrue(Float.isNaN(mService.mService.getThermalHeadroom(0)));
     }
 
     @Test
@@ -393,6 +403,14 @@ public class ThermalManagerServiceTest {
                 mFakeHal.getCurrentCoolingDevices(true, CoolingDevice.TYPE_CPU),
                 Arrays.asList(mService.mService.getCurrentCoolingDevicesWithType(
                         CoolingDevice.TYPE_CPU)));
+    }
+
+    @Test
+    public void testGetThermalHeadroomInputRange() throws RemoteException {
+        assertTrue(Float.isNaN(mService.mService.getThermalHeadroom(
+                ThermalManagerService.MIN_FORECAST_SEC - 1)));
+        assertTrue(Float.isNaN(mService.mService.getThermalHeadroom(
+                ThermalManagerService.MAX_FORECAST_SEC + 1)));
     }
 
     @Test
@@ -456,5 +474,81 @@ public class ThermalManagerServiceTest {
         // If there are no thresholds, then we shouldn't receive a headroom value
         watcher.mSevereThresholds.erase();
         assertTrue(Float.isNaN(watcher.getForecast(0)));
+    }
+
+    @Test
+    public void testTemperatureWatcherGetForecastUpdate() throws Exception {
+        ThermalManagerService.TemperatureWatcher watcher = mService.mTemperatureWatcher;
+
+        // Reduce the inactivity threshold to speed up testing
+        watcher.mInactivityThresholdMillis = 2000;
+
+        // Make sure mSamples is empty before updateTemperature
+        assertTrue(isWatcherSamplesEmpty(watcher));
+
+        // Call getForecast once to trigger updateTemperature
+        watcher.getForecast(0);
+
+        // After 1 second, the samples should be updated
+        Thread.sleep(1000);
+        assertFalse(isWatcherSamplesEmpty(watcher));
+
+        // After mInactivityThresholdMillis, the samples should be cleared
+        Thread.sleep(watcher.mInactivityThresholdMillis);
+        assertTrue(isWatcherSamplesEmpty(watcher));
+    }
+
+    // Helper function to hold mSamples lock, avoid GuardedBy lint errors
+    private boolean isWatcherSamplesEmpty(ThermalManagerService.TemperatureWatcher watcher) {
+        synchronized (watcher.mSamples) {
+            return watcher.mSamples.isEmpty();
+        }
+    }
+
+    @Test
+    public void testDump() {
+        when(mContext.checkCallingOrSelfPermission(android.Manifest.permission.DUMP))
+                .thenReturn(PackageManager.PERMISSION_GRANTED);
+        final StringWriter out = new StringWriter();
+        PrintWriter pw = new PrintWriter(out);
+        mService.dumpInternal(new FileDescriptor(), pw, null);
+        final String dumpStr = out.toString();
+        assertThat(dumpStr).contains("IsStatusOverride: false");
+        assertThat(dumpStr).contains(
+                "ThermalEventListeners:\n"
+                        + "\tcallbacks: 2\n"
+                        + "\tkilled: false\n"
+                        + "\tbroadcasts count: -1");
+        assertThat(dumpStr).contains(
+                "ThermalStatusListeners:\n"
+                        + "\tcallbacks: 2\n"
+                        + "\tkilled: false\n"
+                        + "\tbroadcasts count: -1");
+        assertThat(dumpStr).contains("Thermal Status: 0");
+        assertThat(dumpStr).contains(
+                "Cached temperatures:\n"
+                + "\tTemperature{mValue=0.0, mType=4, mName=usbport, mStatus=0}\n"
+                + "\tTemperature{mValue=0.0, mType=2, mName=batt, mStatus=0}\n"
+                + "\tTemperature{mValue=0.0, mType=3, mName=skin1, mStatus=0}\n"
+                + "\tTemperature{mValue=0.0, mType=3, mName=skin2, mStatus=0}"
+        );
+        assertThat(dumpStr).contains("HAL Ready: true\n"
+                + "HAL connection:\n"
+                + "\tThermalHAL AIDL 1  connected: yes");
+        assertThat(dumpStr).contains("Current temperatures from HAL:\n"
+                + "\tTemperature{mValue=0.0, mType=3, mName=skin1, mStatus=0}\n"
+                + "\tTemperature{mValue=0.0, mType=3, mName=skin2, mStatus=0}\n"
+                + "\tTemperature{mValue=0.0, mType=2, mName=batt, mStatus=0}\n"
+                + "\tTemperature{mValue=0.0, mType=4, mName=usbport, mStatus=0}\n");
+        assertThat(dumpStr).contains("Current cooling devices from HAL:\n"
+                + "\tCoolingDevice{mValue=0, mType=1, mName=cpu}\n"
+                + "\tCoolingDevice{mValue=0, mType=1, mName=gpu}\n");
+        assertThat(dumpStr).contains("Temperature static thresholds from HAL:\n"
+                + "\tTemperatureThreshold{mType=3, mName=skin1, mHotThrottlingThresholds=[25.0, "
+                + "30.0, 35.0, 40.0, 45.0, 50.0, 55.0], mColdThrottlingThresholds=[0.0, 0.0, 0.0,"
+                + " 0.0, 0.0, 0.0, 0.0]}\n"
+                + "\tTemperatureThreshold{mType=0, mName=cpu, mHotThrottlingThresholds=[NaN, NaN,"
+                + " NaN, 95.0, NaN, NaN, NaN], mColdThrottlingThresholds=[0.0, 0.0, 0.0, 0.0, 0"
+                + ".0, 0.0, 0.0]}");
     }
 }

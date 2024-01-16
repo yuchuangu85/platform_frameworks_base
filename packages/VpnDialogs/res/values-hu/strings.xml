@@ -18,6 +18,7 @@
     xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
     <string name="prompt" msgid="3183836924226407828">"Kapcsolódási kérés"</string>
     <string name="warning" msgid="809658604548412033">"A(z) <xliff:g id="APP">%s</xliff:g> VPN kapcsolatot akar beállítani, amelynek segítségével figyelheti a hálózati forgalmat. Csak akkor fogadja el, ha megbízik a forrásban. &lt;br /&gt; &lt;br /&gt; Amikor a VPN aktív, &lt;img src=vpn_icon /&gt; ikon jelenik meg a képernyő tetején."</string>
+    <string name="warning" product="tv" msgid="5188957997628124947">"A(z) <xliff:g id="APP">%s</xliff:g> alkalmazás VPN-kapcsolatot szeretne beállítani, amely segítségével figyelheti a hálózati forgalmat. Csak akkor fogadja el, ha megbízik a forrásban. &lt;br /&gt; &lt;br /&gt; Amikor aktív a VPN, a következő ikon látható a képernyőn: &lt;img src=vpn_icon /&gt;."</string>
     <string name="legacy_title" msgid="192936250066580964">"A VPN csatlakoztatva van"</string>
     <string name="session" msgid="6470628549473641030">"Munkamenet:"</string>
     <string name="duration" msgid="3584782459928719435">"Időtartam:"</string>
@@ -33,4 +34,6 @@
     <string name="disconnect" msgid="971412338304200056">"Kapcsolat bontása"</string>
     <string name="open_app" msgid="3717639178595958667">"Alkalmazás indítása"</string>
     <string name="dismiss" msgid="6192859333764711227">"Bezárás"</string>
+    <string name="sanitized_vpn_label_with_ellipsis" msgid="7014327474633422235">"<xliff:g id="SANITIZED_VPN_LABEL_WITH_ELLIPSIS_0">%1$s</xliff:g>… ( <xliff:g id="SANITIZED_VPN_LABEL_WITH_ELLIPSIS_1">%2$s</xliff:g>)"</string>
+    <string name="sanitized_vpn_label" msgid="1877415015009794766">"<xliff:g id="SANITIZED_VPN_LABEL_0">%1$s</xliff:g> ( <xliff:g id="SANITIZED_VPN_LABEL_1">%2$s</xliff:g>)"</string>
 </resources>

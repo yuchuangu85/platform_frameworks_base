@@ -15,24 +15,34 @@
  */
 package android.content.pm;
 
+import static android.Manifest.permission.INTERACT_ACROSS_USERS;
+import static android.app.admin.DevicePolicyResources.Strings.Core.SWITCH_TO_PERSONAL_LABEL;
+import static android.app.admin.DevicePolicyResources.Strings.Core.SWITCH_TO_WORK_LABEL;
+import static android.content.pm.PackageManager.MATCH_DEFAULT_ONLY;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
+import android.annotation.UserHandleAware;
 import android.app.Activity;
+import android.app.ActivityOptions;
 import android.app.AppOpsManager.Mode;
+import android.app.admin.DevicePolicyManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
+import android.text.TextUtils;
 
 import com.android.internal.R;
 import com.android.internal.util.UserIcons;
@@ -100,7 +110,44 @@ public class CrossProfileApps {
                     mContext.getAttributionTag(),
                     component,
                     targetUser.getIdentifier(),
-                    true);
+                    true,
+                    mContext.getActivityToken(),
+                    ActivityOptions.makeBasic().toBundle());
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Starts the specified main activity of the caller package in the specified profile, launching
+     * in the specified activity.
+     *
+     * @param component The ComponentName of the activity to launch, it must be exported and has
+     *        action {@link android.content.Intent#ACTION_MAIN}, category
+     *        {@link android.content.Intent#CATEGORY_LAUNCHER}. Otherwise, SecurityException will
+     *        be thrown.
+     * @param targetUser The UserHandle of the profile, must be one of the users returned by
+     *        {@link #getTargetUserProfiles()}, otherwise a {@link SecurityException} will
+     *        be thrown.
+     * @param callingActivity The activity to start the new activity from for the purposes of
+     *        deciding which task the new activity should belong to. If {@code null}, the activity
+     *        will always be started in a new task.
+     * @param options The activity options or {@code null}. See {@link android.app.ActivityOptions}.
+     */
+    public void startMainActivity(@NonNull ComponentName component,
+            @NonNull UserHandle targetUser,
+            @Nullable Activity callingActivity,
+            @Nullable Bundle options) {
+        try {
+            mService.startActivityAsUser(
+                    mContext.getIApplicationThread(),
+                    mContext.getPackageName(),
+                    mContext.getAttributionTag(),
+                    component,
+                    targetUser.getIdentifier(),
+                    true,
+                    callingActivity != null ? callingActivity.getActivityToken() : null,
+                    options);
         } catch (RemoteException ex) {
             throw ex.rethrowFromSystemServer();
         }
@@ -126,7 +173,7 @@ public class CrossProfileApps {
      */
     @RequiresPermission(anyOf = {
             android.Manifest.permission.INTERACT_ACROSS_PROFILES,
-            android.Manifest.permission.INTERACT_ACROSS_USERS})
+            INTERACT_ACROSS_USERS})
     public void startActivity(
             @NonNull Intent intent,
             @NonNull UserHandle targetUser,
@@ -155,7 +202,7 @@ public class CrossProfileApps {
      */
     @RequiresPermission(anyOf = {
             android.Manifest.permission.INTERACT_ACROSS_PROFILES,
-            android.Manifest.permission.INTERACT_ACROSS_USERS})
+            INTERACT_ACROSS_USERS})
     public void startActivity(
             @NonNull Intent intent,
             @NonNull UserHandle targetUser,
@@ -180,6 +227,49 @@ public class CrossProfileApps {
      * {@link #startMainActivity}, this can start any activity of the caller package, not just
      * the main activity.
      * The caller must have the {@link android.Manifest.permission#INTERACT_ACROSS_PROFILES}
+     * or {@link android.Manifest.permission#START_CROSS_PROFILE_ACTIVITIES}
+     * permission and both the caller and target user profiles must be in the same profile group.
+     *
+     * @param component The ComponentName of the activity to launch. It must be exported.
+     * @param targetUser The UserHandle of the profile, must be one of the users returned by
+     *        {@link #getTargetUserProfiles()}, otherwise a {@link SecurityException} will
+     *        be thrown.
+     * @param callingActivity The activity to start the new activity from for the purposes of
+     *        deciding which task the new activity should belong to. If {@code null}, the activity
+     *        will always be started in a new task.
+     * @param options The activity options or {@code null}. See {@link android.app.ActivityOptions}.
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(anyOf = {
+            android.Manifest.permission.INTERACT_ACROSS_PROFILES,
+            android.Manifest.permission.START_CROSS_PROFILE_ACTIVITIES})
+    public void startActivity(
+            @NonNull ComponentName component,
+            @NonNull UserHandle targetUser,
+            @Nullable Activity callingActivity,
+            @Nullable Bundle options) {
+        try {
+            mService.startActivityAsUser(
+                    mContext.getIApplicationThread(),
+                    mContext.getPackageName(),
+                    mContext.getAttributionTag(),
+                    component,
+                    targetUser.getIdentifier(),
+                    false,
+                    callingActivity != null ? callingActivity.getActivityToken() : null,
+                    options);
+        } catch (RemoteException ex) {
+            throw ex.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Starts the specified activity of the caller package in the specified profile. Unlike
+     * {@link #startMainActivity}, this can start any activity of the caller package, not just
+     * the main activity.
+     * The caller must have the {@link android.Manifest.permission#INTERACT_ACROSS_PROFILES}
+     * or {@link android.Manifest.permission#START_CROSS_PROFILE_ACTIVITIES}
      * permission and both the caller and target user profiles must be in the same profile group.
      *
      * @param component The ComponentName of the activity to launch. It must be exported.
@@ -189,12 +279,14 @@ public class CrossProfileApps {
      * @hide
      */
     @SystemApi
-    @RequiresPermission(android.Manifest.permission.INTERACT_ACROSS_PROFILES)
+    @RequiresPermission(anyOf = {
+            android.Manifest.permission.INTERACT_ACROSS_PROFILES,
+            android.Manifest.permission.START_CROSS_PROFILE_ACTIVITIES})
     public void startActivity(@NonNull ComponentName component, @NonNull UserHandle targetUser) {
         try {
             mService.startActivityAsUser(mContext.getIApplicationThread(),
                     mContext.getPackageName(), mContext.getAttributionTag(), component,
-                    targetUser.getIdentifier(), false);
+                    targetUser.getIdentifier(), false, null, null);
         } catch (RemoteException ex) {
             throw ex.rethrowFromSystemServer();
         }
@@ -238,11 +330,51 @@ public class CrossProfileApps {
     public @NonNull CharSequence getProfileSwitchingLabel(@NonNull UserHandle userHandle) {
         verifyCanAccessUser(userHandle);
 
-        final int stringRes = mUserManager.isManagedProfile(userHandle.getIdentifier())
-                ? R.string.managed_profile_label
-                : R.string.user_owner_label;
-        return mResources.getString(stringRes);
+        final boolean isManagedProfile = mUserManager.isManagedProfile(userHandle.getIdentifier());
+        final DevicePolicyManager dpm = mContext.getSystemService(DevicePolicyManager.class);
+        final String callingAppLabel = getCallingApplicationLabel().toString();
+        return dpm.getResources().getString(
+                getUpdatableProfileSwitchingLabelId(isManagedProfile),
+                () -> getDefaultProfileSwitchingLabel(isManagedProfile, callingAppLabel),
+                callingAppLabel);
     }
+
+    private CharSequence getCallingApplicationLabel() {
+        PackageManager pm = mContext.getPackageManager();
+        // If there is a label for the launcher intent, then use that as it is typically shorter.
+        // Otherwise, just use the top-level application name.
+        Intent launchIntent = pm.getLaunchIntentForPackage(mContext.getPackageName());
+        if (launchIntent == null) {
+            return getDefaultCallingApplicationLabel();
+        }
+        List<ResolveInfo> infos =
+                pm.queryIntentActivities(
+                        launchIntent, PackageManager.ResolveInfoFlags.of(MATCH_DEFAULT_ONLY));
+        if (infos.size() > 0) {
+            return infos.get(0).loadLabel(pm);
+        }
+        return getDefaultCallingApplicationLabel();
+    }
+
+    private CharSequence getDefaultCallingApplicationLabel() {
+        return mContext.getApplicationInfo()
+                .loadSafeLabel(
+                        mContext.getPackageManager(),
+                        /* ellipsizeDip= */ 0,
+                        TextUtils.SAFE_STRING_FLAG_SINGLE_LINE
+                                | TextUtils.SAFE_STRING_FLAG_TRIM);
+    }
+
+    private String getUpdatableProfileSwitchingLabelId(boolean isManagedProfile) {
+        return isManagedProfile ? SWITCH_TO_WORK_LABEL : SWITCH_TO_PERSONAL_LABEL;
+    }
+
+    private String getDefaultProfileSwitchingLabel(boolean isManagedProfile, String label) {
+        final int stringRes = isManagedProfile
+                ? R.string.managed_profile_app_label : R.string.user_owner_app_label;
+        return mResources.getString(stringRes, label);
+    }
+
 
     /**
      * Return a drawable that calling app can show to user for the semantic of profile switching --
@@ -263,11 +395,20 @@ public class CrossProfileApps {
         final boolean isManagedProfile =
                 mUserManager.isManagedProfile(userHandle.getIdentifier());
         if (isManagedProfile) {
-            return mResources.getDrawable(R.drawable.ic_corp_badge, null);
-        } else {
-            return UserIcons.getDefaultUserIcon(
-                    mResources, UserHandle.USER_SYSTEM, true /* light */);
+            return mContext.getPackageManager().getUserBadgeForDensityNoBackground(
+                    userHandle, /* density= */ 0);
         }
+        Drawable personalProfileIcon = UserIcons.getDefaultUserIcon(
+                mResources, UserHandle.USER_SYSTEM,  /* light= */ true);
+        // Using the same colors as the managed profile icon.
+        int colorId = mContext.getResources().getConfiguration().isNightModeActive()
+                ? R.color.profile_badge_1_dark
+                : R.color.profile_badge_1;
+        // First set the color filter to null so that it does not override
+        // the tint.
+        personalProfileIcon.setColorFilter(null);
+        personalProfileIcon.setTint(mResources.getColor(colorId, /* theme= */ null));
+        return personalProfileIcon;
     }
 
     /**
@@ -401,10 +542,13 @@ public class CrossProfileApps {
      */
     @RequiresPermission(
             allOf={android.Manifest.permission.CONFIGURE_INTERACT_ACROSS_PROFILES,
-                    android.Manifest.permission.INTERACT_ACROSS_USERS})
+                    INTERACT_ACROSS_USERS})
+    @UserHandleAware(
+            enabledSinceTargetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            requiresPermissionIfNotCaller = INTERACT_ACROSS_USERS)
     public void setInteractAcrossProfilesAppOp(@NonNull String packageName, @Mode int newMode) {
         try {
-            mService.setInteractAcrossProfilesAppOp(packageName, newMode);
+            mService.setInteractAcrossProfilesAppOp(mContext.getUserId(), packageName, newMode);
         } catch (RemoteException ex) {
             throw ex.rethrowFromSystemServer();
         }
@@ -420,9 +564,12 @@ public class CrossProfileApps {
      * @hide
      */
     @TestApi
+    @UserHandleAware(
+            enabledSinceTargetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            requiresPermissionIfNotCaller = INTERACT_ACROSS_USERS)
     public boolean canConfigureInteractAcrossProfiles(@NonNull String packageName) {
         try {
-            return mService.canConfigureInteractAcrossProfiles(packageName);
+            return mService.canConfigureInteractAcrossProfiles(mContext.getUserId(), packageName);
         } catch (RemoteException ex) {
             throw ex.rethrowFromSystemServer();
         }
@@ -441,9 +588,13 @@ public class CrossProfileApps {
      *
      * @hide
      */
+    @UserHandleAware(
+            enabledSinceTargetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            requiresPermissionIfNotCaller = INTERACT_ACROSS_USERS)
     public boolean canUserAttemptToConfigureInteractAcrossProfiles(String packageName) {
         try {
-            return mService.canUserAttemptToConfigureInteractAcrossProfiles(packageName);
+            return mService.canUserAttemptToConfigureInteractAcrossProfiles(
+                    mContext.getUserId(), packageName);
         } catch (RemoteException ex) {
             throw ex.rethrowFromSystemServer();
         }
@@ -470,7 +621,10 @@ public class CrossProfileApps {
      */
     @RequiresPermission(
             allOf={android.Manifest.permission.CONFIGURE_INTERACT_ACROSS_PROFILES,
-                    android.Manifest.permission.INTERACT_ACROSS_USERS})
+                    INTERACT_ACROSS_USERS})
+    @UserHandleAware(
+            enabledSinceTargetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            requiresPermissionIfNotCaller = INTERACT_ACROSS_USERS)
     public void resetInteractAcrossProfilesAppOps(
             @NonNull Collection<String> previousCrossProfilePackages,
             @NonNull Set<String> newCrossProfilePackages) {
@@ -485,7 +639,8 @@ public class CrossProfileApps {
             return;
         }
         try {
-            mService.resetInteractAcrossProfilesAppOps(unsetCrossProfilePackages);
+            mService.resetInteractAcrossProfilesAppOps(
+                    mContext.getUserId(), unsetCrossProfilePackages);
         } catch (RemoteException ex) {
             throw ex.rethrowFromSystemServer();
         }
@@ -510,10 +665,13 @@ public class CrossProfileApps {
      */
     @RequiresPermission(
             allOf={android.Manifest.permission.CONFIGURE_INTERACT_ACROSS_PROFILES,
-                    android.Manifest.permission.INTERACT_ACROSS_USERS})
+                    INTERACT_ACROSS_USERS})
+    @UserHandleAware(
+            enabledSinceTargetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            requiresPermissionIfNotCaller = INTERACT_ACROSS_USERS)
     public void clearInteractAcrossProfilesAppOps() {
         try {
-            mService.clearInteractAcrossProfilesAppOps();
+            mService.clearInteractAcrossProfilesAppOps(mContext.getUserId());
         } catch (RemoteException ex) {
             throw ex.rethrowFromSystemServer();
         }

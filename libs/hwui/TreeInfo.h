@@ -100,6 +100,8 @@ public:
 
     int stretchEffectCount = 0;
 
+    bool forceDrawFrame = false;
+
     struct Out {
         bool hasFunctors = false;
         // This is only updated if evaluateAnimations is true
@@ -121,6 +123,10 @@ public:
         // This is used to post a message to redraw when it is time to draw the
         // next frame of an AnimatedImageDrawable.
         nsecs_t animatedImageDelay = kNoAnimatedImageDelay;
+        // This is used to determine if there were only TextureView updates in this frame.
+        // This info is passed to SurfaceFlinger to determine whether it should use vsyncIds
+        // for refresh rate selection.
+        bool solelyTextureViewUpdates = true;
     } out;
 
     // This flag helps to disable projection for receiver nodes that do not have any backward

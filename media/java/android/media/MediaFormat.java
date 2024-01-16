@@ -174,6 +174,76 @@ public final class MediaFormat {
     public static final String MIMETYPE_AUDIO_MPEGH_MHA1 = "audio/mha1";
     /** MIME type for MPEG-H Audio single stream, encapsulated in MHAS */
     public static final String MIMETYPE_AUDIO_MPEGH_MHM1 = "audio/mhm1";
+    /** MIME type for DTS Digital Surround (up to 5.1 channels) audio stream, aka DTS-CA. */
+    public static final String MIMETYPE_AUDIO_DTS = "audio/vnd.dts";
+    /**
+     * MIME type for DTS HD (up to 7.1 channels) audio stream.
+     * With codec profile DTS_HDProfileHRA represents DTS HD High Resolution Audio.
+     * With codec profile DTS_HDProfileMA represents DTS HD Master Audio.
+     * With codec profile DTS_HDProfileLBR represents DTS Express.
+     */
+    public static final String MIMETYPE_AUDIO_DTS_HD = "audio/vnd.dts.hd";
+    /**
+     * MIME type for DTS UHD (object-based) audio stream, aka DTS:X.
+     * With codec profile DTS_UHDProfileP1 represents DTS-UHD P1.
+     * With codec profile DTS_UHDProfileP2 represents DTS-UHD P2.
+     */
+    public static final String MIMETYPE_AUDIO_DTS_UHD = "audio/vnd.dts.uhd";
+    /** MIME type for Dynamic Resolution Adaptation (DRA) audio stream. */
+    public static final String MIMETYPE_AUDIO_DRA = "audio/vnd.dra";
+    /** MIME type for Dolby Metadata-enhanced Audio Transmission (MAT) audio stream. */
+    public static final String MIMETYPE_AUDIO_DOLBY_MAT = "audio/vnd.dolby.mat";
+    /** MIME type for Dolby TrueHD audio format, based on Meridian Lossless Packing (MLP). */
+    public static final String MIMETYPE_AUDIO_DOLBY_TRUEHD = "audio/vnd.dolby.mlp";
+    /**
+     * MIME type for AAC Low Complexity (LC) audio stream. Uses the scheme defined by
+     * RFC 6381 with OTI of MPEG-4 (40) and AOT of AAC LC (2) from ISO/IEC 14496-3.
+     */
+    public static final String MIMETYPE_AUDIO_AAC_LC = "audio/mp4a.40.02";
+    /**
+     * MIME type for HE-AAC v1 (LC + SBR) audio stream. Uses the scheme defined by
+     * RFC 6381 with OTI of MPEG-4 (40) and AOT of AAC SBR (5) from ISO/IEC 14496-3.
+     */
+    public static final String MIMETYPE_AUDIO_AAC_HE_V1 = "audio/mp4a.40.05";
+    /**
+     * MIME type for HE-AAC v2 (LC + SBR + PS) audio stream. Uses the scheme defined by
+     * RFC 6381 with OTI of MPEG-4 (40) and AOT of PS (29) from ISO/IEC 14496-3.
+     */
+    public static final String MIMETYPE_AUDIO_AAC_HE_V2 = "audio/mp4a.40.29";
+    /**
+     * MIME type for AAC Enhanced Low Delay (ELD) audio stream. Uses the scheme defined by
+     * RFC 6381 with OTI of MPEG-4 (40) and AOT of ELD (39) from ISO/IEC 14496-3.
+     */
+    public static final String MIMETYPE_AUDIO_AAC_ELD = "audio/mp4a.40.39";
+    /**
+     * MIME type for AAC XHE audio stream. Uses the scheme defined by
+     * RFC 6381 with OTI of MPEG-4 (40) and AOT of USAC (42) from ISO/IEC 14496-3.
+     */
+    public static final String MIMETYPE_AUDIO_AAC_XHE = "audio/mp4a.40.42";
+    /**
+     * MIME type for MPEG-H Baseline (BL) Profile L3 audio stream. Uses the scheme defined by
+     * RFC 6381 with mpegh3daProfileLevelIndication for main profile/L3 (0x3) from ISO/IEC 23008-3.
+     */
+    public static final String MIMETYPE_AUDIO_MPEGH_BL_L3 = "audio/mhm1.03";
+    /**
+     * MIME type for MPEG-H Baseline (BL) Profile L4 audio stream. Uses the scheme defined by
+     * RFC 6381 with mpegh3daProfileLevelIndication for main profile/L4 (0x4) from ISO/IEC 23008-3.
+     */
+    public static final String MIMETYPE_AUDIO_MPEGH_BL_L4 = "audio/mhm1.04";
+    /**
+     * MIME type for MPEG-H Low Complexity (LC) L3 audio stream. Uses the scheme defined by
+     * RFC 6381 with mpegh3daProfileLevelIndication for LC profile/L3 (0xD) from ISO/IEC 23008-3.
+     */
+    public static final String MIMETYPE_AUDIO_MPEGH_LC_L3 = "audio/mhm1.0d";
+    /**
+     * MIME type for MPEG-H Low Complexity (LC) L4 audio stream. Uses the scheme defined by
+     * RFC 6381 with mpegh3daProfileLevelIndication for LC profile/L4 (0xE) from ISO/IEC 23008-3.
+     */
+    public static final String MIMETYPE_AUDIO_MPEGH_LC_L4 = "audio/mhm1.0e";
+    /**
+     * MIME type for the IEC61937 audio stream encapsulation. This type isn't defined by IANA.
+     */
+    public static final String MIMETYPE_AUDIO_IEC61937 = "audio/x-iec61937";
 
     /**
      * MIME type for HEIF still image data encoded in HEVC.
@@ -181,13 +251,14 @@ public final class MediaFormat {
      * To decode such an image, {@link MediaCodec} decoder for
      * {@link #MIMETYPE_VIDEO_HEVC} shall be used. The client needs to form
      * the correct {@link #MediaFormat} based on additional information in
-     * the track format, and send it to {@link MediaCodec#configure}.
+     * the track format (shown in the next paragraph), and send it to
+     * {@link MediaCodec#configure}.
      *
      * The track's MediaFormat will come with {@link #KEY_WIDTH} and
      * {@link #KEY_HEIGHT} keys, which describes the width and height
      * of the image. If the image doesn't contain grid (i.e. none of
      * {@link #KEY_TILE_WIDTH}, {@link #KEY_TILE_HEIGHT},
-     * {@link #KEY_GRID_ROWS}, {@link #KEY_GRID_COLUMNS} are present}), the
+     * {@link #KEY_GRID_ROWS}, {@link #KEY_GRID_COLUMNS} are present), the
      * track will contain a single sample of coded data for the entire image,
      * and the image width and height should be used to set up the decoder.
      *
@@ -203,6 +274,36 @@ public final class MediaFormat {
      * side, if the tiled area is larger than the image width and height.
      */
     public static final String MIMETYPE_IMAGE_ANDROID_HEIC = "image/vnd.android.heic";
+
+    /**
+     * MIME type for AVIF still image data encoded in AV1.
+     *
+     * To decode such an image, {@link MediaCodec} decoder for
+     * {@link #MIMETYPE_VIDEO_AV1} shall be used. The client needs to form
+     * the correct {@link #MediaFormat} based on additional information in
+     * the track format (shown in the next paragraph), and send it to
+     * {@link MediaCodec#configure}.
+     *
+     * The track's MediaFormat will come with {@link #KEY_WIDTH} and
+     * {@link #KEY_HEIGHT} keys, which describes the width and height
+     * of the image. If the image doesn't contain grid (i.e. none of
+     * {@link #KEY_TILE_WIDTH}, {@link #KEY_TILE_HEIGHT},
+     * {@link #KEY_GRID_ROWS}, {@link #KEY_GRID_COLUMNS} are present), the
+     * track will contain a single sample of coded data for the entire image,
+     * and the image width and height should be used to set up the decoder.
+     *
+     * If the image does come with grid, each sample from the track will
+     * contain one tile in the grid, of which the size is described by
+     * {@link #KEY_TILE_WIDTH} and {@link #KEY_TILE_HEIGHT}. This size
+     * (instead of {@link #KEY_WIDTH} and {@link #KEY_HEIGHT}) should be
+     * used to set up the decoder. The track contains {@link #KEY_GRID_ROWS}
+     * by {@link #KEY_GRID_COLUMNS} samples in row-major, top-row first,
+     * left-to-right order. The output image should be reconstructed by
+     * first tiling the decoding results of the tiles in the correct order,
+     * then trimming (before rotation is applied) on the bottom and right
+     * side, if the tiled area is larger than the image width and height.
+     */
+    public static final String MIMETYPE_IMAGE_AVIF = "image/avif";
 
     /**
      * MIME type for WebVTT subtitle data.
@@ -230,9 +331,10 @@ public final class MediaFormat {
     /**
      * A key describing the log session ID for MediaCodec. The log session ID is a random 32-byte
      * hexadecimal string that is used to associate metrics from multiple media codec instances
-     * to the same playback or recording session.
+     * to the same playback or recording session. The value is created as
+     * {@link android.media.metrics.LogSessionId LogSessionId}. Sessions are created in
+     * {@link android.media.metrics.MediaMetricsManager MediaMetricsManager}.
      * The associated value is a string.
-     * @hide
      */
     public static final String LOG_SESSION_ID = "log-session-id";
 
@@ -298,6 +400,42 @@ public final class MediaFormat {
     public static final String KEY_HEIGHT = "height";
 
     /**
+     * A key describing the bottom-coordinate (y) of the crop rectangle.
+     * This is the bottom-most row included in the crop frame,
+     * where row indices start at 0.
+     * Additional information on the crop rectangle semantics can be found at
+     * {@link android.media.MediaCodec}.
+     */
+    public static final String KEY_CROP_BOTTOM = "crop-bottom";
+
+    /**
+     * A key describing the left-coordinate (x) of the crop rectangle.
+     * This is the left-most column included in the crop frame,
+     * where column indices start at 0.
+     * Additional information on the crop rectangle semantics can be found at
+     * {@link android.media.MediaCodec}.
+     */
+    public static final String KEY_CROP_LEFT = "crop-left";
+
+    /**
+     * A key describing the right-coordinate (x) of the crop rectangle.
+     * This is the right-most column included in the crop frame,
+     * where column indices start at 0.
+     * Additional information on the crop rectangle semantics can be found at
+     * {@link android.media.MediaCodec}.
+     */
+    public static final String KEY_CROP_RIGHT = "crop-right";
+
+    /**
+     * A key describing the top-coordinate (y) of the crop rectangle.
+     * This is the top-most row included in the crop frame,
+     * where row indices start at 0.
+     * Additional information on the crop rectangle semantics can be found at
+     * {@link android.media.MediaCodec}.
+     */
+    public static final String KEY_CROP_TOP = "crop-top";
+
+    /**
      * A key describing the maximum expected width of the content in a video
      * decoder format, in case there are resolution changes in the video content.
      * The associated value is an integer
@@ -359,17 +497,27 @@ public final class MediaFormat {
 
     /**
      * A key describing the frame rate of a video format in frames/sec.
+     * <p>
      * The associated value is normally an integer when the value is used by the platform,
      * but video codecs also accept float configuration values.
      * Specifically, {@link MediaExtractor#getTrackFormat MediaExtractor} provides an integer
      * value corresponding to the frame rate information of the track if specified and non-zero.
      * Otherwise, this key is not present. {@link MediaCodec#configure MediaCodec} accepts both
-     * float and integer values. This represents the desired operating frame rate if the
+     * float and integer values.
+     * <p>
+     * This represents the desired operating frame rate if the
      * {@link #KEY_OPERATING_RATE} is not present and {@link #KEY_PRIORITY} is {@code 0}
-     * (realtime). For video encoders this value corresponds to the intended frame rate,
-     * although encoders are expected
-     * to support variable frame rate based on {@link MediaCodec.BufferInfo#presentationTimeUs
-     * buffer timestamp}. This key is not used in the {@code MediaCodec}
+     * (realtime). Otherwise, this is just informational.
+     * <p>
+     * For video encoders this value corresponds to the intended frame rate (the rate at which
+     * the application intends to send frames to the encoder, as calculated by the buffer
+     * timestamps, and not from the actual real-time rate that the frames are sent to
+     * the encoder). Encoders use this hint for rate control, specifically for the initial
+     * frames, as encoders are expected to support variable frame rate (for rate control) based
+     * on the actual {@link MediaCodec.BufferInfo#presentationTimeUs buffer timestamps} of
+     * subsequent frames.
+     * <p>
+     * This key is not used in the {@code MediaCodec}
      * {@link MediaCodec#getInputFormat input}/{@link MediaCodec#getOutputFormat output} formats,
      * nor by {@link MediaMuxer#addTrack MediaMuxer}.
      */
@@ -377,9 +525,11 @@ public final class MediaFormat {
 
     /**
      * A key describing the width (in pixels) of each tile of the content in a
-     * {@link #MIMETYPE_IMAGE_ANDROID_HEIC} track. The associated value is an integer.
+     * {@link #MIMETYPE_IMAGE_ANDROID_HEIC} / {@link #MIMETYPE_IMAGE_AVIF} track.
+     * The associated value is an integer.
      *
-     * Refer to {@link #MIMETYPE_IMAGE_ANDROID_HEIC} on decoding instructions of such tracks.
+     * Refer to {@link #MIMETYPE_IMAGE_ANDROID_HEIC} / {@link #MIMETYPE_IMAGE_AVIF} on decoding
+     * instructions of such tracks.
      *
      * @see #KEY_TILE_HEIGHT
      * @see #KEY_GRID_ROWS
@@ -389,9 +539,11 @@ public final class MediaFormat {
 
     /**
      * A key describing the height (in pixels) of each tile of the content in a
-     * {@link #MIMETYPE_IMAGE_ANDROID_HEIC} track. The associated value is an integer.
+     * {@link #MIMETYPE_IMAGE_ANDROID_HEIC} / {@link #MIMETYPE_IMAGE_AVIF} track.
+     * The associated value is an integer.
      *
-     * Refer to {@link #MIMETYPE_IMAGE_ANDROID_HEIC} on decoding instructions of such tracks.
+     * Refer to {@link #MIMETYPE_IMAGE_ANDROID_HEIC} / {@link #MIMETYPE_IMAGE_AVIF} on decoding
+     * instructions of such tracks.
      *
      * @see #KEY_TILE_WIDTH
      * @see #KEY_GRID_ROWS
@@ -401,9 +553,11 @@ public final class MediaFormat {
 
     /**
      * A key describing the number of grid rows in the content in a
-     * {@link #MIMETYPE_IMAGE_ANDROID_HEIC} track. The associated value is an integer.
+     * {@link #MIMETYPE_IMAGE_ANDROID_HEIC} / {@link #MIMETYPE_IMAGE_AVIF} track.
+     * The associated value is an integer.
      *
-     * Refer to {@link #MIMETYPE_IMAGE_ANDROID_HEIC} on decoding instructions of such tracks.
+     * Refer to {@link #MIMETYPE_IMAGE_ANDROID_HEIC} / {@link #MIMETYPE_IMAGE_AVIF} on decoding
+     * instructions of such tracks.
      *
      * @see #KEY_TILE_WIDTH
      * @see #KEY_TILE_HEIGHT
@@ -413,9 +567,11 @@ public final class MediaFormat {
 
     /**
      * A key describing the number of grid columns in the content in a
-     * {@link #MIMETYPE_IMAGE_ANDROID_HEIC} track. The associated value is an integer.
+     * {@link #MIMETYPE_IMAGE_ANDROID_HEIC} / {@link #MIMETYPE_IMAGE_AVIF} track.
+     * The associated value is an integer.
      *
-     * Refer to {@link #MIMETYPE_IMAGE_ANDROID_HEIC} on decoding instructions of such tracks.
+     * Refer to {@link #MIMETYPE_IMAGE_ANDROID_HEIC} / {@link #MIMETYPE_IMAGE_AVIF} on decoding
+     * instructions of such tracks.
      *
      * @see #KEY_TILE_WIDTH
      * @see #KEY_TILE_HEIGHT
@@ -732,8 +888,11 @@ public final class MediaFormat {
      * By default, the decoder will output the same number of channels as present in the encoded
      * stream, if supported. Set this value to limit the number of output channels, and use
      * the downmix information in the stream, if available.
-     * <p>Values larger than the number of channels in the content to decode are ignored.
+     * <p>Values larger than the number of channels in the content to decode behave just
+     * like the actual channel count of the content (e.g. passing 99 for the decoding of 5.1 content
+     * will behave like using 6).
      * <p>This key is only used during decoding.
+     * @deprecated Use the non-AAC-specific key {@link #KEY_MAX_OUTPUT_CHANNEL_COUNT} instead
      */
     public static final String KEY_AAC_MAX_OUTPUT_CHANNEL_COUNT = "aac-max-output-channel_count";
 
@@ -969,11 +1128,23 @@ public final class MediaFormat {
 
     /**
      * A key describing the desired profile to be used by an encoder.
+     * <p>
      * The associated value is an integer.
      * Constants are declared in {@link MediaCodecInfo.CodecProfileLevel}.
      * This key is used as a hint, and is only supported for codecs
-     * that specify a profile. Note: Codecs are free to use all the available
-     * coding tools at the specified profile.
+     * that specify a profile. When configuring profile, encoder configuration
+     * may fail if other parameters are not compatible with the desired
+     * profile or if the desired profile is not supported, but it may also
+     * fail silently (where the encoder ends up using a different, compatible profile.)
+     * <p>
+     * It is recommended that the profile is set for all encoders. For more information, see
+     * the <i>Encoder Profiles</i> section of the {@link MediaCodec} API reference.
+     * <p class="note">
+     * <strong>Note:</strong> Codecs are free to use all the available
+     * coding tools at the specified profile, but may ultimately choose to not do so.
+     * <p class="note">
+     * <strong>Note:</strong> When configuring video encoders, profile (if set) must be
+     * set together with {@link #KEY_LEVEL level}.
      *
      * @see MediaCodecInfo.CodecCapabilities#profileLevels
      */
@@ -981,12 +1152,22 @@ public final class MediaFormat {
 
     /**
      * A key describing the desired profile to be used by an encoder.
+     * <p>
      * The associated value is an integer.
      * Constants are declared in {@link MediaCodecInfo.CodecProfileLevel}.
      * This key is used as a further hint when specifying a desired profile,
      * and is only supported for codecs that specify a level.
      * <p>
      * This key is ignored if the {@link #KEY_PROFILE profile} is not specified.
+     * Otherwise, the value should be a level compatible with the configured encoding
+     * parameters.
+     * <p class="note">
+     * <strong>Note:</strong> This key cannot be used to constrain the encoder's
+     * output to a maximum encoding level. Encoders are free to target a different
+     * level if the configured encoding parameters dictate it. Nevertheless,
+     * encoders shall use (and encode) a level sufficient to decode the generated
+     * bitstream, though they may exceed the (Video) Buffering Verifier limits for
+     * that encoded level.
      *
      * @see MediaCodecInfo.CodecCapabilities#profileLevels
      */
@@ -1032,7 +1213,7 @@ public final class MediaFormat {
 
     /**
      * A key describing the desired bitrate mode to be used by an encoder.
-     * Constants are declared in {@link MediaCodecInfo.CodecCapabilities}.
+     * Constants are declared in {@link MediaCodecInfo.EncoderCapabilities}.
      *
      * @see MediaCodecInfo.EncoderCapabilities#isBitrateModeSupported(int)
      */
@@ -1147,7 +1328,7 @@ public final class MediaFormat {
      * A key describing the per-frame average block QP (Quantization Parameter).
      * This is a part of a video 'Encoding Statistics' export feature.
      * This value is emitted from video encoder for a video frame.
-     * The average value is rounded down (using floor()) to integer value.
+     * The average value is rounded to the nearest integer value.
      *
      * The associated value is an integer.
      */
@@ -1220,9 +1401,9 @@ public final class MediaFormat {
      * selected in the absence of a specific user choice.
      * This is currently used in two scenarios:
      * 1) for subtitle tracks, when the user selected 'Default' for the captioning locale.
-     * 2) for a {@link #MIMETYPE_IMAGE_ANDROID_HEIC} track, indicating the image is the
-     * primary item in the file.
-
+     * 2) for a {@link #MIMETYPE_IMAGE_ANDROID_HEIC} / {@link #MIMETYPE_IMAGE_AVIF} track,
+     * indicating the image is the primary item in the file.
+     *
      * The associated value is an integer, where non-0 means TRUE.  This is an optional
      * field; if not specified, DEFAULT is considered to be FALSE.
      */

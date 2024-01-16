@@ -19,6 +19,7 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
+import android.content.pm.PackageManager;
 import android.os.Parcel;
 import android.os.Parcelable;
 
@@ -128,7 +129,7 @@ public class UiccSlotInfo implements Parcelable {
         this.mLogicalSlotIdx = logicalSlotIdx;
         this.mIsExtendedApduSupported = isExtendedApduSupported;
         this.mIsRemovable = false;
-        this.mPortList = null;
+        this.mPortList = new ArrayList<UiccPortInfo>();
     }
 
     /**
@@ -138,14 +139,16 @@ public class UiccSlotInfo implements Parcelable {
     public UiccSlotInfo(boolean isEuicc, String cardId,
             @CardStateInfo int cardStateInfo, boolean isExtendedApduSupported,
             boolean isRemovable, @NonNull List<UiccPortInfo> portList) {
-        this.mIsActive = portList.get(0).isActive();
         this.mIsEuicc = isEuicc;
         this.mCardId = cardId;
         this.mCardStateInfo = cardStateInfo;
-        this.mLogicalSlotIdx = portList.get(0).getLogicalSlotIndex();
         this.mIsExtendedApduSupported = isExtendedApduSupported;
         this.mIsRemovable = isRemovable;
         this.mPortList = portList;
+        this.mIsActive = !portList.isEmpty() && portList.get(0).isActive();
+        this.mLogicalSlotIdx = portList.isEmpty()
+                ? SubscriptionManager.INVALID_PHONE_INDEX
+                : portList.get(0).getLogicalSlotIndex();
     }
 
     /**
@@ -160,10 +163,10 @@ public class UiccSlotInfo implements Parcelable {
     @Deprecated
     public boolean getIsActive() {
         if (mLogicalSlotAccessRestricted) {
-            throw new UnsupportedOperationException("get port status from UiccPortInfo");
+            throw new UnsupportedOperationException("getIsActive() is not supported by "
+            + "UiccSlotInfo. Please Use UiccPortInfo API instead");
         }
-        //always return status from first port.
-        return getPorts().stream().findFirst().get().isActive();
+        return mIsActive;
     }
 
     public boolean getIsEuicc() {
@@ -197,11 +200,10 @@ public class UiccSlotInfo implements Parcelable {
     @Deprecated
     public int getLogicalSlotIdx() {
         if (mLogicalSlotAccessRestricted) {
-            throw new UnsupportedOperationException("get logical slot index from UiccPortInfo");
+            throw new UnsupportedOperationException("getLogicalSlotIdx() is not supported by "
+                + "UiccSlotInfo. Please use UiccPortInfo API instead");
         }
-        //always return logical slot index from first port.
-        //portList always have at least one element.
-        return getPorts().stream().findFirst().get().getLogicalSlotIndex();
+        return mLogicalSlotIdx;
     }
 
     /**
@@ -224,6 +226,9 @@ public class UiccSlotInfo implements Parcelable {
 
     /**
      * Get Information regarding port, iccid and its active status.
+     *
+     * For device which support {@link PackageManager#FEATURE_TELEPHONY_EUICC_MEP}, it should return
+     * more than one {@link UiccPortInfo} object if the card is eUICC.
      *
      * @return Collection of {@link UiccPortInfo}
      */
@@ -271,16 +276,13 @@ public class UiccSlotInfo implements Parcelable {
     @NonNull
     @Override
     public String toString() {
-        return "UiccSlotInfo (mIsActive="
-                + mIsActive
+        return "UiccSlotInfo ("
                 + ", mIsEuicc="
                 + mIsEuicc
                 + ", mCardId="
-                + mCardId
+                + SubscriptionInfo.getPrintableId(mCardId)
                 + ", cardState="
                 + mCardStateInfo
-                + ", phoneId="
-                + mLogicalSlotIdx
                 + ", mIsExtendedApduSupported="
                 + mIsExtendedApduSupported
                 + ", mIsRemovable="

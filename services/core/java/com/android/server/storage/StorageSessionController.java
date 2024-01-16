@@ -19,6 +19,7 @@ package com.android.server.storage;
 import android.Manifest;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
+import android.app.ApplicationExitInfo;
 import android.app.IActivityManager;
 import android.content.ComponentName;
 import android.content.Context;
@@ -260,16 +261,11 @@ public final class StorageSessionController {
     }
 
     /**
-     * Restarts all sessions for {@code userId}.
-     *
-     * Does nothing if {@link #shouldHandle} is {@code false}
-     *
-     * This call blocks and waits for all sessions to be started, however any failures when starting
-     * a session will be ignored.
+     * Makes sure we initialize the ExternalStorageService component.
      */
     public void onUnlockUser(int userId) throws ExternalStorageServiceException {
         Slog.i(TAG, "On user unlock " + userId);
-        if (shouldHandle(null) && userId == 0) {
+        if (userId == 0) {
             initExternalStorageServiceComponent();
         }
     }
@@ -368,16 +364,12 @@ public final class StorageSessionController {
         mExternalStorageServicePackageName = provider.applicationInfo.packageName;
         mExternalStorageServiceAppId = UserHandle.getAppId(provider.applicationInfo.uid);
 
-        Intent intent = new Intent(ExternalStorageService.SERVICE_INTERFACE);
-        intent.setPackage(mExternalStorageServicePackageName);
-        ResolveInfo resolveInfo = mContext.getPackageManager().resolveService(intent,
-                PackageManager.GET_SERVICES | PackageManager.GET_META_DATA);
-        if (resolveInfo == null || resolveInfo.serviceInfo == null) {
+        ServiceInfo serviceInfo = resolveExternalStorageServiceAsUser(UserHandle.USER_SYSTEM);
+        if (serviceInfo == null) {
             throw new ExternalStorageServiceException(
                     "No valid ExternalStorageService component found");
         }
 
-        ServiceInfo serviceInfo = resolveInfo.serviceInfo;
         ComponentName name = new ComponentName(serviceInfo.packageName, serviceInfo.name);
         if (!Manifest.permission.BIND_EXTERNAL_STORAGE_SERVICE
                 .equals(serviceInfo.permission)) {
@@ -453,7 +445,7 @@ public final class StorageSessionController {
         IActivityManager am = ActivityManager.getService();
         try {
             am.killApplication(mExternalStorageServicePackageName, mExternalStorageServiceAppId,
-                    userId, "storage_session_controller reset");
+                    userId, "storage_session_controller reset", ApplicationExitInfo.REASON_OTHER);
         } catch (RemoteException e) {
             Slog.i(TAG, "Failed to kill the ExtenalStorageService for user " + userId);
         }
@@ -489,5 +481,25 @@ public final class StorageSessionController {
 
     private boolean shouldHandle(@Nullable VolumeInfo vol) {
         return !mIsResetting && (vol == null || isSupportedVolume(vol));
+    }
+
+    /**
+     * Returns {@code true} if the given user supports external storage,
+     * {@code false} otherwise.
+     */
+    public boolean supportsExternalStorage(int userId) {
+        return resolveExternalStorageServiceAsUser(userId) != null;
+    }
+
+    private ServiceInfo resolveExternalStorageServiceAsUser(int userId) {
+        Intent intent = new Intent(ExternalStorageService.SERVICE_INTERFACE);
+        intent.setPackage(mExternalStorageServicePackageName);
+        ResolveInfo resolveInfo = mContext.getPackageManager().resolveServiceAsUser(intent,
+                PackageManager.GET_SERVICES | PackageManager.GET_META_DATA, userId);
+        if (resolveInfo == null) {
+            return null;
+        }
+
+        return resolveInfo.serviceInfo;
     }
 }

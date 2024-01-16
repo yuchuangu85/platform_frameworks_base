@@ -16,46 +16,107 @@
 
 package com.android.keyguard;
 
-import android.graphics.Rect;
-import android.util.Slog;
+import static androidx.constraintlayout.widget.ConstraintSet.END;
+import static androidx.constraintlayout.widget.ConstraintSet.PARENT_ID;
 
+import static com.android.internal.jank.InteractionJankMonitor.CUJ_LOCKSCREEN_CLOCK_MOVE_ANIMATION;
+import static com.android.systemui.util.kotlin.JavaAdapterKt.collectFlow;
+
+import android.animation.Animator;
+import android.animation.ValueAnimator;
+import android.annotation.Nullable;
+import android.content.res.Configuration;
+import android.graphics.Rect;
+import android.transition.ChangeBounds;
+import android.transition.Transition;
+import android.transition.TransitionListenerAdapter;
+import android.transition.TransitionManager;
+import android.transition.TransitionSet;
+import android.transition.TransitionValues;
+import android.util.Slog;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.VisibleForTesting;
+import androidx.constraintlayout.widget.ConstraintLayout;
+import androidx.constraintlayout.widget.ConstraintSet;
+import androidx.viewpager.widget.ViewPager;
+
+import com.android.app.animation.Interpolators;
+import com.android.internal.jank.InteractionJankMonitor;
 import com.android.keyguard.KeyguardClockSwitch.ClockSize;
-import com.android.systemui.keyguard.KeyguardUnlockAnimationController;
-import com.android.systemui.shared.system.smartspace.SmartspaceTransitionController;
+import com.android.keyguard.logging.KeyguardLogger;
+import com.android.systemui.Dumpable;
+import com.android.systemui.R;
+import com.android.systemui.dump.DumpManager;
+import com.android.systemui.flags.FeatureFlags;
+import com.android.systemui.flags.Flags;
+import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor;
+import com.android.systemui.keyguard.shared.model.ScreenModel;
+import com.android.systemui.keyguard.shared.model.ScreenState;
+import com.android.systemui.plugins.ClockController;
 import com.android.systemui.statusbar.notification.AnimatableProperty;
 import com.android.systemui.statusbar.notification.PropertyAnimator;
 import com.android.systemui.statusbar.notification.stack.AnimationProperties;
 import com.android.systemui.statusbar.notification.stack.StackStateAnimator;
 import com.android.systemui.statusbar.phone.DozeParameters;
-import com.android.systemui.statusbar.phone.UnlockedScreenOffAnimationController;
+import com.android.systemui.statusbar.phone.ScreenOffAnimationController;
 import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 import com.android.systemui.util.ViewController;
 
-import java.util.TimeZone;
+import kotlin.coroutines.CoroutineContext;
+import kotlin.coroutines.EmptyCoroutineContext;
+
+import java.io.PrintWriter;
 
 import javax.inject.Inject;
 
 /**
  * Injectable controller for {@link KeyguardStatusView}.
  */
-public class KeyguardStatusViewController extends ViewController<KeyguardStatusView> {
+public class KeyguardStatusViewController extends ViewController<KeyguardStatusView> implements
+        Dumpable {
     private static final boolean DEBUG = KeyguardConstants.DEBUG;
-    private static final String TAG = "KeyguardStatusViewController";
+    @VisibleForTesting static final String TAG = "KeyguardStatusViewController";
 
-    private static final AnimationProperties CLOCK_ANIMATION_PROPERTIES =
+    /**
+     * Duration to use for the animator when the keyguard status view alignment changes, and a
+     * custom clock animation is in use.
+     */
+    private static final int KEYGUARD_STATUS_VIEW_CUSTOM_CLOCK_MOVE_DURATION = 1000;
+
+    public static final AnimationProperties CLOCK_ANIMATION_PROPERTIES =
             new AnimationProperties().setDuration(StackStateAnimator.ANIMATION_DURATION_STANDARD);
 
     private final KeyguardSliceViewController mKeyguardSliceViewController;
     private final KeyguardClockSwitchController mKeyguardClockSwitchController;
     private final KeyguardUpdateMonitor mKeyguardUpdateMonitor;
     private final ConfigurationController mConfigurationController;
-    private final DozeParameters mDozeParameters;
     private final KeyguardVisibilityHelper mKeyguardVisibilityHelper;
-    private final KeyguardUnlockAnimationController mKeyguardUnlockAnimationController;
-    private final KeyguardStateController mKeyguardStateController;
-    private SmartspaceTransitionController mSmartspaceTransitionController;
+    private final FeatureFlags mFeatureFlags;
+    private final InteractionJankMonitor mInteractionJankMonitor;
     private final Rect mClipBounds = new Rect();
+    private final KeyguardInteractor mKeyguardInteractor;
+
+    private Boolean mStatusViewCentered = true;
+
+    private DumpManager mDumpManager;
+
+    private final TransitionListenerAdapter mKeyguardStatusAlignmentTransitionListener =
+            new TransitionListenerAdapter() {
+                @Override
+                public void onTransitionCancel(Transition transition) {
+                    mInteractionJankMonitor.cancel(CUJ_LOCKSCREEN_CLOCK_MOVE_ANIMATION);
+                }
+
+                @Override
+                public void onTransitionEnd(Transition transition) {
+                    mInteractionJankMonitor.end(CUJ_LOCKSCREEN_CLOCK_MOVE_ANIMATION);
+                }
+            };
 
     @Inject
     public KeyguardStatusViewController(
@@ -66,39 +127,76 @@ public class KeyguardStatusViewController extends ViewController<KeyguardStatusV
             KeyguardUpdateMonitor keyguardUpdateMonitor,
             ConfigurationController configurationController,
             DozeParameters dozeParameters,
-            KeyguardUnlockAnimationController keyguardUnlockAnimationController,
-            SmartspaceTransitionController smartspaceTransitionController,
-            UnlockedScreenOffAnimationController unlockedScreenOffAnimationController) {
+            ScreenOffAnimationController screenOffAnimationController,
+            KeyguardLogger logger,
+            FeatureFlags featureFlags,
+            InteractionJankMonitor interactionJankMonitor,
+            KeyguardInteractor keyguardInteractor,
+            DumpManager dumpManager) {
         super(keyguardStatusView);
         mKeyguardSliceViewController = keyguardSliceViewController;
         mKeyguardClockSwitchController = keyguardClockSwitchController;
         mKeyguardUpdateMonitor = keyguardUpdateMonitor;
         mConfigurationController = configurationController;
-        mDozeParameters = dozeParameters;
-        mKeyguardStateController = keyguardStateController;
         mKeyguardVisibilityHelper = new KeyguardVisibilityHelper(mView, keyguardStateController,
-                dozeParameters, unlockedScreenOffAnimationController, /* animateYPos= */ true);
-        mKeyguardUnlockAnimationController = keyguardUnlockAnimationController;
-        mSmartspaceTransitionController = smartspaceTransitionController;
+                dozeParameters, screenOffAnimationController, /* animateYPos= */ true,
+                logger.getBuffer());
+        mInteractionJankMonitor = interactionJankMonitor;
+        mFeatureFlags = featureFlags;
+        mDumpManager = dumpManager;
+        mKeyguardInteractor = keyguardInteractor;
     }
 
     @Override
     public void onInit() {
         mKeyguardClockSwitchController.init();
+
+        mDumpManager.registerDumpable(getInstanceName(), this);
+        if (mFeatureFlags.isEnabled(Flags.MIGRATE_KEYGUARD_STATUS_VIEW)) {
+            startCoroutines(EmptyCoroutineContext.INSTANCE);
+        }
+    }
+
+    void startCoroutines(CoroutineContext context) {
+        collectFlow(mView, mKeyguardInteractor.getDozeTimeTick(),
+                (Long millis) -> {
+                        dozeTimeTick();
+                }, context);
+
+        collectFlow(mView, mKeyguardInteractor.getScreenModel(),
+                (ScreenModel model) -> {
+                    if (model.getState() == ScreenState.SCREEN_TURNING_ON) {
+                        dozeTimeTick();
+                    }
+                }, context);
+    }
+
+    public KeyguardStatusView getView() {
+        return mView;
     }
 
     @Override
     protected void onViewAttached() {
         mKeyguardUpdateMonitor.registerCallback(mInfoCallback);
         mConfigurationController.addCallback(mConfigurationListener);
-        mKeyguardStateController.addCallback(mKeyguardStateControllerCallback);
     }
 
     @Override
     protected void onViewDetached() {
         mKeyguardUpdateMonitor.removeCallback(mInfoCallback);
         mConfigurationController.removeCallback(mConfigurationListener);
-        mKeyguardStateController.removeCallback(mKeyguardStateControllerCallback);
+    }
+
+    /** Sets the StatusView as shown on an external display. */
+    public void setDisplayedOnSecondaryDisplay() {
+        mKeyguardClockSwitchController.setShownOnSecondaryDisplay(true);
+    }
+
+    /**
+     * Called in notificationPanelViewController to avoid leak
+     */
+    public void onDestroy() {
+        mDumpManager.unregisterDumpable(getInstanceName());
     }
 
     /**
@@ -110,25 +208,28 @@ public class KeyguardStatusViewController extends ViewController<KeyguardStatusV
     }
 
     /**
-     * The amount we're in doze.
-     */
-    public void setDarkAmount(float darkAmount) {
-        mView.setDarkAmount(darkAmount);
-    }
-
-    /**
      * Set which clock should be displayed on the keyguard. The other one will be automatically
      * hidden.
      */
-    public void displayClock(@ClockSize int clockSize) {
-        mKeyguardClockSwitchController.displayClock(clockSize);
+    public void displayClock(@ClockSize int clockSize, boolean animate) {
+        mKeyguardClockSwitchController.displayClock(clockSize, animate);
     }
 
     /**
-     * If we're presenting a custom clock of just the default one.
+     * Performs fold to aod animation of the clocks (changes font weight from bold to thin).
+     * This animation is played when AOD is enabled and foldable device is fully folded, it is
+     * displayed on the outer screen
+     * @param foldFraction current fraction of fold animation complete
      */
-    public boolean hasCustomClock() {
-        return mKeyguardClockSwitchController.hasCustomClock();
+    public void animateFoldToAod(float foldFraction) {
+        mKeyguardClockSwitchController.animateFoldToAod(foldFraction);
+    }
+
+    /**
+     * Sets a translationY on the views on the keyguard, except on the media view.
+     */
+    public void setTranslationY(float translationY, boolean excludeMedia) {
+        mView.setChildrenTranslationY(translationY, excludeMedia);
     }
 
     /**
@@ -136,46 +237,16 @@ public class KeyguardStatusViewController extends ViewController<KeyguardStatusV
      */
     public void setAlpha(float alpha) {
         if (!mKeyguardVisibilityHelper.isVisibilityAnimating()) {
-            // If we're capable of performing the SmartSpace shared element transition, and we are
-            // going to (we're swiping to dismiss vs. bringing up the PIN screen), then fade out
-            // everything except for the SmartSpace.
-            if (mKeyguardUnlockAnimationController.isUnlockingWithSmartSpaceTransition()) {
-                mView.setChildrenAlphaExcludingClockView(alpha);
-                mKeyguardClockSwitchController.setChildrenAlphaExcludingSmartspace(alpha);
-            } else if (!mKeyguardVisibilityHelper.isVisibilityAnimating()) {
-                // Otherwise, we can just set the alpha for the entire container.
-                mView.setAlpha(alpha);
-
-                // If we previously unlocked with the shared element transition, some child views
-                // might still have alpha = 0f. Set them back to 1f since we're just using the
-                // parent container's alpha.
-                if (mView.getChildrenAlphaExcludingSmartSpace() < 1f) {
-                    mView.setChildrenAlphaExcludingClockView(1f);
-                    mKeyguardClockSwitchController.setChildrenAlphaExcludingSmartspace(1f);
-                }
-            }
+            mView.setAlpha(alpha);
         }
     }
 
     /**
-     * Set pivot x.
+     * Update the pivot position based on the parent view
      */
-    public void setPivotX(float pivot) {
-        mView.setPivotX(pivot);
-    }
-
-    /**
-     * Set pivot y.
-     */
-    public void setPivotY(float pivot) {
-        mView.setPivotY(pivot);
-    }
-
-    /**
-     * Get the clock text size.
-     */
-    public float getClockTextSize() {
-        return mKeyguardClockSwitchController.getClockTextSize();
+    public void updatePivot(float parentWidth, float parentHeight) {
+        mView.setPivotX(parentWidth / 2f);
+        mView.setPivotY(mKeyguardClockSwitchController.getClockHeight() / 2f);
     }
 
     /**
@@ -201,21 +272,45 @@ public class KeyguardStatusViewController extends ViewController<KeyguardStatusV
     }
 
     /**
+     * Pass top margin from ClockPositionAlgorithm in NotificationPanelViewController
+     * Use for clock view in LS to compensate for top margin to align to the screen
+     * Regardless of translation from AOD and unlock gestures
+     */
+    public void setLockscreenClockY(int clockY) {
+        mKeyguardClockSwitchController.setLockscreenClockY(clockY);
+    }
+
+    /**
      * Set whether the view accessibility importance mode.
      */
     public void setStatusAccessibilityImportance(int mode) {
         mView.setImportantForAccessibility(mode);
     }
 
+    @VisibleForTesting
+    void setProperty(AnimatableProperty property, float value, boolean animate) {
+        PropertyAnimator.setProperty(mView, property, value, CLOCK_ANIMATION_PROPERTIES, animate);
+    }
+
     /**
      * Update position of the view with an optional animation
      */
     public void updatePosition(int x, int y, float scale, boolean animate) {
-        PropertyAnimator.setProperty(mView, AnimatableProperty.Y, y, CLOCK_ANIMATION_PROPERTIES,
-                animate);
+        setProperty(AnimatableProperty.Y, y, animate);
 
-        mKeyguardClockSwitchController.updatePosition(x, scale, CLOCK_ANIMATION_PROPERTIES,
-                animate);
+        ClockController clock = mKeyguardClockSwitchController.getClock();
+        if (clock != null && clock.getConfig().getUseAlternateSmartspaceAODTransition()) {
+            // If requested, scale the entire view instead of just the clock view
+            mKeyguardClockSwitchController.updatePosition(x, 1f /* scale */,
+                    CLOCK_ANIMATION_PROPERTIES, animate);
+            setProperty(AnimatableProperty.SCALE_X, scale, animate);
+            setProperty(AnimatableProperty.SCALE_Y, scale, animate);
+        } else {
+            mKeyguardClockSwitchController.updatePosition(x, scale,
+                    CLOCK_ANIMATION_PROPERTIES, animate);
+            setProperty(AnimatableProperty.SCALE_X, 1f, animate);
+            setProperty(AnimatableProperty.SCALE_Y, 1f, animate);
+        }
     }
 
     /**
@@ -239,53 +334,27 @@ public class KeyguardStatusViewController extends ViewController<KeyguardStatusV
         @Override
         public void onLocaleListChanged() {
             refreshTime();
+            mKeyguardClockSwitchController.onLocaleListChanged();
         }
 
         @Override
-        public void onDensityOrFontScaleChanged() {
-            mKeyguardClockSwitchController.onDensityOrFontScaleChanged();
+        public void onConfigChanged(Configuration newConfig) {
+            mKeyguardClockSwitchController.onConfigChanged();
         }
     };
 
     private KeyguardUpdateMonitorCallback mInfoCallback = new KeyguardUpdateMonitorCallback() {
         @Override
         public void onTimeChanged() {
+            Slog.v(TAG, "onTimeChanged");
             refreshTime();
         }
 
         @Override
-        public void onTimeFormatChanged(String timeFormat) {
-            mKeyguardClockSwitchController.refreshFormat();
-        }
-
-        @Override
-        public void onTimeZoneChanged(TimeZone timeZone) {
-            mKeyguardClockSwitchController.updateTimeZone(timeZone);
-        }
-
-        @Override
-        public void onKeyguardVisibilityChanged(boolean showing) {
-            if (showing) {
-                if (DEBUG) Slog.v(TAG, "refresh statusview showing:" + showing);
+        public void onKeyguardVisibilityChanged(boolean visible) {
+            if (visible) {
+                if (DEBUG) Slog.v(TAG, "refresh statusview visible:true");
                 refreshTime();
-            }
-        }
-
-        @Override
-        public void onUserSwitchComplete(int userId) {
-            mKeyguardClockSwitchController.refreshFormat();
-        }
-    };
-
-    private KeyguardStateController.Callback mKeyguardStateControllerCallback =
-            new KeyguardStateController.Callback() {
-        @Override
-        public void onKeyguardShowingChanged() {
-            // If we explicitly re-show the keyguard, make sure that all the child views are
-            // visible. They might have been animating out as part of the SmartSpace shared
-            // element transition.
-            if (mKeyguardStateController.isShowing()) {
-                mView.setChildrenAlphaExcludingClockView(1f);
             }
         }
     };
@@ -300,6 +369,216 @@ public class KeyguardStatusViewController extends ViewController<KeyguardStatusV
             mView.setClipBounds(mClipBounds);
         } else {
             mView.setClipBounds(null);
+        }
+    }
+
+    /**
+     * Returns true if the large clock will block the notification shelf in AOD
+     */
+    public boolean isLargeClockBlockingNotificationShelf() {
+        ClockController clock = mKeyguardClockSwitchController.getClock();
+        return clock != null && clock.getLargeClock().getConfig().getHasCustomWeatherDataDisplay();
+    }
+
+    /**
+     * Set if the split shade is enabled
+     */
+    public void setSplitShadeEnabled(boolean enabled) {
+        mKeyguardClockSwitchController.setSplitShadeEnabled(enabled);
+    }
+
+    /**
+     * Updates the alignment of the KeyguardStatusView and animates the transition if requested.
+     */
+    public void updateAlignment(
+            ConstraintLayout layout,
+            boolean splitShadeEnabled,
+            boolean shouldBeCentered,
+            boolean animate) {
+        mKeyguardClockSwitchController.setSplitShadeCentered(splitShadeEnabled && shouldBeCentered);
+        if (mStatusViewCentered == shouldBeCentered) {
+            return;
+        }
+
+        mStatusViewCentered = shouldBeCentered;
+        if (layout == null) {
+            return;
+        }
+
+        ConstraintSet constraintSet = new ConstraintSet();
+        constraintSet.clone(layout);
+        int guideline;
+        if (mFeatureFlags.isEnabled(Flags.MIGRATE_KEYGUARD_STATUS_VIEW)) {
+            guideline = R.id.split_shade_guideline;
+        } else {
+            guideline = R.id.qs_edge_guideline;
+        }
+
+        int statusConstraint = shouldBeCentered ? PARENT_ID : guideline;
+        constraintSet.connect(R.id.keyguard_status_view, END, statusConstraint, END);
+        if (!animate) {
+            constraintSet.applyTo(layout);
+            return;
+        }
+
+        mInteractionJankMonitor.begin(mView, CUJ_LOCKSCREEN_CLOCK_MOVE_ANIMATION);
+        /* This transition blocks any layout changes while running. For that reason
+        * special logic with setting visibility was added to {@link BcSmartspaceView#setDozing}
+        * for split shade to avoid jump of the media object. */
+        ChangeBounds transition = new ChangeBounds();
+        if (splitShadeEnabled) {
+            // Excluding media from the transition on split-shade, as it doesn't transition
+            // horizontally properly.
+            transition.excludeTarget(R.id.status_view_media_container, true);
+
+            // Exclude smartspace viewpager and its children from the transition.
+            //     - Each step of the transition causes the ViewPager to invoke resize,
+            //     which invokes scrolling to the recalculated position. The scrolling
+            //     actions are congested, resulting in kinky translation, and
+            //     delay in settling to the final position. (http://b/281620564#comment1)
+            //     - Also, the scrolling is unnecessary in the transition. We just want
+            //     the viewpager to stay on the same page.
+            //     - Exclude by Class type instead of resource id, since the resource id
+            //     isn't available for all devices, and probably better to exclude all
+            //     ViewPagers any way.
+            transition.excludeTarget(ViewPager.class, true);
+            transition.excludeChildren(ViewPager.class, true);
+        }
+
+        transition.setInterpolator(Interpolators.FAST_OUT_SLOW_IN);
+        transition.setDuration(StackStateAnimator.ANIMATION_DURATION_STANDARD);
+
+        ClockController clock = mKeyguardClockSwitchController.getClock();
+        boolean customClockAnimation = clock != null
+                && clock.getLargeClock().getConfig().getHasCustomPositionUpdatedAnimation();
+
+        if (customClockAnimation) {
+            // Find the clock, so we can exclude it from this transition.
+            FrameLayout clockContainerView = mView.findViewById(R.id.lockscreen_clock_view_large);
+
+            // The clock container can sometimes be null. If it is, just fall back to the
+            // old animation rather than setting up the custom animations.
+            if (clockContainerView == null || clockContainerView.getChildCount() == 0) {
+                transition.addListener(mKeyguardStatusAlignmentTransitionListener);
+                TransitionManager.beginDelayedTransition(layout, transition);
+            } else {
+                View clockView = clockContainerView.getChildAt(0);
+
+                TransitionSet set = new TransitionSet();
+                set.addTransition(transition);
+
+                SplitShadeTransitionAdapter adapter =
+                        new SplitShadeTransitionAdapter(mKeyguardClockSwitchController);
+
+                // Use linear here, so the actual clock can pick its own interpolator.
+                adapter.setInterpolator(Interpolators.LINEAR);
+                adapter.setDuration(KEYGUARD_STATUS_VIEW_CUSTOM_CLOCK_MOVE_DURATION);
+                adapter.addTarget(clockView);
+                set.addTransition(adapter);
+
+                if (splitShadeEnabled) {
+                    // Exclude smartspace viewpager and its children from the transition set.
+                    //     - This is necessary in addition to excluding them from the
+                    //     ChangeBounds child transition.
+                    //     - Without this, the viewpager is scrolled to the new position
+                    //     (corresponding to its end size) before the size change is realized.
+                    //     Note that the size change is realized at the end of the ChangeBounds
+                    //     transition. With the "prescrolling", the viewpager ends up in a weird
+                    //     position, then recovers smoothly during the transition, and ends at
+                    //     the position for the current page.
+                    //     - Exclude by Class type instead of resource id, since the resource id
+                    //     isn't available for all devices, and probably better to exclude all
+                    //     ViewPagers any way.
+                    set.excludeTarget(ViewPager.class, true);
+                    set.excludeChildren(ViewPager.class, true);
+                }
+
+                set.addListener(mKeyguardStatusAlignmentTransitionListener);
+                TransitionManager.beginDelayedTransition(layout, set);
+            }
+        } else {
+            transition.addListener(mKeyguardStatusAlignmentTransitionListener);
+            TransitionManager.beginDelayedTransition(layout, transition);
+        }
+
+        constraintSet.applyTo(layout);
+    }
+
+    @Override
+    public void dump(@NonNull PrintWriter pw, @NonNull String[] args) {
+        mView.dump(pw, args);
+    }
+
+    String getInstanceName() {
+        return TAG + "#" + hashCode();
+    }
+
+    @VisibleForTesting
+    static class SplitShadeTransitionAdapter extends Transition {
+        private static final String PROP_BOUNDS_LEFT = "splitShadeTransitionAdapter:boundsLeft";
+        private static final String PROP_BOUNDS_RIGHT = "splitShadeTransitionAdapter:boundsRight";
+        private static final String PROP_X_IN_WINDOW = "splitShadeTransitionAdapter:xInWindow";
+        private static final String[] TRANSITION_PROPERTIES = {
+                PROP_BOUNDS_LEFT, PROP_BOUNDS_RIGHT, PROP_X_IN_WINDOW};
+
+        private final KeyguardClockSwitchController mController;
+
+        @VisibleForTesting
+        SplitShadeTransitionAdapter(KeyguardClockSwitchController controller) {
+            mController = controller;
+        }
+
+        private void captureValues(TransitionValues transitionValues) {
+            transitionValues.values.put(PROP_BOUNDS_LEFT, transitionValues.view.getLeft());
+            transitionValues.values.put(PROP_BOUNDS_RIGHT, transitionValues.view.getRight());
+            int[] locationInWindowTmp = new int[2];
+            transitionValues.view.getLocationInWindow(locationInWindowTmp);
+            transitionValues.values.put(PROP_X_IN_WINDOW, locationInWindowTmp[0]);
+        }
+
+        @Override
+        public void captureEndValues(TransitionValues transitionValues) {
+            captureValues(transitionValues);
+        }
+
+        @Override
+        public void captureStartValues(TransitionValues transitionValues) {
+            captureValues(transitionValues);
+        }
+
+        @Nullable
+        @Override
+        public Animator createAnimator(@NonNull ViewGroup sceneRoot,
+                @Nullable TransitionValues startValues,
+                @Nullable TransitionValues endValues) {
+            if (startValues == null || endValues == null) {
+                return null;
+            }
+            ValueAnimator anim = ValueAnimator.ofFloat(0, 1);
+
+            int fromLeft = (int) startValues.values.get(PROP_BOUNDS_LEFT);
+            int fromWindowX = (int) startValues.values.get(PROP_X_IN_WINDOW);
+            int toWindowX = (int) endValues.values.get(PROP_X_IN_WINDOW);
+            // Using windowX, to determine direction, instead of left, as in RTL the difference of
+            // toLeft - fromLeft is always positive, even when moving left.
+            int direction = toWindowX - fromWindowX > 0 ? 1 : -1;
+
+            anim.addUpdateListener(animation -> {
+                ClockController clock = mController.getClock();
+                if (clock == null) {
+                    return;
+                }
+
+                clock.getLargeClock().getAnimations()
+                        .onPositionUpdated(fromLeft, direction, animation.getAnimatedFraction());
+            });
+
+            return anim;
+        }
+
+        @Override
+        public String[] getTransitionProperties() {
+            return TRANSITION_PROPERTIES;
         }
     }
 }

@@ -22,19 +22,23 @@ import static android.graphics.Matrix.MSKEW_X;
 import static android.graphics.Matrix.MSKEW_Y;
 import static android.graphics.Matrix.MTRANS_X;
 import static android.graphics.Matrix.MTRANS_Y;
+import static android.view.Display.INVALID_DISPLAY;
 import static android.view.SurfaceControlProto.HASH_CODE;
 import static android.view.SurfaceControlProto.LAYER_ID;
 import static android.view.SurfaceControlProto.NAME;
 
+import android.Manifest;
+import android.annotation.CallbackExecutor;
 import android.annotation.FloatRange;
 import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresPermission;
 import android.annotation.Size;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
-import android.graphics.Bitmap;
+import android.content.Context;
 import android.graphics.ColorSpace;
 import android.graphics.GraphicBuffer;
 import android.graphics.Matrix;
@@ -43,21 +47,38 @@ import android.graphics.Point;
 import android.graphics.Rect;
 import android.graphics.Region;
 import android.gui.DropInputMode;
+import android.gui.StalledTransactionInfo;
+import android.hardware.DataSpace;
 import android.hardware.HardwareBuffer;
+import android.hardware.OverlayProperties;
+import android.hardware.SyncFence;
 import android.hardware.display.DeviceProductInfo;
+import android.hardware.display.DisplayManager;
+import android.hardware.display.DisplayManagerGlobal;
 import android.hardware.display.DisplayedContentSample;
 import android.hardware.display.DisplayedContentSamplingAttributes;
+import android.hardware.display.IDisplayManager;
+import android.hardware.display.IVirtualDisplayCallback;
+import android.hardware.display.VirtualDisplay;
+import android.hardware.graphics.common.DisplayDecorationSupport;
+import android.opengl.EGLDisplay;
+import android.opengl.EGLSync;
 import android.os.Build;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.os.RemoteException;
+import android.os.ServiceManager;
 import android.util.ArrayMap;
 import android.util.Log;
+import android.util.Slog;
 import android.util.SparseIntArray;
 import android.util.proto.ProtoOutputStream;
 import android.view.Surface.OutOfResourcesException;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.util.Preconditions;
 import com.android.internal.util.VirtualRefBasePtr;
 
 import dalvik.system.CloseGuard;
@@ -73,8 +94,8 @@ import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Objects;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 /**
  * Handle to an on-screen Surface managed by the system compositor. The SurfaceControl is
@@ -95,13 +116,10 @@ public final class SurfaceControl implements Parcelable {
     private static native long nativeReadFromParcel(Parcel in);
     private static native long nativeCopyFromSurfaceControl(long nativeObject);
     private static native void nativeWriteToParcel(long nativeObject, Parcel out);
-    private static native void nativeRelease(long nativeObject);
+    private static native long nativeGetNativeSurfaceControlFinalizer();
     private static native void nativeDisconnect(long nativeObject);
     private static native void nativeUpdateDefaultBufferSize(long nativeObject, int width, int height);
-    private static native int nativeCaptureDisplay(DisplayCaptureArgs captureArgs,
-            ScreenCaptureListener captureListener);
-    private static native int nativeCaptureLayers(LayerCaptureArgs captureArgs,
-            ScreenCaptureListener captureListener);
+
     private static native long nativeMirrorSurface(long mirrorOfObject);
     private static native long nativeCreateTransaction();
     private static native long nativeGetNativeTransactionFinalizer();
@@ -112,13 +130,15 @@ public final class SurfaceControl implements Parcelable {
     private static native void nativeSetAnimationTransaction(long transactionObj);
     private static native void nativeSetEarlyWakeupStart(long transactionObj);
     private static native void nativeSetEarlyWakeupEnd(long transactionObj);
+    private static native long nativeGetTransactionId(long transactionObj);
 
     private static native void nativeSetLayer(long transactionObj, long nativeObject, int zorder);
     private static native void nativeSetRelativeLayer(long transactionObj, long nativeObject,
             long relativeToObject, int zorder);
     private static native void nativeSetPosition(long transactionObj, long nativeObject,
             float x, float y);
-    private static native void nativeSetSize(long transactionObj, long nativeObject, int w, int h);
+    private static native void nativeSetScale(long transactionObj, long nativeObject,
+            float x, float y);
     private static native void nativeSetTransparentRegionHint(long transactionObj,
             long nativeObject, Region region);
     private static native void nativeSetAlpha(long transactionObj, long nativeObject, float alpha);
@@ -154,16 +174,12 @@ public final class SurfaceControl implements Parcelable {
             boolean isTrustedOverlay);
     private static native void nativeSetDropInputMode(
             long transactionObj, long nativeObject, int flags);
+    private static native void nativeSurfaceFlushJankData(long nativeSurfaceObject);
     private static native boolean nativeClearContentFrameStats(long nativeObject);
     private static native boolean nativeGetContentFrameStats(long nativeObject, WindowContentFrameStats outStats);
     private static native boolean nativeClearAnimationFrameStats();
     private static native boolean nativeGetAnimationFrameStats(WindowAnimationFrameStats outStats);
 
-    private static native long[] nativeGetPhysicalDisplayIds();
-    private static native long nativeGetPrimaryPhysicalDisplayId();
-    private static native IBinder nativeGetPhysicalDisplayToken(long physicalDisplayId);
-    private static native IBinder nativeCreateDisplay(String name, boolean secure);
-    private static native void nativeDestroyDisplay(IBinder displayToken);
     private static native void nativeSetDisplaySurface(long transactionObj,
             IBinder displayToken, long nativeSurfaceObject);
     private static native void nativeSetDisplayLayerStack(long transactionObj,
@@ -176,8 +192,8 @@ public final class SurfaceControl implements Parcelable {
             int L, int T, int R, int B);
     private static native void nativeSetDisplaySize(long transactionObj, IBinder displayToken,
             int width, int height);
-    private static native StaticDisplayInfo nativeGetStaticDisplayInfo(IBinder displayToken);
-    private static native DynamicDisplayInfo nativeGetDynamicDisplayInfo(IBinder displayToken);
+    private static native StaticDisplayInfo nativeGetStaticDisplayInfo(long displayId);
+    private static native DynamicDisplayInfo nativeGetDynamicDisplayInfo(long displayId);
     private static native DisplayedContentSamplingAttributes
             nativeGetDisplayedContentSamplingAttributes(IBinder displayToken);
     private static native boolean nativeSetDisplayedContentSamplingEnabled(IBinder displayToken,
@@ -191,8 +207,12 @@ public final class SurfaceControl implements Parcelable {
     private static native DisplayPrimaries nativeGetDisplayNativePrimaries(
             IBinder displayToken);
     private static native int[] nativeGetCompositionDataspaces();
+    private static native OverlayProperties nativeGetOverlaySupport();
     private static native boolean nativeSetActiveColorMode(IBinder displayToken,
             int colorMode);
+    private static native boolean nativeGetBootDisplayModeSupport();
+    private static native void nativeSetBootDisplayMode(IBinder displayToken, int displayMode);
+    private static native void nativeClearBootDisplayMode(IBinder displayToken);
     private static native void nativeSetAutoLowLatencyMode(IBinder displayToken, boolean on);
     private static native void nativeSetGameContentType(IBinder displayToken, boolean on);
     private static native void nativeSetDisplayPowerMode(
@@ -200,11 +220,21 @@ public final class SurfaceControl implements Parcelable {
     private static native void nativeReparent(long transactionObj, long nativeObject,
             long newParentNativeObject);
     private static native void nativeSetBuffer(long transactionObj, long nativeObject,
-            GraphicBuffer buffer);
-    private static native void nativeSetColorSpace(long transactionObj, long nativeObject,
-            int colorSpace);
+            HardwareBuffer buffer, long fencePtr, Consumer<SyncFence> releaseCallback);
+    private static native void nativeUnsetBuffer(long transactionObj, long nativeObject);
+    private static native void nativeSetBufferTransform(long transactionObj, long nativeObject,
+            int transform);
+    private static native void nativeSetDataSpace(long transactionObj, long nativeObject,
+            @DataSpace.NamedDataSpace int dataSpace);
+    private static native void nativeSetExtendedRangeBrightness(long transactionObj,
+            long nativeObject, float currentBufferRatio, float desiredRatio);
 
-    private static native void nativeOverrideHdrTypes(IBinder displayToken, int[] modes);
+    private static native void nativeSetCachingHint(long transactionObj,
+            long nativeObject, int cachingHint);
+    private static native void nativeSetDamageRegion(long transactionObj, long nativeObject,
+            Region region);
+    private static native void nativeSetDimmingEnabled(long transactionObj, long nativeObject,
+            boolean dimmingEnabled);
 
     private static native void nativeSetInputWindowInfo(long transactionObj, long nativeObject,
             InputWindowHandle handle);
@@ -212,7 +242,8 @@ public final class SurfaceControl implements Parcelable {
     private static native boolean nativeGetProtectedContentSupport();
     private static native void nativeSetMetadata(long transactionObj, long nativeObject, int key,
             Parcel data);
-    private static native void nativeSyncInputWindows(long transactionObj);
+    private static native void nativeAddWindowInfosReportedListener(long transactionObj,
+            Runnable listener);
     private static native boolean nativeGetDisplayBrightnessSupport(IBinder displayToken);
     private static native boolean nativeSetDisplayBrightness(IBinder displayToken,
             float sdrBrightness, float sdrBrightnessNits, float displayBrightness,
@@ -223,17 +254,20 @@ public final class SurfaceControl implements Parcelable {
             float shadowRadius);
     private static native void nativeSetGlobalShadowSettings(@Size(4) float[] ambientColor,
             @Size(4) float[] spotColor, float lightPosY, float lightPosZ, float lightRadius);
+    private static native DisplayDecorationSupport nativeGetDisplayDecorationSupport(
+            IBinder displayToken);
 
     private static native void nativeSetFrameRate(long transactionObj, long nativeObject,
             float frameRate, int compatibility, int changeFrameRateStrategy);
+    private static native void nativeSetDefaultFrameRateCompatibility(long transactionObj,
+            long nativeObject, int compatibility);
     private static native long nativeGetHandle(long nativeObject);
 
-    private static native long nativeAcquireFrameRateFlexibilityToken();
-    private static native void nativeReleaseFrameRateFlexibilityToken(long token);
     private static native void nativeSetFixedTransformHint(long transactionObj, long nativeObject,
             int transformHint);
+    private static native void nativeRemoveCurrentInputFocus(long nativeObject, int displayId);
     private static native void nativeSetFocusedWindow(long transactionObj, IBinder toToken,
-            String windowName, IBinder focusedToken, String focusedWindowName, int displayId);
+            String windowName, int displayId);
     private static native void nativeSetFrameTimelineVsync(long transactionObj,
             long frameTimelineVsyncId);
     private static native void nativeAddJankDataListener(long nativeListener,
@@ -245,6 +279,21 @@ public final class SurfaceControl implements Parcelable {
             @SurfaceControl.BufferTransform int transformHint);
     private static native int nativeGetTransformHint(long nativeObject);
     private static native int nativeGetLayerId(long nativeObject);
+    private static native void nativeAddTransactionCommittedListener(long nativeObject,
+            TransactionCommittedListener listener);
+    private static native void nativeSanitize(long transactionObject, int pid, int uid);
+    private static native void nativeSetDestinationFrame(long transactionObj, long nativeObject,
+            int l, int t, int r, int b);
+    private static native void nativeSetDefaultApplyToken(IBinder token);
+    private static native IBinder nativeGetDefaultApplyToken();
+    private static native boolean nativeBootFinished();
+    private static native long nativeCreateTpc(TrustedPresentationCallback callback);
+    private static native long getNativeTrustedPresentationCallbackFinalizer();
+    private static native void nativeSetTrustedPresentationCallback(long transactionObj,
+            long nativeObject, long nativeTpc, TrustedPresentationThresholds thresholds);
+    private static native void nativeClearTrustedPresentationCallback(long transactionObj,
+            long nativeObject);
+    private static native StalledTransactionInfo nativeGetStalledTransactionInfo(int pid);
 
     /**
      * Transforms that can be applied to buffers as they are displayed to a window.
@@ -370,9 +419,7 @@ public final class SurfaceControl implements Parcelable {
         public static final int JANK_SURFACEFLINGER_GPU_DEADLINE_MISSED = 0x4;
         // Either App or GPU took too long on the frame
         public static final int JANK_APP_DEADLINE_MISSED = 0x8;
-        // Predictions live for 120ms, if prediction is expired for a frame, there is definitely a
-        // jank
-        // associated with the App if this is for a SurfaceFrame, and SF for a DisplayFrame.
+        // Vsync predictions have drifted beyond the threshold from the actual HWVsync
         public static final int PREDICTION_ERROR = 0x10;
         // Latching a buffer early might cause an early present of the frame
         public static final int SURFACE_FLINGER_SCHEDULING = 0x20;
@@ -416,12 +463,18 @@ public final class SurfaceControl implements Parcelable {
 
     private final CloseGuard mCloseGuard = CloseGuard.get();
     private String mName;
+    private String mCallsite;
 
      /**
+     * Note: do not rename, this field is used by native code.
      * @hide
      */
     public long mNativeObject;
     private long mNativeHandle;
+
+    private final Object mChoreographerLock = new Object();
+    @GuardedBy("mChoreographerLock")
+    private Choreographer mChoreographer;
 
     // TODO: Move width/height to native and fix locking through out.
     private final Object mLock = new Object();
@@ -430,10 +483,26 @@ public final class SurfaceControl implements Parcelable {
     @GuardedBy("mLock")
     private int mHeight;
 
+    private TrustedPresentationCallback mTrustedPresentationCallback;
+
     private WeakReference<View> mLocalOwnerView;
+
+    // A throwable with the stack filled when this SurfaceControl is released (only if
+    // sDebugUsageAfterRelease) is enabled
+    private Throwable mReleaseStack = null;
+
+    // Triggers the stack to be saved when any SurfaceControl in this process is released, which can
+    // be dumped as additional context
+    private static volatile boolean sDebugUsageAfterRelease = false;
 
     static GlobalTransactionWrapper sGlobalTransaction;
     static long sTransactionNestCount = 0;
+
+    private static final NativeAllocationRegistry sRegistry =
+            NativeAllocationRegistry.createMalloced(SurfaceControl.class.getClassLoader(),
+                    nativeGetNativeSurfaceControlFinalizer());
+
+    private Runnable mFreeNativeResources;
 
     /**
      * Adds a reparenting listener.
@@ -492,7 +561,7 @@ public final class SurfaceControl implements Parcelable {
      * be copied. In particular, screenshots and secondary, non-secure displays will render black
      * content instead of the surface content.
      *
-     * @see #createDisplay(String, boolean)
+     * @see com.android.server.display.DisplayControl#createDisplay(String, boolean)
      * @hide
      */
     public static final int SECURE = 0x00000080;
@@ -505,6 +574,15 @@ public final class SurfaceControl implements Parcelable {
      * @hide
      */
     public static final int ENABLE_BACKPRESSURE = 0x00000100;
+
+    /**
+     * Buffers from this SurfaceControl should be considered display decorations.
+     *
+     * If the hardware has optimizations for display decorations (e.g. rounded corners, camera
+     * cutouts, etc), it should use them for this layer.
+     * @hide
+     */
+    public static final int DISPLAY_DECORATION = 0x00000200;
 
     /**
      * Surface creation flag: Creates a surface where color components are interpreted
@@ -672,21 +750,49 @@ public final class SurfaceControl implements Parcelable {
     public static final int POWER_MODE_ON_SUSPEND = 4;
 
     /**
-     * internal representation of how to interpret pixel value, used only to convert to ColorSpace.
+     * Hint that this SurfaceControl should not participate in layer caching within SurfaceFlinger.
+     *
+     * A system layer may request that a layer does not participate in caching when there are known
+     * quality limitations when caching via the compositor's GPU path.
+     * Use only with {@link SurfaceControl.Transaction#setCachingHint}.
+     * @hide
      */
-    private static final int INTERNAL_DATASPACE_SRGB = 142671872;
-    private static final int INTERNAL_DATASPACE_DISPLAY_P3 = 143261696;
-    private static final int INTERNAL_DATASPACE_SCRGB = 411107328;
+    public static final int CACHING_DISABLED = 0;
+
+    /**
+     * Hint that this SurfaceControl should participate in layer caching within SurfaceFlinger.
+     *
+     * Use only with {@link SurfaceControl.Transaction#setCachingHint}.
+     * @hide
+     */
+    public static final int CACHING_ENABLED = 1;
+
+    /** @hide */
+    @IntDef(flag = true, value = {CACHING_DISABLED, CACHING_ENABLED})
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface CachingHint {}
 
     private void assignNativeObject(long nativeObject, String callsite) {
         if (mNativeObject != 0) {
             release();
         }
         if (nativeObject != 0) {
-            mCloseGuard.openWithCallSite("release", callsite);
+            mFreeNativeResources =
+                    sRegistry.registerNativeAllocation(this, nativeObject);
         }
         mNativeObject = nativeObject;
         mNativeHandle = mNativeObject != 0 ? nativeGetHandle(nativeObject) : 0;
+        if (sDebugUsageAfterRelease && mNativeObject == 0) {
+            mReleaseStack = new Throwable("Assigned invalid nativeObject");
+        } else {
+            mReleaseStack = null;
+        }
+        setUnreleasedWarningCallSite(callsite);
+        if (nativeObject != 0) {
+            // Only add valid surface controls to the registry. This is called at the end of this
+            // method since its information is dumped if the process threshold is reached.
+            addToRegistry();
+        }
     }
 
     /**
@@ -743,396 +849,6 @@ public final class SurfaceControl implements Parcelable {
     public static final int METADATA_GAME_MODE = 8;
 
     /**
-     * A wrapper around HardwareBuffer that contains extra information about how to
-     * interpret the screenshot HardwareBuffer.
-     *
-     * @hide
-     */
-    public static class ScreenshotHardwareBuffer {
-        private final HardwareBuffer mHardwareBuffer;
-        private final ColorSpace mColorSpace;
-        private final boolean mContainsSecureLayers;
-
-        public ScreenshotHardwareBuffer(HardwareBuffer hardwareBuffer, ColorSpace colorSpace,
-                boolean containsSecureLayers) {
-            mHardwareBuffer = hardwareBuffer;
-            mColorSpace = colorSpace;
-            mContainsSecureLayers = containsSecureLayers;
-        }
-
-       /**
-        * Create ScreenshotHardwareBuffer from an existing HardwareBuffer object.
-        * @param hardwareBuffer The existing HardwareBuffer object
-        * @param namedColorSpace Integer value of a named color space {@link ColorSpace.Named}
-        * @param containsSecureLayers Indicates whether this graphic buffer contains captured
-        *                             contents
-        *        of secure layers, in which case the screenshot should not be persisted.
-        */
-        private static ScreenshotHardwareBuffer createFromNative(HardwareBuffer hardwareBuffer,
-                int namedColorSpace, boolean containsSecureLayers) {
-            ColorSpace colorSpace = ColorSpace.get(ColorSpace.Named.values()[namedColorSpace]);
-            return new ScreenshotHardwareBuffer(hardwareBuffer, colorSpace, containsSecureLayers);
-        }
-
-        public ColorSpace getColorSpace() {
-            return mColorSpace;
-        }
-
-        public HardwareBuffer getHardwareBuffer() {
-            return mHardwareBuffer;
-        }
-
-        public boolean containsSecureLayers() {
-            return mContainsSecureLayers;
-        }
-
-        /**
-         * Copy content of ScreenshotHardwareBuffer into a hardware bitmap and return it.
-         * Note: If you want to modify the Bitmap in software, you will need to copy the Bitmap
-         * into
-         * a software Bitmap using {@link Bitmap#copy(Bitmap.Config, boolean)}
-         *
-         * CAVEAT: This can be extremely slow; avoid use unless absolutely necessary; prefer to
-         * directly
-         * use the {@link HardwareBuffer} directly.
-         *
-         * @return Bitmap generated from the {@link HardwareBuffer}
-         */
-        public Bitmap asBitmap() {
-            if (mHardwareBuffer == null) {
-                Log.w(TAG, "Failed to take screenshot. Null screenshot object");
-                return null;
-            }
-            return Bitmap.wrapHardwareBuffer(mHardwareBuffer, mColorSpace);
-        }
-    }
-
-    /**
-     * @hide
-     */
-    public interface ScreenCaptureListener {
-        /**
-         * The callback invoked when the screen capture is complete.
-         * @param hardwareBuffer Data containing info about the screen capture.
-         */
-        void onScreenCaptureComplete(ScreenshotHardwareBuffer hardwareBuffer);
-    }
-
-    private static class SyncScreenCaptureListener implements ScreenCaptureListener {
-        private static final int SCREENSHOT_WAIT_TIME_S = 1;
-        private ScreenshotHardwareBuffer mScreenshotHardwareBuffer;
-        private final CountDownLatch mCountDownLatch = new CountDownLatch(1);
-
-        @Override
-        public void onScreenCaptureComplete(ScreenshotHardwareBuffer hardwareBuffer) {
-            mScreenshotHardwareBuffer = hardwareBuffer;
-            mCountDownLatch.countDown();
-        }
-
-        private ScreenshotHardwareBuffer waitForScreenshot() {
-            try {
-                mCountDownLatch.await(SCREENSHOT_WAIT_TIME_S, TimeUnit.SECONDS);
-            } catch (Exception e) {
-                Log.e(TAG, "Failed to wait for screen capture result", e);
-            }
-
-            return mScreenshotHardwareBuffer;
-        }
-    }
-
-    /**
-     * A common arguments class used for various screenshot requests. This contains arguments that
-     * are shared between {@link DisplayCaptureArgs} and {@link LayerCaptureArgs}
-     * @hide
-     */
-    private abstract static class CaptureArgs {
-        private final int mPixelFormat;
-        private final Rect mSourceCrop = new Rect();
-        private final float mFrameScaleX;
-        private final float mFrameScaleY;
-        private final boolean mCaptureSecureLayers;
-        private final boolean mAllowProtected;
-        private final long mUid;
-        private final boolean mGrayscale;
-
-        private CaptureArgs(Builder<? extends Builder<?>> builder) {
-            mPixelFormat = builder.mPixelFormat;
-            mSourceCrop.set(builder.mSourceCrop);
-            mFrameScaleX = builder.mFrameScaleX;
-            mFrameScaleY = builder.mFrameScaleY;
-            mCaptureSecureLayers = builder.mCaptureSecureLayers;
-            mAllowProtected = builder.mAllowProtected;
-            mUid = builder.mUid;
-            mGrayscale = builder.mGrayscale;
-        }
-
-        /**
-         * The Builder class used to construct {@link CaptureArgs}
-         *
-         * @param <T> A builder that extends {@link Builder}
-         */
-        abstract static class Builder<T extends Builder<T>> {
-            private int mPixelFormat = PixelFormat.RGBA_8888;
-            private final Rect mSourceCrop = new Rect();
-            private float mFrameScaleX = 1;
-            private float mFrameScaleY = 1;
-            private boolean mCaptureSecureLayers;
-            private boolean mAllowProtected;
-            private long mUid = -1;
-            private boolean mGrayscale;
-
-            /**
-             * The desired pixel format of the returned buffer.
-             */
-            public T setPixelFormat(int pixelFormat) {
-                mPixelFormat = pixelFormat;
-                return getThis();
-            }
-
-            /**
-             * The portion of the screen to capture into the buffer. Caller may pass  in
-             * 'new Rect()' if no cropping is desired.
-             */
-            public T setSourceCrop(Rect sourceCrop) {
-                mSourceCrop.set(sourceCrop);
-                return getThis();
-            }
-
-            /**
-             * The desired scale of the returned buffer. The raw screen will be scaled up/down.
-             */
-            public T setFrameScale(float frameScale) {
-                mFrameScaleX = frameScale;
-                mFrameScaleY = frameScale;
-                return getThis();
-            }
-
-            /**
-             * The desired scale of the returned buffer, allowing separate values for x and y scale.
-             * The raw screen will be scaled up/down.
-             */
-            public T setFrameScale(float frameScaleX, float frameScaleY) {
-                mFrameScaleX = frameScaleX;
-                mFrameScaleY = frameScaleY;
-                return getThis();
-            }
-
-            /**
-             * Whether to allow the screenshot of secure layers. Warning: This should only be done
-             * if the content will be placed in a secure SurfaceControl.
-             *
-             * @see ScreenshotHardwareBuffer#containsSecureLayers()
-             */
-            public T setCaptureSecureLayers(boolean captureSecureLayers) {
-                mCaptureSecureLayers = captureSecureLayers;
-                return getThis();
-            }
-
-            /**
-             * Whether to allow the screenshot of protected (DRM) content. Warning: The screenshot
-             * cannot be read in unprotected space.
-             *
-             * @see HardwareBuffer#USAGE_PROTECTED_CONTENT
-             */
-            public T setAllowProtected(boolean allowProtected) {
-                mAllowProtected = allowProtected;
-                return getThis();
-            }
-
-            /**
-             * Set the uid of the content that should be screenshot. The code will skip any surfaces
-             * that don't belong to the specified uid.
-             */
-            public T setUid(long uid) {
-                mUid = uid;
-                return getThis();
-            }
-
-            /**
-             * Set whether the screenshot should use grayscale or not.
-             */
-            public T setGrayscale(boolean grayscale) {
-                mGrayscale = grayscale;
-                return getThis();
-            }
-
-            /**
-             * Each sub class should return itself to allow the builder to chain properly
-             */
-            abstract T getThis();
-        }
-    }
-
-    /**
-     * The arguments class used to make display capture requests.
-     *
-     * @see #nativeCaptureDisplay(DisplayCaptureArgs, ScreenCaptureListener)
-     * @hide
-     */
-    public static class DisplayCaptureArgs extends CaptureArgs {
-        private final IBinder mDisplayToken;
-        private final int mWidth;
-        private final int mHeight;
-        private final boolean mUseIdentityTransform;
-
-        private DisplayCaptureArgs(Builder builder) {
-            super(builder);
-            mDisplayToken = builder.mDisplayToken;
-            mWidth = builder.mWidth;
-            mHeight = builder.mHeight;
-            mUseIdentityTransform = builder.mUseIdentityTransform;
-        }
-
-        /**
-         * The Builder class used to construct {@link DisplayCaptureArgs}
-         */
-        public static class Builder extends CaptureArgs.Builder<Builder> {
-            private IBinder mDisplayToken;
-            private int mWidth;
-            private int mHeight;
-            private boolean mUseIdentityTransform;
-
-            /**
-             * Construct a new {@link LayerCaptureArgs} with the set parameters. The builder
-             * remains valid.
-             */
-            public DisplayCaptureArgs build() {
-                if (mDisplayToken == null) {
-                    throw new IllegalStateException(
-                            "Can't take screenshot with null display token");
-                }
-                return new DisplayCaptureArgs(this);
-            }
-
-            public Builder(IBinder displayToken) {
-                setDisplayToken(displayToken);
-            }
-
-            /**
-             * The display to take the screenshot of.
-             */
-            public Builder setDisplayToken(IBinder displayToken) {
-                mDisplayToken = displayToken;
-                return this;
-            }
-
-            /**
-             * Set the desired size of the returned buffer. The raw screen  will be  scaled down to
-             * this size
-             *
-             * @param width  The desired width of the returned buffer. Caller may pass in 0 if no
-             *               scaling is desired.
-             * @param height The desired height of the returned buffer. Caller may pass in 0 if no
-             *               scaling is desired.
-             */
-            public Builder setSize(int width, int height) {
-                mWidth = width;
-                mHeight = height;
-                return this;
-            }
-
-            /**
-             * Replace the rotation transform of the display with the identity transformation while
-             * taking the screenshot. This ensures the screenshot is taken in the ROTATION_0
-             * orientation. Set this value to false if the screenshot should be taken in the
-             * current screen orientation.
-             */
-            public Builder setUseIdentityTransform(boolean useIdentityTransform) {
-                mUseIdentityTransform = useIdentityTransform;
-                return this;
-            }
-
-            @Override
-            Builder getThis() {
-                return this;
-            }
-        }
-    }
-
-    /**
-     * The arguments class used to make layer capture requests.
-     *
-     * @see #nativeCaptureLayers(LayerCaptureArgs, ScreenCaptureListener)
-     * @hide
-     */
-    public static class LayerCaptureArgs extends CaptureArgs {
-        private final long mNativeLayer;
-        private final long[] mNativeExcludeLayers;
-        private final boolean mChildrenOnly;
-
-        private LayerCaptureArgs(Builder builder) {
-            super(builder);
-            mChildrenOnly = builder.mChildrenOnly;
-            mNativeLayer = builder.mLayer.mNativeObject;
-            if (builder.mExcludeLayers != null) {
-                mNativeExcludeLayers = new long[builder.mExcludeLayers.length];
-                for (int i = 0; i < builder.mExcludeLayers.length; i++) {
-                    mNativeExcludeLayers[i] = builder.mExcludeLayers[i].mNativeObject;
-                }
-            } else {
-                mNativeExcludeLayers = null;
-            }
-        }
-
-        /**
-         * The Builder class used to construct {@link LayerCaptureArgs}
-         */
-        public static class Builder extends CaptureArgs.Builder<Builder> {
-            private SurfaceControl mLayer;
-            private SurfaceControl[] mExcludeLayers;
-            private boolean mChildrenOnly = true;
-
-            /**
-             * Construct a new {@link LayerCaptureArgs} with the set parameters. The builder
-             * remains valid.
-             */
-            public LayerCaptureArgs build() {
-                if (mLayer == null) {
-                    throw new IllegalStateException(
-                            "Can't take screenshot with null layer");
-                }
-                return new LayerCaptureArgs(this);
-            }
-
-            public Builder(SurfaceControl layer) {
-                setLayer(layer);
-            }
-
-            /**
-             * The root layer to capture.
-             */
-            public Builder setLayer(SurfaceControl layer) {
-                mLayer = layer;
-                return this;
-            }
-
-
-            /**
-             * An array of layer handles to exclude.
-             */
-            public Builder setExcludeLayers(@Nullable SurfaceControl[] excludeLayers) {
-                mExcludeLayers = excludeLayers;
-                return this;
-            }
-
-            /**
-             * Whether to include the layer itself in the screenshot or just the children and their
-             * descendants.
-             */
-            public Builder setChildrenOnly(boolean childrenOnly) {
-                mChildrenOnly = childrenOnly;
-                return this;
-            }
-
-            @Override
-            Builder getThis() {
-                return this;
-            }
-
-        }
-    }
-
-    /**
      * Builder class for {@link SurfaceControl} objects.
      *
      * By default the surface will be hidden, and have "unset" bounds, meaning it can
@@ -1181,6 +897,10 @@ public final class SurfaceControl implements Parcelable {
             if ((mWidth > 0 || mHeight > 0) && (isEffectLayer() || isContainerLayer())) {
                 throw new IllegalStateException(
                         "Only buffer layers can set a valid buffer size.");
+            }
+
+            if (mName == null) {
+                Log.w(TAG, "Missing name for SurfaceControl", new Throwable());
             }
 
             if ((mFlags & FX_SURFACE_MASK) == FX_SURFACE_NORMAL) {
@@ -1331,7 +1051,6 @@ public final class SurfaceControl implements Parcelable {
          * Set the initial visibility for the SurfaceControl.
          *
          * @param hidden Whether the Surface is initially HIDDEN.
-         * @hide
          */
         @NonNull
         public Builder setHidden(boolean hidden) {
@@ -1503,6 +1222,7 @@ public final class SurfaceControl implements Parcelable {
         mHeight = h;
         mLocalOwnerView = localOwnerView;
         Parcel metaParcel = Parcel.obtain();
+        long nativeObject = 0;
         try {
             if (metadata != null && metadata.size() > 0) {
                 metaParcel.writeInt(metadata.size());
@@ -1514,17 +1234,16 @@ public final class SurfaceControl implements Parcelable {
                 }
                 metaParcel.setDataPosition(0);
             }
-            mNativeObject = nativeCreate(session, name, w, h, format, flags,
+            nativeObject = nativeCreate(session, name, w, h, format, flags,
                     parent != null ? parent.mNativeObject : 0, metaParcel);
         } finally {
             metaParcel.recycle();
         }
-        if (mNativeObject == 0) {
+        if (nativeObject == 0) {
             throw new OutOfResourcesException(
                     "Couldn't allocate SurfaceControl native object");
         }
-        mNativeHandle = nativeGetHandle(mNativeObject);
-        mCloseGuard.openWithCallSite("release", callsite);
+        assignNativeObject(nativeObject, callsite);
     }
 
     /**
@@ -1545,6 +1264,9 @@ public final class SurfaceControl implements Parcelable {
     }
 
     /**
+     * Note: Most callers should use {@link SurfaceControl.Builder} or one of the other constructors
+     *       to build an instance of a SurfaceControl. This constructor is mainly used for
+     *       unparceling and passing into an AIDL call as an out parameter.
      * @hide
      */
     public SurfaceControl() {
@@ -1573,6 +1295,9 @@ public final class SurfaceControl implements Parcelable {
 
     @Override
     public void writeToParcel(Parcel dest, int flags) {
+        if (sDebugUsageAfterRelease) {
+            checkNotReleased();
+        }
         dest.writeString8(mName);
         dest.writeInt(mWidth);
         dest.writeInt(mHeight);
@@ -1589,6 +1314,49 @@ public final class SurfaceControl implements Parcelable {
     }
 
     /**
+     * Enables additional debug logs to track usage-after-release of all SurfaceControls in this
+     * process.
+     * @hide
+     */
+    public static void setDebugUsageAfterRelease(boolean debug) {
+        if (!Build.isDebuggable()) {
+            return;
+        }
+        sDebugUsageAfterRelease = debug;
+    }
+
+    /**
+     * Provides more information to show about the source of this SurfaceControl if it is finalized
+     * without being released. This is primarily intended for callers to update the call site after
+     * receiving a SurfaceControl from another process, which would otherwise get a generic default
+     * call site.
+     * @hide
+     */
+    public void setUnreleasedWarningCallSite(@NonNull String callsite) {
+        if (!isValid()) {
+            return;
+        }
+        mCloseGuard.openWithCallSite("release", callsite);
+        mCallsite = callsite;
+    }
+
+    /**
+     * Returns the last provided call site when this SurfaceControl was created.
+     * @hide
+     */
+    @Nullable String getCallsite() {
+        return mCallsite;
+    }
+
+    /**
+     * Returns the name of this SurfaceControl, mainly for debugging purposes.
+     * @hide
+     */
+    @NonNull String getName() {
+        return mName;
+    }
+
+    /**
      * Checks whether two {@link SurfaceControl} objects represent the same surface.
      *
      * @param other The other object to check
@@ -1598,6 +1366,69 @@ public final class SurfaceControl implements Parcelable {
     @TestApi
     public boolean isSameSurface(@NonNull SurfaceControl other) {
         return other.mNativeHandle == mNativeHandle;
+    }
+
+    /**
+     * When called for the first time a new instance of the {@link Choreographer} is created
+     * with a {@link android.os.Looper} of the current thread. Every subsequent call will return
+     * the same instance of the Choreographer.
+     *
+     * @see #getChoreographer(Looper) to create Choreographer with a different
+     * looper than current thread looper.
+     *
+     * @hide
+     */
+    @TestApi
+    public @NonNull Choreographer getChoreographer() {
+        checkNotReleased();
+        synchronized (mChoreographerLock) {
+            if (mChoreographer == null) {
+                return getChoreographer(Looper.myLooper());
+            }
+            return mChoreographer;
+        }
+    }
+
+    /**
+     * When called for the first time a new instance of the {@link Choreographer} is created with
+     * the sourced {@link android.os.Looper}. Every subsequent call will return the same
+     * instance of the Choreographer.
+     *
+     * @see #getChoreographer()
+     *
+     * @throws IllegalStateException when a {@link Choreographer} instance exists with a different
+     * looper than sourced.
+     * @param looper the choreographer is attached on this looper.
+     *
+     * @hide
+     */
+    @TestApi
+    public @NonNull Choreographer getChoreographer(@NonNull Looper looper) {
+        checkNotReleased();
+        synchronized (mChoreographerLock) {
+            if (mChoreographer == null) {
+                mChoreographer = Choreographer.getInstanceForSurfaceControl(mNativeHandle, looper);
+            } else if (!mChoreographer.isTheLooperSame(looper)) {
+                throw new IllegalStateException(
+                        "Choreographer already exists with a different looper");
+            }
+            return mChoreographer;
+        }
+    }
+
+    /**
+     * Returns true if {@link Choreographer} is present otherwise false.
+     * To check the validity use {@link #isValid} on the SurfaceControl, a valid SurfaceControl with
+     * choreographer will have the valid Choreographer.
+     *
+     * @hide
+     */
+    @TestApi
+    @UnsupportedAppUsage
+    public boolean hasChoreographer() {
+        synchronized (mChoreographerLock) {
+            return mChoreographer != null;
+        }
     }
 
     /**
@@ -1636,9 +1467,7 @@ public final class SurfaceControl implements Parcelable {
             if (mCloseGuard != null) {
                 mCloseGuard.warnIfOpen();
             }
-            if (mNativeObject != 0) {
-                nativeRelease(mNativeObject);
-            }
+            removeFromRegistry();
         } finally {
             super.finalize();
         }
@@ -1656,10 +1485,20 @@ public final class SurfaceControl implements Parcelable {
      */
     public void release() {
         if (mNativeObject != 0) {
-            nativeRelease(mNativeObject);
+            mFreeNativeResources.run();
             mNativeObject = 0;
             mNativeHandle = 0;
+            if (sDebugUsageAfterRelease) {
+                mReleaseStack = new Throwable("Released");
+            }
             mCloseGuard.close();
+            synchronized (mChoreographerLock) {
+                if (mChoreographer != null) {
+                    mChoreographer.invalidate();
+                    mChoreographer = null;
+                }
+            }
+            removeFromRegistry();
         }
     }
 
@@ -1674,8 +1513,15 @@ public final class SurfaceControl implements Parcelable {
     }
 
     private void checkNotReleased() {
-        if (mNativeObject == 0) throw new NullPointerException(
-                "Invalid " + this + ", mNativeObject is null. Have you called release() already?");
+        if (mNativeObject == 0) {
+            if (mReleaseStack != null) {
+                throw new IllegalStateException("Invalid usage after release of " + this,
+                        mReleaseStack);
+            } else {
+                throw new NullPointerException("mNativeObject of " + this
+                        + " is null. Have you called release() already?");
+            }
+        }
     }
 
     /**
@@ -1814,13 +1660,15 @@ public final class SurfaceControl implements Parcelable {
         public float density;
         public boolean secure;
         public DeviceProductInfo deviceProductInfo;
+        public @Surface.Rotation int installOrientation;
 
         @Override
         public String toString() {
             return "StaticDisplayInfo{isInternal=" + isInternal
                     + ", density=" + density
                     + ", secure=" + secure
-                    + ", deviceProductInfo=" + deviceProductInfo + "}";
+                    + ", deviceProductInfo=" + deviceProductInfo
+                    + ", installOrientation=" + installOrientation + "}";
         }
 
         @Override
@@ -1831,12 +1679,13 @@ public final class SurfaceControl implements Parcelable {
             return isInternal == that.isInternal
                     && density == that.density
                     && secure == that.secure
-                    && Objects.equals(deviceProductInfo, that.deviceProductInfo);
+                    && Objects.equals(deviceProductInfo, that.deviceProductInfo)
+                    && installOrientation == that.installOrientation;
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(isInternal, density, secure, deviceProductInfo);
+            return Objects.hash(isInternal, density, secure, deviceProductInfo, installOrientation);
         }
     }
 
@@ -1848,6 +1697,7 @@ public final class SurfaceControl implements Parcelable {
     public static final class DynamicDisplayInfo {
         public DisplayMode[] supportedDisplayModes;
         public int activeDisplayModeId;
+        public float renderFrameRate;
 
         public int[] supportedColorModes;
         public int activeColorMode;
@@ -1857,16 +1707,20 @@ public final class SurfaceControl implements Parcelable {
         public boolean autoLowLatencyModeSupported;
         public boolean gameContentTypeSupported;
 
+        public int preferredBootDisplayMode;
+
         @Override
         public String toString() {
             return "DynamicDisplayInfo{"
                     + "supportedDisplayModes=" + Arrays.toString(supportedDisplayModes)
                     + ", activeDisplayModeId=" + activeDisplayModeId
+                    + ", renderFrameRate=" + renderFrameRate
                     + ", supportedColorModes=" + Arrays.toString(supportedColorModes)
                     + ", activeColorMode=" + activeColorMode
                     + ", hdrCapabilities=" + hdrCapabilities
                     + ", autoLowLatencyModeSupported=" + autoLowLatencyModeSupported
-                    + ", gameContentTypeSupported" + gameContentTypeSupported + "}";
+                    + ", gameContentTypeSupported" + gameContentTypeSupported
+                    + ", preferredBootDisplayMode" + preferredBootDisplayMode + "}";
         }
 
         @Override
@@ -1876,15 +1730,17 @@ public final class SurfaceControl implements Parcelable {
             DynamicDisplayInfo that = (DynamicDisplayInfo) o;
             return Arrays.equals(supportedDisplayModes, that.supportedDisplayModes)
                 && activeDisplayModeId == that.activeDisplayModeId
+                && renderFrameRate == that.renderFrameRate
                 && Arrays.equals(supportedColorModes, that.supportedColorModes)
                 && activeColorMode == that.activeColorMode
-                && Objects.equals(hdrCapabilities, that.hdrCapabilities);
+                && Objects.equals(hdrCapabilities, that.hdrCapabilities)
+                && preferredBootDisplayMode == that.preferredBootDisplayMode;
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(supportedDisplayModes, activeDisplayModeId, activeDisplayModeId,
-                    activeColorMode, hdrCapabilities);
+            return Objects.hash(Arrays.hashCode(supportedDisplayModes), activeDisplayModeId,
+                    renderFrameRate, activeColorMode, hdrCapabilities);
         }
     }
 
@@ -1894,11 +1750,6 @@ public final class SurfaceControl implements Parcelable {
      * @hide
      */
     public static final class DisplayMode {
-        /**
-         * Invalid display config id.
-         */
-        public static final int INVALID_DISPLAY_MODE_ID = -1;
-
         public int id;
         public int width;
         public int height;
@@ -1908,6 +1759,7 @@ public final class SurfaceControl implements Parcelable {
         public float refreshRate;
         public long appVsyncOffsetNanos;
         public long presentationDeadlineNanos;
+        public int[] supportedHdrTypes;
 
         /**
          * The config group ID this config is associated to.
@@ -1927,6 +1779,7 @@ public final class SurfaceControl implements Parcelable {
                     + ", refreshRate=" + refreshRate
                     + ", appVsyncOffsetNanos=" + appVsyncOffsetNanos
                     + ", presentationDeadlineNanos=" + presentationDeadlineNanos
+                    + ", supportedHdrTypes=" + Arrays.toString(supportedHdrTypes)
                     + ", group=" + group + "}";
         }
 
@@ -1943,13 +1796,14 @@ public final class SurfaceControl implements Parcelable {
                     && Float.compare(that.refreshRate, refreshRate) == 0
                     && appVsyncOffsetNanos == that.appVsyncOffsetNanos
                     && presentationDeadlineNanos == that.presentationDeadlineNanos
+                    && Arrays.equals(supportedHdrTypes, that.supportedHdrTypes)
                     && group == that.group;
         }
 
         @Override
         public int hashCode() {
             return Objects.hash(id, width, height, xDpi, yDpi, refreshRate, appVsyncOffsetNanos,
-                    presentationDeadlineNanos, group);
+                    presentationDeadlineNanos, group, Arrays.hashCode(supportedHdrTypes));
         }
     }
 
@@ -1966,21 +1820,15 @@ public final class SurfaceControl implements Parcelable {
     /**
      * @hide
      */
-    public static StaticDisplayInfo getStaticDisplayInfo(IBinder displayToken) {
-        if (displayToken == null) {
-            throw new IllegalArgumentException("displayToken must not be null");
-        }
-        return nativeGetStaticDisplayInfo(displayToken);
+    public static StaticDisplayInfo getStaticDisplayInfo(long displayId) {
+        return nativeGetStaticDisplayInfo(displayId);
     }
 
     /**
      * @hide
      */
-    public static DynamicDisplayInfo getDynamicDisplayInfo(IBinder displayToken) {
-        if (displayToken == null) {
-            throw new IllegalArgumentException("displayToken must not be null");
-        }
-        return nativeGetDynamicDisplayInfo(displayToken);
+    public static DynamicDisplayInfo getDynamicDisplayInfo(long displayId) {
+        return nativeGetDynamicDisplayInfo(displayId);
     }
 
     /**
@@ -2021,6 +1869,175 @@ public final class SurfaceControl implements Parcelable {
         return nativeGetDisplayedContentSample(displayToken, maxFrames, timestamp);
     }
 
+    /**
+     * Information about the min and max refresh rate DM would like to set the display to.
+     * @hide
+     */
+    public static final class RefreshRateRange implements Parcelable {
+        public static final String TAG = "RefreshRateRange";
+
+        // The tolerance within which we consider something approximately equals.
+        public static final float FLOAT_TOLERANCE = 0.01f;
+
+        /**
+         * The lowest desired refresh rate.
+         */
+        public float min;
+
+        /**
+         * The highest desired refresh rate.
+         */
+        public float max;
+
+        public RefreshRateRange() {}
+
+        public RefreshRateRange(float min, float max) {
+            if (min < 0 || max < 0 || min > max + FLOAT_TOLERANCE) {
+                Slog.e(TAG, "Wrong values for min and max when initializing RefreshRateRange : "
+                        + min + " " + max);
+                this.min = this.max = 0;
+                return;
+            }
+            if (min > max) {
+                // Min and max are within epsilon of each other, but in the wrong order.
+                float t = min;
+                min = max;
+                max = t;
+            }
+            this.min = min;
+            this.max = max;
+        }
+
+        /**
+         * Checks whether the two objects have the same values.
+         */
+        @Override
+        public boolean equals(Object other) {
+            if (other == this) {
+                return true;
+            }
+
+            if (!(other instanceof RefreshRateRange)) {
+                return false;
+            }
+
+            RefreshRateRange refreshRateRange = (RefreshRateRange) other;
+            return (min == refreshRateRange.min && max == refreshRateRange.max);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(min, max);
+        }
+
+        @Override
+        public String toString() {
+            return "(" + min + " " + max + ")";
+        }
+
+        /**
+         * Copies the supplied object's values to this object.
+         */
+        public void copyFrom(RefreshRateRange other) {
+            this.min = other.min;
+            this.max = other.max;
+        }
+
+        /**
+         * Writes the RefreshRateRange to parce
+         *
+         * @param dest parcel to write the transaction to
+         */
+        @Override
+        public void writeToParcel(@NonNull Parcel dest, @WriteFlags int flags) {
+            dest.writeFloat(min);
+            dest.writeFloat(max);
+        }
+
+        @Override
+        public int describeContents() {
+            return 0;
+        }
+
+        public static final @NonNull Creator<RefreshRateRange> CREATOR =
+                new Creator<RefreshRateRange>() {
+                    @Override
+                    public RefreshRateRange createFromParcel(Parcel in) {
+                        return new RefreshRateRange(in.readFloat(), in.readFloat());
+                    }
+
+                    @Override
+                    public RefreshRateRange[] newArray(int size) {
+                        return new RefreshRateRange[size];
+                    }
+                };
+    }
+
+    /**
+     * Information about the ranges of refresh rates for the display physical refresh rates and the
+     * render frame rate DM would like to set the policy to.
+     * @hide
+     */
+    public static final class RefreshRateRanges {
+        public static final String TAG = "RefreshRateRanges";
+
+        /**
+         *  The range of refresh rates that the display should run at.
+         */
+        public final RefreshRateRange physical;
+
+        /**
+         *  The range of refresh rates that apps should render at.
+         */
+        public final RefreshRateRange render;
+
+        public RefreshRateRanges() {
+            physical = new RefreshRateRange();
+            render = new RefreshRateRange();
+        }
+
+        public RefreshRateRanges(RefreshRateRange physical, RefreshRateRange render) {
+            this.physical = new RefreshRateRange(physical.min, physical.max);
+            this.render = new RefreshRateRange(render.min, render.max);
+        }
+
+        /**
+         * Checks whether the two objects have the same values.
+         */
+        @Override
+        public boolean equals(Object other) {
+            if (other == this) {
+                return true;
+            }
+
+            if (!(other instanceof RefreshRateRanges)) {
+                return false;
+            }
+
+            RefreshRateRanges rates = (RefreshRateRanges) other;
+            return physical.equals(rates.physical) && render.equals(
+                    rates.render);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(physical, render);
+        }
+
+        @Override
+        public String toString() {
+            return "physical: " + physical + " render:  " + render;
+        }
+
+        /**
+         * Copies the supplied object's values to this object.
+         */
+        public void copyFrom(RefreshRateRanges other) {
+            this.physical.copyFrom(other.physical);
+            this.render.copyFrom(other.render);
+        }
+    }
+
 
     /**
      * Contains information about desired display configuration.
@@ -2030,44 +2047,49 @@ public final class SurfaceControl implements Parcelable {
     public static final class DesiredDisplayModeSpecs {
         public int defaultMode;
         /**
-         * The primary refresh rate range represents display manager's general guidance on the
-         * display configs surface flinger will consider when switching refresh rates. Unless
-         * surface flinger has a specific reason to do otherwise, it will stay within this range.
-         */
-        public float primaryRefreshRateMin;
-        public float primaryRefreshRateMax;
-        /**
-         * The app request refresh rate range allows surface flinger to consider more display
-         * configs when switching refresh rates. Although surface flinger will generally stay within
-         * the primary range, specific considerations, such as layer frame rate settings specified
-         * via the setFrameRate() api, may cause surface flinger to go outside the primary
-         * range. Surface flinger never goes outside the app request range. The app request range
-         * will be greater than or equal to the primary refresh rate range, never smaller.
-         */
-        public float appRequestRefreshRateMin;
-        public float appRequestRefreshRateMax;
-
-        /**
          * If true this will allow switching between modes in different display configuration
          * groups. This way the user may see visual interruptions when the display mode changes.
          */
         public boolean allowGroupSwitching;
 
-        public DesiredDisplayModeSpecs() {}
+        /**
+         * The primary physical and render refresh rate ranges represent display manager's general
+         * guidance on the display configs surface flinger will consider when switching refresh
+         * rates and scheduling the frame rate. Unless surface flinger has a specific reason to do
+         * otherwise, it will stay within this range.
+         */
+        public final RefreshRateRanges primaryRanges;
+
+        /**
+         * The app request physical and render refresh rate ranges allow surface flinger to consider
+         * more display configs when switching refresh rates. Although surface flinger will
+         * generally stay within the primary range, specific considerations, such as layer frame
+         * rate settings specified via the setFrameRate() api, may cause surface flinger to go
+         * outside the primary range. Surface flinger never goes outside the app request range.
+         * The app request range will be greater than or equal to the primary refresh rate range,
+         * never smaller.
+         */
+        public final RefreshRateRanges appRequestRanges;
+
+        public DesiredDisplayModeSpecs() {
+            this.primaryRanges = new RefreshRateRanges();
+            this.appRequestRanges = new RefreshRateRanges();
+        }
 
         public DesiredDisplayModeSpecs(DesiredDisplayModeSpecs other) {
+            this.primaryRanges = new RefreshRateRanges();
+            this.appRequestRanges = new RefreshRateRanges();
             copyFrom(other);
         }
 
         public DesiredDisplayModeSpecs(int defaultMode, boolean allowGroupSwitching,
-                float primaryRefreshRateMin, float primaryRefreshRateMax,
-                float appRequestRefreshRateMin, float appRequestRefreshRateMax) {
+                RefreshRateRanges primaryRanges, RefreshRateRanges appRequestRanges) {
             this.defaultMode = defaultMode;
             this.allowGroupSwitching = allowGroupSwitching;
-            this.primaryRefreshRateMin = primaryRefreshRateMin;
-            this.primaryRefreshRateMax = primaryRefreshRateMax;
-            this.appRequestRefreshRateMin = appRequestRefreshRateMin;
-            this.appRequestRefreshRateMax = appRequestRefreshRateMax;
+            this.primaryRanges =
+                    new RefreshRateRanges(primaryRanges.physical, primaryRanges.render);
+            this.appRequestRanges =
+                    new RefreshRateRanges(appRequestRanges.physical, appRequestRanges.render);
         }
 
         @Override
@@ -2080,10 +2102,9 @@ public final class SurfaceControl implements Parcelable {
          */
         public boolean equals(DesiredDisplayModeSpecs other) {
             return other != null && defaultMode == other.defaultMode
-                    && primaryRefreshRateMin == other.primaryRefreshRateMin
-                    && primaryRefreshRateMax == other.primaryRefreshRateMax
-                    && appRequestRefreshRateMin == other.appRequestRefreshRateMin
-                    && appRequestRefreshRateMax == other.appRequestRefreshRateMax;
+                    && allowGroupSwitching == other.allowGroupSwitching
+                    && primaryRanges.equals(other.primaryRanges)
+                    && appRequestRanges.equals(other.appRequestRanges);
         }
 
         @Override
@@ -2096,18 +2117,17 @@ public final class SurfaceControl implements Parcelable {
          */
         public void copyFrom(DesiredDisplayModeSpecs other) {
             defaultMode = other.defaultMode;
-            primaryRefreshRateMin = other.primaryRefreshRateMin;
-            primaryRefreshRateMax = other.primaryRefreshRateMax;
-            appRequestRefreshRateMin = other.appRequestRefreshRateMin;
-            appRequestRefreshRateMax = other.appRequestRefreshRateMax;
+            allowGroupSwitching = other.allowGroupSwitching;
+            primaryRanges.copyFrom(other.primaryRanges);
+            appRequestRanges.copyFrom(other.appRequestRanges);
         }
 
         @Override
         public String toString() {
-            return String.format("defaultConfig=%d primaryRefreshRateRange=[%.0f %.0f]"
-                            + " appRequestRefreshRateRange=[%.0f %.0f]",
-                    defaultMode, primaryRefreshRateMin, primaryRefreshRateMax,
-                    appRequestRefreshRateMin, appRequestRefreshRateMax);
+            return "defaultMode=" + defaultMode
+                    + " allowGroupSwitching=" + allowGroupSwitching
+                    + " primaryRanges=" + primaryRanges
+                    + " appRequestRanges=" + appRequestRanges;
         }
     }
 
@@ -2229,22 +2249,51 @@ public final class SurfaceControl implements Parcelable {
         ColorSpace[] colorSpaces = { srgb, srgb };
         if (dataspaces.length == 2) {
             for (int i = 0; i < 2; ++i) {
-                switch(dataspaces[i]) {
-                    case INTERNAL_DATASPACE_DISPLAY_P3:
-                        colorSpaces[i] = ColorSpace.get(ColorSpace.Named.DISPLAY_P3);
-                        break;
-                    case INTERNAL_DATASPACE_SCRGB:
-                        colorSpaces[i] = ColorSpace.get(ColorSpace.Named.EXTENDED_SRGB);
-                        break;
-                    case INTERNAL_DATASPACE_SRGB:
-                    // Other dataspace is not recognized, use SRGB color space instead,
-                    // the default value of the array is already SRGB, thus do nothing.
-                    default:
-                        break;
+                ColorSpace cs = ColorSpace.getFromDataSpace(dataspaces[i]);
+                if (cs != null) {
+                    colorSpaces[i] = cs;
                 }
             }
         }
         return colorSpaces;
+    }
+
+    /**
+     * @return the overlay properties of the device
+     * @hide
+     */
+    public static OverlayProperties getOverlaySupport() {
+        return nativeGetOverlaySupport();
+    }
+
+    /**
+     * @hide
+     */
+    public static boolean getBootDisplayModeSupport() {
+        return nativeGetBootDisplayModeSupport();
+    }
+
+    /** There is no associated getter for this method.  When this is set, the display is expected
+     * to start up in this mode next time the device reboots.
+     * @hide
+     */
+    public static void setBootDisplayMode(IBinder displayToken, int displayModeId) {
+        if (displayToken == null) {
+            throw new IllegalArgumentException("displayToken must not be null");
+        }
+
+        nativeSetBootDisplayMode(displayToken, displayModeId);
+    }
+
+    /**
+     * @hide
+     */
+    public static void clearBootDisplayMode(IBinder displayToken) {
+        if (displayToken == null) {
+            throw new IllegalArgumentException("displayToken must not be null");
+        }
+
+        nativeClearBootDisplayMode(displayToken);
     }
 
     /**
@@ -2270,229 +2319,89 @@ public final class SurfaceControl implements Parcelable {
     }
 
     /**
-     * @hide
-     */
-    @UnsupportedAppUsage
-    public static void setDisplayProjection(IBinder displayToken,
-            int orientation, Rect layerStackRect, Rect displayRect) {
-        synchronized (SurfaceControl.class) {
-            sGlobalTransaction.setDisplayProjection(displayToken, orientation,
-                    layerStackRect, displayRect);
-        }
-    }
-
-    /**
-     * @hide
-     */
-    @UnsupportedAppUsage
-    public static void setDisplayLayerStack(IBinder displayToken, int layerStack) {
-        synchronized (SurfaceControl.class) {
-            sGlobalTransaction.setDisplayLayerStack(displayToken, layerStack);
-        }
-    }
-
-    /**
-     * @hide
-     */
-    @UnsupportedAppUsage
-    public static void setDisplaySurface(IBinder displayToken, Surface surface) {
-        synchronized (SurfaceControl.class) {
-            sGlobalTransaction.setDisplaySurface(displayToken, surface);
-        }
-    }
-
-    /**
-     * @hide
-     */
-    public static void setDisplaySize(IBinder displayToken, int width, int height) {
-        synchronized (SurfaceControl.class) {
-            sGlobalTransaction.setDisplaySize(displayToken, width, height);
-        }
-    }
-
-    /**
-     * Overrides HDR modes for a display device.
+     * Because this API is now going through {@link DisplayManager}, orientation and displayRect
+     * will automatically be computed based on configuration changes. Because of this, the params
+     * orientation and displayRect are ignored
      *
-     * If the caller does not have ACCESS_SURFACE_FLINGER permission, this will throw a Security
-     * Exception.
      * @hide
      */
-    @TestApi
-    public static void overrideHdrTypes(@NonNull IBinder displayToken, @NonNull int[] modes) {
-        nativeOverrideHdrTypes(displayToken, modes);
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.TIRAMISU,
+            publicAlternatives = "Use {@code VirtualDisplay#resize(int, int, int)} instead.",
+            trackingBug = 247078497)
+    public static void setDisplayProjection(IBinder displayToken, int orientation,
+            Rect layerStackRect, Rect displayRect) {
+        DisplayManagerGlobal.getInstance().resizeVirtualDisplay(
+                IVirtualDisplayCallback.Stub.asInterface(displayToken), layerStackRect.width(),
+                layerStackRect.height(), 1);
     }
 
     /**
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.TIRAMISU,
+            publicAlternatives = "Use {@code MediaProjection#createVirtualDisplay()} with flag "
+                    + " {@code VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR} for mirroring instead.",
+            trackingBug = 247078497)
+    public static void setDisplayLayerStack(IBinder displayToken, int layerStack) {
+        IBinder b = ServiceManager.getService(Context.DISPLAY_SERVICE);
+        if (b == null) {
+            throw new UnsupportedOperationException();
+        }
+
+        IDisplayManager dm = IDisplayManager.Stub.asInterface(b);
+        try {
+            dm.setDisplayIdToMirror(displayToken, layerStack);
+        } catch (RemoteException e) {
+            throw new UnsupportedOperationException(e);
+        }
+    }
+
+    /**
+     * @hide
+     */
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.TIRAMISU,
+            publicAlternatives = "Use {@code VirtualDisplay#setSurface(Surface)} instead.",
+            trackingBug = 247078497)
+    public static void setDisplaySurface(IBinder displayToken, Surface surface) {
+        IVirtualDisplayCallback virtualDisplayCallback =
+                IVirtualDisplayCallback.Stub.asInterface(displayToken);
+        DisplayManagerGlobal dm = DisplayManagerGlobal.getInstance();
+        dm.setVirtualDisplaySurface(virtualDisplayCallback, surface);
+    }
+
+    /**
+     * Secure is no longer supported because this is only called from outside system which cannot
+     * create secure displays.
+     * @hide
+     */
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.TIRAMISU,
+            publicAlternatives = "Use {@code MediaProjection#createVirtualDisplay()} or "
+                    + "{@code DisplayManager#createVirtualDisplay()} instead.",
+            trackingBug = 247078497)
     public static IBinder createDisplay(String name, boolean secure) {
         if (name == null) {
             throw new IllegalArgumentException("name must not be null");
         }
-        return nativeCreateDisplay(name, secure);
+
+        // We don't have a size yet so pass in 1 for width and height since 0 is invalid
+        VirtualDisplay vd = DisplayManager.createVirtualDisplay(name, 1 /* width */, 1 /* height */,
+                INVALID_DISPLAY, null /* Surface */);
+        return vd == null ? null : vd.getToken().asBinder();
     }
 
     /**
      * @hide
      */
-    @UnsupportedAppUsage
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.TIRAMISU,
+            publicAlternatives = "Use {@code VirtualDisplay#release()} instead.",
+            trackingBug = 247078497)
     public static void destroyDisplay(IBinder displayToken) {
         if (displayToken == null) {
             throw new IllegalArgumentException("displayToken must not be null");
         }
-        nativeDestroyDisplay(displayToken);
-    }
 
-    /**
-     * @hide
-     */
-    public static long[] getPhysicalDisplayIds() {
-        return nativeGetPhysicalDisplayIds();
-    }
-
-    /**
-     * Exposed to identify the correct display to apply the primary display orientation. Avoid using
-     * for any other purpose.
-     * @hide
-     */
-    public static long getPrimaryPhysicalDisplayId() {
-        return nativeGetPrimaryPhysicalDisplayId();
-    }
-
-    /**
-     * @hide
-     */
-    public static IBinder getPhysicalDisplayToken(long physicalDisplayId) {
-        return nativeGetPhysicalDisplayToken(physicalDisplayId);
-    }
-
-    /**
-     * TODO(b/116025192): Remove this stopgap once framework is display-agnostic.
-     *
-     * @hide
-     */
-    @TestApi
-    @NonNull
-    public static IBinder getInternalDisplayToken() {
-        final long[] physicalDisplayIds = getPhysicalDisplayIds();
-        if (physicalDisplayIds.length == 0) {
-            return null;
-        }
-        return getPhysicalDisplayToken(physicalDisplayIds[0]);
-    }
-
-    /**
-     * @param captureArgs Arguments about how to take the screenshot
-     * @param captureListener A listener to receive the screenshot callback
-     * @hide
-     */
-    public static int captureDisplay(@NonNull DisplayCaptureArgs captureArgs,
-            @NonNull ScreenCaptureListener captureListener) {
-        return nativeCaptureDisplay(captureArgs, captureListener);
-    }
-
-    /**
-     * Captures all the surfaces in a display and returns a {@link ScreenshotHardwareBuffer} with
-     * the content.
-     *
-     * @hide
-     */
-    public static ScreenshotHardwareBuffer captureDisplay(DisplayCaptureArgs captureArgs) {
-        SyncScreenCaptureListener screenCaptureListener = new SyncScreenCaptureListener();
-
-        int status = captureDisplay(captureArgs, screenCaptureListener);
-        if (status != 0) {
-            return null;
-        }
-
-        return screenCaptureListener.waitForScreenshot();
-    }
-
-    /**
-     * Captures a layer and its children and returns a {@link HardwareBuffer} with the content.
-     *
-     * @param layer            The root layer to capture.
-     * @param sourceCrop       The portion of the root surface to capture; caller may pass in 'new
-     *                         Rect()' or null if no cropping is desired. If the root layer does not
-     *                         have a buffer or a crop set, then a non-empty source crop must be
-     *                         specified.
-     * @param frameScale       The desired scale of the returned buffer; the raw
-     *                         screen will be scaled up/down.
-     *
-     * @return Returns a HardwareBuffer that contains the layer capture.
-     * @hide
-     */
-    public static ScreenshotHardwareBuffer captureLayers(SurfaceControl layer, Rect sourceCrop,
-            float frameScale) {
-        return captureLayers(layer, sourceCrop, frameScale, PixelFormat.RGBA_8888);
-    }
-
-    /**
-     * Captures a layer and its children and returns a {@link HardwareBuffer} with the content.
-     *
-     * @param layer            The root layer to capture.
-     * @param sourceCrop       The portion of the root surface to capture; caller may pass in 'new
-     *                         Rect()' or null if no cropping is desired. If the root layer does not
-     *                         have a buffer or a crop set, then a non-empty source crop must be
-     *                         specified.
-     * @param frameScale       The desired scale of the returned buffer; the raw
-     *                         screen will be scaled up/down.
-     * @param format           The desired pixel format of the returned buffer.
-     *
-     * @return Returns a HardwareBuffer that contains the layer capture.
-     * @hide
-     */
-    public static ScreenshotHardwareBuffer captureLayers(SurfaceControl layer, Rect sourceCrop,
-            float frameScale, int format) {
-        LayerCaptureArgs captureArgs = new LayerCaptureArgs.Builder(layer)
-                .setSourceCrop(sourceCrop)
-                .setFrameScale(frameScale)
-                .setPixelFormat(format)
-                .build();
-
-        return captureLayers(captureArgs);
-    }
-
-    /**
-     * @hide
-     */
-    public static ScreenshotHardwareBuffer captureLayers(LayerCaptureArgs captureArgs) {
-        SyncScreenCaptureListener screenCaptureListener = new SyncScreenCaptureListener();
-
-        int status = captureLayers(captureArgs, screenCaptureListener);
-        if (status != 0) {
-            return null;
-        }
-
-        return screenCaptureListener.waitForScreenshot();
-    }
-
-    /**
-     * Like {@link #captureLayers(SurfaceControl, Rect, float, int)} but with an array of layer
-     * handles to exclude.
-     * @hide
-     */
-    public static ScreenshotHardwareBuffer captureLayersExcluding(SurfaceControl layer,
-            Rect sourceCrop, float frameScale, int format, SurfaceControl[] exclude) {
-        LayerCaptureArgs captureArgs = new LayerCaptureArgs.Builder(layer)
-                .setSourceCrop(sourceCrop)
-                .setFrameScale(frameScale)
-                .setPixelFormat(format)
-                .setExcludeLayers(exclude)
-                .build();
-
-        return captureLayers(captureArgs);
-    }
-
-    /**
-     * @param captureArgs Arguments about how to take the screenshot
-     * @param captureListener A listener to receive the screenshot callback
-     * @hide
-     */
-    public static int captureLayers(@NonNull LayerCaptureArgs captureArgs,
-            @NonNull ScreenCaptureListener captureListener) {
-        return nativeCaptureLayers(captureArgs, captureListener);
+        DisplayManagerGlobal.getInstance().releaseVirtualDisplay(
+                IVirtualDisplayCallback.Stub.asInterface(displayToken));
     }
 
     /**
@@ -2599,6 +2508,7 @@ public final class SurfaceControl implements Parcelable {
     public static SurfaceControl mirrorSurface(SurfaceControl mirrorOf) {
         long nativeObj = nativeMirrorSurface(mirrorOf.mNativeObject);
         SurfaceControl sc = new SurfaceControl();
+        sc.mName = mirrorOf.mName + " (mirror)";
         sc.assignNativeObject(nativeObj, "mirrorSurface");
         return sc;
     }
@@ -2640,6 +2550,22 @@ public final class SurfaceControl implements Parcelable {
     }
 
     /**
+     * Returns whether/how a display supports DISPLAY_DECORATION.
+     *
+     * @param displayToken
+     *      The token for the display.
+     *
+     * @return A class describing how the display supports DISPLAY_DECORATION or null if it does
+     * not.
+     *
+     * TODO (b/218524164): Move this out of SurfaceControl.
+     * @hide
+     */
+    public static DisplayDecorationSupport getDisplayDecorationSupport(IBinder displayToken) {
+        return nativeGetDisplayDecorationSupport(displayToken);
+    }
+
+    /**
      * Adds a callback to be informed about SF's jank classification for a specific surface.
      * @hide
      */
@@ -2661,6 +2587,98 @@ public final class SurfaceControl implements Parcelable {
      */
     public static int getGPUContextPriority() {
         return nativeGetGPUContextPriority();
+    }
+
+    /**
+     * Lets surfaceFlinger know the boot procedure is completed.
+     * @hide
+     */
+    public static boolean bootFinished() {
+        return nativeBootFinished();
+    }
+
+    /**
+     * Interface to handle request to
+     * {@link SurfaceControl.Transaction#addTransactionCommittedListener(Executor, TransactionCommittedListener)}
+     */
+    public interface TransactionCommittedListener {
+        /**
+         * Invoked when the transaction has been committed in SurfaceFlinger.
+         */
+        void onTransactionCommitted();
+    }
+
+    /**
+     * Threshold values that are sent with
+     * {@link Transaction#setTrustedPresentationCallback(SurfaceControl,
+     * TrustedPresentationThresholds, Executor, Consumer)}
+     */
+    public static final class TrustedPresentationThresholds {
+        private final float mMinAlpha;
+        private final float mMinFractionRendered;
+        private final int mStabilityRequirementMs;
+
+        /**
+         * Creates a TrustedPresentationThresholds that's used when calling
+         * {@link Transaction#setTrustedPresentationCallback(SurfaceControl,
+         * TrustedPresentationThresholds, Executor, Consumer)}
+         *
+         * @param minAlpha               The min alpha the {@link SurfaceControl} is required to
+         *                               have to be considered inside the threshold.
+         * @param minFractionRendered    The min fraction of the SurfaceControl that was resented
+         *                               to the user to be considered inside the threshold.
+         * @param stabilityRequirementMs The time in milliseconds required for the
+         *                               {@link SurfaceControl} to be in the threshold.
+         * @throws IllegalArgumentException If threshold values are invalid.
+         */
+        public TrustedPresentationThresholds(
+                @FloatRange(from = 0f, fromInclusive = false, to = 1f) float minAlpha,
+                @FloatRange(from = 0f, fromInclusive = false, to = 1f) float minFractionRendered,
+                @IntRange(from = 1) int stabilityRequirementMs) {
+            mMinAlpha = minAlpha;
+            mMinFractionRendered = minFractionRendered;
+            mStabilityRequirementMs = stabilityRequirementMs;
+
+            checkValid();
+        }
+
+        private void checkValid() {
+            if (mMinAlpha <= 0 || mMinFractionRendered <= 0 || mStabilityRequirementMs < 1) {
+                throw new IllegalArgumentException(
+                        "TrustedPresentationThresholds values are invalid");
+            }
+        }
+    }
+
+    /**
+     * Register a TrustedPresentationCallback for a particular SurfaceControl so it can be notified
+     * when the specified Threshold has been crossed.
+     *
+     * @hide
+     */
+    public abstract static class TrustedPresentationCallback {
+        private final long mNativeObject;
+
+        private static final NativeAllocationRegistry sRegistry =
+                NativeAllocationRegistry.createMalloced(
+                        TrustedPresentationCallback.class.getClassLoader(),
+                        getNativeTrustedPresentationCallbackFinalizer());
+
+        private final Runnable mFreeNativeResources;
+
+        private TrustedPresentationCallback() {
+            mNativeObject = nativeCreateTpc(this);
+            mFreeNativeResources = sRegistry.registerNativeAllocation(this, mNativeObject);
+        }
+
+        /**
+         * Invoked when the SurfaceControl that this TrustedPresentationCallback was registered for
+         * enters or exits the threshold bounds.
+         *
+         * @param inTrustedPresentationState true when the SurfaceControl entered the
+         *                                   presentation state, false when it has left.
+         */
+        public abstract void onTrustedPresentationChanged(boolean inTrustedPresentationState);
     }
 
     /**
@@ -2700,13 +2718,33 @@ public final class SurfaceControl implements Parcelable {
          * is allowed as a convenience.
          */
         public Transaction() {
-            mNativeObject = nativeCreateTransaction();
-            mFreeNativeResources
-                = sRegistry.registerNativeAllocation(this, mNativeObject);
+            this(nativeCreateTransaction());
+        }
+
+        private Transaction(long nativeObject) {
+            mNativeObject = nativeObject;
+            mFreeNativeResources =
+                    sRegistry.registerNativeAllocation(this, mNativeObject);
         }
 
         private Transaction(Parcel in) {
             readFromParcel(in);
+        }
+
+        /**
+         *
+         * @hide
+         */
+        public static void setDefaultApplyToken(IBinder token) {
+            nativeSetDefaultApplyToken(token);
+        }
+
+        /**
+         *
+         * @hide
+         */
+        public static IBinder getDefaultApplyToken() {
+            return nativeGetDefaultApplyToken();
         }
 
         /**
@@ -2809,7 +2847,7 @@ public final class SurfaceControl implements Parcelable {
          */
         @NonNull
         public Transaction setFrameRateSelectionPriority(@NonNull SurfaceControl sc, int priority) {
-            sc.checkNotReleased();
+            checkPreconditions(sc);
             nativeSetFrameRateSelectionPriority(mNativeObject, sc.mNativeObject, priority);
             return this;
         }
@@ -2843,12 +2881,36 @@ public final class SurfaceControl implements Parcelable {
         }
 
         /**
-         * @hide
+         * Sets the SurfaceControl to the specified position relative to the parent
+         * SurfaceControl
+         *
+         * @param sc The SurfaceControl to change position
+         * @param x the X position
+         * @param y the Y position
+         * @return this transaction
          */
-        @UnsupportedAppUsage
-        public Transaction setPosition(SurfaceControl sc, float x, float y) {
+        @NonNull
+        public Transaction setPosition(@NonNull SurfaceControl sc, float x, float y) {
             checkPreconditions(sc);
             nativeSetPosition(mNativeObject, sc.mNativeObject, x, y);
+            return this;
+        }
+
+        /**
+         * Sets the SurfaceControl to the specified scale with (0, 0) as the center point
+         * of the scale.
+         *
+         * @param sc The SurfaceControl to change scale
+         * @param scaleX the X scale
+         * @param scaleY the Y scale
+         * @return this transaction
+         */
+        @NonNull
+        public Transaction setScale(@NonNull SurfaceControl sc, float scaleX, float scaleY) {
+            checkPreconditions(sc);
+            Preconditions.checkArgument(scaleX >= 0, "Negative value passed in for scaleX");
+            Preconditions.checkArgument(scaleY >= 0, "Negative value passed in for scaleY");
+            nativeSetScale(mNativeObject, sc.mNativeObject, scaleX, scaleY);
             return this;
         }
 
@@ -2866,7 +2928,6 @@ public final class SurfaceControl implements Parcelable {
                 @IntRange(from = 0) int w, @IntRange(from = 0) int h) {
             checkPreconditions(sc);
             mResizedSurfaces.put(sc, new Point(w, h));
-            nativeSetSize(mNativeObject, sc.mNativeObject, w, h);
             return this;
         }
 
@@ -2964,13 +3025,14 @@ public final class SurfaceControl implements Parcelable {
         }
 
         /**
-         * Waits until any changes to input windows have been sent from SurfaceFlinger to
-         * InputFlinger before returning.
+         * Adds a callback that is called after WindowInfosListeners from the systems server are
+         * complete. This is primarily used to ensure that InputDispatcher::setInputWindowsLocked
+         * has been called before running the added callback.
          *
          * @hide
          */
-        public Transaction syncInputWindows() {
-            nativeSyncInputWindows(mNativeObject);
+        public Transaction addWindowInfosReportedListener(@NonNull Runnable listener) {
+            nativeAddWindowInfosReportedListener(mNativeObject, listener);
             return this;
         }
 
@@ -2984,6 +3046,10 @@ public final class SurfaceControl implements Parcelable {
          * @param destFrame The destination rectangle in parent space. Or null for the source frame.
          * @param orientation The buffer rotation
          * @return This transaction object.
+         * @deprecated Use {@link #setCrop(SurfaceControl, Rect)},
+         * {@link #setBufferTransform(SurfaceControl, int)},
+         * {@link #setPosition(SurfaceControl, float, float)} and
+         * {@link #setScale(SurfaceControl, float, float)} instead.
          */
         @NonNull
         public Transaction setGeometry(@NonNull SurfaceControl sc, @Nullable Rect sourceCrop,
@@ -3059,11 +3125,36 @@ public final class SurfaceControl implements Parcelable {
          * @param sc   SurfaceControl to set crop of.
          * @param crop Bounds of the crop to apply.
          * @hide
+         * @deprecated Use {@link #setCrop(SurfaceControl, Rect)} instead.
          */
+        @Deprecated
         @UnsupportedAppUsage
         public Transaction setWindowCrop(SurfaceControl sc, Rect crop) {
             checkPreconditions(sc);
             if (crop != null) {
+                nativeSetWindowCrop(mNativeObject, sc.mNativeObject,
+                        crop.left, crop.top, crop.right, crop.bottom);
+            } else {
+                nativeSetWindowCrop(mNativeObject, sc.mNativeObject, 0, 0, 0, 0);
+            }
+
+            return this;
+        }
+
+        /**
+         * Bounds the surface and its children to the bounds specified. Size of the surface will be
+         * ignored and only the crop and buffer size will be used to determine the bounds of the
+         * surface. If no crop is specified and the surface has no buffer, the surface bounds is
+         * only constrained by the size of its parent bounds.
+         *
+         * @param sc   SurfaceControl to set crop of.
+         * @param crop Bounds of the crop to apply.
+         * @return this This transaction for chaining
+         */
+        public @NonNull Transaction setCrop(@NonNull SurfaceControl sc, @Nullable Rect crop) {
+            checkPreconditions(sc);
+            if (crop != null) {
+                Preconditions.checkArgument(crop.isValid(), "Crop isn't valid.");
                 nativeSetWindowCrop(mNativeObject, sc.mNativeObject,
                         crop.left, crop.top, crop.right, crop.bottom);
             } else {
@@ -3218,11 +3309,49 @@ public final class SurfaceControl implements Parcelable {
         }
 
         /**
-         * Sets the opacity of the surface.  Setting the flag is equivalent to creating the
-         * Surface with the {@link #OPAQUE} flag.
+         * Sets whether the surface should take advantage of display decoration optimizations.
          * @hide
          */
-        public Transaction setOpaque(SurfaceControl sc, boolean isOpaque) {
+        public Transaction setDisplayDecoration(SurfaceControl sc, boolean displayDecoration) {
+            checkPreconditions(sc);
+            if (displayDecoration) {
+                nativeSetFlags(mNativeObject, sc.mNativeObject, DISPLAY_DECORATION,
+                        DISPLAY_DECORATION);
+            } else {
+                nativeSetFlags(mNativeObject, sc.mNativeObject, 0, DISPLAY_DECORATION);
+            }
+            return this;
+        }
+
+        /**
+         * Indicates whether the surface must be considered opaque, even if its pixel format is
+         * set to translucent. This can be useful if an application needs full RGBA 8888 support
+         * for instance but will still draw every pixel opaque.
+         * <p>
+         * This flag only determines whether opacity will be sampled from the alpha channel.
+         * Plane-alpha from calls to setAlpha() can still result in blended composition
+         * regardless of the opaque setting.
+         *
+         * Combined effects are (assuming a buffer format with an alpha channel):
+         * <ul>
+         * <li>OPAQUE + alpha(1.0) == opaque composition
+         * <li>OPAQUE + alpha(0.x) == blended composition
+         * <li>OPAQUE + alpha(0.0) == no composition
+         * <li>!OPAQUE + alpha(1.0) == blended composition
+         * <li>!OPAQUE + alpha(0.x) == blended composition
+         * <li>!OPAQUE + alpha(0.0) == no composition
+         * </ul>
+         * If the underlying buffer lacks an alpha channel, it is as if setOpaque(true)
+         * were set automatically.
+         *
+         * @see Builder#setOpaque(boolean)
+         *
+         * @param sc The SurfaceControl to update
+         * @param isOpaque true if the buffer's alpha should be ignored, false otherwise
+         * @return this
+         */
+        @NonNull
+        public Transaction setOpaque(@NonNull SurfaceControl sc, boolean isOpaque) {
             checkPreconditions(sc);
             if (isOpaque) {
                 nativeSetFlags(mNativeObject, sc.mNativeObject, SURFACE_OPAQUE, SURFACE_OPAQUE);
@@ -3323,6 +3452,7 @@ public final class SurfaceControl implements Parcelable {
           *
           * @hide
           */
+        @RequiresPermission(Manifest.permission.WAKEUP_SURFACE_FLINGER)
         public Transaction setEarlyWakeupStart() {
             nativeSetEarlyWakeupStart(mNativeObject);
             return this;
@@ -3333,9 +3463,19 @@ public final class SurfaceControl implements Parcelable {
          *
          * @hide
          */
+        @RequiresPermission(Manifest.permission.WAKEUP_SURFACE_FLINGER)
         public Transaction setEarlyWakeupEnd() {
             nativeSetEarlyWakeupEnd(mNativeObject);
             return this;
+        }
+
+        /**
+         * @hide
+         * @return The transaction's current id.
+         *         The id changed every time the transaction is applied.
+         */
+        public long getId() {
+            return nativeGetTransactionId(mNativeObject);
         }
 
         /**
@@ -3430,6 +3570,8 @@ public final class SurfaceControl implements Parcelable {
          *                                black screen for a second or two. This parameter is
          *                                ignored when <code>frameRate</code> is 0.
          * @return This transaction object.
+         *
+         * @see #clearFrameRate(SurfaceControl)
          */
         @NonNull
         public Transaction setFrameRate(@NonNull SurfaceControl sc,
@@ -3439,6 +3581,49 @@ public final class SurfaceControl implements Parcelable {
             checkPreconditions(sc);
             nativeSetFrameRate(mNativeObject, sc.mNativeObject, frameRate, compatibility,
                     changeFrameRateStrategy);
+            return this;
+        }
+
+        /**
+         * Clears the frame rate which was set for the surface {@link SurfaceControl}.
+         *
+         * <p>This is equivalent to calling {@link #setFrameRate(SurfaceControl, float, int, int)}
+         * using {@code 0} for {@code frameRate}.
+         * <p>
+         * Note that this only has an effect for surfaces presented on the display. If this
+         * surface is consumed by something other than the system compositor, e.g. a media
+         * codec, this call has no effect.
+         *
+         * @param sc The SurfaceControl to clear the frame rate of.
+         * @return This transaction object.
+         *
+         * @see #setFrameRate(SurfaceControl, float, int)
+         */
+        @NonNull
+        public Transaction clearFrameRate(@NonNull SurfaceControl sc) {
+            checkPreconditions(sc);
+            nativeSetFrameRate(mNativeObject, sc.mNativeObject, 0.0f,
+                    Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                    Surface.CHANGE_FRAME_RATE_ALWAYS);
+            return this;
+        }
+
+        /**
+         * Sets the default frame rate compatibility for the surface {@link SurfaceControl}
+         *
+         * @param sc The SurfaceControl to specify the frame rate of.
+         * @param compatibility The frame rate compatibility of this surface. The compatibility
+         *               value may influence the system's choice of display frame rate.
+         *
+         * @return This transaction object.
+         *
+         * @hide
+         */
+        @NonNull
+        public Transaction setDefaultFrameRateCompatibility(@NonNull SurfaceControl sc,
+                @Surface.FrameRateCompatibility int compatibility) {
+            checkPreconditions(sc);
+            nativeSetDefaultFrameRateCompatibility(mNativeObject, sc.mNativeObject, compatibility);
             return this;
         }
 
@@ -3455,28 +3640,18 @@ public final class SurfaceControl implements Parcelable {
          */
         public Transaction setFocusedWindow(@NonNull IBinder token, String windowName,
                 int displayId) {
-            nativeSetFocusedWindow(mNativeObject, token,  windowName,
-                    null /* focusedToken */, null /* focusedWindowName */, displayId);
+            nativeSetFocusedWindow(mNativeObject, token, windowName, displayId);
             return this;
         }
 
         /**
-         * Set focus on the window identified by the input {@code token} if the window identified by
-         * the input {@code focusedToken} is currently focused. If the {@code focusedToken} does not
-         * have focus, the request is dropped.
-         *
-         * This is used by forward focus transfer requests from clients that host embedded windows,
-         * and want to transfer focus to/from them.
-         *
+         * Removes the input focus from the current window which is having the input focus. Should
+         * only be called when the current focused app is not responding and the current focused
+         * window is not beloged to the current focused app.
          * @hide
          */
-        public Transaction requestFocusTransfer(@NonNull IBinder token,
-                                                String windowName,
-                                                @NonNull IBinder focusedToken,
-                                                String focusedWindowName,
-                                                int displayId) {
-            nativeSetFocusedWindow(mNativeObject, token, windowName, focusedToken,
-                    focusedWindowName, displayId);
+        public Transaction removeCurrentInputFocus(int displayId) {
+            nativeRemoveCurrentInputFocus(mNativeObject, displayId);
             return this;
         }
 
@@ -3501,10 +3676,182 @@ public final class SurfaceControl implements Parcelable {
          * created as type {@link #FX_SURFACE_BLAST}
          *
          * @hide
+         * @deprecated Use {@link #setBuffer(SurfaceControl, HardwareBuffer)} instead
          */
+        @Deprecated
         public Transaction setBuffer(SurfaceControl sc, GraphicBuffer buffer) {
+            return setBuffer(sc, HardwareBuffer.createFromGraphicBuffer(buffer));
+        }
+
+        /**
+         * Updates the HardwareBuffer displayed for the SurfaceControl.
+         *
+         * Note that the buffer must be allocated with {@link HardwareBuffer#USAGE_COMPOSER_OVERLAY}
+         * as well as {@link HardwareBuffer#USAGE_GPU_SAMPLED_IMAGE} as the surface control might
+         * be composited using either an overlay or using the GPU.
+         *
+         * @param sc The SurfaceControl to update
+         * @param buffer The buffer to be displayed
+         * @return this
+         */
+        public @NonNull Transaction setBuffer(@NonNull SurfaceControl sc,
+                @Nullable HardwareBuffer buffer) {
+            return setBuffer(sc, buffer, null);
+        }
+
+        /**
+         * Unsets the buffer for the SurfaceControl in the current Transaction. This will not clear
+         * the buffer being rendered, but resets the buffer state in the Transaction only. The call
+         * will also invoke the release callback.
+         *
+         * Note, this call is different from passing a null buffer to
+         * {@link SurfaceControl.Transaction#setBuffer} which will release the last displayed
+         * buffer.
+         *
+         * @hide
+         */
+        public Transaction unsetBuffer(SurfaceControl sc) {
+            nativeUnsetBuffer(mNativeObject, sc.mNativeObject);
+            return this;
+        }
+
+        /**
+         * Updates the HardwareBuffer displayed for the SurfaceControl.
+         *
+         * Note that the buffer must be allocated with {@link HardwareBuffer#USAGE_COMPOSER_OVERLAY}
+         * as well as {@link HardwareBuffer#USAGE_GPU_SAMPLED_IMAGE} as the surface control might
+         * be composited using either an overlay or using the GPU.
+         *
+         * A presentation fence may be passed to improve performance by allowing the buffer
+         * to complete rendering while it is waiting for the transaction to be applied.
+         * For example, if the buffer is being produced by rendering with OpenGL ES then
+         * a fence created with
+         * {@link android.opengl.EGLExt#eglDupNativeFenceFDANDROID(EGLDisplay, EGLSync)} can be
+         * used to allow the GPU rendering to be concurrent with the transaction. The compositor
+         * will wait for the fence to be signaled before the buffer is displayed. If multiple
+         * buffers are set as part of the same transaction, the presentation fences of all of them
+         * must signal before any buffer is displayed. That is, the entire transaction is delayed
+         * until all presentation fences have signaled, ensuring the transaction remains consistent.
+         *
+         * @param sc The SurfaceControl to update
+         * @param buffer The buffer to be displayed. Pass in a null buffer to release the last
+         * displayed buffer.
+         * @param fence The presentation fence. If null or invalid, this is equivalent to
+         *              {@link #setBuffer(SurfaceControl, HardwareBuffer)}
+         * @return this
+         */
+        public @NonNull Transaction setBuffer(@NonNull SurfaceControl sc,
+                @Nullable HardwareBuffer buffer, @Nullable SyncFence fence) {
+            return setBuffer(sc, buffer, fence, null);
+        }
+
+        /**
+         * Updates the HardwareBuffer displayed for the SurfaceControl.
+         *
+         * Note that the buffer must be allocated with {@link HardwareBuffer#USAGE_COMPOSER_OVERLAY}
+         * as well as {@link HardwareBuffer#USAGE_GPU_SAMPLED_IMAGE} as the surface control might
+         * be composited using either an overlay or using the GPU.
+         *
+         * A presentation fence may be passed to improve performance by allowing the buffer
+         * to complete rendering while it is waiting for the transaction to be applied.
+         * For example, if the buffer is being produced by rendering with OpenGL ES then
+         * a fence created with
+         * {@link android.opengl.EGLExt#eglDupNativeFenceFDANDROID(EGLDisplay, EGLSync)} can be
+         * used to allow the GPU rendering to be concurrent with the transaction. The compositor
+         * will wait for the fence to be signaled before the buffer is displayed. If multiple
+         * buffers are set as part of the same transaction, the presentation fences of all of them
+         * must signal before any buffer is displayed. That is, the entire transaction is delayed
+         * until all presentation fences have signaled, ensuring the transaction remains consistent.
+         *
+         * A releaseCallback may be passed to know when the buffer is safe to be reused. This
+         * is recommended when attempting to render continuously using SurfaceControl transactions
+         * instead of through {@link Surface}, as it provides a safe & reliable way to know when
+         * a buffer can be re-used. The callback will be invoked with a {@link SyncFence} which,
+         * if {@link SyncFence#isValid() valid}, must be waited on prior to using the buffer. This
+         * can either be done directly with {@link SyncFence#awaitForever()} or it may be done
+         * indirectly such as passing it as a release fence to
+         * {@link android.media.Image#setFence(SyncFence)} when using
+         * {@link android.media.ImageReader}.
+         *
+         * @param sc The SurfaceControl to update
+         * @param buffer The buffer to be displayed
+         * @param fence The presentation fence. If null or invalid, this is equivalent to
+         *              {@link #setBuffer(SurfaceControl, HardwareBuffer)}
+         * @param releaseCallback The callback to invoke when the buffer being set has been released
+         *                        by a later transaction. That is, the point at which it is safe
+         *                        to re-use the buffer.
+         * @return this
+         */
+        public @NonNull Transaction setBuffer(@NonNull SurfaceControl sc,
+                @Nullable HardwareBuffer buffer, @Nullable SyncFence fence,
+                @Nullable Consumer<SyncFence> releaseCallback) {
             checkPreconditions(sc);
-            nativeSetBuffer(mNativeObject, sc.mNativeObject, buffer);
+            if (fence != null) {
+                synchronized (fence.getLock()) {
+                    nativeSetBuffer(mNativeObject, sc.mNativeObject, buffer,
+                            fence.getNativeFence(), releaseCallback);
+                }
+            } else {
+                nativeSetBuffer(mNativeObject, sc.mNativeObject, buffer, 0, releaseCallback);
+            }
+            return this;
+        }
+
+
+        /**
+         * Sets the buffer transform that should be applied to the current buffer.
+         *
+         * This can be used in combination with
+         * {@link AttachedSurfaceControl#addOnBufferTransformHintChangedListener(AttachedSurfaceControl.OnBufferTransformHintChangedListener)}
+         * to pre-rotate the buffer for the current display orientation. This can
+         * improve the performance of displaying the associated buffer.
+         *
+         * @param sc The SurfaceControl to update
+         * @param transform The transform to apply to the buffer.
+         * @return this
+         */
+        public @NonNull Transaction setBufferTransform(@NonNull SurfaceControl sc,
+                @SurfaceControl.BufferTransform int transform) {
+            checkPreconditions(sc);
+            nativeSetBufferTransform(mNativeObject, sc.mNativeObject, transform);
+            return this;
+        }
+
+        /**
+         * Updates the region for the content on this surface updated in this transaction. The
+         * damage region is the area of the buffer that has changed since the previously
+         * sent buffer. This can be used to reduce the amount of recomposition that needs
+         * to happen when only a small region of the buffer is being updated, such as for
+         * a small blinking cursor or a loading indicator.
+         *
+         * @param sc The SurfaceControl on which to set the damage region
+         * @param region The region to set. If null, the entire buffer is assumed dirty. This is
+         *               equivalent to not setting a damage region at all.
+         */
+        public @NonNull Transaction setDamageRegion(@NonNull SurfaceControl sc,
+                @Nullable Region region) {
+            nativeSetDamageRegion(mNativeObject, sc.mNativeObject, region);
+            return this;
+        }
+
+        /**
+         * Set if the layer can be dimmed.
+         *
+         * <p>Dimming is to adjust brightness of the layer.
+         * Default value is {@code true}, which means the layer can be dimmed.
+         * Disabling dimming means the brightness of the layer can not be changed, i.e.,
+         * keep the white point for the layer same as the display brightness.</p>
+         *
+         * @param sc The SurfaceControl on which to enable or disable dimming.
+         * @param dimmingEnabled The dimming flag.
+         * @return this.
+         *
+         * @hide
+         */
+        public @NonNull Transaction setDimmingEnabled(@NonNull SurfaceControl sc,
+                boolean dimmingEnabled) {
+            checkPreconditions(sc);
+            nativeSetDimmingEnabled(mNativeObject, sc.mNativeObject, dimmingEnabled);
             return this;
         }
 
@@ -3514,10 +3861,103 @@ public final class SurfaceControl implements Parcelable {
          * SurfaceControls that were created as type {@link #FX_SURFACE_BLAST}
          *
          * @hide
+         * @deprecated use {@link #setDataSpace(SurfaceControl, long)} instead
          */
+        @Deprecated
         public Transaction setColorSpace(SurfaceControl sc, ColorSpace colorSpace) {
             checkPreconditions(sc);
-            nativeSetColorSpace(mNativeObject, sc.mNativeObject, colorSpace.getId());
+            if (colorSpace.getId() == ColorSpace.Named.DISPLAY_P3.ordinal()) {
+                setDataSpace(sc, DataSpace.DATASPACE_DISPLAY_P3);
+            } else {
+                setDataSpace(sc, DataSpace.DATASPACE_SRGB);
+            }
+            return this;
+        }
+
+        /**
+         * Set the dataspace for the SurfaceControl. This will control how the buffer
+         * set with {@link #setBuffer(SurfaceControl, HardwareBuffer)} is displayed.
+         *
+         * @param sc The SurfaceControl to update
+         * @param dataspace The dataspace to set it to
+         * @return this
+         */
+        public @NonNull Transaction setDataSpace(@NonNull SurfaceControl sc,
+                @DataSpace.NamedDataSpace int dataspace) {
+            checkPreconditions(sc);
+            nativeSetDataSpace(mNativeObject, sc.mNativeObject, dataspace);
+            return this;
+        }
+
+        /**
+         * Sets the desired extended range brightness for the layer. This only applies for layers
+         * whose dataspace has RANGE_EXTENDED.
+         *
+         * @param sc The layer whose extended range brightness is being specified
+         * @param currentBufferRatio The current hdr/sdr ratio of the current buffer. For example
+         *                           if the buffer was rendered with a target SDR whitepoint of
+         *                           100 nits and a max display brightness of 200 nits, this should
+         *                           be set to 2.0f.
+         *
+         *                           <p>Default value is 1.0f.
+         *
+         *                           <p>Transfer functions that encode their own brightness ranges,
+         *                           such as HLG or PQ, should also set this to 1.0f and instead
+         *                           communicate extended content brightness information via
+         *                           metadata such as CTA861_3 or SMPTE2086.
+         *
+         *                           <p>Must be finite && >= 1.0f
+         *
+         * @param desiredRatio The desired hdr/sdr ratio. This can be used to communicate the max
+         *                     desired brightness range. This is similar to the "max luminance"
+         *                     value in other HDR metadata formats, but represented as a ratio of
+         *                     the target SDR whitepoint to the max display brightness. The system
+         *                     may not be able to, or may choose not to, deliver the
+         *                     requested range.
+         *
+         *                     <p>While requesting a large desired ratio will result in the most
+         *                     dynamic range, voluntarily reducing the requested range can help
+         *                     improve battery life as well as can improve quality by ensuring
+         *                     greater bit depth is allocated to the luminance range in use.
+         *
+         *                     <p>Default value is 1.0f and indicates that extended range brightness
+         *                     is not being used, so the resulting SDR or HDR behavior will be
+         *                     determined entirely by the dataspace being used (ie, typically SDR
+         *                     however PQ or HLG transfer functions will still result in HDR)
+         *
+         *                     <p>Must be finite && >= 1.0f
+         * @return this
+         **/
+        public @NonNull Transaction setExtendedRangeBrightness(@NonNull SurfaceControl sc,
+                float currentBufferRatio, float desiredRatio) {
+            checkPreconditions(sc);
+            if (!Float.isFinite(currentBufferRatio) || currentBufferRatio < 1.0f) {
+                throw new IllegalArgumentException(
+                        "currentBufferRatio must be finite && >= 1.0f; got " + currentBufferRatio);
+            }
+            if (!Float.isFinite(desiredRatio) || desiredRatio < 1.0f) {
+                throw new IllegalArgumentException(
+                        "desiredRatio must be finite && >= 1.0f; got " + desiredRatio);
+            }
+            nativeSetExtendedRangeBrightness(mNativeObject, sc.mNativeObject, currentBufferRatio,
+                    desiredRatio);
+            return this;
+        }
+
+        /**
+         * Sets the caching hint for the layer. By default, the caching hint is
+         * {@link CACHING_ENABLED}.
+         *
+         * @param sc The SurfaceControl to update
+         * @param cachingHint The caching hint to apply to the SurfaceControl. The CachingHint is
+         *                    not applied to any children of this SurfaceControl.
+         * @return this
+         * @hide
+         */
+        public @NonNull Transaction setCachingHint(
+                @NonNull SurfaceControl sc, @CachingHint int cachingHint) {
+            checkPreconditions(sc);
+            nativeSetCachingHint(mNativeObject, sc.mNativeObject, cachingHint);
             return this;
         }
 
@@ -3540,6 +3980,42 @@ public final class SurfaceControl implements Parcelable {
         public Transaction setDropInputMode(SurfaceControl sc, @DropInputMode int mode) {
             checkPreconditions(sc);
             nativeSetDropInputMode(mNativeObject, sc.mNativeObject, mode);
+            return this;
+        }
+
+        /**
+         * Sends a flush jank data transaction for the given surface.
+         * @hide
+         */
+        public static void sendSurfaceFlushJankData(SurfaceControl sc) {
+            sc.checkNotReleased();
+            nativeSurfaceFlushJankData(sc.mNativeObject);
+        }
+
+        /**
+         * @hide
+         */
+        public void sanitize(int pid, int uid) {
+            nativeSanitize(mNativeObject, pid, uid);
+        }
+
+        /**
+         * @hide
+         */
+        public Transaction setDesintationFrame(SurfaceControl sc, @NonNull Rect destinationFrame) {
+            checkPreconditions(sc);
+            nativeSetDestinationFrame(mNativeObject, sc.mNativeObject,
+                    destinationFrame.left, destinationFrame.top, destinationFrame.right,
+                    destinationFrame.bottom);
+            return this;
+        }
+
+        /**
+         * @hide
+         */
+        public Transaction setDesintationFrame(SurfaceControl sc, int width, int height) {
+            checkPreconditions(sc);
+            nativeSetDestinationFrame(mNativeObject, sc.mNativeObject, 0, 0, width, height);
             return this;
         }
 
@@ -3591,6 +4067,131 @@ public final class SurfaceControl implements Parcelable {
         @NonNull
         public Transaction setFrameTimelineVsync(long frameTimelineVsyncId) {
             nativeSetFrameTimelineVsync(mNativeObject, frameTimelineVsyncId);
+            return this;
+        }
+
+        /**
+         * Request to add a {@link TransactionCommittedListener}.
+         *
+         * The callback is invoked when transaction is applied and the updates are ready to be
+         * presented. This callback does not mean buffers have been released! It simply means that
+         * any new transactions applied will not overwrite the transaction for which we are
+         * receiving a callback and instead will be included in the next frame. If you are trying
+         * to avoid dropping frames (overwriting transactions), and unable to use timestamps (Which
+         * provide a more efficient solution), then this method provides a method to pace your
+         * transaction application.
+         *
+         * @param executor The executor that the callback should be invoked on.
+         * @param listener The callback that will be invoked when the transaction has been
+         *                 committed.
+         */
+        @NonNull
+        public Transaction addTransactionCommittedListener(
+                @NonNull @CallbackExecutor Executor executor,
+                @NonNull TransactionCommittedListener listener) {
+            TransactionCommittedListener listenerInner =
+                    () -> executor.execute(listener::onTransactionCommitted);
+            nativeAddTransactionCommittedListener(mNativeObject, listenerInner);
+            return this;
+        }
+
+        /**
+         * Sets a callback to receive feedback about the presentation of a {@link SurfaceControl}.
+         * When the {@link SurfaceControl} is presented according to the passed in
+         * {@link TrustedPresentationThresholds}, it is said to "enter the state", and receives the
+         * callback with {@code true}. When the conditions fall out of thresholds, it is then
+         * said to leave the state.
+         * <p>
+         * There are a few simple thresholds:
+         * <ul>
+         *    <li>minAlpha: Lower bound on computed alpha</li>
+         *    <li>minFractionRendered: Lower bounds on fraction of pixels that were rendered</li>
+         *    <li>stabilityThresholdMs: A time that alpha and fraction rendered must remain within
+         *    bounds before we can "enter the state" </li>
+         * </ul>
+         * <p>
+         * The fraction of pixels rendered is a computation based on scale, crop
+         * and occlusion. The calculation may be somewhat counterintuitive, so we
+         * can work through an example. Imagine we have a SurfaceControl with a 100x100 buffer
+         * which is occluded by (10x100) pixels on the left, and cropped by (100x10) pixels
+         * on the top. Furthermore imagine this SurfaceControl is scaled by 0.9 in both dimensions.
+         * (c=crop,o=occluded,b=both,x=none)
+         *
+         * <blockquote>
+         * <table>
+         *   <caption></caption>
+         *   <tr><td>b</td><td>c</td><td>c</td><td>c</td></tr>
+         *   <tr><td>o</td><td>x</td><td>x</td><td>x</td></tr>
+         *   <tr><td>o</td><td>x</td><td>x</td><td>x</td></tr>
+         *   <tr><td>o</td><td>x</td><td>x</td><td>x</td></tr>
+         * </table>
+         * </blockquote>
+         *
+         *<p>
+         * We first start by computing fr=xscale*yscale=0.9*0.9=0.81, indicating
+         * that "81%" of the pixels were rendered. This corresponds to what was 100
+         * pixels being displayed in 81 pixels. This is somewhat of an abuse of
+         * language, as the information of merged pixels isn't totally lost, but
+         * we err on the conservative side.
+         * <p>
+         * We then repeat a similar process for the crop and covered regions and
+         * accumulate the results: fr = fr * (fractionNotCropped) * (fractionNotCovered)
+         * So for this example we would get 0.9*0.9*0.9*0.9=0.65...
+         * <p>
+         * Notice that this is not completely accurate, as we have double counted
+         * the region marked as b. However we only wanted a "lower bound" and so it
+         * is ok to err in this direction. Selection of the threshold will ultimately
+         * be somewhat arbitrary, and so there are some somewhat arbitrary decisions in
+         * this API as well.
+         * <p>
+         * @param sc         The {@link SurfaceControl} to set the
+         *                   {@link TrustedPresentationCallback} on
+         * @param thresholds The {@link TrustedPresentationThresholds} that will specify when the to
+         *                   invoke the callback.
+         * @param executor   The {@link Executor} where the callback will be invoked on.
+         * @param listener   The {@link Consumer} that will receive the callbacks when entered or
+         *                   exited the threshold.
+         * @return This transaction
+         * @see TrustedPresentationThresholds
+         */
+        @NonNull
+        public Transaction setTrustedPresentationCallback(@NonNull SurfaceControl sc,
+                @NonNull TrustedPresentationThresholds thresholds, @NonNull Executor executor,
+                @NonNull Consumer<Boolean> listener) {
+            checkPreconditions(sc);
+            TrustedPresentationCallback tpc = new TrustedPresentationCallback() {
+                @Override
+                public void onTrustedPresentationChanged(boolean inTrustedPresentationState) {
+                    executor.execute(
+                            () -> listener.accept(inTrustedPresentationState));
+                }
+            };
+
+            if (sc.mTrustedPresentationCallback != null) {
+                sc.mTrustedPresentationCallback.mFreeNativeResources.run();
+            }
+
+            nativeSetTrustedPresentationCallback(mNativeObject, sc.mNativeObject,
+                    tpc.mNativeObject, thresholds);
+            sc.mTrustedPresentationCallback = tpc;
+            return this;
+        }
+
+        /**
+         * Clears the {@link TrustedPresentationCallback} for a specific {@link SurfaceControl}
+         *
+         * @param sc The SurfaceControl that the {@link TrustedPresentationCallback} should be
+         *           cleared from
+         * @return This transaction
+         */
+        @NonNull
+        public Transaction clearTrustedPresentationCallback(@NonNull SurfaceControl sc) {
+            checkPreconditions(sc);
+            nativeClearTrustedPresentationCallback(mNativeObject, sc.mNativeObject);
+            if (sc.mTrustedPresentationCallback != null) {
+                sc.mTrustedPresentationCallback.mFreeNativeResources.run();
+                sc.mTrustedPresentationCallback = null;
+            }
             return this;
         }
 
@@ -3685,27 +4286,6 @@ public final class SurfaceControl implements Parcelable {
     }
 
     /**
-     * Acquire a frame rate flexibility token, which allows surface flinger to freely switch display
-     * frame rates. This is used by CTS tests to put the device in a consistent state. See
-     * ISurfaceComposer::acquireFrameRateFlexibilityToken(). The caller must have the
-     * ACCESS_SURFACE_FLINGER permission, or else the call will fail, returning 0.
-     * @hide
-     */
-    @TestApi
-    public static long acquireFrameRateFlexibilityToken() {
-        return nativeAcquireFrameRateFlexibilityToken();
-    }
-
-    /**
-     * Release a frame rate flexibility token.
-     * @hide
-     */
-    @TestApi
-    public static void releaseFrameRateFlexibilityToken(long token) {
-        nativeReleaseFrameRateFlexibilityToken(token);
-    }
-
-    /**
      * This is a refactoring utility function to enable lower levels of code to be refactored
      * from using the global transaction (and instead use a passed in Transaction) without
      * having to refactor the higher levels at the same time.
@@ -3758,4 +4338,38 @@ public final class SurfaceControl implements Parcelable {
 
         return -1;
     }
+
+    /**
+     * Adds this surface control to the registry for this process if it is created.
+     */
+    private void addToRegistry() {
+        final SurfaceControlRegistry registry = SurfaceControlRegistry.getProcessInstance();
+        if (registry != null) {
+            registry.add(this);
+        }
+    }
+
+    /**
+     * Removes this surface control from the registry for this process.
+     */
+    private void removeFromRegistry() {
+        final SurfaceControlRegistry registry = SurfaceControlRegistry.getProcessInstance();
+        if (registry != null) {
+            registry.remove(this);
+        }
+    }
+
+    // Called by native
+    private static void invokeReleaseCallback(Consumer<SyncFence> callback, long nativeFencePtr) {
+        SyncFence fence = new SyncFence(nativeFencePtr);
+        callback.accept(fence);
+    }
+
+    /**
+     * @hide
+     */
+    public static StalledTransactionInfo getStalledTransactionInfo(int pid) {
+        return nativeGetStalledTransactionInfo(pid);
+    }
+
 }

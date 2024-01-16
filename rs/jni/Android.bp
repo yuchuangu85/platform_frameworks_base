@@ -22,6 +22,7 @@ package {
 cc_library_shared {
     name: "librs_jni",
 
+    cpp_std: "gnu++2b",
     srcs: ["android_renderscript_RenderScript.cpp"],
 
     shared_libs: [
@@ -51,4 +52,10 @@ cc_library_shared {
         "-Wunreachable-code",
         "-Wno-deprecated-declarations",
     ],
+
+    target: {
+        android_riscv64: {
+            enabled: false,
+        },
+    },
 }

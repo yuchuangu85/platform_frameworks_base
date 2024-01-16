@@ -36,10 +36,10 @@ import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.FalsingManager;
-import com.android.systemui.plugins.qs.DetailAdapter;
 import com.android.systemui.plugins.qs.QSTile;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.QsEventLogger;
 import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 import com.android.systemui.statusbar.policy.IndividualSensorPrivacyController;
@@ -69,7 +69,9 @@ public abstract class SensorPrivacyToggleTile extends QSTileImpl<QSTile.BooleanS
      */
     public abstract String getRestriction();
 
-    protected SensorPrivacyToggleTile(QSHost host,
+    protected SensorPrivacyToggleTile(
+            QSHost host,
+            QsEventLogger uiEventLogger,
             @Background Looper backgroundLooper,
             @Main Handler mainHandler,
             FalsingManager falsingManager,
@@ -79,7 +81,7 @@ public abstract class SensorPrivacyToggleTile extends QSTileImpl<QSTile.BooleanS
             QSLogger qsLogger,
             IndividualSensorPrivacyController sensorPrivacyController,
             KeyguardStateController keyguardStateController) {
-        super(host, backgroundLooper, mainHandler, falsingManager, metricsLogger,
+        super(host, uiEventLogger, backgroundLooper, mainHandler, falsingManager, metricsLogger,
                 statusBarStateController, activityStarter, qsLogger);
         mSensorPrivacyController = sensorPrivacyController;
         mKeyguard = keyguardStateController;
@@ -93,15 +95,15 @@ public abstract class SensorPrivacyToggleTile extends QSTileImpl<QSTile.BooleanS
 
     @Override
     protected void handleClick(@Nullable View view) {
-        if (mKeyguard.isMethodSecure() && mKeyguard.isShowing()) {
-            mActivityStarter.postQSRunnableDismissingKeyguard(() -> {
-                mSensorPrivacyController.setSensorBlocked(QS_TILE, getSensorId(),
-                        !mSensorPrivacyController.isSensorBlocked(getSensorId()));
-            });
+        boolean blocked = mSensorPrivacyController.isSensorBlocked(getSensorId());
+        if (mSensorPrivacyController.requiresAuthentication()
+                && mKeyguard.isMethodSecure()
+                && mKeyguard.isShowing()) {
+            mActivityStarter.postQSRunnableDismissingKeyguard(() ->
+                    mSensorPrivacyController.setSensorBlocked(QS_TILE, getSensorId(), !blocked));
             return;
         }
-        mSensorPrivacyController.setSensorBlocked(QS_TILE, getSensorId(),
-                !mSensorPrivacyController.isSensorBlocked(getSensorId()));
+        mSensorPrivacyController.setSensorBlocked(QS_TILE, getSensorId(), !blocked);
     }
 
     @Override
@@ -132,11 +134,6 @@ public abstract class SensorPrivacyToggleTile extends QSTileImpl<QSTile.BooleanS
     @Override
     public Intent getLongClickIntent() {
         return new Intent(Settings.ACTION_PRIVACY_SETTINGS);
-    }
-
-    @Override
-    public DetailAdapter getDetailAdapter() {
-        return super.getDetailAdapter();
     }
 
     @Override

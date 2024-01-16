@@ -19,6 +19,7 @@ package com.android.server.wm;
 import static android.app.ActivityManager.LOCK_TASK_MODE_LOCKED;
 import static android.app.ActivityManager.LOCK_TASK_MODE_NONE;
 import static android.app.ActivityManager.LOCK_TASK_MODE_PINNED;
+import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_UNDEFINED;
 import static android.content.Context.DEVICE_POLICY_SERVICE;
 import static android.content.Context.STATUS_BAR_SERVICE;
@@ -64,6 +65,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.policy.IKeyguardDismissCallback;
 import com.android.internal.protolog.common.ProtoLog;
 import com.android.internal.statusbar.IStatusBarService;
+import com.android.internal.telephony.CellBroadcastUtils;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.server.LocalServices;
 import com.android.server.am.ActivityManagerService;
@@ -392,6 +394,10 @@ public class LockTaskController {
             return false;
         }
 
+        if (isWirelessEmergencyAlert(intent)) {
+            return false;
+        }
+
         return !(isTaskAuthAllowlisted(taskAuth) || mLockTaskModeTasks.isEmpty());
     }
 
@@ -422,6 +428,25 @@ public class LockTaskController {
             default:
         }
         return isPackageAllowlisted(userId, packageName);
+    }
+
+    private boolean isWirelessEmergencyAlert(Intent intent) {
+        if (intent == null) {
+            return false;
+        }
+
+        final ComponentName cellBroadcastAlertDialogComponentName =
+                CellBroadcastUtils.getDefaultCellBroadcastAlertDialogComponent(mContext);
+
+        if (cellBroadcastAlertDialogComponentName == null) {
+            return false;
+        }
+
+        if (cellBroadcastAlertDialogComponentName.equals(intent.getComponent())) {
+            return true;
+        }
+
+        return false;
     }
 
     private boolean isEmergencyCallIntent(Intent intent) {
@@ -457,27 +482,24 @@ public class LockTaskController {
      *
      * @param task the task that requested the end of lock task mode ({@code null} for quitting app
      *             pinning mode)
-     * @param isSystemCaller indicates whether this request comes from the system via
-     *                       {@link ActivityTaskManagerService#stopSystemLockTaskMode()}. If
-     *                       {@code true}, it means the user intends to stop pinned mode through UI;
-     *                       otherwise, it's called by an app and we need to stop locked or pinned
-     *                       mode, subject to checks.
+     * @param stopAppPinning indicates whether to stop app pinning mode or to stop a task from
+     *                       being locked.
      * @param callingUid the caller that requested the end of lock task mode.
      * @throws IllegalArgumentException if the calling task is invalid (e.g., {@code null} or not in
      *                                  foreground)
      * @throws SecurityException if the caller is not authorized to stop the lock task mode, i.e. if
      *                           they differ from the one that launched lock task mode.
      */
-    void stopLockTaskMode(@Nullable Task task, boolean isSystemCaller, int callingUid) {
+    void stopLockTaskMode(@Nullable Task task, boolean stopAppPinning, int callingUid) {
         if (mLockTaskModeState == LOCK_TASK_MODE_NONE) {
             return;
         }
 
-        if (isSystemCaller) {
+        if (stopAppPinning) {
             if (mLockTaskModeState == LOCK_TASK_MODE_PINNED) {
                 clearLockedTasks("stopAppPinning");
             } else {
-                Slog.e(TAG_LOCKTASK, "Attempted to stop LockTask with isSystemCaller=true");
+                Slog.e(TAG_LOCKTASK, "Attempted to stop app pinning while fully locked");
                 showLockTaskToast();
             }
 
@@ -542,7 +564,7 @@ public class LockTaskController {
         if (mLockTaskModeTasks.isEmpty()) {
             return;
         }
-        task.performClearTaskLocked();
+        task.performClearTaskForReuse(false /* excludingTaskOverlay*/);
         mSupervisor.mRootWindowContainer.resumeFocusedTasksTopActivities();
     }
 
@@ -583,7 +605,10 @@ public class LockTaskController {
                 getDevicePolicyManager().notifyLockTaskModeChanged(false, null, userId);
             }
             if (oldLockTaskModeState == LOCK_TASK_MODE_PINNED) {
-                getStatusBarService().showPinningEnterExitToast(false /* entering */);
+                final IStatusBarService statusBarService = getStatusBarService();
+                if (statusBarService != null) {
+                    statusBarService.showPinningEnterExitToast(false /* entering */);
+                }
             }
             mWindowManager.onLockTaskStateChanged(mLockTaskModeState);
         } catch (RemoteException ex) {
@@ -598,7 +623,10 @@ public class LockTaskController {
     void showLockTaskToast() {
         if (mLockTaskModeState == LOCK_TASK_MODE_PINNED) {
             try {
-                getStatusBarService().showPinningEscapeToast();
+                final IStatusBarService statusBarService = getStatusBarService();
+                if (statusBarService != null) {
+                    statusBarService.showPinningEscapeToast();
+                }
             } catch (RemoteException e) {
                 Slog.e(TAG, "Failed to send pinning escape toast", e);
             }
@@ -618,6 +646,10 @@ public class LockTaskController {
      * @param callingUid the caller that requested the launch of lock task mode.
      */
     void startLockTaskMode(@NonNull Task task, boolean isSystemCaller, int callingUid) {
+        if (task.mLockTaskAuth == LOCK_TASK_AUTH_DONT_LOCK) {
+            ProtoLog.w(WM_DEBUG_LOCKTASK, "startLockTaskMode: Can't lock due to auth");
+            return;
+        }
         if (!isSystemCaller) {
             task.mLockTaskUid = callingUid;
             if (task.mLockTaskAuth == LOCK_TASK_AUTH_PINNABLE) {
@@ -630,8 +662,16 @@ public class LockTaskController {
                     statusBarManager.showScreenPinningRequest(task.mTaskId);
                 }
                 return;
+            } else if (mLockTaskModeState == LOCK_TASK_MODE_PINNED) {
+                // startLockTask() called by app, and app is part of lock task allowlist.
+                // Deactivate the currently pinned task before doing so.
+                Slog.i(TAG, "Stop app pinning before entering full lock task mode");
+                stopLockTaskMode(/* task= */ null, /* stopAppPinning= */ true, callingUid);
             }
         }
+
+        // When a task is locked, dismiss the root pinned task if it exists
+        mSupervisor.mRootWindowContainer.removeRootTasksInWindowingModes(WINDOWING_MODE_PINNED);
 
         // System can only initiate screen pinning, not full lock task mode
         ProtoLog.w(WM_DEBUG_LOCKTASK, "%s", isSystemCaller ? "Locking pinned" : "Locking fully");
@@ -697,7 +737,10 @@ public class LockTaskController {
         // When lock task starts, we disable the status bars.
         try {
             if (lockTaskModeState == LOCK_TASK_MODE_PINNED) {
-                getStatusBarService().showPinningEnterExitToast(true /* entering */);
+                final IStatusBarService statusBarService = getStatusBarService();
+                if (statusBarService != null) {
+                    statusBarService.showPinningEnterExitToast(true /* entering */);
+                }
             }
             mWindowManager.onLockTaskStateChanged(lockTaskModeState);
             mLockTaskModeState = lockTaskModeState;
@@ -740,7 +783,7 @@ public class LockTaskController {
             ProtoLog.d(WM_DEBUG_LOCKTASK, "onLockTaskPackagesUpdated: removing %s"
                     + " mLockTaskAuth()=%s", lockedTask, lockedTask.lockTaskAuthToString());
             removeLockedTask(lockedTask);
-            lockedTask.performClearTaskLocked();
+            lockedTask.performClearTaskForReuse(false /* excludingTaskOverlay*/);
             taskChanged = true;
         }
 
@@ -975,9 +1018,7 @@ public class LockTaskController {
      */
     boolean isBaseOfLockedTask(String packageName) {
         for (int i = 0; i < mLockTaskModeTasks.size(); i++) {
-            final Intent bi = mLockTaskModeTasks.get(i).getBaseIntent();
-            if (bi != null && packageName.equals(bi.getComponent()
-                    .getPackageName())) {
+            if (packageName.equals(mLockTaskModeTasks.get(i).getBasePackageName())) {
                 return true;
             }
         }

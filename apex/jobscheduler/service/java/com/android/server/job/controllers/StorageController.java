@@ -70,8 +70,7 @@ public final class StorageController extends StateController {
     }
 
     @Override
-    public void maybeStopTrackingJobLocked(JobStatus taskStatus, JobStatus incomingJob,
-            boolean forUpdate) {
+    public void maybeStopTrackingJobLocked(JobStatus taskStatus, JobStatus incomingJob) {
         if (taskStatus.clearTrackingController(JobStatus.TRACKING_STORAGE)) {
             mTrackedTasks.remove(taskStatus);
         }
@@ -93,7 +92,7 @@ public final class StorageController extends StateController {
         } else if (reportChange) {
             // Let the scheduler know that state has changed. This may or may not result in an
             // execution.
-            mStateChangedListener.onControllerStateChanged();
+            mStateChangedListener.onControllerStateChanged(mTrackedTasks);
         }
     }
 

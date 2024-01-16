@@ -15,8 +15,6 @@
  */
 package android.net.vcn;
 
-import static android.net.vcn.VcnUnderlyingNetworkTemplate.MATCH_ANY;
-
 import static com.android.internal.annotations.VisibleForTesting.Visibility;
 
 import android.annotation.IntDef;
@@ -31,6 +29,7 @@ import com.android.internal.util.Preconditions;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -87,6 +86,9 @@ public abstract class VcnUnderlyingNetworkTemplate {
 
     /** @hide */
     static final String METERED_MATCH_KEY = "mMeteredMatchCriteria";
+
+    /** @hide */
+    static final int DEFAULT_METERED_MATCH_CRITERIA = MATCH_ANY;
 
     private final int mMeteredMatchCriteria;
 
@@ -237,11 +239,21 @@ public abstract class VcnUnderlyingNetworkTemplate {
         pw.println(this.getClass().getSimpleName() + ":");
         pw.increaseIndent();
 
-        pw.println("mMeteredMatchCriteria: " + getMatchCriteriaString(mMeteredMatchCriteria));
-        pw.println("mMinEntryUpstreamBandwidthKbps: " + mMinEntryUpstreamBandwidthKbps);
-        pw.println("mMinExitUpstreamBandwidthKbps: " + mMinExitUpstreamBandwidthKbps);
-        pw.println("mMinEntryDownstreamBandwidthKbps: " + mMinEntryDownstreamBandwidthKbps);
-        pw.println("mMinExitDownstreamBandwidthKbps: " + mMinExitDownstreamBandwidthKbps);
+        if (mMeteredMatchCriteria != DEFAULT_METERED_MATCH_CRITERIA) {
+            pw.println("mMeteredMatchCriteria: " + getMatchCriteriaString(mMeteredMatchCriteria));
+        }
+        if (mMinEntryUpstreamBandwidthKbps != DEFAULT_MIN_BANDWIDTH_KBPS) {
+            pw.println("mMinEntryUpstreamBandwidthKbps: " + mMinEntryUpstreamBandwidthKbps);
+        }
+        if (mMinExitUpstreamBandwidthKbps != DEFAULT_MIN_BANDWIDTH_KBPS) {
+            pw.println("mMinExitUpstreamBandwidthKbps: " + mMinExitUpstreamBandwidthKbps);
+        }
+        if (mMinEntryDownstreamBandwidthKbps != DEFAULT_MIN_BANDWIDTH_KBPS) {
+            pw.println("mMinEntryDownstreamBandwidthKbps: " + mMinEntryDownstreamBandwidthKbps);
+        }
+        if (mMinExitDownstreamBandwidthKbps != DEFAULT_MIN_BANDWIDTH_KBPS) {
+            pw.println("mMinExitDownstreamBandwidthKbps: " + mMinExitDownstreamBandwidthKbps);
+        }
         dumpTransportSpecificFields(pw);
 
         pw.decreaseIndent();
@@ -296,4 +308,7 @@ public abstract class VcnUnderlyingNetworkTemplate {
     public int getMinExitDownstreamBandwidthKbps() {
         return mMinExitDownstreamBandwidthKbps;
     }
+
+    /** @hide */
+    public abstract Map<Integer, Integer> getCapabilitiesMatchCriteria();
 }

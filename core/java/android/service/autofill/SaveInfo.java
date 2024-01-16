@@ -39,6 +39,7 @@ import com.android.internal.util.Preconditions;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * Information used to indicate that an {@link AutofillService} is interested on saving the
@@ -307,7 +308,7 @@ public final class SaveInfo implements Parcelable {
      * username field, another for password).
      */
     // TODO(b/113281366): improve documentation: add example, document relationship with other
-    // flagss, etc...
+    // flags, etc...
     public static final int FLAG_DELAY_SAVE = 0x4;
 
     /** @hide */
@@ -332,6 +333,39 @@ public final class SaveInfo implements Parcelable {
     private final InternalSanitizer[] mSanitizerKeys;
     private final AutofillId[][] mSanitizerValues;
     private final AutofillId mTriggerId;
+
+    /**
+     * Creates a copy of the provided SaveInfo.
+     *
+     * @hide
+     */
+    public static SaveInfo copy(SaveInfo s, AutofillId[] optionalIds) {
+        return new SaveInfo(s.mType, s.mNegativeButtonStyle, s.mPositiveButtonStyle,
+                s.mNegativeActionListener, s.mRequiredIds, assertValid(optionalIds), s.mDescription,
+                s.mFlags, s.mCustomDescription, s.mValidator, s.mSanitizerKeys, s.mSanitizerValues,
+                s.mTriggerId);
+    }
+
+    private SaveInfo(@SaveDataType int type, @NegativeButtonStyle int negativeButtonStyle,
+            @PositiveButtonStyle int positiveButtonStyle, IntentSender negativeActionListener,
+            AutofillId[] requiredIds, AutofillId[] optionalIds, CharSequence description, int flags,
+            CustomDescription customDescription, InternalValidator validator,
+            InternalSanitizer[] sanitizerKeys, AutofillId[][] sanitizerValues,
+            AutofillId triggerId) {
+        mType = type;
+        mNegativeButtonStyle = negativeButtonStyle;
+        mNegativeActionListener = negativeActionListener;
+        mPositiveButtonStyle = positiveButtonStyle;
+        mRequiredIds = requiredIds;
+        mOptionalIds = optionalIds;
+        mDescription = description;
+        mFlags = flags;
+        mCustomDescription = customDescription;
+        mValidator = validator;
+        mSanitizerKeys = sanitizerKeys;
+        mSanitizerValues = sanitizerValues;
+        mTriggerId = triggerId;
+    }
 
     private SaveInfo(Builder builder) {
         mType = builder.mType;
@@ -769,24 +803,20 @@ public final class SaveInfo implements Parcelable {
          */
         public @NonNull Builder setTriggerId(@NonNull AutofillId id) {
             throwIfDestroyed();
-            mTriggerId = Preconditions.checkNotNull(id);
+            mTriggerId = Objects.requireNonNull(id);
             return this;
         }
 
         /**
          * Builds a new {@link SaveInfo} instance.
          *
-         * @throws IllegalStateException if no
-         * {@link #Builder(int, AutofillId[]) required ids},
+         * If no {@link #Builder(int, AutofillId[]) required ids},
          * or {@link #setOptionalIds(AutofillId[]) optional ids}, or {@link #FLAG_DELAY_SAVE}
-         * were set
+         * were set, Save Dialog will only be triggered if platform detection is enabled, which
+         * is indicated when {@link FillRequest.getHints()} is not empty.
          */
         public SaveInfo build() {
             throwIfDestroyed();
-            Preconditions.checkState(
-                    !ArrayUtils.isEmpty(mRequiredIds) || !ArrayUtils.isEmpty(mOptionalIds)
-                            || (mFlags & FLAG_DELAY_SAVE) != 0,
-                    "must have at least one required or optional id or FLAG_DELAYED_SAVE");
             mDestroyed = true;
             return new SaveInfo(this);
         }
@@ -887,14 +917,14 @@ public final class SaveInfo implements Parcelable {
                 builder.setOptionalIds(optionalIds);
             }
 
-            builder.setNegativeAction(parcel.readInt(), parcel.readParcelable(null));
+            builder.setNegativeAction(parcel.readInt(), parcel.readParcelable(null, android.content.IntentSender.class));
             builder.setPositiveAction(parcel.readInt());
             builder.setDescription(parcel.readCharSequence());
-            final CustomDescription customDescripton = parcel.readParcelable(null);
+            final CustomDescription customDescripton = parcel.readParcelable(null, android.service.autofill.CustomDescription.class);
             if (customDescripton != null) {
                 builder.setCustomDescription(customDescripton);
             }
-            final InternalValidator validator = parcel.readParcelable(null);
+            final InternalValidator validator = parcel.readParcelable(null, android.service.autofill.InternalValidator.class);
             if (validator != null) {
                 builder.setValidator(validator);
             }
@@ -908,7 +938,7 @@ public final class SaveInfo implements Parcelable {
                     builder.addSanitizer(sanitizers[i], autofillIds);
                 }
             }
-            final AutofillId triggerId = parcel.readParcelable(null);
+            final AutofillId triggerId = parcel.readParcelable(null, android.view.autofill.AutofillId.class);
             if (triggerId != null) {
                 builder.setTriggerId(triggerId);
             }

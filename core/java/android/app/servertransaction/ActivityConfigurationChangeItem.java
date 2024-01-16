@@ -23,6 +23,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityThread.ActivityClientRecord;
 import android.app.ClientTransactionHandler;
+import android.content.res.CompatibilityInfo;
 import android.content.res.Configuration;
 import android.os.IBinder;
 import android.os.Parcel;
@@ -40,11 +41,10 @@ public class ActivityConfigurationChangeItem extends ActivityTransactionItem {
 
     @Override
     public void preExecute(android.app.ClientTransactionHandler client, IBinder token) {
-        final ActivityClientRecord r = getActivityClientRecord(client, token,
-                true /* includeLaunching */);
+        CompatibilityInfo.applyOverrideScaleIfNeeded(mConfiguration);
         // Notify the client of an upcoming change in the token configuration. This ensures that
         // batches of config change items only process the newest configuration.
-        client.updatePendingActivityConfiguration(r, mConfiguration);
+        client.updatePendingActivityConfiguration(token, mConfiguration);
     }
 
     @Override

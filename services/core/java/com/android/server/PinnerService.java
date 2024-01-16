@@ -18,6 +18,7 @@ package com.android.server;
 
 import static android.app.ActivityManager.UID_OBSERVER_ACTIVE;
 import static android.app.ActivityManager.UID_OBSERVER_GONE;
+import static android.os.Process.SYSTEM_UID;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
@@ -25,8 +26,8 @@ import android.annotation.Nullable;
 import android.app.ActivityManager;
 import android.app.ActivityManagerInternal;
 import android.app.IActivityManager;
-import android.app.IUidObserver;
 import android.app.SearchManager;
+import android.app.UidObserver;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -77,10 +78,13 @@ import java.io.InputStream;
 import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
+
+import sun.misc.Unsafe;
 
 /**
  * <p>PinnerService pins important files for key processes in memory.</p>
@@ -148,6 +152,11 @@ public final class PinnerService extends SystemService {
      */
     @GuardedBy("this")
     private ArraySet<Integer> mPinKeys;
+
+    private static final long MAX_ANON_SIZE = 2L * (1L << 30); // 2GB
+    private long mPinAnonSize;
+    private long mPinAnonAddress;
+    private long mCurrentlyPinnedAnonSize;
 
     // Resource-configured pinner flags;
     private final boolean mConfiguredToPinCamera;
@@ -261,6 +270,37 @@ public final class PinnerService extends SystemService {
         }
     }
 
+    /** Returns information about pinned files and sizes for StatsPullAtomService. */
+    public List<PinnedFileStats> dumpDataForStatsd() {
+        List<PinnedFileStats> pinnedFileStats = new ArrayList<>();
+        synchronized (PinnerService.this) {
+            for (PinnedFile pinnedFile : mPinnedFiles) {
+                pinnedFileStats.add(new PinnedFileStats(SYSTEM_UID, pinnedFile));
+            }
+
+            for (int key : mPinnedApps.keySet()) {
+                PinnedApp app = mPinnedApps.get(key);
+                for (PinnedFile pinnedFile : mPinnedApps.get(key).mFiles) {
+                    pinnedFileStats.add(new PinnedFileStats(app.uid, pinnedFile));
+                }
+            }
+        }
+        return pinnedFileStats;
+    }
+
+    /** Wrapper class for statistics for a pinned file. */
+    public static class PinnedFileStats {
+        public final int uid;
+        public final String filename;
+        public final int sizeKb;
+
+        protected PinnedFileStats(int uid, PinnedFile file) {
+            this.uid = uid;
+            this.filename = file.fileName.substring(file.fileName.lastIndexOf('/') + 1);
+            this.sizeKb = file.bytesPinned / 1024;
+        }
+    }
+
     /**
      * Handler for on start pinning message
      */
@@ -328,30 +368,17 @@ public final class PinnerService extends SystemService {
 
     private void registerUidListener() {
         try {
-            mAm.registerUidObserver(new IUidObserver.Stub() {
+            mAm.registerUidObserver(new UidObserver() {
                 @Override
-                public void onUidGone(int uid, boolean disabled) throws RemoteException {
+                public void onUidGone(int uid, boolean disabled) {
                     mPinnerHandler.sendMessage(PooledLambda.obtainMessage(
                             PinnerService::handleUidGone, PinnerService.this, uid));
                 }
 
                 @Override
-                public void onUidActive(int uid) throws RemoteException {
+                public void onUidActive(int uid)  {
                     mPinnerHandler.sendMessage(PooledLambda.obtainMessage(
                             PinnerService::handleUidActive, PinnerService.this, uid));
-                }
-
-                @Override
-                public void onUidIdle(int uid, boolean disabled) throws RemoteException {
-                }
-
-                @Override
-                public void onUidStateChanged(int uid, int procState, long procStateSeq,
-                        int capability) throws RemoteException {
-                }
-
-                @Override
-                public void onUidCachedChanged(int uid, boolean cached) throws RemoteException {
                 }
             }, UID_OBSERVER_GONE | UID_OBSERVER_ACTIVE, 0, null);
         } catch (RemoteException e) {
@@ -531,6 +558,11 @@ public final class PinnerService extends SystemService {
             pinKeys.add(KEY_ASSISTANT);
         }
 
+        mPinAnonSize = DeviceConfig.getLong(DeviceConfig.NAMESPACE_RUNTIME_NATIVE_BOOT,
+                "pin_anon_size",
+                SystemProperties.getLong("pinner.pin_anon_size", 0));
+        mPinAnonSize = Math.max(0, Math.min(mPinAnonSize, MAX_ANON_SIZE));
+
         return pinKeys;
     }
 
@@ -570,6 +602,7 @@ public final class PinnerService extends SystemService {
             int key = currentPinKeys.valueAt(i);
             pinApp(key, userHandle, true /* force */);
         }
+        pinAnonRegion();
     }
 
     /**
@@ -650,6 +683,64 @@ public final class PinnerService extends SystemService {
                 return "Assistant";
             default:
                 return null;
+        }
+    }
+
+    /**
+     * Pin an empty anonymous region. This should only be used for ablation experiments.
+     */
+    private void pinAnonRegion() {
+        if (mPinAnonSize == 0) {
+            return;
+        }
+        long alignedPinSize = mPinAnonSize;
+        if (alignedPinSize % PAGE_SIZE != 0) {
+            alignedPinSize -= alignedPinSize % PAGE_SIZE;
+            Slog.e(TAG, "pinAnonRegion: aligning size to " + alignedPinSize);
+        }
+        if (mPinAnonAddress != 0
+                && mCurrentlyPinnedAnonSize != alignedPinSize) {
+            unpinAnonRegion();
+        }
+        long address = 0;
+        try {
+            address = Os.mmap(0, alignedPinSize,
+                    OsConstants.PROT_READ | OsConstants.PROT_WRITE,
+                    OsConstants.MAP_PRIVATE | OsConstants.MAP_ANONYMOUS,
+                    new FileDescriptor(), /*offset=*/0);
+
+            Unsafe tempUnsafe = null;
+            Class<sun.misc.Unsafe> clazz = sun.misc.Unsafe.class;
+            for (java.lang.reflect.Field f : clazz.getDeclaredFields()) {
+                f.setAccessible(true);
+                Object obj = f.get(null);
+                if (clazz.isInstance(obj)) {
+                    tempUnsafe = clazz.cast(obj);
+                }
+            }
+            if (tempUnsafe == null) {
+                throw new Exception("Couldn't get Unsafe");
+            }
+            Method setMemory = clazz.getMethod("setMemory", long.class, long.class, byte.class);
+            setMemory.invoke(tempUnsafe, address, alignedPinSize, (byte) 1);
+            Os.mlock(address, alignedPinSize);
+            mCurrentlyPinnedAnonSize = alignedPinSize;
+            mPinAnonAddress = address;
+            address = -1;
+            Slog.e(TAG, "pinAnonRegion success, size=" + mCurrentlyPinnedAnonSize);
+        } catch (Exception ex) {
+            Slog.e(TAG, "Could not pin anon region of size " + alignedPinSize, ex);
+            return;
+        } finally {
+            if (address >= 0) {
+                safeMunmap(address, alignedPinSize);
+            }
+        }
+    }
+
+    private void unpinAnonRegion() {
+        if (mPinAnonAddress != 0) {
+            safeMunmap(mPinAnonAddress, mCurrentlyPinnedAnonSize);
         }
     }
 
@@ -1063,6 +1154,9 @@ public final class PinnerService extends SystemService {
                         pw.print("  "); pw.format("%s %s\n", pf.fileName, pf.bytesPinned);
                         totalSize += pf.bytesPinned;
                     }
+                }
+                if (mPinAnonAddress != 0) {
+                    pw.format("Pinned anon region: %s\n", mCurrentlyPinnedAnonSize);
                 }
                 pw.format("Total size: %s\n", totalSize);
                 pw.println();

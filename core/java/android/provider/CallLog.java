@@ -63,6 +63,7 @@ import java.io.InputStream;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 
@@ -425,6 +426,7 @@ public class CallLog {
             private double mLatitude = Double.NaN;
             private double mLongitude = Double.NaN;
             private Uri mPictureUri;
+            private int mIsPhoneAccountMigrationPending;
 
             /**
              * @param callerInfo the CallerInfo object to get the target contact from.
@@ -634,6 +636,15 @@ public class CallLog {
             }
 
             /**
+             * @param isPhoneAccountMigrationPending whether the phone account migration is pending
+             */
+            public @NonNull AddCallParametersBuilder setIsPhoneAccountMigrationPending(
+                    int isPhoneAccountMigrationPending) {
+                mIsPhoneAccountMigrationPending = isPhoneAccountMigrationPending;
+                return this;
+            }
+
+            /**
              * Builds the object
              */
             public @NonNull AddCallParams build() {
@@ -641,7 +652,8 @@ public class CallLog {
                         mPresentation, mCallType, mFeatures, mAccountHandle, mStart, mDuration,
                         mDataUsage, mAddForAllUsers, mUserToBeInsertedTo, mIsRead, mCallBlockReason,
                         mCallScreeningAppName, mCallScreeningComponentName, mMissedReason,
-                        mPriority, mSubject, mLatitude, mLongitude, mPictureUri);
+                        mPriority, mSubject, mLatitude, mLongitude, mPictureUri,
+                        mIsPhoneAccountMigrationPending);
             }
         }
 
@@ -668,6 +680,7 @@ public class CallLog {
         private double mLatitude = Double.NaN;
         private double mLongitude = Double.NaN;
         private Uri mPictureUri;
+        private int mIsPhoneAccountMigrationPending;
 
         private AddCallParams(CallerInfo callerInfo, String number, String postDialDigits,
                 String viaNumber, int presentation, int callType, int features,
@@ -676,7 +689,8 @@ public class CallLog {
                 int callBlockReason,
                 CharSequence callScreeningAppName, String callScreeningComponentName,
                 long missedReason,
-                int priority, String subject, double latitude, double longitude, Uri pictureUri) {
+                int priority, String subject, double latitude, double longitude, Uri pictureUri,
+                int isPhoneAccountMigrationPending) {
             mCallerInfo = callerInfo;
             mNumber = number;
             mPostDialDigits = postDialDigits;
@@ -700,6 +714,7 @@ public class CallLog {
             mLatitude = latitude;
             mLongitude = longitude;
             mPictureUri = pictureUri;
+            mIsPhoneAccountMigrationPending = isPhoneAccountMigrationPending;
         }
 
     }
@@ -1278,7 +1293,9 @@ public class CallLog {
                 USER_MISSED_LOW_RING_VOLUME,
                 USER_MISSED_NO_VIBRATE,
                 USER_MISSED_CALL_SCREENING_SERVICE_SILENCED,
-                USER_MISSED_CALL_FILTERS_TIMEOUT
+                USER_MISSED_CALL_FILTERS_TIMEOUT,
+                USER_MISSED_NEVER_RANG,
+                USER_MISSED_NOT_RUNNING
         })
         @Retention(RetentionPolicy.SOURCE)
         public @interface MissedReason {}
@@ -1367,6 +1384,20 @@ public class CallLog {
          * the call filters timed out.
          */
         public static final long USER_MISSED_CALL_FILTERS_TIMEOUT = 1 << 22;
+
+        /**
+         * When {@link CallLog.Calls#TYPE} is {@link CallLog.Calls#MISSED_TYPE}, set this bit when
+         * the call ended before ringing.
+         * @hide
+         */
+        public static final long USER_MISSED_NEVER_RANG = 1 << 23;
+
+        /**
+         * When {@link CallLog.Calls#TYPE} is {@link CallLog.Calls#MISSED_TYPE}, set this bit when
+         * the user receiving the call is not running (i.e. work profile paused).
+         * @hide
+         */
+        public static final long USER_MISSED_NOT_RUNNING = 1 << 24;
 
         /**
          * Where the {@link CallLog.Calls#TYPE} is {@link CallLog.Calls#MISSED_TYPE},
@@ -1482,6 +1513,21 @@ public class CallLog {
         public static final String LOCATION = "location";
 
         /**
+         * A reference to indicate whether phone account migration process is pending.
+         *
+         * Before Android 13, {@link PhoneAccountHandle#getId()} returns the ICCID for Telephony
+         * PhoneAccountHandle. Starting from Android 13, {@link PhoneAccountHandle#getId()} returns
+         * the Subscription ID for Telephony PhoneAccountHandle. A phone account migration process
+         * is to ensure this PhoneAccountHandle migration process cross the Android versions in
+         * the CallLog database.
+         *
+         * <p>Type: INTEGER</p>
+         * @hide
+         */
+        public static final String IS_PHONE_ACCOUNT_MIGRATION_PENDING =
+                "is_call_log_phone_account_migration_pending";
+
+        /**
          * Adds a call to the call log.
          *
          * @param ci the CallerInfo object to get the target contact from.  Can be null
@@ -1498,6 +1544,7 @@ public class CallLog {
          * @param duration call duration in seconds
          * @param dataUsage data usage for the call in bytes, null if data usage was not tracked for
          *                  the call.
+         * @param isPhoneAccountMigrationPending whether the PhoneAccountHandle ID need to migrate
          * @result The URI of the call log entry belonging to the user that made or received this
          *        call.
          * {@hide}
@@ -1505,13 +1552,14 @@ public class CallLog {
         public static Uri addCall(CallerInfo ci, Context context, String number,
                 int presentation, int callType, int features,
                 PhoneAccountHandle accountHandle,
-                long start, int duration, Long dataUsage, long missedReason) {
+                long start, int duration, Long dataUsage, long missedReason,
+                int isPhoneAccountMigrationPending) {
             return addCall(ci, context, number, "" /* postDialDigits */, "" /* viaNumber */,
                 presentation, callType, features, accountHandle, start, duration,
                 dataUsage, false /* addForAllUsers */, null /* userToBeInsertedTo */,
                 false /* isRead */, Calls.BLOCK_REASON_NOT_BLOCKED /* callBlockReason */,
                 null /* callScreeningAppName */, null /* callScreeningComponentName */,
-                    missedReason);
+                    missedReason, isPhoneAccountMigrationPending);
         }
 
 
@@ -1539,6 +1587,7 @@ public class CallLog {
          * @param userToBeInsertedTo {@link UserHandle} of user that the call is going to be
          *                           inserted to. null if it is inserted to the current user. The
          *                           value is ignored if @{link addForAllUsers} is true.
+         * @param isPhoneAccountMigrationPending whether the PhoneAccountHandle ID need to migrate
          * @result The URI of the call log entry belonging to the user that made or received this
          *        call.
          * {@hide}
@@ -1547,12 +1596,13 @@ public class CallLog {
                 String postDialDigits, String viaNumber, int presentation, int callType,
                 int features, PhoneAccountHandle accountHandle, long start, int duration,
                 Long dataUsage, boolean addForAllUsers, UserHandle userToBeInsertedTo,
-                long missedReason) {
+                long missedReason, int isPhoneAccountMigrationPending) {
             return addCall(ci, context, number, postDialDigits, viaNumber, presentation, callType,
                 features, accountHandle, start, duration, dataUsage, addForAllUsers,
                 userToBeInsertedTo, false /* isRead */ , Calls.BLOCK_REASON_NOT_BLOCKED
                 /* callBlockReason */, null /* callScreeningAppName */,
-                null /* callScreeningComponentName */, missedReason);
+                null /* callScreeningComponentName */, missedReason,
+                isPhoneAccountMigrationPending);
         }
 
 
@@ -1588,6 +1638,7 @@ public class CallLog {
          * @param callScreeningAppName The call screening application name which block the call.
          * @param callScreeningComponentName The call screening component name which block the call.
          * @param missedReason The encoded missed information of the call.
+         * @param isPhoneAccountMigrationPending whether the PhoneAccountHandle ID need to migrate
          *
          * @result The URI of the call log entry belonging to the user that made or received this
          *        call.  This could be of the shadow provider.  Do not return it to non-system apps,
@@ -1600,7 +1651,8 @@ public class CallLog {
                 int features, PhoneAccountHandle accountHandle, long start, int duration,
                 Long dataUsage, boolean addForAllUsers, UserHandle userToBeInsertedTo,
                 boolean isRead, int callBlockReason, CharSequence callScreeningAppName,
-                String callScreeningComponentName, long missedReason) {
+                String callScreeningComponentName, long missedReason,
+                int isPhoneAccountMigrationPending) {
             AddCallParams.AddCallParametersBuilder builder =
                     new AddCallParams.AddCallParametersBuilder();
             builder.setCallerInfo(ci);
@@ -1621,6 +1673,7 @@ public class CallLog {
             builder.setCallScreeningAppName(callScreeningAppName);
             builder.setCallScreeningComponentName(callScreeningComponentName);
             builder.setMissedReason(missedReason);
+            builder.setIsPhoneAccountMigrationPending(isPhoneAccountMigrationPending);
 
             return addCall(context, builder.build());
         }
@@ -1692,6 +1745,7 @@ public class CallLog {
             if (params.mPictureUri != null) {
                 values.put(COMPOSER_PHOTO_URI, params.mPictureUri.toString());
             }
+            values.put(IS_PHONE_ACCOUNT_MIGRATION_PENDING, params.mIsPhoneAccountMigrationPending);
 
             if ((params.mCallerInfo != null) && (params.mCallerInfo.getContactId() > 0)) {
                 // Update usage information for the number associated with the contact ID.
@@ -1764,7 +1818,7 @@ public class CallLog {
             Uri result = null;
 
             final UserManager userManager = context.getSystemService(UserManager.class);
-            final int currentUserId = userManager.getUserHandle();
+            final int currentUserId = userManager.getProcessUserId();
 
             if (params.mAddForAllUsers) {
                 if (userManager.isUserUnlocked(UserHandle.SYSTEM)) {
@@ -1903,9 +1957,8 @@ public class CallLog {
                     userManager.isUserUnlocked(user) ? CONTENT_URI : SHADOW_CONTENT_URI,
                     user.getIdentifier());
 
-            if (VERBOSE_LOG) {
-                Log.v(LOG_TAG, String.format("Inserting to %s", uri));
-            }
+            Log.i(LOG_TAG, String.format(Locale.getDefault(),
+                    "addEntryAndRemoveExpiredEntries: provider uri=%s", uri));
 
             try {
                 // When cleaning up the call log, try to delete older call long entries on a per
@@ -1932,13 +1985,14 @@ public class CallLog {
                     Log.w(LOG_TAG, "Failed to insert into call log; null result uri.");
                 }
 
+                int numDeleted;
                 if (values.containsKey(PHONE_ACCOUNT_ID)
                         && !TextUtils.isEmpty(values.getAsString(PHONE_ACCOUNT_ID))
                         && values.containsKey(PHONE_ACCOUNT_COMPONENT_NAME)
                         && !TextUtils.isEmpty(values.getAsString(PHONE_ACCOUNT_COMPONENT_NAME))) {
                     // Only purge entries for the same phone account.
-                    resolver.delete(uri, "_id IN " +
-                            "(SELECT _id FROM calls"
+                    numDeleted = resolver.delete(uri, "_id IN "
+                            + "(SELECT _id FROM calls"
                             + " WHERE " + PHONE_ACCOUNT_COMPONENT_NAME + " = ?"
                             + " AND " + PHONE_ACCOUNT_ID + " = ?"
                             + " ORDER BY " + DEFAULT_SORT_ORDER
@@ -1948,14 +2002,15 @@ public class CallLog {
                     });
                 } else {
                     // No valid phone account specified, so default to the old behavior.
-                    resolver.delete(uri, "_id IN " +
-                            "(SELECT _id FROM calls ORDER BY " + DEFAULT_SORT_ORDER
+                    numDeleted = resolver.delete(uri, "_id IN "
+                            + "(SELECT _id FROM calls ORDER BY " + DEFAULT_SORT_ORDER
                             + " LIMIT -1 OFFSET 500)", null);
                 }
+                Log.i(LOG_TAG, "addEntry: cleaned up " + numDeleted + " old entries");
 
                 return result;
             } catch (IllegalArgumentException e) {
-                Log.w(LOG_TAG, "Failed to insert calllog", e);
+                Log.e(LOG_TAG, "Failed to insert calllog", e);
                 // Even though we make sure the target user is running and decrypted before calling
                 // this method, there's a chance that the user just got shut down, in which case
                 // we'll still get "IllegalArgumentException: Unknown URL content://call_log/calls".

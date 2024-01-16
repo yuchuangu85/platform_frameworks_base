@@ -57,8 +57,9 @@ public final class PointerIcon implements Parcelable {
     /** Type constant: Null icon.  It has no bitmap. */
     public static final int TYPE_NULL = 0;
 
-    /** Type constant: no icons are specified. If all views uses this, then falls back
-     * to the default type, but this is helpful to distinguish a view explicitly want
+    /**
+     * Type constant: no icons are specified. If all views uses this, then the pointer icon falls
+     * back to the default type, but this is helpful to distinguish a view that explicitly wants
      * to have the default icon.
      * @hide
      */
@@ -138,6 +139,9 @@ public final class PointerIcon implements Parcelable {
     /** Type constant: grabbing. */
     public static final int TYPE_GRABBING = 1021;
 
+    /** Type constant: handwriting. */
+    public static final int TYPE_HANDWRITING = 1022;
+
     // OEM private types should be defined starting at this range to avoid
     // conflicts with any system types that may be defined in the future.
     private static final int TYPE_OEM_FIRST = 10000;
@@ -184,7 +188,7 @@ public final class PointerIcon implements Parcelable {
      * @see #TYPE_NULL
      * @hide
      */
-    public static PointerIcon getNullIcon() {
+    public static @NonNull PointerIcon getNullIcon() {
         return gNullIcon;
     }
 
@@ -197,7 +201,7 @@ public final class PointerIcon implements Parcelable {
      * @throws IllegalArgumentException if context is null.
      * @hide
      */
-    public static PointerIcon getDefaultIcon(@NonNull Context context) {
+    public static @NonNull PointerIcon getDefaultIcon(@NonNull Context context) {
         return getSystemIcon(context, TYPE_DEFAULT);
     }
 
@@ -211,7 +215,7 @@ public final class PointerIcon implements Parcelable {
      *
      * @throws IllegalArgumentException if context is null.
      */
-    public static PointerIcon getSystemIcon(@NonNull Context context, int type) {
+    public static @NonNull PointerIcon getSystemIcon(@NonNull Context context, int type) {
         if (context == null) {
             throw new IllegalArgumentException("context must not be null");
         }
@@ -287,7 +291,8 @@ public final class PointerIcon implements Parcelable {
      * @throws IllegalArgumentException if bitmap is null, or if the x/y hotspot
      *         parameters are invalid.
      */
-    public static PointerIcon create(@NonNull Bitmap bitmap, float hotSpotX, float hotSpotY) {
+    public static @NonNull PointerIcon create(@NonNull Bitmap bitmap, float hotSpotX,
+            float hotSpotY) {
         if (bitmap == null) {
             throw new IllegalArgumentException("bitmap must not be null");
         }
@@ -321,7 +326,7 @@ public final class PointerIcon implements Parcelable {
      * @throws Resources.NotFoundException if the resource was not found or the drawable
      * linked in the resource was not found.
      */
-    public static PointerIcon load(@NonNull Resources resources, @XmlRes int resourceId) {
+    public static @NonNull PointerIcon load(@NonNull Resources resources, @XmlRes int resourceId) {
         if (resources == null) {
             throw new IllegalArgumentException("resources must not be null");
         }
@@ -342,7 +347,7 @@ public final class PointerIcon implements Parcelable {
      * @hide
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
-    public PointerIcon load(@NonNull Context context) {
+    public @NonNull PointerIcon load(@NonNull Context context) {
         if (context == null) {
             throw new IllegalArgumentException("context must not be null");
         }
@@ -362,7 +367,7 @@ public final class PointerIcon implements Parcelable {
         return mType;
     }
 
-    public static final @android.annotation.NonNull Parcelable.Creator<PointerIcon> CREATOR
+    public static final @NonNull Parcelable.Creator<PointerIcon> CREATOR
             = new Parcelable.Creator<PointerIcon>() {
         public PointerIcon createFromParcel(Parcel in) {
             int type = in.readInt();
@@ -532,6 +537,13 @@ public final class PointerIcon implements Parcelable {
         mHotSpotY = hotSpotY;
     }
 
+    @Override
+    public String toString() {
+        return "PointerIcon{type=" + typeToString(mType)
+                + ", hotspotX=" + mHotSpotX + ", hotspotY=" + mHotSpotY
+                + ", systemIconResourceId=" + mSystemIconResourceId + "}";
+    }
+
     private static void validateHotSpot(Bitmap bitmap, float hotSpotX, float hotSpotY) {
         if (hotSpotX < 0 || hotSpotX >= bitmap.getWidth()) {
             throw new IllegalArgumentException("x hotspot lies outside of the bitmap area");
@@ -593,6 +605,8 @@ public final class PointerIcon implements Parcelable {
                 return com.android.internal.R.styleable.Pointer_pointerIconGrab;
             case TYPE_GRABBING:
                 return com.android.internal.R.styleable.Pointer_pointerIconGrabbing;
+            case TYPE_HANDWRITING:
+                return com.android.internal.R.styleable.Pointer_pointerIconHandwriting;
             default:
                 return 0;
         }
@@ -623,4 +637,40 @@ public final class PointerIcon implements Parcelable {
         displayManager.registerDisplayListener(sDisplayListener, null /* handler */);
     }
 
+    /**
+     * Convert type constant to string.
+     * @hide
+     */
+    public static String typeToString(int type) {
+        switch (type) {
+            case TYPE_CUSTOM: return "CUSTOM";
+            case TYPE_NULL: return "NULL";
+            case TYPE_NOT_SPECIFIED: return "NOT_SPECIFIED";
+            case TYPE_ARROW: return "ARROW";
+            case TYPE_SPOT_HOVER: return "SPOT_HOVER";
+            case TYPE_SPOT_TOUCH: return "SPOT_TOUCH";
+            case TYPE_SPOT_ANCHOR: return "SPOT_ANCHOR";
+            case TYPE_CONTEXT_MENU: return "CONTEXT_MENU";
+            case TYPE_HAND: return "HAND";
+            case TYPE_HELP: return "HELP";
+            case TYPE_WAIT: return "WAIT";
+            case TYPE_CELL: return "CELL";
+            case TYPE_CROSSHAIR: return "CROSSHAIR";
+            case TYPE_TEXT: return "TEXT";
+            case TYPE_VERTICAL_TEXT: return "VERTICAL_TEXT";
+            case TYPE_ALIAS: return "ALIAS";
+            case TYPE_COPY: return "COPY";
+            case TYPE_NO_DROP: return "NO_DROP";
+            case TYPE_ALL_SCROLL: return "ALL_SCROLL";
+            case TYPE_HORIZONTAL_DOUBLE_ARROW: return "HORIZONTAL_DOUBLE_ARROW";
+            case TYPE_VERTICAL_DOUBLE_ARROW: return "VERTICAL_DOUBLE_ARROW";
+            case TYPE_TOP_RIGHT_DIAGONAL_DOUBLE_ARROW: return "TOP_RIGHT_DIAGONAL_DOUBLE_ARROW";
+            case TYPE_TOP_LEFT_DIAGONAL_DOUBLE_ARROW: return "TOP_LEFT_DIAGONAL_DOUBLE_ARROW";
+            case TYPE_ZOOM_IN: return "ZOOM_IN";
+            case TYPE_ZOOM_OUT: return "ZOOM_OUT";
+            case TYPE_GRAB: return "GRAB";
+            case TYPE_GRABBING: return "GRABBING";
+            default: return Integer.toString(type);
+        }
+    }
 }

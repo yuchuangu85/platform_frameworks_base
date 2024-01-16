@@ -20,8 +20,10 @@ import android.graphics.Region;
 import android.graphics.Point;
 import android.os.Bundle;
 import android.view.MagnificationSpec;
+import android.view.SurfaceControl;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.IAccessibilityInteractionConnectionCallback;
+import android.window.ScreenCapture;
 
 /**
  * Interface for interaction between the AccessibilityManagerService
@@ -34,23 +36,24 @@ oneway interface IAccessibilityInteractionConnection {
     void findAccessibilityNodeInfoByAccessibilityId(long accessibilityNodeId, in Region bounds,
         int interactionId, IAccessibilityInteractionConnectionCallback callback, int flags,
         int interrogatingPid, long interrogatingTid, in MagnificationSpec spec,
-        in Bundle arguments);
+        in float[] matrixValues, in Bundle arguments);
 
     void findAccessibilityNodeInfosByViewId(long accessibilityNodeId, String viewId,
         in Region bounds, int interactionId, IAccessibilityInteractionConnectionCallback callback,
-        int flags, int interrogatingPid, long interrogatingTid, in MagnificationSpec spec);
+        int flags, int interrogatingPid, long interrogatingTid, in MagnificationSpec spec,
+         in float[] matrix);
 
     void findAccessibilityNodeInfosByText(long accessibilityNodeId, String text, in Region bounds,
         int interactionId, IAccessibilityInteractionConnectionCallback callback, int flags,
-        int interrogatingPid, long interrogatingTid, in MagnificationSpec spec);
+        int interrogatingPid, long interrogatingTid, in MagnificationSpec spec, in float[] matrixValues);
 
     void findFocus(long accessibilityNodeId, int focusType, in Region bounds, int interactionId,
         IAccessibilityInteractionConnectionCallback callback, int flags, int interrogatingPid,
-        long interrogatingTid, in MagnificationSpec spec);
+        long interrogatingTid, in MagnificationSpec spec, in float[] matrixValues);
 
     void focusSearch(long accessibilityNodeId, int direction, in Region bounds, int interactionId,
         IAccessibilityInteractionConnectionCallback callback, int flags, int interrogatingPid,
-        long interrogatingTid, in MagnificationSpec spec);
+        long interrogatingTid, in MagnificationSpec spec, in float[] matrixValues);
 
     void performAccessibilityAction(long accessibilityNodeId, int action, in Bundle arguments,
         int interactionId, IAccessibilityInteractionConnectionCallback callback, int flags,
@@ -59,4 +62,9 @@ oneway interface IAccessibilityInteractionConnection {
     void clearAccessibilityFocus();
 
     void notifyOutsideTouch();
+
+    void takeScreenshotOfWindow(int interactionId,
+        in ScreenCapture.ScreenCaptureListener listener,
+        IAccessibilityInteractionConnectionCallback callback);
+    void attachAccessibilityOverlayToWindow(in SurfaceControl sc);
 }

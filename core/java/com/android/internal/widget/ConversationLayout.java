@@ -66,7 +66,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.function.Consumer;
 
 /**
  * A custom-built layout for the Notification.MessagingStyle allows dynamic addition and removal
@@ -76,8 +75,6 @@ import java.util.function.Consumer;
 public class ConversationLayout extends FrameLayout
         implements ImageMessageConsumer, IMessagingLayout {
 
-    private static final Consumer<MessagingMessage> REMOVE_MESSAGE
-            = MessagingMessage::removeMessage;
     public static final Interpolator LINEAR_OUT_SLOW_IN = new PathInterpolator(0f, 0f, 0.2f, 1f);
     public static final Interpolator FAST_OUT_LINEAR_IN = new PathInterpolator(0.4f, 0f, 1f, 1f);
     public static final Interpolator FAST_OUT_SLOW_IN = new PathInterpolator(0.4f, 0f, 0.2f, 1f);
@@ -114,6 +111,7 @@ public class ConversationLayout extends FrameLayout
     private Icon mLargeIcon;
     private View mExpandButtonContainer;
     private ViewGroup mExpandButtonAndContentContainer;
+    private ViewGroup mExpandButtonContainerA11yContainer;
     private NotificationExpandButton mExpandButton;
     private MessagingLinearLayout mImageMessageContainer;
     private int mBadgeProtrusion;
@@ -150,6 +148,7 @@ public class ConversationLayout extends FrameLayout
     private Icon mShortcutIcon;
     private View mAppNameDivider;
     private TouchDelegateComposite mTouchDelegate = new TouchDelegateComposite(this);
+    private ArrayList<MessagingLinearLayout.MessagingChild> mToRecycle = new ArrayList<>();
 
     public ConversationLayout(@NonNull Context context) {
         super(context);
@@ -236,6 +235,8 @@ public class ConversationLayout extends FrameLayout
         });
         mConversationText = findViewById(R.id.conversation_text);
         mExpandButtonContainer = findViewById(R.id.expand_button_container);
+        mExpandButtonContainerA11yContainer =
+                findViewById(R.id.expand_button_a11y_container);
         mConversationHeader = findViewById(R.id.conversation_header);
         mContentContainer = findViewById(R.id.notification_action_list_margin_target);
         mExpandButtonAndContentContainer = findViewById(R.id.expand_button_and_content_container);
@@ -382,7 +383,11 @@ public class ConversationLayout extends FrameLayout
         updateContentEndPaddings();
     }
 
-    @RemotableViewMethod
+    /**
+     * Set conversation data
+     * @param extras Bundle contains conversation data
+     */
+    @RemotableViewMethod(asyncImpl = "setDataAsync")
     public void setData(Bundle extras) {
         Parcelable[] messages = extras.getParcelableArray(Notification.EXTRA_MESSAGES);
         List<Notification.MessagingStyle.Message> newMessages
@@ -392,20 +397,40 @@ public class ConversationLayout extends FrameLayout
                 = Notification.MessagingStyle.Message.getMessagesFromBundleArray(histMessages);
 
         // mUser now set (would be nice to avoid the side effect but WHATEVER)
-        setUser(extras.getParcelable(Notification.EXTRA_MESSAGING_PERSON));
-
+        final Person user = extras.getParcelable(Notification.EXTRA_MESSAGING_PERSON, Person.class);
         // Append remote input history to newMessages (again, side effect is lame but WHATEVS)
         RemoteInputHistoryItem[] history = (RemoteInputHistoryItem[])
-                extras.getParcelableArray(Notification.EXTRA_REMOTE_INPUT_HISTORY_ITEMS);
+                extras.getParcelableArray(Notification.EXTRA_REMOTE_INPUT_HISTORY_ITEMS, android.app.RemoteInputHistoryItem.class);
         addRemoteInputHistoryToMessages(newMessages, history);
 
         boolean showSpinner =
                 extras.getBoolean(Notification.EXTRA_SHOW_REMOTE_INPUT_SPINNER, false);
-        // bind it, baby
-        bind(newMessages, newHistoricMessages, showSpinner);
-
         int unreadCount = extras.getInt(Notification.EXTRA_CONVERSATION_UNREAD_MESSAGE_COUNT);
-        setUnreadCount(unreadCount);
+
+        // convert MessagingStyle.Message to MessagingMessage, re-using ones from a previous binding
+        // if they exist
+        final List<MessagingMessage> newMessagingMessages =
+                createMessages(newMessages, /* isHistoric= */false,
+                        /* usePrecomputedText= */false);
+        final List<MessagingMessage> newHistoricMessagingMessages =
+                createMessages(newHistoricMessages, /* isHistoric= */true,
+                        /* usePrecomputedText= */false);
+        // bind it, baby
+        bindViews(user, showSpinner, unreadCount,
+                newMessagingMessages,
+                newHistoricMessagingMessages);
+    }
+
+    /**
+     * RemotableViewMethod's asyncImpl of {@link #setData(Bundle)}.
+     * This should be called on a background thread, and returns a Runnable which is then must be
+     * called on the main thread to complete the operation and set text.
+     * @param extras Bundle contains conversation data
+     * @hide
+     */
+    @NonNull
+    public Runnable setDataAsync(Bundle extras) {
+        return () -> setData(extras);
     }
 
     @Override
@@ -435,15 +460,17 @@ public class ConversationLayout extends FrameLayout
         }
     }
 
-    private void bind(List<Notification.MessagingStyle.Message> newMessages,
-            List<Notification.MessagingStyle.Message> newHistoricMessages,
-            boolean showSpinner) {
-        // convert MessagingStyle.Message to MessagingMessage, re-using ones from a previous binding
-        // if they exist
-        List<MessagingMessage> historicMessages = createMessages(newHistoricMessages,
-                true /* isHistoric */);
-        List<MessagingMessage> messages = createMessages(newMessages, false /* isHistoric */);
 
+    private void bindViews(Person user,
+            boolean showSpinner, int unreadCount, List<MessagingMessage> newMessagingMessages,
+            List<MessagingMessage> newHistoricMessagingMessages) {
+        setUser(user);
+        setUnreadCount(unreadCount);
+        bind(showSpinner, newMessagingMessages, newHistoricMessagingMessages);
+    }
+
+    private void bind(boolean showSpinner, List<MessagingMessage> messages,
+            List<MessagingMessage> historicMessages) {
         // Copy our groups, before they get clobbered
         ArrayList<MessagingGroup> oldGroups = new ArrayList<>(mGroups);
 
@@ -462,8 +489,12 @@ public class ConversationLayout extends FrameLayout
         removeGroups(oldGroups);
 
         // Let's remove the remaining messages
-        mMessages.forEach(REMOVE_MESSAGE);
-        mHistoricMessages.forEach(REMOVE_MESSAGE);
+        for (MessagingMessage message : mMessages) {
+            message.removeMessage(mToRecycle);
+        }
+        for (MessagingMessage historicMessage : mHistoricMessages) {
+            historicMessage.removeMessage(mToRecycle);
+        }
 
         mMessages = messages;
         mHistoricMessages = historicMessages;
@@ -472,6 +503,12 @@ public class ConversationLayout extends FrameLayout
         updateTitleAndNamesDisplay();
 
         updateConversationLayout();
+
+        // Recycle everything at the end of the update, now that we know it's no longer needed.
+        for (MessagingLinearLayout.MessagingChild child : mToRecycle) {
+            child.recycle();
+        }
+        mToRecycle.clear();
     }
 
     /**
@@ -745,18 +782,18 @@ public class ConversationLayout extends FrameLayout
             MessagingGroup group = oldGroups.get(i);
             if (!mGroups.contains(group)) {
                 List<MessagingMessage> messages = group.getMessages();
-                Runnable endRunnable = () -> {
-                    mMessagingLinearLayout.removeTransientView(group);
-                    group.recycle();
-                };
-
                 boolean wasShown = group.isShown();
                 mMessagingLinearLayout.removeView(group);
                 if (wasShown && !MessagingLinearLayout.isGone(group)) {
                     mMessagingLinearLayout.addTransientView(group, 0);
-                    group.removeGroupAnimated(endRunnable);
+                    group.removeGroupAnimated(() -> {
+                        mMessagingLinearLayout.removeTransientView(group);
+                        group.recycle();
+                    });
                 } else {
-                    endRunnable.run();
+                    // Defer recycling until after the update is done, since we may still need the
+                    // old group around to perform other updates.
+                    mToRecycle.add(group);
                 }
                 mMessages.removeAll(messages);
                 mHistoricMessages.removeAll(messages);
@@ -871,6 +908,10 @@ public class ConversationLayout extends FrameLayout
             if (newGroup == null) {
                 newGroup = MessagingGroup.createGroup(mMessagingLinearLayout);
                 mAddedGroups.add(newGroup);
+            } else if (newGroup.getParent() != mMessagingLinearLayout) {
+                throw new IllegalStateException(
+                        "group parent was " + newGroup.getParent() + " but expected "
+                                + mMessagingLinearLayout);
             }
             newGroup.setImageDisplayLocation(mIsCollapsed
                     ? IMAGE_DISPLAY_LOCATION_EXTERNAL
@@ -912,7 +953,8 @@ public class ConversationLayout extends FrameLayout
                 message = messages.get(i - histSize);
             }
             boolean isNewGroup = currentGroup == null;
-            Person sender = message.getMessage().getSenderPerson();
+            Person sender =
+                    message.getMessage() == null ? null : message.getMessage().getSenderPerson();
             CharSequence key = getKey(sender);
             isNewGroup |= !TextUtils.equals(key, currentSenderKey);
             if (isNewGroup) {
@@ -941,15 +983,17 @@ public class ConversationLayout extends FrameLayout
      * @param newMessages the messages to parse.
      */
     private List<MessagingMessage> createMessages(
-            List<Notification.MessagingStyle.Message> newMessages, boolean historic) {
+            List<Notification.MessagingStyle.Message> newMessages, boolean isHistoric,
+            boolean usePrecomputedText) {
         List<MessagingMessage> result = new ArrayList<>();
         for (int i = 0; i < newMessages.size(); i++) {
             Notification.MessagingStyle.Message m = newMessages.get(i);
             MessagingMessage message = findAndRemoveMatchingMessage(m);
             if (message == null) {
-                message = MessagingMessage.createMessage(this, m, mImageResolver);
+                message = MessagingMessage.createMessage(this, m,
+                        mImageResolver, usePrecomputedText);
             }
-            message.setIsHistoric(historic);
+            message.setIsHistoric(isHistoric);
             result.add(message);
         }
         return result;
@@ -1079,7 +1123,7 @@ public class ConversationLayout extends FrameLayout
             newContainer = mExpandButtonAndContentContainer;
         } else {
             buttonGravity = Gravity.CENTER_HORIZONTAL | Gravity.TOP;
-            newContainer = this;
+            newContainer = mExpandButtonContainerA11yContainer;
         }
         mExpandButton.setExpanded(!mIsCollapsed);
 
@@ -1175,7 +1219,8 @@ public class ConversationLayout extends FrameLayout
             return null;
         }
         final MessagingMessage messagingMessage = mMessages.get(mMessages.size() - 1);
-        final CharSequence text = messagingMessage.getMessage().getText();
+        final CharSequence text = messagingMessage.getMessage() == null ? null
+                : messagingMessage.getMessage().getText();
         if (text == null && messagingMessage instanceof MessagingImageMessage) {
             final String unformatted =
                     getResources().getString(R.string.conversation_single_line_image_placeholder);

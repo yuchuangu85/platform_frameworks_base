@@ -18,12 +18,15 @@ package com.android.systemui;
 
 import android.app.ActivityThread;
 import android.app.Application;
+import android.app.Notification;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
+import android.os.Bundle;
+import android.os.Looper;
 import android.os.Process;
 import android.os.SystemProperties;
 import android.os.Trace;
@@ -31,44 +34,51 @@ import android.os.UserHandle;
 import android.util.Log;
 import android.util.TimingsTraceLog;
 import android.view.SurfaceControl;
+import android.view.ThreadedRenderer;
+import android.view.View;
 
 import com.android.internal.protolog.common.ProtoLog;
-import com.android.systemui.dagger.ContextComponentHelper;
 import com.android.systemui.dagger.GlobalRootComponent;
 import com.android.systemui.dagger.SysUIComponent;
 import com.android.systemui.dump.DumpManager;
-import com.android.systemui.shared.system.ThreadedRendererCompat;
+import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.util.NotificationChannels;
 
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
+import java.util.Comparator;
+import java.util.Map;
+import java.util.TreeMap;
+
+import javax.inject.Provider;
 
 /**
  * Application class for SystemUI.
  */
 public class SystemUIApplication extends Application implements
-        SystemUIAppComponentFactory.ContextInitializer {
+        SystemUIAppComponentFactoryBase.ContextInitializer {
 
     public static final String TAG = "SystemUIService";
     private static final boolean DEBUG = false;
 
-    private ContextComponentHelper mComponentHelper;
     private BootCompleteCacheImpl mBootCompleteCache;
 
     /**
      * Hold a reference on the stuff we start.
      */
-    private SystemUI[] mServices;
+    private CoreStartable[] mServices;
     private boolean mServicesStarted;
-    private SystemUIAppComponentFactory.ContextAvailableCallback mContextAvailableCallback;
-    private GlobalRootComponent mRootComponent;
+    private SystemUIAppComponentFactoryBase.ContextAvailableCallback mContextAvailableCallback;
     private SysUIComponent mSysUIComponent;
+    private SystemUIInitializer mInitializer;
 
     public SystemUIApplication() {
         super();
         Log.v(TAG, "SystemUIApplication constructed.");
         // SysUI may be building without protolog preprocessing in some cases
         ProtoLog.REQUIRE_PROTOLOGTOOL = false;
+    }
+
+    protected GlobalRootComponent getRootComponent() {
+        return mInitializer.getRootComponent();
     }
 
     @Override
@@ -80,31 +90,39 @@ public class SystemUIApplication extends Application implements
         TimingsTraceLog log = new TimingsTraceLog("SystemUIBootTiming",
                 Trace.TRACE_TAG_APP);
         log.traceBegin("DependencyInjection");
-        mContextAvailableCallback.onContextAvailable(this);
-        mRootComponent = SystemUIFactory.getInstance().getRootComponent();
-        mSysUIComponent = SystemUIFactory.getInstance().getSysUIComponent();
-        mComponentHelper = mSysUIComponent.getContextComponentHelper();
+        mInitializer = mContextAvailableCallback.onContextAvailable(this);
+        mSysUIComponent = mInitializer.getSysUIComponent();
         mBootCompleteCache = mSysUIComponent.provideBootCacheImpl();
         log.traceEnd();
+
+        // Enable Looper trace points.
+        // This allows us to see Handler callbacks on traces.
+        Looper.getMainLooper().setTraceTag(Trace.TRACE_TAG_APP);
 
         // Set the application theme that is inherited by all services. Note that setting the
         // application theme in the manifest does only work for activities. Keep this in sync with
         // the theme set there.
         setTheme(R.style.Theme_SystemUI);
 
+        View.setTraceLayoutSteps(
+                SystemProperties.getBoolean("persist.debug.trace_layouts", false));
+        View.setTracedRequestLayoutClassClass(
+                SystemProperties.get("persist.debug.trace_request_layout_class", null));
+
         if (Process.myUserHandle().equals(UserHandle.SYSTEM)) {
-            IntentFilter bootCompletedFilter = new IntentFilter(Intent.ACTION_BOOT_COMPLETED);
+            IntentFilter bootCompletedFilter = new
+                    IntentFilter(Intent.ACTION_LOCKED_BOOT_COMPLETED);
             bootCompletedFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
 
             // If SF GPU context priority is set to realtime, then SysUI should run at high.
             // The priority is defaulted at medium.
             int sfPriority = SurfaceControl.getGPUContextPriority();
             Log.i(TAG, "Found SurfaceFlinger's GPU Priority: " + sfPriority);
-            if (sfPriority == ThreadedRendererCompat.EGL_CONTEXT_PRIORITY_REALTIME_NV) {
+            if (sfPriority == ThreadedRenderer.EGL_CONTEXT_PRIORITY_REALTIME_NV) {
                 Log.i(TAG, "Setting SysUI's GPU Context priority to: "
-                        + ThreadedRendererCompat.EGL_CONTEXT_PRIORITY_HIGH_IMG);
-                ThreadedRendererCompat.setContextPriority(
-                        ThreadedRendererCompat.EGL_CONTEXT_PRIORITY_HIGH_IMG);
+                        + ThreadedRenderer.EGL_CONTEXT_PRIORITY_HIGH_IMG);
+                ThreadedRenderer.setContextPriority(
+                        ThreadedRenderer.EGL_CONTEXT_PRIORITY_HIGH_IMG);
             }
 
             registerReceiver(new BroadcastReceiver() {
@@ -118,7 +136,7 @@ public class SystemUIApplication extends Application implements
                     if (mServicesStarted) {
                         final int N = mServices.length;
                         for (int i = 0; i < N; i++) {
-                            mServices[i].onBootCompleted();
+                            notifyBootCompleted(mServices[i]);
                         }
                     }
                 }
@@ -159,8 +177,16 @@ public class SystemUIApplication extends Application implements
      */
 
     public void startServicesIfNeeded() {
-        String[] names = SystemUIFactory.getInstance().getSystemUIServiceComponents(getResources());
-        startServicesIfNeeded(/* metricsPrefix= */ "StartServices", names);
+        final String vendorComponent = mInitializer.getVendorComponent(getResources());
+
+        // Sort the startables so that we get a deterministic ordering.
+        // TODO: make #start idempotent and require users of CoreStartable to call it.
+        Map<Class<?>, Provider<CoreStartable>> sortedStartables = new TreeMap<>(
+                Comparator.comparing(Class::getName));
+        sortedStartables.putAll(mSysUIComponent.getStartables());
+        sortedStartables.putAll(mSysUIComponent.getPerUserStartables());
+        startServicesIfNeeded(
+                sortedStartables, "StartServices", vendorComponent);
     }
 
     /**
@@ -170,16 +196,22 @@ public class SystemUIApplication extends Application implements
      * <p>This method must only be called from the main thread.</p>
      */
     void startSecondaryUserServicesIfNeeded() {
-        String[] names = SystemUIFactory.getInstance().getSystemUIServiceComponentsPerUser(
-                getResources());
-        startServicesIfNeeded(/* metricsPrefix= */ "StartSecondaryServices", names);
+        // Sort the startables so that we get a deterministic ordering.
+        Map<Class<?>, Provider<CoreStartable>> sortedStartables = new TreeMap<>(
+                Comparator.comparing(Class::getName));
+        sortedStartables.putAll(mSysUIComponent.getPerUserStartables());
+        startServicesIfNeeded(
+                sortedStartables, "StartSecondaryServices", null);
     }
 
-    private void startServicesIfNeeded(String metricsPrefix, String[] services) {
+    private void startServicesIfNeeded(
+            Map<Class<?>, Provider<CoreStartable>> startables,
+            String metricsPrefix,
+            String vendorComponent) {
         if (mServicesStarted) {
             return;
         }
-        mServices = new SystemUI[services.length];
+        mServices = new CoreStartable[startables.size() + (vendorComponent == null ? 0 : 1)];
 
         if (!mBootCompleteCache.isBootComplete()) {
             // check to see if maybe it was already completed long before we began
@@ -192,48 +224,46 @@ public class SystemUIApplication extends Application implements
             }
         }
 
-        final DumpManager dumpManager = mSysUIComponent.createDumpManager();
+        DumpManager dumpManager = mSysUIComponent.createDumpManager();
 
         Log.v(TAG, "Starting SystemUI services for user " +
                 Process.myUserHandle().getIdentifier() + ".");
         TimingsTraceLog log = new TimingsTraceLog("SystemUIBootTiming",
                 Trace.TRACE_TAG_APP);
         log.traceBegin(metricsPrefix);
-        final int N = services.length;
-        for (int i = 0; i < N; i++) {
-            String clsName = services[i];
-            if (DEBUG) Log.d(TAG, "loading: " + clsName);
-            log.traceBegin(metricsPrefix + clsName);
-            long ti = System.currentTimeMillis();
-            try {
-                SystemUI obj = mComponentHelper.resolveSystemUI(clsName);
-                if (obj == null) {
-                    Constructor constructor = Class.forName(clsName).getConstructor(Context.class);
-                    obj = (SystemUI) constructor.newInstance(this);
-                }
-                mServices[i] = obj;
-            } catch (ClassNotFoundException
-                    | NoSuchMethodException
-                    | IllegalAccessException
-                    | InstantiationException
-                    | InvocationTargetException ex) {
-                throw new RuntimeException(ex);
-            }
 
-            if (DEBUG) Log.d(TAG, "running: " + mServices[i]);
-            mServices[i].start();
-            log.traceEnd();
+        int i = 0;
+        for (Map.Entry<Class<?>, Provider<CoreStartable>> entry : startables.entrySet()) {
+            String clsName = entry.getKey().getName();
+            int j = i;  // Copied to make lambda happy.
+            timeInitialization(
+                    clsName,
+                    () -> mServices[j] = startStartable(clsName, entry.getValue()),
+                    log,
+                    metricsPrefix);
+            i++;
+        }
 
-            // Warn if initialization of component takes too long
-            ti = System.currentTimeMillis() - ti;
-            if (ti > 1000) {
-                Log.w(TAG, "Initialization of " + clsName + " took " + ti + " ms");
-            }
+        if (vendorComponent != null) {
+            timeInitialization(
+                    vendorComponent,
+                    () -> mServices[mServices.length - 1] =
+                            startAdditionalStartable(vendorComponent),
+                    log,
+                    metricsPrefix);
+        }
+
+        for (i = 0; i < mServices.length; i++) {
+            CoreStartable service = mServices[i];
             if (mBootCompleteCache.isBootComplete()) {
-                mServices[i].onBootCompleted();
+                notifyBootCompleted(service);
             }
 
-            dumpManager.registerDumpable(mServices[i].getClass().getName(), mServices[i]);
+            if (service.isDumpCritical()) {
+                dumpManager.registerCriticalDumpable(service.getClass().getName(), service);
+            } else {
+                dumpManager.registerNormalDumpable(service.getClass().getName(), service);
+            }
         }
         mSysUIComponent.getInitController().executePostInitTasks();
         log.traceEnd();
@@ -241,27 +271,119 @@ public class SystemUIApplication extends Application implements
         mServicesStarted = true;
     }
 
+    private static void notifyBootCompleted(CoreStartable coreStartable) {
+        if (Trace.isEnabled()) {
+            Trace.traceBegin(
+                    Trace.TRACE_TAG_APP,
+                    coreStartable.getClass().getSimpleName() + ".onBootCompleted()");
+        }
+        coreStartable.onBootCompleted();
+        Trace.endSection();
+    }
+
+    private static void timeInitialization(String clsName, Runnable init, TimingsTraceLog log,
+            String metricsPrefix) {
+        long ti = System.currentTimeMillis();
+        log.traceBegin(metricsPrefix + " " + clsName);
+        init.run();
+        log.traceEnd();
+
+        // Warn if initialization of component takes too long
+        ti = System.currentTimeMillis() - ti;
+        if (ti > 1000) {
+            Log.w(TAG, "Initialization of " + clsName + " took " + ti + " ms");
+        }
+    }
+
+    private static CoreStartable startAdditionalStartable(String clsName) {
+        CoreStartable startable;
+        if (DEBUG) Log.d(TAG, "loading: " + clsName);
+        if (Trace.isEnabled()) {
+            Trace.traceBegin(
+                    Trace.TRACE_TAG_APP, clsName + ".newInstance()");
+        }
+        try {
+            startable = (CoreStartable) Class.forName(clsName).newInstance();
+        } catch (ClassNotFoundException
+                | IllegalAccessException
+                | InstantiationException ex) {
+            throw new RuntimeException(ex);
+        } finally {
+            Trace.endSection();
+        }
+
+        return startStartable(startable);
+    }
+
+    private static CoreStartable startStartable(String clsName, Provider<CoreStartable> provider) {
+        if (DEBUG) Log.d(TAG, "loading: " + clsName);
+        if (Trace.isEnabled()) {
+            Trace.traceBegin(
+                    Trace.TRACE_TAG_APP, "Provider<" + clsName + ">.get()");
+        }
+        CoreStartable startable = provider.get();
+        Trace.endSection();
+        return startStartable(startable);
+    }
+
+    private static CoreStartable startStartable(CoreStartable startable) {
+        if (DEBUG) Log.d(TAG, "running: " + startable);
+        if (Trace.isEnabled()) {
+            Trace.traceBegin(
+                    Trace.TRACE_TAG_APP, startable.getClass().getSimpleName() + ".start()");
+        }
+        startable.start();
+        Trace.endSection();
+
+        return startable;
+    }
+
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         if (mServicesStarted) {
-            mSysUIComponent.getConfigurationController().onConfigurationChanged(newConfig);
+            ConfigurationController configController = mSysUIComponent.getConfigurationController();
+            if (Trace.isEnabled()) {
+                Trace.traceBegin(
+                        Trace.TRACE_TAG_APP,
+                        configController.getClass().getSimpleName() + ".onConfigurationChanged()");
+            }
+            configController.onConfigurationChanged(newConfig);
+            Trace.endSection();
             int len = mServices.length;
             for (int i = 0; i < len; i++) {
                 if (mServices[i] != null) {
+                    if (Trace.isEnabled()) {
+                        Trace.traceBegin(
+                                Trace.TRACE_TAG_APP,
+                                mServices[i].getClass().getSimpleName()
+                                        + ".onConfigurationChanged()");
+                    }
                     mServices[i].onConfigurationChanged(newConfig);
+                    Trace.endSection();
                 }
             }
         }
     }
 
-    public SystemUI[] getServices() {
+    public CoreStartable[] getServices() {
         return mServices;
     }
 
     @Override
     public void setContextAvailableCallback(
-            SystemUIAppComponentFactory.ContextAvailableCallback callback) {
+            SystemUIAppComponentFactoryBase.ContextAvailableCallback callback) {
         mContextAvailableCallback = callback;
     }
 
+    /** Update a notifications application name. */
+    public static void overrideNotificationAppName(Context context, Notification.Builder n,
+            boolean system) {
+        final Bundle extras = new Bundle();
+        String appName = system
+                ? context.getString(com.android.internal.R.string.notification_app_name_system)
+                : context.getString(com.android.internal.R.string.notification_app_name_settings);
+        extras.putString(Notification.EXTRA_SUBSTITUTE_APP_NAME, appName);
+
+        n.addExtras(extras);
+    }
 }

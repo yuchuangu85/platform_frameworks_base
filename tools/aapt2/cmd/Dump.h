@@ -17,6 +17,9 @@
 #ifndef AAPT2_DUMP_H
 #define AAPT2_DUMP_H
 
+#include <io/FileStream.h>
+#include <io/ZipArchive.h>
+
 #include "Command.h"
 #include "Debug.h"
 #include "LoadedApk.h"
@@ -30,30 +33,31 @@ namespace aapt {
  **/
 class DumpApkCommand : public Command {
  public:
-  explicit DumpApkCommand(const std::string&& name, text::Printer* printer, IDiagnostics* diag)
+  explicit DumpApkCommand(const std::string&& name, text::Printer* printer,
+                          android::IDiagnostics* diag)
       : Command(name), printer_(printer), diag_(diag) {
-        SetDescription("Dump information about an APK or APC.");
+    SetDescription("Dump information about an APK or APC.");
   }
 
   text::Printer* GetPrinter() {
     return printer_;
   }
 
-  IDiagnostics* GetDiagnostics() {
+  android::IDiagnostics* GetDiagnostics() {
     return diag_;
   }
 
-  Maybe<std::string> GetPackageName(LoadedApk* apk) {
+  std::optional<std::string> GetPackageName(LoadedApk* apk) {
     xml::Element* manifest_el = apk->GetManifest()->root.get();
     if (!manifest_el) {
-      GetDiagnostics()->Error(DiagMessage() << "No AndroidManifest.");
-      return Maybe<std::string>();
+      GetDiagnostics()->Error(android::DiagMessage() << "No AndroidManifest.");
+      return {};
     }
 
     xml::Attribute* attr = manifest_el->FindAttribute({}, "package");
     if (!attr) {
-      GetDiagnostics()->Error(DiagMessage() << "No package name.");
-      return Maybe<std::string>();
+      GetDiagnostics()->Error(android::DiagMessage() << "No package name.");
+      return {};
     }
     return attr->value;
   }
@@ -63,7 +67,7 @@ class DumpApkCommand : public Command {
 
   int Action(const std::vector<std::string>& args) final {
     if (args.size() < 1) {
-      diag_->Error(DiagMessage() << "No dump apk specified.");
+      diag_->Error(android::DiagMessage() << "No dump apk specified.");
       return 1;
     }
 
@@ -83,13 +87,13 @@ class DumpApkCommand : public Command {
 
  private:
   text::Printer* printer_;
-  IDiagnostics* diag_;
+  android::IDiagnostics* diag_;
 };
 
 /** Command that prints contents of files generated from the compilation stage. */
 class DumpAPCCommand : public Command {
  public:
-  explicit DumpAPCCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpAPCCommand(text::Printer* printer, android::IDiagnostics* diag)
       : Command("apc"), printer_(printer), diag_(diag) {
     SetDescription("Print the contents of the AAPT2 Container (APC) generated fom compilation.");
     AddOptionalSwitch("--no-values", "Suppresses output of values when displaying resource tables.",
@@ -101,7 +105,7 @@ class DumpAPCCommand : public Command {
 
  private:
   text::Printer* printer_;
-  IDiagnostics* diag_;
+  android::IDiagnostics* diag_;
   bool no_values_ = false;
   bool verbose_ = false;
 };
@@ -121,11 +125,19 @@ class DumpBadgerCommand : public Command {
 
 class DumpBadgingCommand : public DumpApkCommand {
  public:
-  explicit DumpBadgingCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpBadgingCommand(text::Printer* printer, android::IDiagnostics* diag)
       : DumpApkCommand("badging", printer, diag) {
     SetDescription("Print information extracted from the manifest of the APK.");
     AddOptionalSwitch("--include-meta-data", "Include meta-data information.",
                       &options_.include_meta_data);
+  }
+
+  void SetIncludeMetaData(bool value) {
+    options_.include_meta_data = value;
+  }
+
+  void SetOnlyPermissions(bool value) {
+    options_.only_permissions = value;
   }
 
   int Dump(LoadedApk* apk) override {
@@ -138,7 +150,7 @@ class DumpBadgingCommand : public DumpApkCommand {
 
 class DumpConfigsCommand : public DumpApkCommand {
  public:
-  explicit DumpConfigsCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpConfigsCommand(text::Printer* printer, android::IDiagnostics* diag)
       : DumpApkCommand("configurations", printer, diag) {
     SetDescription("Print every configuration used by a resource in the APK.");
   }
@@ -148,7 +160,7 @@ class DumpConfigsCommand : public DumpApkCommand {
 
 class DumpPackageNameCommand : public DumpApkCommand {
  public:
-  explicit DumpPackageNameCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpPackageNameCommand(text::Printer* printer, android::IDiagnostics* diag)
       : DumpApkCommand("packagename", printer, diag) {
     SetDescription("Print the package name of the APK.");
   }
@@ -158,7 +170,7 @@ class DumpPackageNameCommand : public DumpApkCommand {
 
 class DumpPermissionsCommand : public DumpApkCommand {
  public:
-  explicit DumpPermissionsCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpPermissionsCommand(text::Printer* printer, android::IDiagnostics* diag)
       : DumpApkCommand("permissions", printer, diag) {
     SetDescription("Print the permissions extracted from the manifest of the APK.");
   }
@@ -172,7 +184,7 @@ class DumpPermissionsCommand : public DumpApkCommand {
 
 class DumpStringsCommand : public DumpApkCommand {
  public:
-  explicit DumpStringsCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpStringsCommand(text::Printer* printer, android::IDiagnostics* diag)
       : DumpApkCommand("strings", printer, diag) {
     SetDescription("Print the contents of the resource table string pool in the APK.");
   }
@@ -183,7 +195,7 @@ class DumpStringsCommand : public DumpApkCommand {
 /** Prints the graph of parents of a style in an APK. */
 class DumpStyleParentCommand : public DumpApkCommand {
  public:
-  explicit DumpStyleParentCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpStyleParentCommand(text::Printer* printer, android::IDiagnostics* diag)
       : DumpApkCommand("styleparents", printer, diag) {
     SetDescription("Print the parents of a style in an APK.");
     AddRequiredFlag("--style", "The name of the style to print", &style_);
@@ -197,7 +209,7 @@ class DumpStyleParentCommand : public DumpApkCommand {
 
 class DumpTableCommand : public DumpApkCommand {
  public:
-  explicit DumpTableCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpTableCommand(text::Printer* printer, android::IDiagnostics* diag)
       : DumpApkCommand("resources", printer, diag) {
     SetDescription("Print the contents of the resource table from the APK.");
     AddOptionalSwitch("--no-values", "Suppresses output of values when displaying resource tables.",
@@ -214,7 +226,7 @@ class DumpTableCommand : public DumpApkCommand {
 
 class DumpXmlStringsCommand : public DumpApkCommand {
  public:
-  explicit DumpXmlStringsCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpXmlStringsCommand(text::Printer* printer, android::IDiagnostics* diag)
       : DumpApkCommand("xmlstrings", printer, diag) {
     SetDescription("Print the string pool of a compiled xml in an APK.");
     AddRequiredFlagList("--file", "A compiled xml file to print", &files_);
@@ -226,9 +238,20 @@ class DumpXmlStringsCommand : public DumpApkCommand {
   std::vector<std::string> files_;
 };
 
+class DumpChunks : public DumpApkCommand {
+ public:
+  DumpChunks(text::Printer* printer, android::IDiagnostics* diag)
+      : DumpApkCommand("chunks", printer, diag) {
+    SetDescription("Print the chunk information of the compiled resources.arsc in the APK.");
+  }
+
+  int Dump(LoadedApk* apk) override;
+};
+
+/** Prints the tree of a compiled xml in an APK. */
 class DumpXmlTreeCommand : public DumpApkCommand {
  public:
-  explicit DumpXmlTreeCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpXmlTreeCommand(text::Printer* printer, android::IDiagnostics* diag)
       : DumpApkCommand("xmltree", printer, diag) {
     SetDescription("Print the tree of a compiled xml in an APK.");
     AddRequiredFlagList("--file", "A compiled xml file to print", &files_);
@@ -242,7 +265,7 @@ class DumpXmlTreeCommand : public DumpApkCommand {
 
 class DumpOverlayableCommand : public DumpApkCommand {
  public:
-  explicit DumpOverlayableCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpOverlayableCommand(text::Printer* printer, android::IDiagnostics* diag)
       : DumpApkCommand("overlayable", printer, diag) {
     SetDescription("Print the <overlayable> resources of an APK.");
   }
@@ -253,7 +276,7 @@ class DumpOverlayableCommand : public DumpApkCommand {
 /** The default dump command. Performs no action because a subcommand is required. */
 class DumpCommand : public Command {
  public:
-  explicit DumpCommand(text::Printer* printer, IDiagnostics* diag)
+  explicit DumpCommand(text::Printer* printer, android::IDiagnostics* diag)
       : Command("dump", "d"), diag_(diag) {
     AddOptionalSubcommand(util::make_unique<DumpAPCCommand>(printer, diag_));
     AddOptionalSubcommand(util::make_unique<DumpBadgingCommand>(printer, diag_));
@@ -263,6 +286,7 @@ class DumpCommand : public Command {
     AddOptionalSubcommand(util::make_unique<DumpStringsCommand>(printer, diag_));
     AddOptionalSubcommand(util::make_unique<DumpStyleParentCommand>(printer, diag_));
     AddOptionalSubcommand(util::make_unique<DumpTableCommand>(printer, diag_));
+    AddOptionalSubcommand(util::make_unique<DumpChunks>(printer, diag_));
     AddOptionalSubcommand(util::make_unique<DumpXmlStringsCommand>(printer, diag_));
     AddOptionalSubcommand(util::make_unique<DumpXmlTreeCommand>(printer, diag_));
     AddOptionalSubcommand(util::make_unique<DumpOverlayableCommand>(printer, diag_));
@@ -271,16 +295,16 @@ class DumpCommand : public Command {
 
   int Action(const std::vector<std::string>& args) override {
     if (args.size() == 0) {
-      diag_->Error(DiagMessage() << "no subcommand specified");
+      diag_->Error(android::DiagMessage() << "no subcommand specified");
     } else {
-      diag_->Error(DiagMessage() << "unknown subcommand '" << args[0] << "'");
+      diag_->Error(android::DiagMessage() << "unknown subcommand '" << args[0] << "'");
     }
     Usage(&std::cerr);
     return 1;
   }
 
  private:
-  IDiagnostics* diag_;
+  android::IDiagnostics* diag_;
 };
 
 }  // namespace aapt

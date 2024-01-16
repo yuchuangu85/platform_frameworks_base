@@ -36,7 +36,6 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UiThread;
 import android.content.ComponentName;
-import android.content.Context;
 import android.content.pm.ParceledListSlice;
 import android.graphics.Insets;
 import android.graphics.Rect;
@@ -47,16 +46,16 @@ import android.os.IBinder.DeathRecipient;
 import android.os.RemoteException;
 import android.text.Selection;
 import android.text.Spannable;
-import android.text.SpannableString;
-import android.text.Spanned;
 import android.text.TextUtils;
 import android.util.LocalLog;
 import android.util.Log;
 import android.util.TimeUtils;
 import android.view.autofill.AutofillId;
 import android.view.contentcapture.ViewNode.ViewStructureImpl;
+import android.view.contentprotection.ContentProtectionEventProcessor;
 import android.view.inputmethod.BaseInputConnection;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.os.IResultReceiver;
 
 import java.io.PrintWriter;
@@ -64,6 +63,7 @@ import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -102,7 +102,7 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
     private final AtomicBoolean mDisabled = new AtomicBoolean(false);
 
     @NonNull
-    private final Context mContext;
+    private final ContentCaptureManager.StrippedContext mContext;
 
     @NonNull
     private final ContentCaptureManager mManager;
@@ -120,9 +120,13 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
     /**
      * Direct interface to the service binder object - it's used to send the events, including the
      * last ones (when the session is finished)
+     *
+     * @hide
      */
-    @NonNull
-    private IContentCaptureDirectManager mDirectServiceInterface;
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
+    @Nullable
+    public IContentCaptureDirectManager mDirectServiceInterface;
+
     @Nullable
     private DeathRecipient mDirectServiceVulture;
 
@@ -133,14 +137,19 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
     @Nullable
     private IBinder mShareableActivityToken;
 
+    /** @hide */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
     @Nullable
-    private ComponentName mComponentName;
+    public ComponentName mComponentName;
 
     /**
      * List of events held to be sent as a batch.
+     *
+     * @hide
      */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
     @Nullable
-    private ArrayList<ContentCaptureEvent> mEvents;
+    public ArrayList<ContentCaptureEvent> mEvents;
 
     // Used just for debugging purposes (on dump)
     private long mNextFlush;
@@ -158,6 +167,11 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
      */
     @NonNull
     private final SessionStateReceiver mSessionStateReceiver;
+
+    /** @hide */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
+    @Nullable
+    public ContentProtectionEventProcessor mContentProtectionEventProcessor;
 
     private static class SessionStateReceiver extends IResultReceiver.Stub {
         private final WeakReference<MainContentCaptureSession> mMainSession;
@@ -196,8 +210,12 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         }
     }
 
-    protected MainContentCaptureSession(@NonNull Context context,
-            @NonNull ContentCaptureManager manager, @NonNull Handler handler,
+    /** @hide */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PROTECTED)
+    public MainContentCaptureSession(
+            @NonNull ContentCaptureManager.StrippedContext context,
+            @NonNull ContentCaptureManager manager,
+            @NonNull Handler handler,
             @NonNull IContentCaptureManager systemServerInterface) {
         mContext = context;
         mManager = manager;
@@ -275,15 +293,16 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
     }
 
     /**
-     * Callback from {@code system_server} after call to
-     * {@link IContentCaptureManager#startSession(IBinder, ComponentName, String, int,
-     * IResultReceiver)}.
+     * Callback from {@code system_server} after call to {@link
+     * IContentCaptureManager#startSession(IBinder, ComponentName, String, int, IResultReceiver)}.
      *
      * @param resultCode session state
      * @param binder handle to {@code IContentCaptureDirectManager}
+     * @hide
      */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
     @UiThread
-    private void onSessionStarted(int resultCode, @Nullable IBinder binder) {
+    public void onSessionStarted(int resultCode, @Nullable IBinder binder) {
         if (binder != null) {
             mDirectServiceInterface = IContentCaptureDirectManager.Stub.asInterface(binder);
             mDirectServiceVulture = () -> {
@@ -296,6 +315,20 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
             } catch (RemoteException e) {
                 Log.w(TAG, "Failed to link to death on " + binder + ": " + e);
             }
+        }
+
+        // Should not be possible for mComponentName to be null here but check anyway
+        if (mManager.mOptions.contentProtectionOptions.enableReceiver
+                && mManager.getContentProtectionEventBuffer() != null
+                && mComponentName != null) {
+            mContentProtectionEventProcessor =
+                    new ContentProtectionEventProcessor(
+                            mManager.getContentProtectionEventBuffer(),
+                            mHandler,
+                            mSystemServerInterface,
+                            mComponentName.getPackageName());
+        } else {
+            mContentProtectionEventProcessor = null;
         }
 
         if ((resultCode & STATE_DISABLED) != 0) {
@@ -313,8 +346,10 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         }
     }
 
+    /** @hide */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
     @UiThread
-    private void sendEvent(@NonNull ContentCaptureEvent event) {
+    public void sendEvent(@NonNull ContentCaptureEvent event) {
         sendEvent(event, /* forceFlush= */ false);
     }
 
@@ -339,6 +374,25 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
             if (sVerbose) Log.v(TAG, "handleSendEvent(): ignoring when disabled");
             return;
         }
+
+        if (isContentProtectionReceiverEnabled()) {
+            sendContentProtectionEvent(event);
+        }
+        if (isContentCaptureReceiverEnabled()) {
+            sendContentCaptureEvent(event, forceFlush);
+        }
+    }
+
+    @UiThread
+    private void sendContentProtectionEvent(@NonNull ContentCaptureEvent event) {
+        if (mContentProtectionEventProcessor != null) {
+            mContentProtectionEventProcessor.processEvent(event);
+        }
+    }
+
+    @UiThread
+    private void sendContentCaptureEvent(@NonNull ContentCaptureEvent event, boolean forceFlush) {
+        final int eventType = event.getType();
         final int maxBufferSize = mManager.mOptions.maxBufferSize;
         if (mEvents == null) {
             if (sVerbose) {
@@ -458,8 +512,14 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
             case ContentCaptureEvent.TYPE_SESSION_FINISHED:
                 flushReason = FLUSH_REASON_SESSION_FINISHED;
                 break;
+            case ContentCaptureEvent.TYPE_VIEW_TREE_APPEARING:
+                flushReason = FLUSH_REASON_VIEW_TREE_APPEARING;
+                break;
+            case ContentCaptureEvent.TYPE_VIEW_TREE_APPEARED:
+                flushReason = FLUSH_REASON_VIEW_TREE_APPEARED;
+                break;
             default:
-                flushReason = FLUSH_REASON_FULL;
+                flushReason = forceFlush ? FLUSH_REASON_FORCE_FLUSH : FLUSH_REASON_FULL;
         }
 
         flush(flushReason);
@@ -524,14 +584,25 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         flush(reason);
     }
 
+    /** @hide */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
     @Override
     @UiThread
-    void flush(@FlushReason int reason) {
-        if (mEvents == null) return;
+    public void flush(@FlushReason int reason) {
+        if (mEvents == null || mEvents.size() == 0) {
+            if (sVerbose) {
+                Log.v(TAG, "Don't flush for empty event buffer.");
+            }
+            return;
+        }
 
         if (mDisabled.get()) {
             Log.e(TAG, "handleForceFlush(" + getDebugState(reason) + "): should not be when "
                     + "disabled");
+            return;
+        }
+
+        if (!isContentCaptureReceiverEnabled()) {
             return;
         }
 
@@ -550,8 +621,13 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
 
         final int numberEvents = mEvents.size();
         final String reasonString = getFlushReasonAsString(reason);
-        if (sDebug) {
-            Log.d(TAG, "Flushing " + numberEvents + " event(s) for " + getDebugState(reason));
+
+        if (sVerbose) {
+            ContentCaptureEvent event = mEvents.get(numberEvents - 1);
+            String forceString = (reason == FLUSH_REASON_FORCE_FLUSH) ? ". The force flush event "
+                    + ContentCaptureEvent.getTypeAsString(event.getType()) : "";
+            Log.v(TAG, "Flushing " + numberEvents + " event(s) for " + getDebugState(reason)
+                    + forceString);
         }
         if (mFlushHistory != null) {
             // Logs reason, size, max size, idle timeout
@@ -593,8 +669,10 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         return new ParceledListSlice<>(events);
     }
 
+    /** hide */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
     @UiThread
-    private void destroySession() {
+    public void destroySession() {
         if (sDebug) {
             Log.d(TAG, "Destroying session (ctx=" + mContext + ", id=" + mId + ") with "
                     + (mEvents == null ? 0 : mEvents.size()) + " event(s) for "
@@ -612,12 +690,15 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
             mDirectServiceInterface.asBinder().unlinkToDeath(mDirectServiceVulture, 0);
         }
         mDirectServiceInterface = null;
+        mContentProtectionEventProcessor = null;
     }
 
     // TODO(b/122454205): once we support multiple sessions, we might need to move some of these
     // clearings out.
+    /** @hide */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PRIVATE)
     @UiThread
-    private void resetSession(int newState) {
+    public void resetSession(int newState) {
         if (sVerbose) {
             Log.v(TAG, "handleResetSession(" + getActivityName() + "): from "
                     + getStateAsString(mState) + " to " + getStateAsString(newState));
@@ -630,9 +711,14 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         mComponentName = null;
         mEvents = null;
         if (mDirectServiceInterface != null) {
-            mDirectServiceInterface.asBinder().unlinkToDeath(mDirectServiceVulture, 0);
+            try {
+                mDirectServiceInterface.asBinder().unlinkToDeath(mDirectServiceVulture, 0);
+            } catch (NoSuchElementException e) {
+                Log.w(TAG, "IContentCaptureDirectManager does not exist");
+            }
         }
         mDirectServiceInterface = null;
+        mContentProtectionEventProcessor = null;
         mHandler.removeMessages(MSG_FLUSH);
     }
 
@@ -720,7 +806,10 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
         // Since the same CharSequence instance may be reused in the TextView, we need to make
         // a copy of its content so that its value will not be changed by subsequent updates
         // in the TextView.
-        final CharSequence eventText = stringOrSpannedStringWithoutNoCopySpans(text);
+        CharSequence trimmed = TextUtils.trimToParcelableSize(text);
+        final CharSequence eventText = trimmed != null && trimmed == text
+                ? trimmed.toString()
+                : trimmed;
 
         final int composingStart;
         final int composingEnd;
@@ -741,16 +830,6 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
                         .setSelectionIndex(startIndex, endIndex)));
     }
 
-    private CharSequence stringOrSpannedStringWithoutNoCopySpans(CharSequence source) {
-        if (source == null) {
-            return null;
-        } else if (source instanceof Spanned) {
-            return new SpannableString(source, /* ignoreNoCopySpan= */ true);
-        } else {
-            return source.toString();
-        }
-    }
-
     /** Public because is also used by ViewRootImpl */
     public void notifyViewInsetsChanged(int sessionId, @NonNull Insets viewInsets) {
         mHandler.post(() -> sendEvent(new ContentCaptureEvent(sessionId, TYPE_VIEW_INSETS_CHANGED)
@@ -760,7 +839,11 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
     /** Public because is also used by ViewRootImpl */
     public void notifyViewTreeEvent(int sessionId, boolean started) {
         final int type = started ? TYPE_VIEW_TREE_APPEARING : TYPE_VIEW_TREE_APPEARED;
-        mHandler.post(() -> sendEvent(new ContentCaptureEvent(sessionId, type), FORCE_FLUSH));
+        final boolean disableFlush = mManager.getFlushViewTreeAppearingEventDisabled();
+
+        mHandler.post(() -> sendEvent(
+                new ContentCaptureEvent(sessionId, type),
+                disableFlush ? !started : FORCE_FLUSH));
     }
 
     void notifySessionResumed(int sessionId) {
@@ -862,5 +945,15 @@ public final class MainContentCaptureSession extends ContentCaptureSession {
     @NonNull
     private String getDebugState(@FlushReason int reason) {
         return getDebugState() + ", reason=" + getFlushReasonAsString(reason);
+    }
+
+    @UiThread
+    private boolean isContentProtectionReceiverEnabled() {
+        return mManager.mOptions.contentProtectionOptions.enableReceiver;
+    }
+
+    @UiThread
+    private boolean isContentCaptureReceiverEnabled() {
+        return mManager.mOptions.enableReceiver;
     }
 }

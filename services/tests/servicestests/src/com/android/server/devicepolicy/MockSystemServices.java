@@ -25,13 +25,16 @@ import static org.mockito.Mockito.when;
 
 import android.accounts.Account;
 import android.accounts.AccountManager;
+import android.annotation.NonNull;
 import android.app.ActivityManagerInternal;
 import android.app.AlarmManager;
 import android.app.AppOpsManager;
 import android.app.IActivityManager;
 import android.app.IActivityTaskManager;
 import android.app.NotificationManager;
+import android.app.admin.DevicePolicyManager;
 import android.app.backup.IBackupManager;
+import android.app.role.RoleManager;
 import android.app.usage.UsageStatsManagerInternal;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -46,12 +49,14 @@ import android.content.pm.PackageManagerInternal;
 import android.content.pm.UserInfo;
 import android.database.Cursor;
 import android.hardware.usb.UsbManager;
+import android.location.LocationManager;
 import android.media.IAudioService;
 import android.net.ConnectivityManager;
 import android.net.IIpConnectivityMetrics;
 import android.net.Uri;
 import android.net.VpnManager;
 import android.net.wifi.WifiManager;
+import android.os.Binder;
 import android.os.Handler;
 import android.os.PowerManager;
 import android.os.PowerManagerInternal;
@@ -60,6 +65,7 @@ import android.os.UserManager;
 import android.permission.IPermissionManager;
 import android.provider.Settings;
 import android.security.KeyChain;
+import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.test.mock.MockContentProvider;
 import android.test.mock.MockContentResolver;
@@ -70,9 +76,13 @@ import android.view.IWindowManager;
 import com.android.internal.util.test.FakeSettingsProvider;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.internal.widget.LockSettingsInternal;
-import com.android.server.PersistentDataBlockManagerInternal;
+import com.android.server.AlarmManagerInternal;
+import com.android.server.pdb.PersistentDataBlockManagerInternal;
 import com.android.server.net.NetworkPolicyManagerInternal;
+import com.android.server.pm.PackageManagerLocal;
 import com.android.server.pm.UserManagerInternal;
+import com.android.server.pm.pkg.PackageState;
+import com.android.server.pm.pkg.PackageUserState;
 import com.android.server.wm.ActivityTaskManagerInternal;
 
 import java.io.File;
@@ -80,6 +90,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -89,11 +100,13 @@ public class MockSystemServices {
     public final File systemUserDataDir;
     public final EnvironmentForMock environment;
     public final SystemPropertiesForMock systemProperties;
+    public final Executor executor;
     public final UserManager userManager;
     public final UserManagerInternal userManagerInternal;
     public final UsageStatsManagerInternal usageStatsManagerInternal;
     public final NetworkPolicyManagerInternal networkPolicyManagerInternal;
     public final PackageManagerInternal packageManagerInternal;
+    public final PackageManagerLocal packageManagerLocal;
     public final UserManagerForMock userManagerForMock;
     public final PowerManagerForMock powerManager;
     public final PowerManagerInternal powerManagerInternal;
@@ -119,23 +132,33 @@ public class MockSystemServices {
     public final ConnectivityManager connectivityManager;
     public final AccountManager accountManager;
     public final AlarmManager alarmManager;
+    public final AlarmManagerInternal alarmManagerInternal;
     public final KeyChain.KeyChainConnection keyChainConnection;
     public final CrossProfileApps crossProfileApps;
     public final PersistentDataBlockManagerInternal persistentDataBlockManagerInternal;
     public final AppOpsManager appOpsManager;
     public final UsbManager usbManager;
     public final VpnManager vpnManager;
+    public final DevicePolicyManager devicePolicyManager;
+    public final LocationManager locationManager;
+    public final RoleManager roleManager;
+    public final SubscriptionManager subscriptionManager;
     /** Note this is a partial mock, not a real mock. */
     public final PackageManager packageManager;
     public final BuildMock buildMock = new BuildMock();
     public final File dataDir;
+    public final PolicyPathProvider pathProvider;
 
-    public MockSystemServices(Context realContext, String name) {
+    private final Map<String, PackageState> mTestPackageStates = new ArrayMap<>();
+
+    public MockSystemServices(Context realContext, String name,
+            @NonNull DpmMockContext.MockBinder mockBinder) {
         dataDir = new File(realContext.getCacheDir(), name);
         DpmTestUtils.clearDir(dataDir);
 
         environment = mock(EnvironmentForMock.class);
         systemProperties = mock(SystemPropertiesForMock.class);
+        executor = mock(Executor.class);
         userManager = mock(UserManager.class);
         userManagerInternal = mock(UserManagerInternal.class);
         usageStatsManagerInternal = mock(UsageStatsManagerInternal.class);
@@ -143,6 +166,7 @@ public class MockSystemServices {
 
         userManagerForMock = mock(UserManagerForMock.class);
         packageManagerInternal = mock(PackageManagerInternal.class);
+        packageManagerLocal = mock(PackageManagerLocal.class);
         powerManager = mock(PowerManagerForMock.class);
         powerManagerInternal = mock(PowerManagerInternal.class);
         recoverySystem = mock(RecoverySystemForMock.class);
@@ -166,17 +190,30 @@ public class MockSystemServices {
         connectivityManager = mock(ConnectivityManager.class);
         accountManager = mock(AccountManager.class);
         alarmManager = mock(AlarmManager.class);
+        alarmManagerInternal = mock(AlarmManagerInternal.class);
         keyChainConnection = mock(KeyChain.KeyChainConnection.class, RETURNS_DEEP_STUBS);
         crossProfileApps = mock(CrossProfileApps.class);
         persistentDataBlockManagerInternal = mock(PersistentDataBlockManagerInternal.class);
         appOpsManager = mock(AppOpsManager.class);
         usbManager = mock(UsbManager.class);
         vpnManager = mock(VpnManager.class);
+        devicePolicyManager = mock(DevicePolicyManager.class);
+        locationManager = mock(LocationManager.class);
+        roleManager = realContext.getSystemService(RoleManager.class);
+        subscriptionManager = mock(SubscriptionManager.class);
 
         // Package manager is huge, so we use a partial mock instead.
         packageManager = spy(realContext.getPackageManager());
         when(packageManagerInternal.getSystemUiServiceComponent()).thenReturn(
                 new ComponentName("com.android.systemui", ".Service"));
+
+        addTestPackageUid("android", DpmMockContext.SYSTEM_UID);
+        addTestPackageUid(realContext.getPackageName(), Binder.getCallingUid());
+        when(packageManagerLocal.withUnfilteredSnapshot()).thenAnswer(unused -> {
+            var snapshot = mock(PackageManagerLocal.UnfilteredSnapshot.class);
+            when(snapshot.getPackageStates()).thenAnswer(unused1 -> mTestPackageStates);
+            return snapshot;
+        });
 
         contentResolver = new MockContentResolver();
         contentResolver.addProvider("telephony", new MockContentProvider(realContext) {
@@ -200,11 +237,24 @@ public class MockSystemServices {
 
         // Add the system user with a fake profile group already set up (this can happen in the real
         // world if a managed profile is added and then removed).
-        systemUserDataDir = addUser(UserHandle.USER_SYSTEM, UserInfo.FLAG_PRIMARY,
+        systemUserDataDir = addUser(UserHandle.USER_SYSTEM,
+                UserInfo.FLAG_PRIMARY | UserInfo.FLAG_MAIN,
                 UserManager.USER_TYPE_FULL_SYSTEM, UserHandle.USER_SYSTEM);
+        when(userManager.getMainUser()).thenReturn(UserHandle.SYSTEM);
 
         // System user is always running.
         setUserRunning(UserHandle.USER_SYSTEM, true);
+        pathProvider = new PolicyPathProvider() {
+            @Override
+            public File getDataSystemDirectory() {
+                return new File(systemUserDataDir.getAbsolutePath());
+            }
+
+            @Override
+            public File getUserSystemDirectory(int userId) {
+                return environment.getUserSystemDirectory(userId);
+            }
+        };
     }
 
     /** Optional mapping of other user contexts for {@link #createPackageContextAsUser} to return */
@@ -377,6 +427,16 @@ public class MockSystemServices {
         throw new UnsupportedOperationException("No package " + packageName + " for user " + user);
     }
 
+    public void addTestPackageUid(@NonNull String packageName, int uid) {
+        var packageState = mock(PackageState.class);
+        when(packageState.getAppId()).thenReturn(UserHandle.getAppId(uid));
+        when(packageState.getUserStateOrDefault(anyInt())).thenAnswer(invocation -> {
+            var userState = mock(PackageUserState.class);
+            when(userState.isInstalled()).thenReturn(true);
+            return userState;
+        });
+        mTestPackageStates.put(packageName, packageState);
+    }
 
     public static class EnvironmentForMock {
         public File getUserSystemDirectory(int userId) {
@@ -490,18 +550,6 @@ public class MockSystemServices {
 
     public static class StorageManagerForMock {
         public boolean isFileBasedEncryptionEnabled() {
-            return false;
-        }
-
-        public boolean isNonDefaultBlockEncrypted() {
-            return false;
-        }
-
-        public boolean isEncrypted() {
-            return false;
-        }
-
-        public boolean isEncryptable() {
             return false;
         }
     }

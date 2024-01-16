@@ -16,20 +16,24 @@
 
 package com.android.keyguard;
 
+import static com.android.internal.jank.InteractionJankMonitor.CUJ_LOCKSCREEN_PIN_APPEAR;
+import static com.android.internal.jank.InteractionJankMonitor.CUJ_LOCKSCREEN_PIN_DISAPPEAR;
 import static com.android.systemui.statusbar.policy.DevicePostureController.DEVICE_POSTURE_HALF_OPENED;
 import static com.android.systemui.statusbar.policy.DevicePostureController.DEVICE_POSTURE_UNKNOWN;
 
+import android.animation.ValueAnimator;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.util.AttributeSet;
+import android.util.MathUtils;
 import android.view.View;
 import android.view.animation.AnimationUtils;
+import android.view.animation.Interpolator;
 
 import androidx.constraintlayout.widget.ConstraintLayout;
 import androidx.constraintlayout.widget.ConstraintSet;
 
-import com.android.internal.jank.InteractionJankMonitor;
-import com.android.settingslib.animation.AppearAnimationUtils;
+import com.android.app.animation.Interpolators;
 import com.android.settingslib.animation.DisappearAnimationUtils;
 import com.android.systemui.R;
 import com.android.systemui.statusbar.policy.DevicePostureController.DevicePostureInt;
@@ -39,13 +43,17 @@ import com.android.systemui.statusbar.policy.DevicePostureController.DevicePostu
  */
 public class KeyguardPINView extends KeyguardPinBasedInputView {
 
-    private final AppearAnimationUtils mAppearAnimationUtils;
+    ValueAnimator mAppearAnimator = ValueAnimator.ofFloat(0f, 1f);
     private final DisappearAnimationUtils mDisappearAnimationUtils;
     private final DisappearAnimationUtils mDisappearAnimationUtilsLocked;
     private ConstraintLayout mContainer;
     private int mDisappearYTranslation;
     private View[][] mViews;
+    private int mYTrans;
+    private int mYTransOffset;
+    private View mBouncerMessageArea;
     @DevicePostureInt private int mLastDevicePosture = DEVICE_POSTURE_UNKNOWN;
+    public static final long ANIMATION_DURATION = 650;
 
     public KeyguardPINView(Context context) {
         this(context, null);
@@ -53,7 +61,6 @@ public class KeyguardPINView extends KeyguardPinBasedInputView {
 
     public KeyguardPINView(Context context, AttributeSet attrs) {
         super(context, attrs);
-        mAppearAnimationUtils = new AppearAnimationUtils(context);
         mDisappearAnimationUtils = new DisappearAnimationUtils(context,
                 125, 0.6f /* translationScale */,
                 0.45f /* delayScale */, AnimationUtils.loadInterpolator(
@@ -62,9 +69,11 @@ public class KeyguardPINView extends KeyguardPinBasedInputView {
                 (long) (125 * KeyguardPatternView.DISAPPEAR_MULTIPLIER_LOCKED),
                 0.6f /* translationScale */,
                 0.45f /* delayScale */, AnimationUtils.loadInterpolator(
-                        mContext, android.R.interpolator.fast_out_linear_in));
+                       mContext, android.R.interpolator.fast_out_linear_in));
         mDisappearYTranslation = getResources().getDimensionPixelSize(
                 R.dimen.disappear_y_translation);
+        mYTrans = getResources().getDimensionPixelSize(R.dimen.pin_view_trans_y_entry);
+        mYTransOffset = getResources().getDimensionPixelSize(R.dimen.pin_view_trans_y_entry_offset);
     }
 
     @Override
@@ -73,8 +82,10 @@ public class KeyguardPINView extends KeyguardPinBasedInputView {
     }
 
     void onDevicePostureChanged(@DevicePostureInt int posture) {
-        mLastDevicePosture = posture;
-        updateMargins();
+        if (mLastDevicePosture != posture) {
+            mLastDevicePosture = posture;
+            updateMargins();
+        }
     }
 
     @Override
@@ -136,6 +147,7 @@ public class KeyguardPINView extends KeyguardPinBasedInputView {
         super.onFinishInflate();
 
         mContainer = findViewById(R.id.pin_container);
+        mBouncerMessageArea = findViewById(R.id.bouncer_message_area);
         mViews = new View[][]{
                 new View[]{
                         findViewById(R.id.row0), null, null
@@ -168,50 +180,73 @@ public class KeyguardPINView extends KeyguardPinBasedInputView {
 
     @Override
     public void startAppearAnimation() {
-        enableClipping(false);
         setAlpha(1f);
-        setTranslationY(mAppearAnimationUtils.getStartTranslation());
-        AppearAnimationUtils.startTranslationYAnimation(this, 0 /* delay */, 500 /* duration */,
-                0, mAppearAnimationUtils.getInterpolator(),
-                getAnimationListener(InteractionJankMonitor.CUJ_LOCKSCREEN_PIN_APPEAR));
-        mAppearAnimationUtils.startAnimation2d(mViews,
-                new Runnable() {
-                    @Override
-                    public void run() {
-                        enableClipping(true);
-                    }
-                });
+        setTranslationY(0);
+        if (mAppearAnimator.isRunning()) {
+            mAppearAnimator.cancel();
+        }
+        mAppearAnimator.setDuration(ANIMATION_DURATION);
+        mAppearAnimator.addUpdateListener(animation -> animate(animation.getAnimatedFraction()));
+        mAppearAnimator.addListener(getAnimationListener(CUJ_LOCKSCREEN_PIN_APPEAR));
+        mAppearAnimator.start();
     }
 
     public boolean startDisappearAnimation(boolean needsSlowUnlockTransition,
             final Runnable finishRunnable) {
+        if (mAppearAnimator.isRunning()) {
+            mAppearAnimator.cancel();
+        }
 
-        enableClipping(false);
         setTranslationY(0);
-        AppearAnimationUtils.startTranslationYAnimation(this, 0 /* delay */, 280 /* duration */,
-                mDisappearYTranslation, mDisappearAnimationUtils.getInterpolator(),
-                getAnimationListener(InteractionJankMonitor.CUJ_LOCKSCREEN_PIN_DISAPPEAR));
         DisappearAnimationUtils disappearAnimationUtils = needsSlowUnlockTransition
                         ? mDisappearAnimationUtilsLocked
                         : mDisappearAnimationUtils;
-        disappearAnimationUtils.startAnimation2d(mViews,
-                () -> {
-                    enableClipping(true);
+        disappearAnimationUtils.createAnimation(
+                this, 0, 200, mDisappearYTranslation, false,
+                mDisappearAnimationUtils.getInterpolator(), () -> {
                     if (finishRunnable != null) {
                         finishRunnable.run();
                     }
-                });
+                },
+                getAnimationListener(CUJ_LOCKSCREEN_PIN_DISAPPEAR));
         return true;
-    }
-
-    private void enableClipping(boolean enable) {
-        mContainer.setClipToPadding(enable);
-        mContainer.setClipChildren(enable);
-        setClipChildren(enable);
     }
 
     @Override
     public boolean hasOverlappingRendering() {
         return false;
+    }
+
+    /** Animate subviews according to expansion or time. */
+    private void animate(float progress) {
+        Interpolator standardDecelerate = Interpolators.STANDARD_DECELERATE;
+        Interpolator legacyDecelerate = Interpolators.LEGACY_DECELERATE;
+        float standardProgress = standardDecelerate.getInterpolation(progress);
+
+        mBouncerMessageArea.setTranslationY(
+                mYTrans - mYTrans * standardProgress);
+        mBouncerMessageArea.setAlpha(standardProgress);
+
+        for (int i = 0; i < mViews.length; i++) {
+            View[] row = mViews[i];
+            for (View view : row) {
+                if (view == null) {
+                    continue;
+                }
+
+                float scaledProgress = legacyDecelerate.getInterpolation(MathUtils.constrain(
+                        (progress - 0.075f * i) / (1f - 0.075f * mViews.length),
+                        0f,
+                        1f
+                ));
+                view.setAlpha(scaledProgress);
+                int yDistance = mYTrans + mYTransOffset * i;
+                view.setTranslationY(
+                        yDistance - (yDistance * standardProgress));
+                if (view instanceof NumPadAnimationListener) {
+                    ((NumPadAnimationListener) view).setProgress(scaledProgress);
+                }
+            }
+        }
     }
 }

@@ -130,11 +130,12 @@ public class TestPackageInstaller {
         IntentSender getIntentSender(int sessionId) {
             String action = BROADCAST_ACTION + "." + sessionId;
             IntentFilter filter = new IntentFilter(action);
-            mContext.registerReceiver(this, filter);
+            mContext.registerReceiver(this, filter,
+                    Context.RECEIVER_EXPORTED_UNAUDITED);
 
-            Intent intent = new Intent(action);
+            Intent intent = new Intent(action).setPackage(mContext.getPackageName());
             PendingIntent pending = PendingIntent.getBroadcast(mContext, sessionId, intent,
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE_UNAUDITED);
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
             return pending.getIntentSender();
         }
 

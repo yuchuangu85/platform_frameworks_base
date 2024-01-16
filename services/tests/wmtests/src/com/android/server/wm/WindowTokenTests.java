@@ -16,7 +16,7 @@
 
 package com.android.server.wm;
 
-import static android.view.InsetsState.ITYPE_IME;
+import static android.view.InsetsSource.ID_IME;
 import static android.view.WindowManager.LayoutParams.FIRST_SUB_WINDOW;
 import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
 import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY;
@@ -39,6 +39,7 @@ import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.platform.test.annotations.Presubmit;
+import android.view.WindowInsets;
 import android.window.WindowContext;
 
 import androidx.test.filters.SmallTest;
@@ -91,6 +92,20 @@ public class WindowTokenTests extends WindowTestsBase {
         // The child windows should have the same window token as their parents.
         assertEquals(window1.mToken, window11.mToken);
         assertEquals(window1.mToken, window12.mToken);
+    }
+
+    @Test
+    public void testAddWindow_assignsLayers() {
+        final TestWindowToken token1 = createTestWindowToken(0, mDisplayContent);
+        final TestWindowToken token2 = createTestWindowToken(0, mDisplayContent);
+        final WindowState window1 = createWindow(null, TYPE_STATUS_BAR, token1, "window1");
+        final WindowState window2 = createWindow(null, TYPE_STATUS_BAR, token2, "window2");
+
+        token1.addWindow(window1);
+        token2.addWindow(window2);
+
+        assertEquals(token1.getLastLayer(), 0);
+        assertEquals(token2.getLastLayer(), 1);
     }
 
     @Test
@@ -244,12 +259,13 @@ public class WindowTokenTests extends WindowTestsBase {
      * states for its children windows and by default it shouldn't let IME window setting
      * the frozen insets state even the window of the window token is the IME layering target.
      */
-    @UseTestDisplay(addWindows = W_INPUT_METHOD)
+    @SetupWindows(addWindows = W_INPUT_METHOD)
     @Test
     public void testSetInsetsFrozen_notAffectImeWindowState() {
         // Pre-condition: make the IME window be controlled by IME insets provider.
-        mDisplayContent.getInsetsStateController().getSourceProvider(ITYPE_IME).setWindow(
-                mDisplayContent.mInputMethodWindow, null, null);
+        mDisplayContent.getInsetsStateController()
+                .getOrCreateSourceProvider(ID_IME, WindowInsets.Type.ime())
+                .setWindowContainer(mDisplayContent.mInputMethodWindow, null, null);
 
         // Simulate an app window to be the IME layering target, assume the app window has no
         // frozen insets state by default.

@@ -18,56 +18,75 @@ package com.android.wm.shell.pip.tv;
 
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_UNDEFINED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
+import static android.view.KeyEvent.KEYCODE_DPAD_LEFT;
+import static android.view.KeyEvent.KEYCODE_DPAD_RIGHT;
 
 import android.annotation.IntDef;
 import android.app.ActivityManager;
 import android.app.ActivityTaskManager;
 import android.app.RemoteAction;
 import android.app.TaskInfo;
-import android.content.ComponentName;
+import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.pm.ParceledListSlice;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Rect;
+import android.os.Handler;
 import android.os.RemoteException;
-import android.util.Log;
-import android.view.DisplayInfo;
+import android.view.Gravity;
 
+import androidx.annotation.NonNull;
+
+import com.android.internal.protolog.common.ProtoLog;
 import com.android.wm.shell.R;
 import com.android.wm.shell.WindowManagerShellWrapper;
+import com.android.wm.shell.common.DisplayController;
 import com.android.wm.shell.common.DisplayLayout;
 import com.android.wm.shell.common.ShellExecutor;
 import com.android.wm.shell.common.TaskStackListenerCallback;
 import com.android.wm.shell.common.TaskStackListenerImpl;
+import com.android.wm.shell.common.pip.PipAppOpsListener;
+import com.android.wm.shell.common.pip.PipDisplayLayoutState;
+import com.android.wm.shell.common.pip.PipMediaController;
 import com.android.wm.shell.pip.PinnedStackListenerForwarder;
 import com.android.wm.shell.pip.Pip;
-import com.android.wm.shell.pip.PipBoundsAlgorithm;
-import com.android.wm.shell.pip.PipBoundsState;
-import com.android.wm.shell.pip.PipMediaController;
+import com.android.wm.shell.pip.PipAnimationController;
+import com.android.wm.shell.pip.PipParamsChangedForwarder;
 import com.android.wm.shell.pip.PipTaskOrganizer;
 import com.android.wm.shell.pip.PipTransitionController;
+import com.android.wm.shell.protolog.ShellProtoLogGroup;
+import com.android.wm.shell.sysui.ConfigurationChangeListener;
+import com.android.wm.shell.sysui.ShellController;
+import com.android.wm.shell.sysui.ShellInit;
+import com.android.wm.shell.sysui.UserChangeListener;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 
 /**
  * Manages the picture-in-picture (PIP) UI and states.
  */
 public class TvPipController implements PipTransitionController.PipTransitionCallback,
-        TvPipMenuController.Delegate, TvPipNotificationController.Delegate {
+        TvPipBoundsController.PipBoundsListener, TvPipMenuController.Delegate,
+        DisplayController.OnDisplaysChangedListener, ConfigurationChangeListener,
+        UserChangeListener {
     private static final String TAG = "TvPipController";
-    static final boolean DEBUG = true;
 
     private static final int NONEXISTENT_TASK_ID = -1;
 
     @Retention(RetentionPolicy.SOURCE)
-    @IntDef(prefix = { "STATE_" }, value = {
+    @IntDef(prefix = {"STATE_"}, value = {
             STATE_NO_PIP,
             STATE_PIP,
-            STATE_PIP_MENU
+            STATE_PIP_MENU,
     })
-    public @interface State {}
+    public @interface State {
+    }
 
     /**
      * State when there is no applications in Pip.
@@ -85,95 +104,211 @@ public class TvPipController implements PipTransitionController.PipTransitionCal
      */
     private static final int STATE_PIP_MENU = 2;
 
+    static final String ACTION_SHOW_PIP_MENU =
+            "com.android.wm.shell.pip.tv.notification.action.SHOW_PIP_MENU";
+    static final String ACTION_CLOSE_PIP =
+            "com.android.wm.shell.pip.tv.notification.action.CLOSE_PIP";
+    static final String ACTION_MOVE_PIP =
+            "com.android.wm.shell.pip.tv.notification.action.MOVE_PIP";
+    static final String ACTION_TOGGLE_EXPANDED_PIP =
+            "com.android.wm.shell.pip.tv.notification.action.TOGGLE_EXPANDED_PIP";
+    static final String ACTION_TO_FULLSCREEN =
+            "com.android.wm.shell.pip.tv.notification.action.FULLSCREEN";
+
     private final Context mContext;
 
-    private final PipBoundsState mPipBoundsState;
-    private final PipBoundsAlgorithm mPipBoundsAlgorithm;
+    private final ShellController mShellController;
+    private final TvPipBoundsState mTvPipBoundsState;
+    private final PipDisplayLayoutState mPipDisplayLayoutState;
+    private final TvPipBoundsAlgorithm mTvPipBoundsAlgorithm;
+    private final TvPipBoundsController mTvPipBoundsController;
+    private final PipAppOpsListener mAppOpsListener;
     private final PipTaskOrganizer mPipTaskOrganizer;
     private final PipMediaController mPipMediaController;
+    private final TvPipActionsProvider mTvPipActionsProvider;
     private final TvPipNotificationController mPipNotificationController;
     private final TvPipMenuController mTvPipMenuController;
+    private final PipTransitionController mPipTransitionController;
+    private final TaskStackListenerImpl mTaskStackListener;
+    private final PipParamsChangedForwarder mPipParamsChangedForwarder;
+    private final DisplayController mDisplayController;
+    private final WindowManagerShellWrapper mWmShellWrapper;
     private final ShellExecutor mMainExecutor;
+    private final Handler mMainHandler; // For registering the broadcast receiver
     private final TvPipImpl mImpl = new TvPipImpl();
 
-    private @State int mState = STATE_NO_PIP;
+    private final ActionBroadcastReceiver mActionBroadcastReceiver;
+
+    @State
+    private int mState = STATE_NO_PIP;
     private int mPinnedTaskId = NONEXISTENT_TASK_ID;
 
+    // How long the shell will wait for the app to close the PiP if a custom action is set.
+    private int mPipForceCloseDelay;
+
     private int mResizeAnimationDuration;
+    private int mEduTextWindowExitAnimationDuration;
 
     public static Pip create(
             Context context,
-            PipBoundsState pipBoundsState,
-            PipBoundsAlgorithm pipBoundsAlgorithm,
+            ShellInit shellInit,
+            ShellController shellController,
+            TvPipBoundsState tvPipBoundsState,
+            PipDisplayLayoutState pipDisplayLayoutState,
+            TvPipBoundsAlgorithm tvPipBoundsAlgorithm,
+            TvPipBoundsController tvPipBoundsController,
+            PipAppOpsListener pipAppOpsListener,
             PipTaskOrganizer pipTaskOrganizer,
             PipTransitionController pipTransitionController,
             TvPipMenuController tvPipMenuController,
             PipMediaController pipMediaController,
             TvPipNotificationController pipNotificationController,
             TaskStackListenerImpl taskStackListener,
+            PipParamsChangedForwarder pipParamsChangedForwarder,
+            DisplayController displayController,
             WindowManagerShellWrapper wmShell,
+            Handler mainHandler,
             ShellExecutor mainExecutor) {
         return new TvPipController(
                 context,
-                pipBoundsState,
-                pipBoundsAlgorithm,
+                shellInit,
+                shellController,
+                tvPipBoundsState,
+                pipDisplayLayoutState,
+                tvPipBoundsAlgorithm,
+                tvPipBoundsController,
+                pipAppOpsListener,
                 pipTaskOrganizer,
                 pipTransitionController,
                 tvPipMenuController,
                 pipMediaController,
                 pipNotificationController,
                 taskStackListener,
+                pipParamsChangedForwarder,
+                displayController,
                 wmShell,
+                mainHandler,
                 mainExecutor).mImpl;
     }
 
     private TvPipController(
             Context context,
-            PipBoundsState pipBoundsState,
-            PipBoundsAlgorithm pipBoundsAlgorithm,
+            ShellInit shellInit,
+            ShellController shellController,
+            TvPipBoundsState tvPipBoundsState,
+            PipDisplayLayoutState pipDisplayLayoutState,
+            TvPipBoundsAlgorithm tvPipBoundsAlgorithm,
+            TvPipBoundsController tvPipBoundsController,
+            PipAppOpsListener pipAppOpsListener,
             PipTaskOrganizer pipTaskOrganizer,
             PipTransitionController pipTransitionController,
             TvPipMenuController tvPipMenuController,
             PipMediaController pipMediaController,
             TvPipNotificationController pipNotificationController,
             TaskStackListenerImpl taskStackListener,
-            WindowManagerShellWrapper wmShell,
+            PipParamsChangedForwarder pipParamsChangedForwarder,
+            DisplayController displayController,
+            WindowManagerShellWrapper wmShellWrapper,
+            Handler mainHandler,
             ShellExecutor mainExecutor) {
         mContext = context;
+        mMainHandler = mainHandler;
         mMainExecutor = mainExecutor;
+        mShellController = shellController;
+        mDisplayController = displayController;
 
-        mPipBoundsState = pipBoundsState;
-        mPipBoundsState.setDisplayId(context.getDisplayId());
-        mPipBoundsState.setDisplayLayout(new DisplayLayout(context, context.getDisplay()));
-        mPipBoundsAlgorithm = pipBoundsAlgorithm;
+        DisplayLayout layout = new DisplayLayout(context, context.getDisplay());
+
+        mTvPipBoundsState = tvPipBoundsState;
+
+        mPipDisplayLayoutState = pipDisplayLayoutState;
+        mPipDisplayLayoutState.setDisplayLayout(layout);
+        mPipDisplayLayoutState.setDisplayId(context.getDisplayId());
+
+        mTvPipBoundsAlgorithm = tvPipBoundsAlgorithm;
+        mTvPipBoundsController = tvPipBoundsController;
+        mTvPipBoundsController.setListener(this);
 
         mPipMediaController = pipMediaController;
+        mTvPipActionsProvider = new TvPipActionsProvider(context, pipMediaController,
+                this::executeAction);
 
         mPipNotificationController = pipNotificationController;
-        mPipNotificationController.setDelegate(this);
+        mPipNotificationController.setTvPipActionsProvider(mTvPipActionsProvider);
 
         mTvPipMenuController = tvPipMenuController;
         mTvPipMenuController.setDelegate(this);
+        mTvPipMenuController.setTvPipActionsProvider(mTvPipActionsProvider);
 
+        mActionBroadcastReceiver = new ActionBroadcastReceiver();
+
+        mAppOpsListener = pipAppOpsListener;
         mPipTaskOrganizer = pipTaskOrganizer;
-        pipTransitionController.registerPipTransitionCallback(this);
-
-        loadConfigurations();
-
-        registerTaskStackListenerCallback(taskStackListener);
-        registerWmShellPinnedStackListener(wmShell);
+        mPipTransitionController = pipTransitionController;
+        mPipParamsChangedForwarder = pipParamsChangedForwarder;
+        mTaskStackListener = taskStackListener;
+        mWmShellWrapper = wmShellWrapper;
+        shellInit.addInitCallback(this::onInit, this);
     }
 
-    private void onConfigurationChanged(Configuration newConfig) {
-        if (DEBUG) Log.d(TAG, "onConfigurationChanged(), state=" + stateToName(mState));
+    private void onInit() {
+        mPipTransitionController.registerPipTransitionCallback(this);
 
-        if (isPipShown()) {
-            if (DEBUG) Log.d(TAG, "  > closing Pip.");
-            closePip();
+        reloadResources();
+
+        registerPipParamsChangedListener(mPipParamsChangedForwarder);
+        registerTaskStackListenerCallback(mTaskStackListener);
+        registerWmShellPinnedStackListener(mWmShellWrapper);
+        registerSessionListenerForCurrentUser();
+        mDisplayController.addDisplayWindowListener(this);
+
+        mShellController.addConfigurationChangeListener(this);
+        mShellController.addUserChangeListener(this);
+    }
+
+    @Override
+    public void onUserChanged(int newUserId, @NonNull Context userContext) {
+        // Re-register the media session listener when switching users
+        registerSessionListenerForCurrentUser();
+    }
+
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: onConfigurationChanged(), state=%s", TAG, stateToName(mState));
+
+        int previousDefaultGravityX = mTvPipBoundsState.getDefaultGravity()
+                & Gravity.HORIZONTAL_GRAVITY_MASK;
+
+        reloadResources();
+
+        mPipNotificationController.onConfigurationChanged();
+        mTvPipBoundsAlgorithm.onConfigurationChanged(mContext);
+        mTvPipBoundsState.onConfigurationChanged();
+
+        int defaultGravityX = mTvPipBoundsState.getDefaultGravity()
+                & Gravity.HORIZONTAL_GRAVITY_MASK;
+        if (isPipShown() && previousDefaultGravityX != defaultGravityX) {
+            movePipToOppositeSide();
         }
+    }
 
-        loadConfigurations();
-        mPipNotificationController.onConfigurationChanged(mContext);
+    private void reloadResources() {
+        final Resources res = mContext.getResources();
+        mResizeAnimationDuration = res.getInteger(R.integer.config_pipResizeAnimationDuration);
+        mPipForceCloseDelay = res.getInteger(R.integer.config_pipForceCloseDelay);
+        mEduTextWindowExitAnimationDuration =
+                res.getInteger(R.integer.pip_edu_text_window_exit_animation_duration);
+    }
+
+    private void movePipToOppositeSide() {
+        ProtoLog.i(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: movePipToOppositeSide", TAG);
+        if ((mTvPipBoundsState.getTvPipGravity() & Gravity.RIGHT) == Gravity.RIGHT) {
+            movePip(KEYCODE_DPAD_LEFT);
+        } else if ((mTvPipBoundsState.getTvPipGravity() & Gravity.LEFT) == Gravity.LEFT) {
+            movePip(KEYCODE_DPAD_RIGHT);
+        }
     }
 
     /**
@@ -186,174 +321,235 @@ public class TvPipController implements PipTransitionController.PipTransitionCal
     /**
      * Starts the process if bringing up the Pip menu if by issuing a command to move Pip
      * task/window to the "Menu" position. We'll show the actual Menu UI (eg. actions) once the Pip
-     * task/window is properly positioned in {@link #onPipTransitionFinished(ComponentName, int)}.
+     * task/window is properly positioned in {@link #onPipTransitionFinished(int)}.
+     *
+     * @param moveMenu If true, show the moveMenu, otherwise show the regular menu.
      */
-    @Override
-    public void showPictureInPictureMenu() {
-        if (DEBUG) Log.d(TAG, "showPictureInPictureMenu(), state=" + stateToName(mState));
+    private void showPictureInPictureMenu(boolean moveMenu) {
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: showPictureInPictureMenu(), state=%s", TAG, stateToName(mState));
 
-        if (mState != STATE_PIP) {
-            if (DEBUG) Log.d(TAG, "  > cannot open Menu from the current state.");
+        if (mState == STATE_NO_PIP) {
+            ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                    "%s:  > cannot open Menu from the current state.", TAG);
             return;
         }
 
         setState(STATE_PIP_MENU);
-        resizePinnedStack(STATE_PIP_MENU);
+        if (moveMenu) {
+            mTvPipMenuController.showMovementMenu();
+        } else {
+            mTvPipMenuController.showMenu();
+        }
+        updatePinnedStackBounds();
     }
 
-    /**
-     * Moves Pip window to its "normal" position.
-     */
     @Override
-    public void movePipToNormalPosition() {
-        if (DEBUG) Log.d(TAG, "movePipToNormalPosition(), state=" + stateToName(mState));
-
+    public void onMenuClosed() {
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: closeMenu(), state before=%s", TAG, stateToName(mState));
         setState(STATE_PIP);
-        resizePinnedStack(STATE_PIP);
+        updatePinnedStackBounds();
+    }
+
+    @Override
+    public void onInMoveModeChanged() {
+        updatePinnedStackBounds();
     }
 
     /**
      * Opens the "Pip-ed" Activity fullscreen.
      */
-    @Override
-    public void movePipToFullscreen() {
-        if (DEBUG) Log.d(TAG, "movePipToFullscreen(), state=" + stateToName(mState));
+    private void movePipToFullscreen() {
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: movePipToFullscreen(), state=%s", TAG, stateToName(mState));
 
         mPipTaskOrganizer.exitPip(mResizeAnimationDuration, false /* requestEnterSplit */);
         onPipDisappeared();
     }
 
-    /**
-     * Closes Pip window.
-     */
-    @Override
-    public void closePip() {
-        if (DEBUG) Log.d(TAG, "closePip(), state=" + stateToName(mState));
+    private void togglePipExpansion() {
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: togglePipExpansion()", TAG);
+        boolean expanding = !mTvPipBoundsState.isTvPipExpanded();
+        mTvPipBoundsAlgorithm.updateGravityOnExpansionToggled(expanding);
+        mTvPipBoundsState.setTvPipManuallyCollapsed(!expanding);
+        mTvPipBoundsState.setTvPipExpanded(expanding);
 
-        removeTask(mPinnedTaskId);
-        onPipDisappeared();
+        updatePinnedStackBounds();
+    }
+
+    @Override
+    public void movePip(int keycode) {
+        if (mTvPipBoundsAlgorithm.updateGravity(keycode)) {
+            mTvPipMenuController.updateGravity(mTvPipBoundsState.getTvPipGravity());
+            updatePinnedStackBounds();
+        } else {
+            ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                    "%s: Position hasn't changed", TAG);
+        }
+    }
+
+    @Override
+    public void onKeepClearAreasChanged(int displayId, Set<Rect> restricted,
+            Set<Rect> unrestricted) {
+        if (mPipDisplayLayoutState.getDisplayId() == displayId) {
+            boolean unrestrictedAreasChanged = !Objects.equals(unrestricted,
+                    mTvPipBoundsState.getUnrestrictedKeepClearAreas());
+            mTvPipBoundsState.setKeepClearAreas(restricted, unrestricted);
+            updatePinnedStackBounds(mResizeAnimationDuration, unrestrictedAreasChanged);
+        }
+    }
+
+    private void updatePinnedStackBounds() {
+        updatePinnedStackBounds(mResizeAnimationDuration, true);
     }
 
     /**
-     * Resizes the Pip task/window to the appropriate size for the given state.
-     * This is a legacy API. Now we expect that the state argument passed to it should always match
-     * the current state of the Controller. If it does not match an {@link IllegalArgumentException}
-     * will be thrown. However, if the passed state does match - we'll determine the right bounds
-     * to the state and will move Pip task/window there.
-     *
-     * @param state the to determine the Pip bounds. IMPORTANT: should always match the current
-     *              state of the Controller.
+     * Update the PiP bounds based on the state of the PiP and keep clear areas.
      */
-    private void resizePinnedStack(@State int state) {
-        if (state != mState) {
-            throw new IllegalArgumentException("The passed state should match the current state!");
+    private void updatePinnedStackBounds(int animationDuration, boolean immediate) {
+        if (mState == STATE_NO_PIP) {
+            return;
         }
-        if (DEBUG) Log.d(TAG, "resizePinnedStack() state=" + stateToName(mState));
+        final boolean stayAtAnchorPosition = mTvPipMenuController.isInMoveMode();
+        final boolean disallowStashing = mState == STATE_PIP_MENU || stayAtAnchorPosition;
+        mTvPipBoundsController.recalculatePipBounds(stayAtAnchorPosition, disallowStashing,
+                animationDuration, immediate);
+    }
 
-        final Rect newBounds;
-        switch (mState) {
-            case STATE_PIP_MENU:
-                newBounds = mPipBoundsState.getExpandedBounds();
-                break;
+    @Override
+    public void onPipTargetBoundsChange(Rect targetBounds, int animationDuration) {
+        mPipTaskOrganizer.scheduleAnimateResizePip(targetBounds,
+                animationDuration, null);
+        mTvPipMenuController.onPipTransitionToTargetBoundsStarted(targetBounds);
+    }
 
-            case STATE_PIP:
-                // Let PipBoundsAlgorithm figure out what the correct bounds are at the moment.
-                // Internally, it will get the "default" bounds from PipBoundsState and adjust them
-                // as needed to account for things like IME state (will query PipBoundsState for
-                // this information as well, so it's important to keep PipBoundsState up to date).
-                newBounds = mPipBoundsAlgorithm.getNormalBounds();
-                break;
+    /**
+     * Closes Pip window.
+     */
+    public void closePip() {
+        closeCurrentPiP(mPinnedTaskId);
+    }
 
-            case STATE_NO_PIP:
-            default:
-                return;
+    /**
+     * Force close the current PiP after some time in case the custom action hasn't done it by
+     * itself.
+     */
+    public void customClosePip() {
+        mMainExecutor.executeDelayed(() -> closeCurrentPiP(mPinnedTaskId), mPipForceCloseDelay);
+    }
+
+    private void closeCurrentPiP(int pinnedTaskId) {
+        if (mPinnedTaskId != pinnedTaskId) {
+            ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                    "%s: PiP has already been closed by custom close action", TAG);
+            return;
         }
+        mPipTaskOrganizer.removePip();
+        onPipDisappeared();
+    }
 
-        mPipTaskOrganizer.scheduleAnimateResizePip(newBounds, mResizeAnimationDuration, null);
+    @Override
+    public void closeEduText() {
+        updatePinnedStackBounds(mEduTextWindowExitAnimationDuration, false);
     }
 
     private void registerSessionListenerForCurrentUser() {
         mPipMediaController.registerSessionListenerForCurrentUser();
     }
 
-    private void checkIfPinnedTaskAppeared() {
-        final TaskInfo pinnedTask = getPinnedTaskInfo();
-        if (DEBUG) Log.d(TAG, "checkIfPinnedTaskAppeared(), task=" + pinnedTask);
-        if (pinnedTask == null || pinnedTask.topActivity == null) return;
-        mPinnedTaskId = pinnedTask.taskId;
-        setState(STATE_PIP);
-
-        mPipMediaController.onActivityPinned();
-        mPipNotificationController.show(pinnedTask.topActivity.getPackageName());
-    }
-
     private void checkIfPinnedTaskIsGone() {
-        if (DEBUG) Log.d(TAG, "onTaskStackChanged()");
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: onTaskStackChanged()", TAG);
 
         if (isPipShown() && getPinnedTaskInfo() == null) {
-            Log.w(TAG, "Pinned task is gone.");
+            ProtoLog.w(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                    "%s: Pinned task is gone.", TAG);
             onPipDisappeared();
         }
     }
 
     private void onPipDisappeared() {
-        if (DEBUG) Log.d(TAG, "onPipDisappeared() state=" + stateToName(mState));
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: onPipDisappeared() state=%s", TAG, stateToName(mState));
 
         mPipNotificationController.dismiss();
-        mTvPipMenuController.hideMenu();
+        mActionBroadcastReceiver.unregister();
+
+        mTvPipMenuController.closeMenu();
+        mTvPipBoundsState.resetTvPipState();
+        mTvPipBoundsController.reset();
         setState(STATE_NO_PIP);
         mPinnedTaskId = NONEXISTENT_TASK_ID;
     }
 
     @Override
-    public void onPipTransitionStarted(int direction, Rect pipBounds) {
-        if (DEBUG) Log.d(TAG, "onPipTransition_Started(), state=" + stateToName(mState));
+    public void onPipTransitionStarted(int direction, Rect currentPipBounds) {
+        final boolean enterPipTransition = PipAnimationController.isInPipDirection(direction);
+        if (enterPipTransition && mState == STATE_NO_PIP) {
+            // Set the initial ability to expand the PiP when entering PiP.
+            updateExpansionState();
+        }
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: onPipTransition_Started(), state=%s, direction=%d",
+                TAG, stateToName(mState), direction);
     }
 
     @Override
     public void onPipTransitionCanceled(int direction) {
-        if (DEBUG) Log.d(TAG, "onPipTransition_Canceled(), state=" + stateToName(mState));
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: onPipTransition_Canceled(), state=%s", TAG, stateToName(mState));
+        mTvPipMenuController.onPipTransitionFinished(
+                PipAnimationController.isInPipDirection(direction));
+        mTvPipActionsProvider.updatePipExpansionState(mTvPipBoundsState.isTvPipExpanded());
     }
 
     @Override
     public void onPipTransitionFinished(int direction) {
-        if (DEBUG) Log.d(TAG, "onPipTransition_Finished(), state=" + stateToName(mState));
-
-        if (mState == STATE_PIP_MENU) {
-            if (DEBUG) Log.d(TAG, "  > show menu");
-            mTvPipMenuController.showMenu();
+        final boolean enterPipTransition = PipAnimationController.isInPipDirection(direction);
+        if (enterPipTransition && mState == STATE_NO_PIP) {
+            setState(STATE_PIP);
         }
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: onPipTransition_Finished(), state=%s, direction=%d",
+                TAG, stateToName(mState), direction);
+        mTvPipMenuController.onPipTransitionFinished(enterPipTransition);
+        mTvPipActionsProvider.updatePipExpansionState(mTvPipBoundsState.isTvPipExpanded());
+    }
+
+    private void updateExpansionState() {
+        mTvPipActionsProvider.updateExpansionEnabled(mTvPipBoundsState.isTvExpandedPipSupported()
+                && mTvPipBoundsState.getDesiredTvExpandedAspectRatio() != 0);
     }
 
     private void setState(@State int state) {
-        if (DEBUG) {
-            Log.d(TAG, "setState(), state=" + stateToName(state) + ", prev="
-                    + stateToName(mState));
-        }
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: setState(), state=%s, prev=%s",
+                TAG, stateToName(state), stateToName(mState));
         mState = state;
-    }
-
-    private void loadConfigurations() {
-        final Resources res = mContext.getResources();
-        mResizeAnimationDuration = res.getInteger(R.integer.config_pipResizeAnimationDuration);
-        // "Cache" bounds for the Pip menu as "expanded" bounds in PipBoundsState. We'll refer back
-        // to this value in resizePinnedStack(), when we are adjusting Pip task/window position for
-        // the menu.
-        mPipBoundsState.setExpandedBounds(
-                Rect.unflattenFromString(res.getString(R.string.pip_menu_bounds)));
-    }
-
-    private DisplayInfo getDisplayInfo() {
-        final DisplayInfo displayInfo = new DisplayInfo();
-        mContext.getDisplay().getDisplayInfo(displayInfo);
-        return displayInfo;
     }
 
     private void registerTaskStackListenerCallback(TaskStackListenerImpl taskStackListener) {
         taskStackListener.addListener(new TaskStackListenerCallback() {
             @Override
             public void onActivityPinned(String packageName, int userId, int taskId, int stackId) {
-                checkIfPinnedTaskAppeared();
+                final TaskInfo pinnedTask = getPinnedTaskInfo();
+                ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                        "%s: onActivityPinned(), task=%s", TAG, pinnedTask);
+                if (pinnedTask == null || pinnedTask.topActivity == null) return;
+                mPinnedTaskId = pinnedTask.taskId;
+
+                mPipMediaController.onActivityPinned();
+                mActionBroadcastReceiver.register();
+                mPipNotificationController.show(pinnedTask.topActivity.getPackageName());
+                mTvPipBoundsController.reset();
+                mAppOpsListener.onActivityPinned(packageName);
+            }
+
+            @Override
+            public void onActivityUnpinned() {
+                mAppOpsListener.onActivityUnpinned();
             }
 
             @Override
@@ -365,11 +561,69 @@ public class TvPipController implements PipTransitionController.PipTransitionCal
             public void onActivityRestartAttempt(ActivityManager.RunningTaskInfo task,
                     boolean homeTaskVisible, boolean clearedTask, boolean wasVisible) {
                 if (task.getWindowingMode() == WINDOWING_MODE_PINNED) {
-                    if (DEBUG) Log.d(TAG, "onPinnedActivityRestartAttempt()");
-
+                    ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                            "%s: onPinnedActivityRestartAttempt()", TAG);
                     // If the "Pip-ed" Activity is launched again by Launcher or intent, make it
                     // fullscreen.
                     movePipToFullscreen();
+                }
+            }
+        });
+    }
+
+    private void registerPipParamsChangedListener(PipParamsChangedForwarder provider) {
+        provider.addListener(new PipParamsChangedForwarder.PipParamsChangedCallback() {
+            @Override
+            public void onActionsChanged(List<RemoteAction> actions,
+                    RemoteAction closeAction) {
+                ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                        "%s: onActionsChanged()", TAG);
+
+                mTvPipActionsProvider.setAppActions(actions, closeAction);
+            }
+
+            @Override
+            public void onAspectRatioChanged(float ratio) {
+                ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                        "%s: onAspectRatioChanged: %f", TAG, ratio);
+
+                mTvPipBoundsState.setAspectRatio(ratio);
+                if (!mTvPipBoundsState.isTvPipExpanded()) {
+                    updatePinnedStackBounds();
+                }
+            }
+
+            @Override
+            public void onExpandedAspectRatioChanged(float ratio) {
+                ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                        "%s: onExpandedAspectRatioChanged: %f", TAG, ratio);
+
+                mTvPipBoundsState.setDesiredTvExpandedAspectRatio(ratio, false);
+                updateExpansionState();
+
+                // 1) PiP is expanded and only aspect ratio changed, but wasn't disabled
+                // --> update bounds, but don't toggle
+                if (mTvPipBoundsState.isTvPipExpanded() && ratio != 0) {
+                    mTvPipBoundsAlgorithm.updateExpandedPipSize();
+                    updatePinnedStackBounds();
+                }
+
+                // 2) PiP is expanded, but expanded PiP was disabled
+                // --> collapse PiP
+                if (mTvPipBoundsState.isTvPipExpanded() && ratio == 0) {
+                    mTvPipBoundsAlgorithm.updateGravityOnExpansionToggled(/* expanding= */ false);
+                    mTvPipBoundsState.setTvPipExpanded(false);
+                    updatePinnedStackBounds();
+                }
+
+                // 3) PiP not expanded and not manually collapsed and expand was enabled
+                // --> expand to new ratio
+                if (!mTvPipBoundsState.isTvPipExpanded() && ratio != 0
+                        && !mTvPipBoundsState.isTvPipManuallyCollapsed()) {
+                    mTvPipBoundsAlgorithm.updateExpandedPipSize();
+                    mTvPipBoundsAlgorithm.updateGravityOnExpansionToggled(/* expanding= */ true);
+                    mTvPipBoundsState.setTvPipExpanded(true);
+                    updatePinnedStackBounds();
                 }
             }
         });
@@ -380,59 +634,42 @@ public class TvPipController implements PipTransitionController.PipTransitionCal
             wmShell.addPinnedStackListener(new PinnedStackListenerForwarder.PinnedTaskListener() {
                 @Override
                 public void onImeVisibilityChanged(boolean imeVisible, int imeHeight) {
-                    if (DEBUG) {
-                        Log.d(TAG, "onImeVisibilityChanged(), visible=" + imeVisible
-                                + ", height=" + imeHeight);
-                    }
+                    ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                            "%s: onImeVisibilityChanged(), visible=%b, height=%d",
+                            TAG, imeVisible, imeHeight);
 
-                    if (imeVisible == mPipBoundsState.isImeShowing()
-                            && (!imeVisible || imeHeight == mPipBoundsState.getImeHeight())) {
+                    if (imeVisible == mTvPipBoundsState.isImeShowing()
+                            && (!imeVisible || imeHeight == mTvPipBoundsState.getImeHeight())) {
                         // Nothing changed: either IME has been and remains invisible, or remains
                         // visible with the same height.
                         return;
                     }
-                    mPipBoundsState.setImeVisibility(imeVisible, imeHeight);
-                    // "Normal" Pip bounds may have changed, so if we are in the "normal" state,
-                    // let's update the bounds.
-                    if (mState == STATE_PIP) {
-                        resizePinnedStack(STATE_PIP);
+                    mTvPipBoundsState.setImeVisibility(imeVisible, imeHeight);
+
+                    if (mState != STATE_NO_PIP) {
+                        updatePinnedStackBounds();
                     }
-                }
-
-                @Override
-                public void onMovementBoundsChanged(boolean fromImeAdjustment) {}
-
-                @Override
-                public void onActionsChanged(ParceledListSlice<RemoteAction> actions) {
-                    if (DEBUG) Log.d(TAG, "onActionsChanged()");
-
-                    mTvPipMenuController.setAppActions(actions);
                 }
             });
         } catch (RemoteException e) {
-            Log.e(TAG, "Failed to register pinned stack listener", e);
+            ProtoLog.e(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                    "%s: Failed to register pinned stack listener, %s", TAG, e);
         }
     }
 
     private static TaskInfo getPinnedTaskInfo() {
-        if (DEBUG) Log.d(TAG, "getPinnedTaskInfo()");
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: getPinnedTaskInfo()", TAG);
         try {
             final TaskInfo taskInfo = ActivityTaskManager.getService().getRootTaskInfo(
                     WINDOWING_MODE_PINNED, ACTIVITY_TYPE_UNDEFINED);
-            if (DEBUG) Log.d(TAG, "  > taskInfo=" + taskInfo);
+            ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                    "%s: taskInfo=%s", TAG, taskInfo);
             return taskInfo;
         } catch (RemoteException e) {
-            Log.e(TAG, "getRootTaskInfo() failed", e);
+            ProtoLog.e(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                    "%s: getRootTaskInfo() failed, %s", TAG, e);
             return null;
-        }
-    }
-
-    private static void removeTask(int taskId) {
-        if (DEBUG) Log.d(TAG, "removeTask(), taskId=" + taskId);
-        try {
-            ActivityTaskManager.getService().removeTask(taskId);
-        } catch (Exception e) {
-            Log.e(TAG, "Atm.removeTask() failed", e);
         }
     }
 
@@ -450,19 +687,91 @@ public class TvPipController implements PipTransitionController.PipTransitionCal
         }
     }
 
-    private class TvPipImpl implements Pip {
-        @Override
-        public void onConfigurationChanged(Configuration newConfig) {
-            mMainExecutor.execute(() -> {
-                TvPipController.this.onConfigurationChanged(newConfig);
-            });
+    private void executeAction(@TvPipAction.ActionType int actionType) {
+        switch (actionType) {
+            case TvPipAction.ACTION_FULLSCREEN:
+                movePipToFullscreen();
+                break;
+            case TvPipAction.ACTION_CLOSE:
+                closePip();
+                break;
+            case TvPipAction.ACTION_MOVE:
+                showPictureInPictureMenu(/* moveMenu= */ true);
+                break;
+            case TvPipAction.ACTION_CUSTOM_CLOSE:
+                customClosePip();
+                break;
+            case TvPipAction.ACTION_EXPAND_COLLAPSE:
+                togglePipExpansion();
+                break;
+            default:
+                // NOOP
+                break;
+        }
+    }
+
+    private class ActionBroadcastReceiver extends BroadcastReceiver {
+        private static final String SYSTEMUI_PERMISSION = "com.android.systemui.permission.SELF";
+
+        final IntentFilter mIntentFilter;
+
+        {
+            mIntentFilter = new IntentFilter();
+            mIntentFilter.addAction(ACTION_CLOSE_PIP);
+            mIntentFilter.addAction(ACTION_SHOW_PIP_MENU);
+            mIntentFilter.addAction(ACTION_MOVE_PIP);
+            mIntentFilter.addAction(ACTION_TOGGLE_EXPANDED_PIP);
+            mIntentFilter.addAction(ACTION_TO_FULLSCREEN);
+        }
+
+        boolean mRegistered = false;
+
+        void register() {
+            if (mRegistered) return;
+
+            mContext.registerReceiverForAllUsers(this, mIntentFilter, SYSTEMUI_PERMISSION,
+                    mMainHandler, Context.RECEIVER_NOT_EXPORTED);
+            mRegistered = true;
+        }
+
+        void unregister() {
+            if (!mRegistered) return;
+
+            mContext.unregisterReceiver(this);
+            mRegistered = false;
         }
 
         @Override
-        public void registerSessionListenerForCurrentUser() {
-            mMainExecutor.execute(() -> {
-                TvPipController.this.registerSessionListenerForCurrentUser();
-            });
+        public void onReceive(Context context, Intent intent) {
+            final String action = intent.getAction();
+            ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                    "%s: on(Broadcast)Receive(), action=%s", TAG, action);
+
+            if (ACTION_SHOW_PIP_MENU.equals(action)) {
+                showPictureInPictureMenu(/* moveMenu= */ false);
+            } else {
+                executeAction(getCorrespondingActionType(action));
+            }
         }
+
+        @TvPipAction.ActionType
+        private int getCorrespondingActionType(String broadcast) {
+            if (ACTION_CLOSE_PIP.equals(broadcast)) {
+                return TvPipAction.ACTION_CLOSE;
+            } else if (ACTION_MOVE_PIP.equals(broadcast)) {
+                return TvPipAction.ACTION_MOVE;
+            } else if (ACTION_TOGGLE_EXPANDED_PIP.equals(broadcast)) {
+                return TvPipAction.ACTION_EXPAND_COLLAPSE;
+            } else if (ACTION_TO_FULLSCREEN.equals(broadcast)) {
+                return TvPipAction.ACTION_FULLSCREEN;
+            }
+
+            // Default: handle it like an action we don't know the content of.
+            return TvPipAction.ACTION_CUSTOM;
+        }
+    }
+
+    private class TvPipImpl implements Pip {
+        // Not used
     }
 }

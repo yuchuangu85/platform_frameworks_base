@@ -16,12 +16,12 @@
 
 package com.android.server.devicepolicy;
 
-import android.annotation.Nullable;
 import android.app.admin.DeviceAdminInfo;
 import android.content.ComponentName;
 
 import com.android.internal.util.JournaledFile;
 
+import java.util.List;
 import java.util.function.Function;
 
 /**
@@ -29,17 +29,6 @@ import java.util.function.Function;
  * to go through the upgrade process.
  */
 public interface PolicyUpgraderDataProvider {
-    /**
-     * Returns true if the provided {@code userId} is a device owner. May affect some policy
-     * defaults.
-     */
-    boolean isDeviceOwner(int userId, ComponentName who);
-
-    /**
-     * Returns true if the storage manager indicates file-based encryption is enabled.
-     */
-    boolean storageManagerIsFileBasedEncryptionEnabled();
-
     /**
      * Returns the journaled policies file for a given user.
      */
@@ -51,11 +40,6 @@ public interface PolicyUpgraderDataProvider {
     JournaledFile makePoliciesVersionJournaledFile(int userId);
 
     /**
-     * Returns the {@code ComponentName} of the owner component for a user.
-     */
-    @Nullable ComponentName getOwnerComponent(int userId);
-
-    /**
      * Returns a function which provides the component name and device admin info for a given
      * user.
      */
@@ -65,4 +49,9 @@ public interface PolicyUpgraderDataProvider {
      * Returns the users to upgrade.
      */
     int[] getUsersForUpgrade();
+
+    /**
+     * Returns packages suspended by platform for a given user.
+     */
+    List<String> getPlatformSuspendedPackages(int userId);
 }

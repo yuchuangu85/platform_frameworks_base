@@ -39,7 +39,7 @@ import java.util.Objects;
  * InputMethodSubtypeSwitchingController controls the switching behavior of the subtypes.
  *
  * <p>This class is designed to be used from and only from {@link InputMethodManagerService} by
- * using {@link InputMethodManagerService#mMethodMap} as a global lock.</p>
+ * using {@link ImfLock ImfLock.class} as a global lock.</p>
  */
 final class InputMethodSubtypeSwitchingController {
     private static final String TAG = InputMethodSubtypeSwitchingController.class.getSimpleName();
@@ -200,7 +200,7 @@ final class InputMethodSubtypeSwitchingController {
                     continue;
                 }
                 final List<InputMethodSubtype> explicitlyOrImplicitlyEnabledSubtypeList =
-                        mSettings.getEnabledInputMethodSubtypeListLocked(mContext, imi, true);
+                        mSettings.getEnabledInputMethodSubtypeListLocked(imi, true);
                 final ArraySet<String> enabledSubtypeSet = new ArraySet<>();
                 for (InputMethodSubtype subtype : explicitlyOrImplicitlyEnabledSubtypeList) {
                     enabledSubtypeSet.add(String.valueOf(subtype.hashCode()));
@@ -241,8 +241,8 @@ final class InputMethodSubtypeSwitchingController {
     }
 
     private static int calculateSubtypeId(InputMethodInfo imi, InputMethodSubtype subtype) {
-        return subtype != null ? InputMethodUtils.getSubtypeIdFromHashCode(imi,
-                subtype.hashCode()) : NOT_A_SUBTYPE_ID;
+        return subtype != null ? SubtypeUtils.getSubtypeIdFromHashCode(imi, subtype.hashCode())
+                : NOT_A_SUBTYPE_ID;
     }
 
     private static class StaticRotationList {

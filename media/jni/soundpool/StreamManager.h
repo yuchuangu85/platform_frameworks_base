@@ -387,14 +387,14 @@ class StreamManager : public StreamMap {
 public:
     // Note: the SoundPool pointer is only used for stream initialization.
     // It is not stored in StreamManager.
-    StreamManager(int32_t streams, size_t threads, const audio_attributes_t* attributes,
+    StreamManager(int32_t streams, size_t threads, const audio_attributes_t& attributes,
             std::string opPackageName);
     ~StreamManager();
 
     // Returns positive streamID on success, 0 on failure.  This is locked.
     int32_t queueForPlay(const std::shared_ptr<Sound> &sound,
             int32_t soundID, float leftVolume, float rightVolume,
-            int32_t priority, int32_t loop, float rate)
+            int32_t priority, int32_t loop, float rate, int32_t playerIId)
             NO_THREAD_SAFETY_ANALYSIS; // uses unique_lock
 
     ///////////////////////////////////////////////////////////////////////

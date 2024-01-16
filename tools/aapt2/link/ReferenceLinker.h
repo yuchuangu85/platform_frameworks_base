@@ -32,7 +32,7 @@ namespace aapt {
 class ReferenceLinkerTransformer : public CloningValueTransformer {
  public:
   ReferenceLinkerTransformer(const CallSite& callsite, IAaptContext* context, SymbolTable* symbols,
-                             StringPool* string_pool, ResourceTable* table,
+                             android::StringPool* string_pool, ResourceTable* table,
                              xml::IPackageDeclStack* decl)
       : CloningValueTransformer(string_pool),
         callsite_(callsite),
@@ -97,11 +97,11 @@ class ReferenceLinker : public IResourceTableConsumer {
 
   // Resolves the attribute reference and returns an xml::AaptAttribute if successful.
   // If resolution fails, outError holds the error message.
-  static Maybe<xml::AaptAttribute> CompileXmlAttribute(const Reference& reference,
-                                                       const CallSite& callsite,
-                                                       IAaptContext* context,
-                                                       SymbolTable* symbols,
-                                                       std::string* out_error);
+  static std::optional<xml::AaptAttribute> CompileXmlAttribute(const Reference& reference,
+                                                               const CallSite& callsite,
+                                                               IAaptContext* context,
+                                                               SymbolTable* symbols,
+                                                               std::string* out_error);
 
   // Writes the resource name to the DiagMessage, using the
   // "orig_name (aka <transformed_name>)" syntax.
@@ -110,7 +110,8 @@ class ReferenceLinker : public IResourceTableConsumer {
 
   // Same as WriteResourceName but omits the 'attr' part.
   static void WriteAttributeName(const Reference& ref, const CallSite& callsite,
-                                 const xml::IPackageDeclStack* decls, DiagMessage* out_msg);
+                                 const xml::IPackageDeclStack* decls,
+                                 android::DiagMessage* out_msg);
 
   // Returns a fully linked version a resource reference.
   //

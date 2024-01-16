@@ -19,8 +19,11 @@ package com.android.server.job.controllers;
 import static com.android.server.job.JobSchedulerService.NEVER_INDEX;
 import static com.android.server.job.JobSchedulerService.sElapsedRealtimeClock;
 
+import android.app.ActivityManager;
+import android.app.ActivityManagerInternal;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.util.ArraySet;
 import android.util.IndentingPrintWriter;
 import android.util.Log;
 import android.util.Slog;
@@ -58,6 +61,7 @@ public final class BackgroundJobsController extends StateController {
     static final int KNOWN_ACTIVE = 1;
     static final int KNOWN_INACTIVE = 2;
 
+    private final ActivityManagerInternal mActivityManagerInternal;
     private final AppStateTrackerImpl mAppStateTracker;
 
     private final UpdateJobFunctor mUpdateJobFunctor = new UpdateJobFunctor();
@@ -65,6 +69,8 @@ public final class BackgroundJobsController extends StateController {
     public BackgroundJobsController(JobSchedulerService service) {
         super(service);
 
+        mActivityManagerInternal = (ActivityManagerInternal) Objects.requireNonNull(
+                LocalServices.getService(ActivityManagerInternal.class));
         mAppStateTracker = (AppStateTrackerImpl) Objects.requireNonNull(
                 LocalServices.getService(AppStateTracker.class));
         mAppStateTracker.addListener(mForceAppStandbyListener);
@@ -76,8 +82,7 @@ public final class BackgroundJobsController extends StateController {
     }
 
     @Override
-    public void maybeStopTrackingJobLocked(JobStatus jobStatus, JobStatus incomingJob,
-            boolean forUpdate) {
+    public void maybeStopTrackingJobLocked(JobStatus jobStatus, JobStatus incomingJob) {
     }
 
     @Override
@@ -191,8 +196,8 @@ public final class BackgroundJobsController extends StateController {
             ));
         }
 
-        if (mUpdateJobFunctor.mChanged) {
-            mStateChangedListener.onControllerStateChanged();
+        if (mUpdateJobFunctor.mChangedJobs.size() > 0) {
+            mStateChangedListener.onControllerStateChanged(mUpdateJobFunctor.mChangedJobs);
         }
     }
 
@@ -201,8 +206,32 @@ public final class BackgroundJobsController extends StateController {
         final int uid = jobStatus.getSourceUid();
         final String packageName = jobStatus.getSourcePackageName();
 
-        final boolean canRun = !mAppStateTracker.areJobsRestricted(uid, packageName,
-                jobStatus.canRunInBatterySaver());
+        final boolean isUserBgRestricted =
+                !mActivityManagerInternal.isBgAutoRestrictedBucketFeatureFlagEnabled()
+                        && !mAppStateTracker.isRunAnyInBackgroundAppOpsAllowed(uid, packageName);
+        // If a job started with the foreground flag, it'll cause the UID to stay active
+        // and thus cause areJobsRestricted() to always return false, so if
+        // areJobsRestricted() returns false and the app is BG restricted and not TOP,
+        // we need to stop any jobs that started with the foreground flag so they don't
+        // keep the app in an elevated proc state. If we were to get in this situation,
+        // then the user restricted the app after the job started, so it's best to stop
+        // the job as soon as possible, especially since the job would be visible to the
+        // user (with a notification and in Task Manager).
+        // There are several other reasons that uidActive can be true for an app even if its
+        // proc state is less important than BFGS.
+        // JobScheduler has historically (at least up through UDC) allowed the app's jobs to run
+        // when its UID was active, even if it's background restricted. This has been fine because
+        // JobScheduler stops the job as soon as the UID becomes inactive and the jobs themselves
+        // will not keep the UID active. The logic here is to ensure that special jobs
+        // (e.g. user-initiated jobs) themselves do not keep the UID active when the app is
+        // background restricted.
+        final boolean shouldStopImmediately = jobStatus.startedWithForegroundFlag
+                && isUserBgRestricted
+                && mService.getUidProcState(uid)
+                        > ActivityManager.PROCESS_STATE_BOUND_FOREGROUND_SERVICE;
+        final boolean canRun = !shouldStopImmediately
+                && !mAppStateTracker.areJobsRestricted(
+                        uid, packageName, jobStatus.canRunInBatterySaver());
 
         final boolean isActive;
         if (activeState == UNKNOWN) {
@@ -215,14 +244,14 @@ public final class BackgroundJobsController extends StateController {
         }
         boolean didChange =
                 jobStatus.setBackgroundNotRestrictedConstraintSatisfied(nowElapsed, canRun,
-                        !mAppStateTracker.isRunAnyInBackgroundAppOpsAllowed(uid, packageName));
+                        isUserBgRestricted);
         didChange |= jobStatus.setUidActive(isActive);
         return didChange;
     }
 
     private final class UpdateJobFunctor implements Consumer<JobStatus> {
         int mActiveState;
-        boolean mChanged = false;
+        final ArraySet<JobStatus> mChangedJobs = new ArraySet<>();
         int mTotalCount = 0;
         int mCheckedCount = 0;
         long mUpdateTimeElapsed = 0;
@@ -230,7 +259,7 @@ public final class BackgroundJobsController extends StateController {
         void prepare(int newActiveState) {
             mActiveState = newActiveState;
             mUpdateTimeElapsed = sElapsedRealtimeClock.millis();
-            mChanged = false;
+            mChangedJobs.clear();
             mTotalCount = 0;
             mCheckedCount = 0;
         }
@@ -240,7 +269,7 @@ public final class BackgroundJobsController extends StateController {
             mTotalCount++;
             mCheckedCount++;
             if (updateSingleJobRestrictionLocked(jobStatus, mUpdateTimeElapsed, mActiveState)) {
-                mChanged = true;
+                mChangedJobs.add(jobStatus);
             }
         }
     }

@@ -16,9 +16,6 @@
 
 package com.android.server.location.contexthub;
 
-import android.hardware.contexthub.V1_0.IContexthub;
-import android.hardware.contexthub.V1_0.Result;
-import android.hardware.contexthub.V1_0.TransactionResult;
 import android.hardware.location.ContextHubTransaction;
 import android.hardware.location.IContextHubTransactionCallback;
 import android.hardware.location.NanoAppBinary;
@@ -26,11 +23,8 @@ import android.hardware.location.NanoAppState;
 import android.os.RemoteException;
 import android.util.Log;
 
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.Collections;
-import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ScheduledFuture;
@@ -40,7 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Manages transactions at the Context Hub Service.
- *
+ * <p>
  * This class maintains a queue of transaction requests made to the ContextHubService by clients,
  * and executes them through the Context Hub. At any point in time, either the transaction queue is
  * empty, or there is a pending transaction that is waiting for an asynchronous response from the
@@ -57,14 +51,9 @@ import java.util.concurrent.atomic.AtomicInteger;
     private static final int MAX_PENDING_REQUESTS = 10000;
 
     /*
-     * The DateFormat for printing TransactionRecord.
-     */
-    private static final DateFormat DATE_FORMAT = new SimpleDateFormat("MM/dd HH:mm:ss.SSS");
-
-    /*
      * The proxy to talk to the Context Hub
      */
-    private final IContexthub mContextHubProxy;
+    private final IContextHubWrapper mContextHubProxy;
 
     /*
      * The manager for all clients for the service.
@@ -115,12 +104,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 
         @Override
         public String toString() {
-            return DATE_FORMAT.format(new Date(mTimestamp)) + " " + mTransaction;
+            return ContextHubServiceUtil.formatDateFromTimestamp(mTimestamp) + " " + mTransaction;
         }
     }
 
     /* package */ ContextHubTransactionManager(
-            IContexthub contextHubProxy, ContextHubClientManager clientManager,
+            IContextHubWrapper contextHubProxy, ContextHubClientManager clientManager,
             NanoAppStateManager nanoAppStateManager) {
         mContextHubProxy = contextHubProxy;
         mClientManager = clientManager;
@@ -143,20 +132,33 @@ import java.util.concurrent.atomic.AtomicInteger;
                 nanoAppBinary.getNanoAppId(), packageName) {
             @Override
                 /* package */ int onTransact() {
-                android.hardware.contexthub.V1_0.NanoAppBinary hidlNanoAppBinary =
-                        ContextHubServiceUtil.createHidlNanoAppBinary(nanoAppBinary);
                 try {
-                    return mContextHubProxy.loadNanoApp(
-                            contextHubId, hidlNanoAppBinary, this.getTransactionId());
+                    return mContextHubProxy.loadNanoapp(
+                            contextHubId, nanoAppBinary, this.getTransactionId());
                 } catch (RemoteException e) {
                     Log.e(TAG, "RemoteException while trying to load nanoapp with ID 0x" +
                             Long.toHexString(nanoAppBinary.getNanoAppId()), e);
-                    return Result.UNKNOWN_FAILURE;
+                    return ContextHubTransaction.RESULT_FAILED_UNKNOWN;
                 }
             }
 
             @Override
                 /* package */ void onTransactionComplete(@ContextHubTransaction.Result int result) {
+                ContextHubStatsLog.write(
+                        ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED,
+                        nanoAppBinary.getNanoAppId(),
+                        nanoAppBinary.getNanoAppVersion(),
+                        ContextHubStatsLog
+                            .CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_TYPE__TYPE_LOAD,
+                        toStatsTransactionResult(result));
+
+                ContextHubEventLogger.getInstance().logNanoappLoad(
+                        contextHubId,
+                        nanoAppBinary.getNanoAppId(),
+                        nanoAppBinary.getNanoAppVersion(),
+                        nanoAppBinary.getBinary().length,
+                        result == ContextHubTransaction.RESULT_SUCCESS);
+
                 if (result == ContextHubTransaction.RESULT_SUCCESS) {
                     // NOTE: The legacy JNI code used to do a query right after a load success
                     // to synchronize the service cache. Instead store the binary that was
@@ -194,17 +196,29 @@ import java.util.concurrent.atomic.AtomicInteger;
             @Override
                 /* package */ int onTransact() {
                 try {
-                    return mContextHubProxy.unloadNanoApp(
+                    return mContextHubProxy.unloadNanoapp(
                             contextHubId, nanoAppId, this.getTransactionId());
                 } catch (RemoteException e) {
                     Log.e(TAG, "RemoteException while trying to unload nanoapp with ID 0x" +
                             Long.toHexString(nanoAppId), e);
-                    return Result.UNKNOWN_FAILURE;
+                    return ContextHubTransaction.RESULT_FAILED_UNKNOWN;
                 }
             }
 
             @Override
                 /* package */ void onTransactionComplete(@ContextHubTransaction.Result int result) {
+                ContextHubStatsLog.write(
+                        ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED, nanoAppId,
+                        0 /* nanoappVersion */,
+                        ContextHubStatsLog
+                            .CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_TYPE__TYPE_UNLOAD,
+                        toStatsTransactionResult(result));
+
+                ContextHubEventLogger.getInstance().logNanoappUnload(
+                        contextHubId,
+                        nanoAppId,
+                        result == ContextHubTransaction.RESULT_SUCCESS);
+
                 if (result == ContextHubTransaction.RESULT_SUCCESS) {
                     mNanoAppStateManager.removeNanoAppInstance(contextHubId, nanoAppId);
                 }
@@ -237,12 +251,12 @@ import java.util.concurrent.atomic.AtomicInteger;
             @Override
                 /* package */ int onTransact() {
                 try {
-                    return mContextHubProxy.enableNanoApp(
+                    return mContextHubProxy.enableNanoapp(
                             contextHubId, nanoAppId, this.getTransactionId());
                 } catch (RemoteException e) {
                     Log.e(TAG, "RemoteException while trying to enable nanoapp with ID 0x" +
                             Long.toHexString(nanoAppId), e);
-                    return Result.UNKNOWN_FAILURE;
+                    return ContextHubTransaction.RESULT_FAILED_UNKNOWN;
                 }
             }
 
@@ -274,12 +288,12 @@ import java.util.concurrent.atomic.AtomicInteger;
             @Override
                 /* package */ int onTransact() {
                 try {
-                    return mContextHubProxy.disableNanoApp(
+                    return mContextHubProxy.disableNanoapp(
                             contextHubId, nanoAppId, this.getTransactionId());
                 } catch (RemoteException e) {
                     Log.e(TAG, "RemoteException while trying to disable nanoapp with ID 0x" +
                             Long.toHexString(nanoAppId), e);
-                    return Result.UNKNOWN_FAILURE;
+                    return ContextHubTransaction.RESULT_FAILED_UNKNOWN;
                 }
             }
 
@@ -310,10 +324,10 @@ import java.util.concurrent.atomic.AtomicInteger;
             @Override
                 /* package */ int onTransact() {
                 try {
-                    return mContextHubProxy.queryApps(contextHubId);
+                    return mContextHubProxy.queryNanoapps(contextHubId);
                 } catch (RemoteException e) {
                     Log.e(TAG, "RemoteException while trying to query for nanoapps", e);
-                    return Result.UNKNOWN_FAILURE;
+                    return ContextHubTransaction.RESULT_FAILED_UNKNOWN;
                 }
             }
 
@@ -336,7 +350,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
     /**
      * Adds a new transaction to the queue.
-     *
+     * <p>
      * If there was no pending transaction at the time, the transaction that was added will be
      * started in this method. If there were too many transactions in the queue, an exception will
      * be thrown.
@@ -363,10 +377,10 @@ import java.util.concurrent.atomic.AtomicInteger;
      * Handles a transaction response from a Context Hub.
      *
      * @param transactionId the transaction ID of the response
-     * @param result        the result of the transaction as defined by the HAL TransactionResult
+     * @param success       true if the transaction succeeded
      */
     /* package */
-    synchronized void onTransactionResponse(int transactionId, int result) {
+    synchronized void onTransactionResponse(int transactionId, boolean success) {
         ContextHubServiceTransaction transaction = mTransactionQueue.peek();
         if (transaction == null) {
             Log.w(TAG, "Received unexpected transaction response (no transaction pending)");
@@ -378,9 +392,7 @@ import java.util.concurrent.atomic.AtomicInteger;
             return;
         }
 
-        transaction.onTransactionComplete(
-                (result == TransactionResult.SUCCESS) ?
-                        ContextHubTransaction.RESULT_SUCCESS :
+        transaction.onTransactionComplete(success ? ContextHubTransaction.RESULT_SUCCESS :
                         ContextHubTransaction.RESULT_FAILED_AT_HUB);
         removeTransactionAndStartNext();
     }
@@ -421,11 +433,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 
     /**
      * Pops the front transaction from the queue and starts the next pending transaction request.
-     *
+     * <p>
      * Removing elements from the transaction queue must only be done through this method. When a
      * pending transaction is removed, the timeout timer is cancelled and the transaction is marked
      * complete.
-     *
+     * <p>
      * It is assumed that the transaction queue is non-empty when this method is invoked, and that
      * the caller has obtained a lock on this ContextHubTransactionManager object.
      */
@@ -442,21 +454,21 @@ import java.util.concurrent.atomic.AtomicInteger;
 
     /**
      * Starts the next pending transaction request.
-     *
+     * <p>
      * Starting new transactions must only be done through this method. This method continues to
      * process the transaction queue as long as there are pending requests, and no transaction is
      * pending.
-     *
+     * <p>
      * It is assumed that the caller has obtained a lock on this ContextHubTransactionManager
      * object.
      */
     private void startNextTransaction() {
-        int result = Result.UNKNOWN_FAILURE;
-        while (result != Result.OK && !mTransactionQueue.isEmpty()) {
+        int result = ContextHubTransaction.RESULT_FAILED_UNKNOWN;
+        while (result != ContextHubTransaction.RESULT_SUCCESS && !mTransactionQueue.isEmpty()) {
             ContextHubServiceTransaction transaction = mTransactionQueue.peek();
             result = transaction.onTransact();
 
-            if (result == Result.OK) {
+            if (result == ContextHubTransaction.RESULT_SUCCESS) {
                 Runnable onTimeoutFunc = () -> {
                     synchronized (this) {
                         if (!transaction.isComplete()) {
@@ -470,8 +482,12 @@ import java.util.concurrent.atomic.AtomicInteger;
                 };
 
                 long timeoutSeconds = transaction.getTimeout(TimeUnit.SECONDS);
-                mTimeoutFuture = mTimeoutExecutor.schedule(onTimeoutFunc, timeoutSeconds,
+                try {
+                    mTimeoutFuture = mTimeoutExecutor.schedule(onTimeoutFunc, timeoutSeconds,
                         TimeUnit.SECONDS);
+                } catch (Exception e) {
+                    Log.e(TAG, "Error when schedule a timer", e);
+                }
             } else {
                 transaction.onTransactionComplete(
                         ContextHubServiceUtil.toTransactionResult(result));
@@ -480,12 +496,36 @@ import java.util.concurrent.atomic.AtomicInteger;
         }
     }
 
+    private int toStatsTransactionResult(@ContextHubTransaction.Result int result) {
+        switch (result) {
+            case ContextHubTransaction.RESULT_SUCCESS:
+                return ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_RESULT__TRANSACTION_RESULT_SUCCESS;
+            case ContextHubTransaction.RESULT_FAILED_BAD_PARAMS:
+                return ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_RESULT__TRANSACTION_RESULT_FAILED_BAD_PARAMS;
+            case ContextHubTransaction.RESULT_FAILED_UNINITIALIZED:
+                return ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_RESULT__TRANSACTION_RESULT_FAILED_UNINITIALIZED;
+            case ContextHubTransaction.RESULT_FAILED_BUSY:
+                return ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_RESULT__TRANSACTION_RESULT_FAILED_BUSY;
+            case ContextHubTransaction.RESULT_FAILED_AT_HUB:
+                return ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_RESULT__TRANSACTION_RESULT_FAILED_AT_HUB;
+            case ContextHubTransaction.RESULT_FAILED_TIMEOUT:
+                return ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_RESULT__TRANSACTION_RESULT_FAILED_TIMEOUT;
+            case ContextHubTransaction.RESULT_FAILED_SERVICE_INTERNAL_FAILURE:
+                return ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_RESULT__TRANSACTION_RESULT_FAILED_SERVICE_INTERNAL_FAILURE;
+            case ContextHubTransaction.RESULT_FAILED_HAL_UNAVAILABLE:
+                return ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_RESULT__TRANSACTION_RESULT_FAILED_HAL_UNAVAILABLE;
+            case ContextHubTransaction.RESULT_FAILED_UNKNOWN:
+            default: /* fall through */
+                return ContextHubStatsLog.CHRE_CODE_DOWNLOAD_TRANSACTED__TRANSACTION_RESULT__TRANSACTION_RESULT_FAILED_UNKNOWN;
+        }
+    }
+
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder(100);
-        TransactionRecord[] arr;
+        ContextHubServiceTransaction[] arr;
         synchronized (this) {
-            arr = mTransactionQueue.toArray(new TransactionRecord[0]);
+            arr = mTransactionQueue.toArray(new ContextHubServiceTransaction[0]);
         }
         for (int i = 0; i < arr.length; i++) {
             sb.append(i + ": " + arr[i] + "\n");

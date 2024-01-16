@@ -25,9 +25,12 @@ import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Log;
 import android.view.View;
+import android.view.inputmethod.ImeTracker;
+import android.view.inputmethod.InputMethodManager;
 import android.view.inputmethod.InputMethodSubtype;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.infra.AndroidFuture;
 
 import java.util.Objects;
 
@@ -99,7 +102,7 @@ public final class InputMethodPrivilegedOperations {
     }
 
     /**
-     * Calls {@link IInputMethodPrivilegedOperations#setImeWindowStatusAsync(int, int}.
+     * Calls {@link IInputMethodPrivilegedOperations#setImeWindowStatusAsync(int, int)}.
      *
      * @param vis visibility flags
      * @param backDisposition disposition flags
@@ -142,7 +145,7 @@ public final class InputMethodPrivilegedOperations {
 
     /**
      * Calls {@link IInputMethodPrivilegedOperations#createInputContentUriToken(Uri, String,
-     * IIInputContentUriTokenResultCallback)}.
+     * AndroidFuture)}.
      *
      * @param contentUri Content URI to which a temporary read permission should be granted
      * @param packageName Indicates what package needs to have a temporary read permission
@@ -156,10 +159,9 @@ public final class InputMethodPrivilegedOperations {
             return null;
         }
         try {
-            final Completable.IInputContentUriToken value =
-                    Completable.createIInputContentUriToken();
-            ops.createInputContentUriToken(contentUri, packageName, ResultCallbacks.of(value));
-            return Completable.getResult(value);
+            final AndroidFuture<IBinder> future = new AndroidFuture<>();
+            ops.createInputContentUriToken(contentUri, packageName, future);
+            return IInputContentUriToken.Stub.asInterface(CompletableFutureUtil.getResult(future));
         } catch (RemoteException e) {
             // For historical reasons, this error was silently ignored.
             // Note that the caller already logs error so we do not need additional Log.e() here.
@@ -206,7 +208,7 @@ public final class InputMethodPrivilegedOperations {
     }
 
     /**
-     * Calls {@link IInputMethodPrivilegedOperations#setInputMethod(String, IVoidResultCallback)}.
+     * Calls {@link IInputMethodPrivilegedOperations#setInputMethod(String, AndroidFuture)}.
      *
      * @param id IME ID of the IME to switch to
      * @see android.view.inputmethod.InputMethodInfo#getId()
@@ -218,9 +220,9 @@ public final class InputMethodPrivilegedOperations {
             return;
         }
         try {
-            final Completable.Void value = Completable.createVoid();
-            ops.setInputMethod(id, ResultCallbacks.of(value));
-            Completable.getResult(value);
+            final AndroidFuture<Void> future = new AndroidFuture<>();
+            ops.setInputMethod(id, future);
+            CompletableFutureUtil.getResult(future);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -228,7 +230,7 @@ public final class InputMethodPrivilegedOperations {
 
     /**
      * Calls {@link IInputMethodPrivilegedOperations#setInputMethodAndSubtype(String,
-     * InputMethodSubtype, IVoidResultCallback)}
+     * InputMethodSubtype, AndroidFuture)}
      *
      * @param id IME ID of the IME to switch to
      * @param subtype {@link InputMethodSubtype} to switch to
@@ -241,61 +243,55 @@ public final class InputMethodPrivilegedOperations {
             return;
         }
         try {
-            final Completable.Void value = Completable.createVoid();
-            ops.setInputMethodAndSubtype(id, subtype, ResultCallbacks.of(value));
-            Completable.getResult(value);
+            final AndroidFuture<Void> future = new AndroidFuture<>();
+            ops.setInputMethodAndSubtype(id, subtype, future);
+            CompletableFutureUtil.getResult(future);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
     }
 
     /**
-     * Calls {@link IInputMethodPrivilegedOperations#hideMySoftInput(int, IVoidResultCallback)}
+     * Calls {@link IInputMethodPrivilegedOperations#hideMySoftInput(int, int, AndroidFuture)}
      *
-     * @param flags additional operating flags
-     * @see android.view.inputmethod.InputMethodManager#HIDE_IMPLICIT_ONLY
-     * @see android.view.inputmethod.InputMethodManager#HIDE_NOT_ALWAYS
+     * @param reason the reason to hide soft input
      */
     @AnyThread
-    public void hideMySoftInput(int flags) {
+    public void hideMySoftInput(@InputMethodManager.HideFlags int flags,
+            @SoftInputShowHideReason int reason) {
         final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
         if (ops == null) {
             return;
         }
         try {
-            final Completable.Void value = Completable.createVoid();
-            ops.hideMySoftInput(flags, ResultCallbacks.of(value));
-            Completable.getResult(value);
+            final AndroidFuture<Void> future = new AndroidFuture<>();
+            ops.hideMySoftInput(flags, reason, future);
+            CompletableFutureUtil.getResult(future);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
     }
 
     /**
-     * Calls {@link IInputMethodPrivilegedOperations#showMySoftInput(int, IVoidResultCallback)}
-     *
-     * @param flags additional operating flags
-     * @see android.view.inputmethod.InputMethodManager#SHOW_IMPLICIT
-     * @see android.view.inputmethod.InputMethodManager#SHOW_FORCED
+     * Calls {@link IInputMethodPrivilegedOperations#showMySoftInput(int, AndroidFuture)}
      */
     @AnyThread
-    public void showMySoftInput(int flags) {
+    public void showMySoftInput(@InputMethodManager.ShowFlags int flags) {
         final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
         if (ops == null) {
             return;
         }
         try {
-            final Completable.Void value = Completable.createVoid();
-            ops.showMySoftInput(flags, ResultCallbacks.of(value));
-            Completable.getResult(value);
+            final AndroidFuture<Void> future = new AndroidFuture<>();
+            ops.showMySoftInput(flags, future);
+            CompletableFutureUtil.getResult(future);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
     }
 
     /**
-     * Calls {@link IInputMethodPrivilegedOperations#switchToPreviousInputMethod(
-     * IBooleanResultCallback)}
+     * Calls {@link IInputMethodPrivilegedOperations#switchToPreviousInputMethod(AndroidFuture)}
      *
      * @return {@code true} if handled
      */
@@ -306,9 +302,9 @@ public final class InputMethodPrivilegedOperations {
             return false;
         }
         try {
-            final Completable.Boolean value = Completable.createBoolean();
-            ops.switchToPreviousInputMethod(ResultCallbacks.of(value));
-            return Completable.getResult(value);
+            final AndroidFuture<Boolean> value = new AndroidFuture<>();
+            ops.switchToPreviousInputMethod(value);
+            return CompletableFutureUtil.getResult(value);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -316,7 +312,7 @@ public final class InputMethodPrivilegedOperations {
 
     /**
      * Calls {@link IInputMethodPrivilegedOperations#switchToNextInputMethod(boolean,
-     * IBooleanResultCallback)}
+     * AndroidFuture)}
      *
      * @param onlyCurrentIme {@code true} to switch to a {@link InputMethodSubtype} within the same
      *                       IME
@@ -329,9 +325,9 @@ public final class InputMethodPrivilegedOperations {
             return false;
         }
         try {
-            final Completable.Boolean value = Completable.createBoolean();
-            ops.switchToNextInputMethod(onlyCurrentIme, ResultCallbacks.of(value));
-            return Completable.getResult(value);
+            final AndroidFuture<Boolean> future = new AndroidFuture<>();
+            ops.switchToNextInputMethod(onlyCurrentIme, future);
+            return CompletableFutureUtil.getResult(future);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -339,7 +335,7 @@ public final class InputMethodPrivilegedOperations {
 
     /**
      * Calls {@link IInputMethodPrivilegedOperations#shouldOfferSwitchingToNextInputMethod(
-     * IBooleanResultCallback)}
+     * AndroidFuture)}
      *
      * @return {@code true} if the IEM should offer a way to globally switch IME
      */
@@ -350,9 +346,9 @@ public final class InputMethodPrivilegedOperations {
             return false;
         }
         try {
-            final Completable.Boolean value = Completable.createBoolean();
-            ops.shouldOfferSwitchingToNextInputMethod(ResultCallbacks.of(value));
-            return Completable.getResult(value);
+            final AndroidFuture<Boolean> future = new AndroidFuture<>();
+            ops.shouldOfferSwitchingToNextInputMethod(future);
+            return CompletableFutureUtil.getResult(future);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -375,22 +371,62 @@ public final class InputMethodPrivilegedOperations {
     }
 
     /**
-     * Calls {@link IInputMethodPrivilegedOperations#applyImeVisibilityAsync(IBinder, boolean)}.
+     * Calls {@link IInputMethodPrivilegedOperations#applyImeVisibilityAsync(IBinder, boolean,
+     * ImeTracker.Token)}.
      *
      * @param showOrHideInputToken placeholder token that maps to window requesting
      *        {@link android.view.inputmethod.InputMethodManager#showSoftInput(View, int)} or
-     *        {@link android.view.inputmethod.InputMethodManager#hideSoftInputFromWindow
-     *        (IBinder, int)}
+     *        {@link android.view.inputmethod.InputMethodManager#hideSoftInputFromWindow(IBinder,
+     *        int)}
      * @param setVisible {@code true} to set IME visible, else hidden.
+     * @param statsToken the token tracking the current IME request or {@code null} otherwise.
      */
     @AnyThread
-    public void applyImeVisibilityAsync(IBinder showOrHideInputToken, boolean setVisible) {
+    public void applyImeVisibilityAsync(IBinder showOrHideInputToken, boolean setVisible,
+            @Nullable ImeTracker.Token statsToken) {
+        final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
+        if (ops == null) {
+            ImeTracker.forLogging().onFailed(statsToken,
+                    ImeTracker.PHASE_IME_APPLY_VISIBILITY_INSETS_CONSUMER);
+            return;
+        }
+        ImeTracker.forLogging().onProgress(statsToken,
+                ImeTracker.PHASE_IME_APPLY_VISIBILITY_INSETS_CONSUMER);
+        try {
+            ops.applyImeVisibilityAsync(showOrHideInputToken, setVisible, statsToken);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Calls {@link IInputMethodPrivilegedOperations#onStylusHandwritingReady(int, int)}
+     */
+    @AnyThread
+    public void onStylusHandwritingReady(int requestId, int pid) {
         final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
         if (ops == null) {
             return;
         }
         try {
-            ops.applyImeVisibilityAsync(showOrHideInputToken, setVisible);
+            ops.onStylusHandwritingReady(requestId, pid);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * IME notifies that the current handwriting session should be closed.
+     * @param requestId
+     */
+    @AnyThread
+    public void resetStylusHandwriting(int requestId) {
+        final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
+        if (ops == null) {
+            return;
+        }
+        try {
+            ops.resetStylusHandwriting(requestId);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }

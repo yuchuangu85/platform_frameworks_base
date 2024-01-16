@@ -16,177 +16,79 @@
 
 package com.android.server.wm.flicker.close
 
-import android.app.Instrumentation
+import android.platform.test.annotations.FlakyTest
 import android.platform.test.annotations.Presubmit
-import androidx.test.platform.app.InstrumentationRegistry
-import com.android.server.wm.flicker.FlickerBuilderProvider
-import com.android.server.wm.flicker.FlickerTestParameter
-import com.android.server.wm.flicker.LAUNCHER_COMPONENT
-import com.android.server.wm.flicker.dsl.FlickerBuilder
+import android.tools.common.flicker.subject.layers.LayersTraceSubject.Companion.VISIBLE_FOR_MORE_THAN_ONE_ENTRY_IGNORE_LAYERS
+import android.tools.common.traces.component.ComponentNameMatcher
+import android.tools.common.traces.component.ComponentNameMatcher.Companion.LAUNCHER
+import android.tools.device.apphelpers.StandardAppHelper
+import android.tools.device.flicker.legacy.FlickerBuilder
+import android.tools.device.flicker.legacy.LegacyFlickerTest
+import com.android.server.wm.flicker.BaseTest
 import com.android.server.wm.flicker.helpers.SimpleAppHelper
-import com.android.server.wm.flicker.helpers.StandardAppHelper
 import com.android.server.wm.flicker.helpers.setRotation
-import com.android.server.wm.flicker.navBarLayerIsVisible
-import com.android.server.wm.flicker.navBarLayerRotatesAndScales
-import com.android.server.wm.flicker.navBarWindowIsVisible
-import com.android.server.wm.flicker.entireScreenCovered
-import com.android.server.wm.flicker.startRotation
-import com.android.server.wm.flicker.statusBarLayerIsVisible
-import com.android.server.wm.flicker.statusBarLayerRotatesScales
-import com.android.server.wm.flicker.statusBarWindowIsVisible
 import com.android.server.wm.flicker.replacesLayer
 import org.junit.Test
 
-/**
- * Base test class for transitions that close an app back to the launcher screen
- */
-abstract class CloseAppTransition(protected val testSpec: FlickerTestParameter) {
-    protected val instrumentation: Instrumentation = InstrumentationRegistry.getInstrumentation()
+/** Base test class for transitions that close an app back to the launcher screen */
+abstract class CloseAppTransition(flicker: LegacyFlickerTest) : BaseTest(flicker) {
     protected open val testApp: StandardAppHelper = SimpleAppHelper(instrumentation)
 
-    /**
-     * Specification of the test transition to execute
-     */
-    protected open val transition: FlickerBuilder.(Map<String, Any?>) -> Unit = {
+    /** {@inheritDoc} */
+    override val transition: FlickerBuilder.() -> Unit = {
         setup {
-            eachRun {
-                testApp.launchViaIntent(wmHelper)
-                this.setRotation(testSpec.config.startRotation)
-            }
+            tapl.setExpectedRotation(flicker.scenario.startRotation.value)
+            testApp.launchViaIntent(wmHelper)
+            this.setRotation(flicker.scenario.startRotation)
         }
-        teardown {
-            test {
-                testApp.exit()
-            }
-        }
+        teardown { testApp.exit(wmHelper) }
     }
 
     /**
-     * Entry point for the test runner. It will use this method to initialize and cache
-     * flicker executions
-     */
-    @FlickerBuilderProvider
-    fun buildFlicker(): FlickerBuilder {
-        return FlickerBuilder(instrumentation).apply {
-            transition(testSpec.config)
-        }
-    }
-
-    /**
-     * Checks that the navigation bar window is visible during the whole transition
-     */
-    @Presubmit
-    @Test
-    open fun navBarWindowIsVisible() {
-        testSpec.navBarWindowIsVisible()
-    }
-
-    /**
-     * Checks that the status bar window is visible during the whole transition
-     */
-    @Presubmit
-    @Test
-    open fun statusBarWindowIsVisible() {
-        testSpec.statusBarWindowIsVisible()
-    }
-
-    /**
-     * Checks that the navigation bar layer is visible during the whole transition
-     */
-    @Presubmit
-    @Test
-    open fun navBarLayerIsVisible() {
-        testSpec.navBarLayerIsVisible()
-    }
-
-    /**
-     * Checks that the status bar layer is visible during the whole transition
-     */
-    @Presubmit
-    @Test
-    open fun statusBarLayerIsVisible() {
-        testSpec.statusBarLayerIsVisible()
-    }
-
-    /**
-     * Checks the position of the navigation bar at the start and end of the transition
-     */
-    @Presubmit
-    @Test
-    open fun navBarLayerRotatesAndScales() = testSpec.navBarLayerRotatesAndScales()
-
-    /**
-     * Checks the position of the status bar at the start and end of the transition
-     */
-    @Presubmit
-    @Test
-    open fun statusBarLayerRotatesScales() = testSpec.statusBarLayerRotatesScales()
-
-    /**
-     * Checks that all windows that are visible on the trace, are visible for at least 2
-     * consecutive entries.
-     */
-    @Presubmit
-    @Test
-    open fun visibleWindowsShownMoreThanOneConsecutiveEntry() {
-        testSpec.assertWm {
-            this.visibleWindowsShownMoreThanOneConsecutiveEntry()
-        }
-    }
-
-    /**
-     * Checks that all layers that are visible on the trace, are visible for at least 2
-     * consecutive entries.
-     */
-    @Presubmit
-    @Test
-    open fun visibleLayersShownMoreThanOneConsecutiveEntry() {
-        testSpec.assertLayers {
-            this.visibleLayersShownMoreThanOneConsecutiveEntry()
-        }
-    }
-
-    /**
-     * Checks that all parts of the screen are covered during the transition
-     */
-    @Presubmit
-    @Test
-    open fun entireScreenCovered() = testSpec.entireScreenCovered()
-
-    /**
-     * Checks that [testApp] is the top visible app window at the start of the transition and
-     * that it is replaced by [LAUNCHER_COMPONENT] during the transition
+     * Checks that [testApp] is the top visible app window at the start of the transition and that
+     * it is replaced by [LAUNCHER] during the transition
      */
     @Presubmit
     @Test
     open fun launcherReplacesAppWindowAsTopWindow() {
-        testSpec.assertWm {
-            this.isAppWindowOnTop(testApp.component)
-                    .then()
-                    .isAppWindowOnTop(LAUNCHER_COMPONENT)
-        }
+        flicker.assertWm { this.isAppWindowOnTop(testApp).then().isAppWindowOnTop(LAUNCHER) }
     }
 
     /**
-     * Checks that [LAUNCHER_COMPONENT] is invisible at the start of the transition and that
-     * it becomes visible during the transition
+     * Checks that [LAUNCHER] is invisible at the start of the transition and that it becomes
+     * visible during the transition
      */
     @Presubmit
     @Test
     open fun launcherWindowBecomesVisible() {
-        testSpec.assertWm {
-            this.isAppWindowNotOnTop(LAUNCHER_COMPONENT)
-                    .then()
-                    .isAppWindowOnTop(LAUNCHER_COMPONENT)
-        }
+        flicker.assertWm { this.isAppWindowNotOnTop(LAUNCHER).then().isAppWindowOnTop(LAUNCHER) }
     }
 
-    /**
-     * Checks that [LAUNCHER_COMPONENT] layer becomes visible when [testApp] becomes invisible
-     */
+    /** Checks that [LAUNCHER] layer becomes visible when [testApp] becomes invisible */
     @Presubmit
     @Test
     open fun launcherLayerReplacesApp() {
-        testSpec.replacesLayer(testApp.component, LAUNCHER_COMPONENT)
+        flicker.replacesLayer(
+            testApp,
+            LAUNCHER,
+            ignoreEntriesWithRotationLayer = flicker.scenario.isLandscapeOrSeascapeAtStart
+        )
+    }
+
+    /** {@inheritDoc} */
+    @Presubmit
+    @Test
+    override fun visibleLayersShownMoreThanOneConsecutiveEntry() {
+        flicker.assertLayers {
+            this.visibleLayersShownMoreThanOneConsecutiveEntry(
+                VISIBLE_FOR_MORE_THAN_ONE_ENTRY_IGNORE_LAYERS + listOf(ComponentNameMatcher.NAV_BAR)
+            )
+        }
+    }
+
+    @FlakyTest(bugId = 288369951)
+    @Test
+    fun visibleLayersShownMoreThanOneConsecutiveEntryWithNavBar() {
+        flicker.assertLayers { this.visibleLayersShownMoreThanOneConsecutiveEntry() }
     }
 }

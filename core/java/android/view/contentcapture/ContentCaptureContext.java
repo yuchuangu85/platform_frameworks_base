@@ -82,11 +82,19 @@ public final class ContentCaptureContext implements Parcelable {
     @SystemApi
     public static final int FLAG_RECONNECTED = 0x4;
 
+    /**
+     * Flag used to disable flush when receiving a VIEW_TREE_APPEARING event.
+     *
+     * @hide
+     */
+    public static final int FLAG_DISABLED_FLUSH_FOR_VIEW_TREE_APPEARING = 1 << 3;
+
     /** @hide */
     @IntDef(flag = true, prefix = { "FLAG_" }, value = {
             FLAG_DISABLED_BY_APP,
             FLAG_DISABLED_BY_FLAG_SECURE,
-            FLAG_RECONNECTED
+            FLAG_RECONNECTED,
+            FLAG_DISABLED_FLUSH_FOR_VIEW_TREE_APPEARING
     })
     @Retention(RetentionPolicy.SOURCE)
     @interface ContextCreationFlags{}
@@ -252,7 +260,8 @@ public final class ContentCaptureContext implements Parcelable {
      * Gets the flags associated with this context.
      *
      * @return any combination of {@link #FLAG_DISABLED_BY_FLAG_SECURE},
-     * {@link #FLAG_DISABLED_BY_APP} and {@link #FLAG_RECONNECTED}.
+     * {@link #FLAG_DISABLED_BY_APP}, {@link #FLAG_RECONNECTED} and {@link
+     * #FLAG_DISABLED_FLUSH_FOR_VIEW_TREE_APPEARING}.
      *
      * @hide
      */
@@ -295,7 +304,7 @@ public final class ContentCaptureContext implements Parcelable {
          * @param id id associated with this context.
          */
         public Builder(@NonNull LocusId id) {
-            mId = Preconditions.checkNotNull(id);
+            mId = Objects.requireNonNull(id);
         }
 
         /**
@@ -310,7 +319,7 @@ public final class ContentCaptureContext implements Parcelable {
          */
         @NonNull
         public Builder setExtras(@NonNull Bundle extras) {
-            mExtras = Preconditions.checkNotNull(extras);
+            mExtras =  Objects.requireNonNull(extras);
             throwIfDestroyed();
             return this;
         }
@@ -419,7 +428,7 @@ public final class ContentCaptureContext implements Parcelable {
             final ContentCaptureContext clientContext;
             if (hasClientContext) {
                 // Must reconstruct the client context using the Builder API
-                final LocusId id = parcel.readParcelable(null);
+                final LocusId id = parcel.readParcelable(null, android.content.LocusId.class);
                 final Bundle extras = parcel.readBundle();
                 final Builder builder = new Builder(id);
                 if (extras != null) builder.setExtras(extras);
@@ -427,7 +436,7 @@ public final class ContentCaptureContext implements Parcelable {
             } else {
                 clientContext = null;
             }
-            final ComponentName componentName = parcel.readParcelable(null);
+            final ComponentName componentName = parcel.readParcelable(null, android.content.ComponentName.class);
             if (componentName == null) {
                 // Client-state only
                 return clientContext;

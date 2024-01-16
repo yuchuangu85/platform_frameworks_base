@@ -16,8 +16,10 @@
 
 package com.android.systemui.statusbar;
 
+import android.graphics.Region;
 import android.view.ViewGroup;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.android.systemui.statusbar.phone.StatusBarWindowCallback;
@@ -58,11 +60,11 @@ public interface NotificationShadeWindowController extends RemoteInputController
     default void attach() {}
 
     /** Sets the notification shade view. */
-    default void setNotificationShadeView(ViewGroup view) {}
+    default void setWindowRootView(ViewGroup view) {}
 
     /** Gets the notification shade view. */
     @Nullable
-    default ViewGroup getNotificationShadeView() {
+    default ViewGroup getWindowRootView() {
         return null;
     }
 
@@ -90,9 +92,6 @@ public interface NotificationShadeWindowController extends RemoteInputController
     /** Sets the state of whether the keyguard is fading away or not. */
     default void setKeyguardFadingAway(boolean keyguardFadingAway) {}
 
-    /** Sets the state of whether the quick settings is expanded or not. */
-    default void setQsExpanded(boolean expanded) {}
-
     /** Sets the state of whether the user activities are forced or not. */
     default void setForceUserActivity(boolean forceUserActivity) {}
 
@@ -113,9 +112,6 @@ public interface NotificationShadeWindowController extends RemoteInputController
     /** Sets the state of whether heads up is showing or not. */
     default void setHeadsUpShowing(boolean showing) {}
 
-    /** Sets whether the wallpaper supports ambient mode or not. */
-    default void setWallpaperSupportsAmbientMode(boolean supportsAmbientMode) {}
-
     /** Gets whether the wallpaper is showing or not. */
     default boolean isShowingWallpaper() {
         return false;
@@ -123,9 +119,6 @@ public interface NotificationShadeWindowController extends RemoteInputController
 
     /** Sets whether the window was collapsed by force or not. */
     default void setForceWindowCollapsed(boolean force) {}
-
-    /** Sets whether panel is expanded or not. */
-    default void setPanelExpanded(boolean isExpanded) {}
 
     /** Gets whether the panel is expanded or not. */
     default boolean getPanelExpanded() {
@@ -147,6 +140,9 @@ public interface NotificationShadeWindowController extends RemoteInputController
     /** Sets the state of whether sysui is dozing or not. */
     default void setDozing(boolean dozing) {}
 
+    /** Sets the state of whether sysui is dreaming or not. */
+    default void setDreaming(boolean dreaming) {}
+
     /** Sets the state of whether plugin open is forced or not. */
     default void setForcePluginOpen(boolean forcePluginOpen, Object token) {}
 
@@ -157,6 +153,9 @@ public interface NotificationShadeWindowController extends RemoteInputController
 
     /** Sets the state of whether the notification shade is touchable or not. */
     default void setNotTouchable(boolean notTouchable) {}
+
+    /** Sets the region where touch is excluded from the parent window. */
+    default void setTouchExclusionRegion(Region region) {}
 
     /** Sets a {@link OtherwisedCollapsedListener}. */
     default void setStateListener(OtherwisedCollapsedListener listener) {}
@@ -175,17 +174,18 @@ public interface NotificationShadeWindowController extends RemoteInputController
     default void setRequestTopUi(boolean requestTopUi, String componentTag) {}
 
     /**
-     * Under low light conditions, we might want to increase the display brightness on devices that
-     * don't have an IR camera.
-     * @param brightness float from 0 to 1 or {@code LayoutParams.BRIGHTNESS_OVERRIDE_NONE}
-     */
-    default void setFaceAuthDisplayBrightness(float brightness) {}
-
-    /**
      * If {@link LightRevealScrim} obscures the UI.
      * @param opaque if the scrim is opaque
      */
     default void setLightRevealScrimOpaque(boolean opaque) {}
+
+    /**
+     * Defer any application of window {@link WindowManager.LayoutParams} until {@code scope} is
+     * fully applied.
+     */
+    default void batchApplyWindowLayoutParams(@NonNull Runnable scope) {
+        scope.run();
+    }
 
     /**
      * Custom listener to pipe data back to plugins about whether or not the status bar would be

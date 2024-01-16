@@ -22,6 +22,7 @@ import static android.content.pm.UserInfo.FLAG_EPHEMERAL;
 import static android.content.pm.UserInfo.FLAG_FULL;
 import static android.content.pm.UserInfo.FLAG_GUEST;
 import static android.content.pm.UserInfo.FLAG_INITIALIZED;
+import static android.content.pm.UserInfo.FLAG_MAIN;
 import static android.content.pm.UserInfo.FLAG_MANAGED_PROFILE;
 import static android.content.pm.UserInfo.FLAG_PROFILE;
 import static android.content.pm.UserInfo.FLAG_RESTRICTED;
@@ -46,6 +47,7 @@ import android.os.Looper;
 import android.os.Parcel;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.platform.test.annotations.Presubmit;
 import android.text.TextUtils;
 
 import androidx.test.InstrumentationRegistry;
@@ -69,6 +71,7 @@ import java.util.List;
  * runtest -c com.android.server.pm.UserManagerServiceUserInfoTest frameworks-services
  * </pre>
  */
+@Presubmit
 @RunWith(AndroidJUnit4.class)
 @MediumTest
 public class UserManagerServiceUserInfoTest {
@@ -108,6 +111,42 @@ public class UserManagerServiceUserInfoTest {
                 data.info.id, new ByteArrayInputStream(bytes));
 
         assertUserInfoEquals(data.info, read.info, /* parcelCopy= */ false);
+    }
+
+    /** Tests that device policy restrictions are written/read properly. */
+    @Test
+    public void testWriteReadDevicePolicyUserRestrictions() throws Exception {
+        final String globalRestriction = UserManager.DISALLOW_FACTORY_RESET;
+        final String localRestriction = UserManager.DISALLOW_CONFIG_DATE_TIME;
+
+        UserData data = new UserData();
+        data.info = createUser(100, FLAG_FULL, "A type");
+
+        mUserManagerService.putUserInfo(data.info);
+
+        // Set a global and user restriction so they get written out to the user file.
+        setUserRestrictions(data.info.id, globalRestriction, localRestriction, true);
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(baos);
+        mUserManagerService.writeUserLP(data, out);
+        byte[] bytes = baos.toByteArray();
+
+        // Clear the restrictions to see if they are properly read in from the user file.
+        setUserRestrictions(data.info.id, globalRestriction, localRestriction, false);
+
+        mUserManagerService.readUserLP(data.info.id, new ByteArrayInputStream(bytes));
+        assertTrue(mUserManagerService.hasUserRestrictionOnAnyUser(globalRestriction));
+        assertTrue(mUserManagerService.hasUserRestrictionOnAnyUser(localRestriction));
+    }
+
+    /** Sets a global and local restriction and verifies they were set properly **/
+    private void setUserRestrictions(int id, String global, String local, boolean enabled) {
+        mUserManagerService.setUserRestrictionInner(UserHandle.USER_ALL, global, enabled);
+        assertEquals(mUserManagerService.hasUserRestrictionOnAnyUser(global), enabled);
+
+        mUserManagerService.setUserRestrictionInner(id, local, enabled);
+        assertEquals(mUserManagerService.hasUserRestrictionOnAnyUser(local), enabled);
     }
 
     @Test
@@ -204,6 +243,13 @@ public class UserManagerServiceUserInfoTest {
         assertFalse("Switching to a profiles should be disabled", userInfo.supportsSwitchTo());
     }
 
+    /** Test UserInfo.canHaveProfile for main user */
+    @Test
+    public void testCanHaveProfile() throws Exception {
+        UserInfo userInfo = createUser(100, FLAG_MAIN, null);
+        assertTrue("Main users can have profile", userInfo.canHaveProfile());
+    }
+
     /** Tests upgradeIfNecessaryLP (but without locking) for upgrading from version 8 to 9+. */
     @Test
     public void testUpgradeIfNecessaryLP_9() {
@@ -220,7 +266,7 @@ public class UserManagerServiceUserInfoTest {
         mUserManagerService.putUserInfo(createUser(105, FLAG_SYSTEM | FLAG_FULL, null));
         mUserManagerService.putUserInfo(createUser(106, FLAG_DEMO | FLAG_FULL, null));
 
-        mUserManagerService.upgradeIfNecessaryLP(null, versionToTest - 1, userTypeVersion);
+        mUserManagerService.upgradeIfNecessaryLP(versionToTest - 1, userTypeVersion);
 
         assertTrue(mUserManagerService.isUserOfType(100, USER_TYPE_PROFILE_MANAGED));
         assertTrue((mUserManagerService.getUserInfo(100).flags & FLAG_PROFILE) != 0);

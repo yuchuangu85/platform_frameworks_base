@@ -16,16 +16,15 @@
 
 #include "link/ReferenceLinker.h"
 
-#include "android-base/logging.h"
-#include "android-base/stringprintf.h"
-#include "androidfw/ResourceTypes.h"
-
-#include "Diagnostics.h"
 #include "ResourceParser.h"
 #include "ResourceTable.h"
 #include "ResourceUtils.h"
 #include "ResourceValues.h"
 #include "ValueVisitor.h"
+#include "android-base/logging.h"
+#include "android-base/stringprintf.h"
+#include "androidfw/IDiagnostics.h"
+#include "androidfw/ResourceTypes.h"
 #include "link/Linkers.h"
 #include "process/IResourceTableConsumer.h"
 #include "process/SymbolTable.h"
@@ -82,7 +81,7 @@ std::unique_ptr<Reference> ReferenceLinkerTransformer::TransformDerived(const Re
     if (auto ref = ValueCast<Reference>(linked_item_ptr)) {
       return std::unique_ptr<Reference>(ref);
     }
-    context_->GetDiagnostics()->Error(DiagMessage(value->GetSource())
+    context_->GetDiagnostics()->Error(android::DiagMessage(value->GetSource())
                                       << "value of '"
                                       << LoggingResourceName(*value, callsite_, package_decls_)
                                       << "' must be a resource reference");
@@ -130,7 +129,7 @@ std::unique_ptr<Style> ReferenceLinkerTransformer::TransformDerived(const Style*
       // check is fast and we avoid creating a DiagMessage when the match is successful.
       if (!symbol->attribute->Matches(*entry.value, nullptr)) {
         // The actual type of this item is incompatible with the attribute.
-        DiagMessage msg(entry.key.GetSource());
+        android::DiagMessage msg(entry.key.GetSource());
 
         // Call the matches method again, this time with a DiagMessage so we fill in the actual
         // error message.
@@ -139,7 +138,7 @@ std::unique_ptr<Style> ReferenceLinkerTransformer::TransformDerived(const Style*
         error_ = true;
       }
     } else {
-      context_->GetDiagnostics()->Error(DiagMessage(entry.key.GetSource())
+      context_->GetDiagnostics()->Error(android::DiagMessage(entry.key.GetSource())
                                         << "style attribute '"
                                         << LoggingResourceName(entry.key, callsite_, package_decls_)
                                         << "' " << err_str);
@@ -190,7 +189,7 @@ class EmptyDeclStack : public xml::IPackageDeclStack {
  public:
   EmptyDeclStack() = default;
 
-  Maybe<xml::ExtractedPackage> TransformPackageAlias(const StringPiece& alias) const override {
+  std::optional<xml::ExtractedPackage> TransformPackageAlias(StringPiece alias) const override {
     if (alias.empty()) {
       return xml::ExtractedPackage{{}, true /*private*/};
     }
@@ -206,7 +205,7 @@ struct MacroDeclStack : public xml::IPackageDeclStack {
       : alias_namespaces_(std::move(namespaces)) {
   }
 
-  Maybe<xml::ExtractedPackage> TransformPackageAlias(const StringPiece& alias) const override {
+  std::optional<xml::ExtractedPackage> TransformPackageAlias(StringPiece alias) const override {
     if (alias.empty()) {
       return xml::ExtractedPackage{{}, true /*private*/};
     }
@@ -322,11 +321,11 @@ const SymbolTable::Symbol* ReferenceLinker::ResolveAttributeCheckVisibility(
   return symbol;
 }
 
-Maybe<xml::AaptAttribute> ReferenceLinker::CompileXmlAttribute(const Reference& reference,
-                                                               const CallSite& callsite,
-                                                               IAaptContext* context,
-                                                               SymbolTable* symbols,
-                                                               std::string* out_error) {
+std::optional<xml::AaptAttribute> ReferenceLinker::CompileXmlAttribute(const Reference& reference,
+                                                                       const CallSite& callsite,
+                                                                       IAaptContext* context,
+                                                                       SymbolTable* symbols,
+                                                                       std::string* out_error) {
   const SymbolTable::Symbol* symbol =
       ResolveAttributeCheckVisibility(reference, callsite, context, symbols, out_error);
   if (!symbol) {
@@ -342,7 +341,7 @@ Maybe<xml::AaptAttribute> ReferenceLinker::CompileXmlAttribute(const Reference& 
 
 void ReferenceLinker::WriteAttributeName(const Reference& ref, const CallSite& callsite,
                                          const xml::IPackageDeclStack* decls,
-                                         DiagMessage* out_msg) {
+                                         android::DiagMessage* out_msg) {
   CHECK(out_msg != nullptr);
   if (!ref.name) {
     *out_msg << ref.id.value();
@@ -350,7 +349,7 @@ void ReferenceLinker::WriteAttributeName(const Reference& ref, const CallSite& c
   }
 
   const ResourceName& ref_name = ref.name.value();
-  CHECK_EQ(ref_name.type, ResourceType::kAttr);
+  CHECK_EQ(ref_name.type.type, ResourceType::kAttr);
 
   if (!ref_name.package.empty()) {
     *out_msg << ref_name.package << ":";
@@ -383,7 +382,7 @@ std::unique_ptr<Item> ReferenceLinker::LinkReference(const CallSite& callsite,
   Reference transformed_reference = reference;
   xml::ResolvePackage(decls, &transformed_reference);
 
-  if (transformed_reference.name.value().type == ResourceType::kMacro) {
+  if (transformed_reference.name.value().type.type == ResourceType::kMacro) {
     if (transformed_reference.name.value().package.empty()) {
       transformed_reference.name.value().package = callsite.package;
     }
@@ -391,7 +390,7 @@ std::unique_ptr<Item> ReferenceLinker::LinkReference(const CallSite& callsite,
     auto result = table->FindResource(transformed_reference.name.value());
     if (!result || result.value().entry->values.empty()) {
       context->GetDiagnostics()->Error(
-          DiagMessage(reference.GetSource())
+          android::DiagMessage(reference.GetSource())
           << "failed to find definition for "
           << LoggingResourceName(transformed_reference, callsite, decls));
       return {};
@@ -422,7 +421,7 @@ std::unique_ptr<Item> ReferenceLinker::LinkReference(const CallSite& callsite,
                                               macro_values[0]->config, *context->GetDiagnostics());
     if (new_value == nullptr) {
       context->GetDiagnostics()->Error(
-          DiagMessage(reference.GetSource())
+          android::DiagMessage(reference.GetSource())
           << "failed to substitute macro "
           << LoggingResourceName(transformed_reference, callsite, decls)
           << ": failed to parse contents as one of type(s) " << Attribute::MaskString(type_flags));
@@ -448,7 +447,7 @@ std::unique_ptr<Item> ReferenceLinker::LinkReference(const CallSite& callsite,
     return std::move(new_ref);
   }
 
-  context->GetDiagnostics()->Error(DiagMessage(reference.GetSource())
+  context->GetDiagnostics()->Error(android::DiagMessage(reference.GetSource())
                                    << "resource "
                                    << LoggingResourceName(transformed_reference, callsite, decls)
                                    << " " << err_str);
@@ -466,22 +465,21 @@ bool ReferenceLinker::Consume(IAaptContext* context, ResourceTable* table) {
     for (auto& type : package->types) {
       for (auto& entry : type->entries) {
         // First, unmangle the name if necessary.
-        ResourceName name(package->name, type->type, entry->name);
+        ResourceName name(package->name, type->named_type, entry->name);
         NameMangler::Unmangle(&name.entry, &name.package);
 
         // Symbol state information may be lost if there is no value for the resource.
         if (entry->visibility.level != Visibility::Level::kUndefined && entry->values.empty()) {
-          context->GetDiagnostics()->Error(DiagMessage(entry->visibility.source)
-                                               << "no definition for declared symbol '" << name
-                                               << "'");
+          context->GetDiagnostics()->Error(android::DiagMessage(entry->visibility.source)
+                                           << "no definition for declared symbol '" << name << "'");
           error = true;
         }
 
         // Ensure that definitions for values declared as overlayable exist
         if (entry->overlayable_item && entry->values.empty()) {
-          context->GetDiagnostics()->Error(DiagMessage(entry->overlayable_item.value().source)
-                                           << "no definition for overlayable symbol '"
-                                           << name << "'");
+          context->GetDiagnostics()->Error(
+              android::DiagMessage(entry->overlayable_item.value().source)
+              << "no definition for overlayable symbol '" << name << "'");
           error = true;
         }
 

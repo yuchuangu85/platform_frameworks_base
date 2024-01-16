@@ -23,6 +23,18 @@ package {
     default_applicable_licenses: ["frameworks_base_license"],
 }
 
+soong_config_module_type {
+    name: "custom_platform_bootclasspath",
+    module_type: "platform_bootclasspath",
+    config_namespace: "AUTO",
+    bool_variables: [
+        "car_bootclasspath_fragment",
+    ],
+    properties: [
+        "fragments",
+    ],
+}
+
 // This module provides access to information Soong has related to the
 // whole platform bootclasspath. Currently, that information is provided solely
 // through configuration but additional information will be added here.
@@ -41,12 +53,16 @@ package {
 //
 // This module needs to be present in the build for the above processing to be
 // done correctly.
-platform_bootclasspath {
+custom_platform_bootclasspath {
     name: "platform-bootclasspath",
 
     // The bootclasspath_fragments that contribute to the platform
     // bootclasspath.
     fragments: [
+        {
+            apex: "com.android.adservices",
+            module: "com.android.adservices-bootclasspath-fragment",
+        },
         {
             apex: "com.android.appsearch",
             module: "com.android.appsearch-bootclasspath-fragment",
@@ -56,8 +72,24 @@ platform_bootclasspath {
             module: "art-bootclasspath-fragment",
         },
         {
+            apex: "com.android.btservices",
+            module: "com.android.btservices-bootclasspath-fragment",
+        },
+        {
+            apex: "com.android.configinfrastructure",
+            module: "com.android.configinfrastructure-bootclasspath-fragment",
+        },
+        {
             apex: "com.android.conscrypt",
             module: "com.android.conscrypt-bootclasspath-fragment",
+        },
+        {
+            apex: "com.android.devicelock",
+            module: "com.android.devicelock-bootclasspath-fragment",
+        },
+        {
+            apex: "com.android.healthfitness",
+            module: "com.android.healthfitness-bootclasspath-fragment",
         },
         {
             apex: "com.android.i18n",
@@ -74,6 +106,10 @@ platform_bootclasspath {
         {
             apex: "com.android.mediaprovider",
             module: "com.android.mediaprovider-bootclasspath-fragment",
+        },
+        {
+            apex: "com.android.ondevicepersonalization",
+            module: "com.android.ondevicepersonalization-bootclasspath-fragment",
         },
         {
             apex: "com.android.os.statsd",
@@ -96,10 +132,30 @@ platform_bootclasspath {
             module: "com.android.tethering-bootclasspath-fragment",
         },
         {
+            apex: "com.android.uwb",
+            module: "com.android.uwb-bootclasspath-fragment",
+        },
+        {
             apex: "com.android.wifi",
             module: "com.android.wifi-bootclasspath-fragment",
         },
+        {
+            apex: "com.android.virt",
+            module: "com.android.virt-bootclasspath-fragment",
+        },
     ],
+
+    soong_config_variables: {
+        car_bootclasspath_fragment: {
+            fragments: [
+                // only used for auto
+                {
+                    apex: "com.android.car.framework",
+                    module: "com.android.car.framework-bootclasspath-fragment",
+                },
+            ],
+        },
+    },
 
     // Additional information needed by hidden api processing.
     hidden_api: {
@@ -146,6 +202,13 @@ platform_bootclasspath {
     required: [
         "platform-systemserverclasspath",
     ],
+}
+
+genrule { // This module exists to make the srcjar output available to Make.
+    name: "platform-bootclasspath.srcjar",
+    srcs: [":platform-bootclasspath{.srcjar}"],
+    out: ["platform-bootclasspath.srcjar"],
+    cmd: "cp $(in) $(out)",
 }
 
 platform_systemserverclasspath {

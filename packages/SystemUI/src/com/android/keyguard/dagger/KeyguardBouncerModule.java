@@ -16,52 +16,43 @@
 
 package com.android.keyguard.dagger;
 
+import static com.android.systemui.biometrics.SideFpsControllerKt.hasSideFpsSensor;
+
+import android.annotation.Nullable;
+import android.hardware.fingerprint.FingerprintManager;
 import android.view.LayoutInflater;
 import android.view.ViewGroup;
 
-import com.android.keyguard.KeyguardHostView;
-import com.android.keyguard.KeyguardMessageArea;
 import com.android.keyguard.KeyguardSecurityContainer;
 import com.android.keyguard.KeyguardSecurityViewFlipper;
 import com.android.systemui.R;
+import com.android.systemui.biometrics.SideFpsController;
 import com.android.systemui.dagger.qualifiers.RootView;
-import com.android.systemui.statusbar.phone.KeyguardBouncer;
+import com.android.systemui.bouncer.domain.interactor.PrimaryBouncerInteractor;
+
+import java.util.Optional;
+
+import javax.inject.Provider;
 
 import dagger.Module;
 import dagger.Provides;
 
 /**
- * Module to create and access view related to the {@link KeyguardBouncer}.
+ * Module to create and access view related to the {@link PrimaryBouncerInteractor}.
  */
 @Module
 public interface KeyguardBouncerModule {
-    /** */
-    @Provides
-    @KeyguardBouncerScope
-    @RootView
-    static ViewGroup providesRootView(LayoutInflater layoutInflater) {
-        return (ViewGroup) layoutInflater.inflate(R.layout.keyguard_bouncer, null);
-    }
 
     /** */
     @Provides
     @KeyguardBouncerScope
-    static KeyguardMessageArea providesKeyguardMessageArea(@RootView ViewGroup viewGroup) {
-        return viewGroup.findViewById(R.id.keyguard_message_area);
-    }
-
-    /** */
-    @Provides
-    @KeyguardBouncerScope
-    static KeyguardHostView providesKeyguardHostView(@RootView ViewGroup rootView) {
-        return rootView.findViewById(R.id.keyguard_host_view);
-    }
-
-    /** */
-    @Provides
-    @KeyguardBouncerScope
-    static KeyguardSecurityContainer providesKeyguardSecurityContainer(KeyguardHostView hostView) {
-        return hostView.findViewById(R.id.keyguard_security_container);
+    static KeyguardSecurityContainer providesKeyguardSecurityContainer(@RootView ViewGroup rootView,
+            LayoutInflater layoutInflater) {
+        KeyguardSecurityContainer securityContainer =
+                (KeyguardSecurityContainer) layoutInflater.inflate(
+                        R.layout.keyguard_security_container_view, rootView, false);
+        rootView.addView(securityContainer);
+        return securityContainer;
     }
 
     /** */
@@ -70,5 +61,17 @@ public interface KeyguardBouncerModule {
     static KeyguardSecurityViewFlipper providesKeyguardSecurityViewFlipper(
             KeyguardSecurityContainer containerView) {
         return containerView.findViewById(R.id.view_flipper);
+    }
+
+    /** Provides {@link SideFpsController} if the device has the side fingerprint sensor. */
+    @Provides
+    @KeyguardBouncerScope
+    static Optional<SideFpsController> providesOptionalSidefpsController(
+            @Nullable FingerprintManager fingerprintManager,
+            Provider<SideFpsController> sidefpsControllerProvider) {
+        if (!hasSideFpsSensor(fingerprintManager)) {
+            return Optional.empty();
+        }
+        return Optional.of(sidefpsControllerProvider.get());
     }
 }

@@ -17,36 +17,43 @@
 package com.android.server.wm.flicker.helpers
 
 import android.app.Instrumentation
-import android.support.test.launcherhelper.ILauncherStrategy
-import android.support.test.launcherhelper.LauncherStrategyFactory
+import android.tools.common.traces.component.ComponentNameMatcher
+import android.tools.device.apphelpers.StandardAppHelper
+import android.tools.device.helpers.FIND_TIMEOUT
+import android.tools.device.traces.parsers.WindowManagerStateHelper
+import android.tools.device.traces.parsers.toFlickerComponent
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import com.android.server.wm.flicker.testapp.ActivityOptions
-import com.android.server.wm.traces.common.FlickerComponentName
-import com.android.server.wm.traces.parser.toFlickerComponent
-import com.android.server.wm.traces.parser.windowmanager.WindowManagerStateHelper
 
-class TwoActivitiesAppHelper @JvmOverloads constructor(
+class TwoActivitiesAppHelper
+@JvmOverloads
+constructor(
     instr: Instrumentation,
-    launcherName: String = ActivityOptions.BUTTON_ACTIVITY_LAUNCHER_NAME,
-    component: FlickerComponentName =
-        ActivityOptions.BUTTON_ACTIVITY_COMPONENT_NAME.toFlickerComponent(),
-    launcherStrategy: ILauncherStrategy = LauncherStrategyFactory
-        .getInstance(instr)
-        .launcherStrategy
-) : StandardAppHelper(instr, launcherName, component, launcherStrategy) {
-    fun openSecondActivity(device: UiDevice, wmHelper: WindowManagerStateHelper) {
-        val button = device.wait(
-                Until.findObject(By.res(getPackage(), "launch_second_activity")),
-                FIND_TIMEOUT)
+    launcherName: String = ActivityOptions.LaunchNewActivity.LABEL,
+    component: ComponentNameMatcher =
+        ActivityOptions.LaunchNewActivity.COMPONENT.toFlickerComponent()
+) : StandardAppHelper(instr, launcherName, component) {
 
-        require(button != null) {
+    private val secondActivityComponent =
+        ActivityOptions.SimpleActivity.COMPONENT.toFlickerComponent()
+
+    fun openSecondActivity(device: UiDevice, wmHelper: WindowManagerStateHelper) {
+        val launchActivityButton = By.res(getPackage(), LAUNCH_SECOND_ACTIVITY)
+        val button = device.wait(Until.findObject(launchActivityButton), FIND_TIMEOUT)
+
+        requireNotNull(button) {
             "Button not found, this usually happens when the device " +
-                    "was left in an unknown state (e.g. in split screen)"
+                "was left in an unknown state (e.g. in split screen)"
         }
         button.click()
-        wmHelper.waitForAppTransitionIdle()
-        wmHelper.waitForFullScreenApp(component)
+
+        device.wait(Until.gone(launchActivityButton), FIND_TIMEOUT)
+        wmHelper.StateSyncBuilder().withFullScreenApp(secondActivityComponent).waitForAndVerify()
+    }
+
+    companion object {
+        private const val LAUNCH_SECOND_ACTIVITY = "launch_second_activity"
     }
 }

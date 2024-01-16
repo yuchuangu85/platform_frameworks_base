@@ -29,8 +29,10 @@ import java.util.Objects;
  * Contains information about a call's attributes as passed up from the HAL. If there are multiple
  * ongoing calls, the CallAttributes will pertain to the call in the foreground.
  * @hide
+ * @deprecated use {@link CallState} for call information for each call.
  */
 @SystemApi
+@Deprecated
 public final class CallAttributes implements Parcelable {
     private PreciseCallState mPreciseCallState;
     @NetworkType
@@ -53,9 +55,9 @@ public final class CallAttributes implements Parcelable {
     }
 
     private CallAttributes(Parcel in) {
-        this.mPreciseCallState = in.readParcelable(PreciseCallState.class.getClassLoader());
+        this.mPreciseCallState = in.readParcelable(PreciseCallState.class.getClassLoader(), android.telephony.PreciseCallState.class);
         this.mNetworkType = in.readInt();
-        this.mCallQuality = in.readParcelable(CallQuality.class.getClassLoader());
+        this.mCallQuality = in.readParcelable(CallQuality.class.getClassLoader(), android.telephony.CallQuality.class);
     }
 
     // getters

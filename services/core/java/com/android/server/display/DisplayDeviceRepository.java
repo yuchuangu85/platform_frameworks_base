@@ -17,6 +17,7 @@
 package com.android.server.display;
 
 import android.annotation.NonNull;
+import android.os.Trace;
 import android.util.Slog;
 import android.view.Display;
 import android.view.DisplayAddress;
@@ -38,9 +39,9 @@ import java.util.function.Consumer;
  */
 class DisplayDeviceRepository implements DisplayAdapter.Listener {
     private static final String TAG = "DisplayDeviceRepository";
+    private static final Boolean DEBUG = false;
 
     public static final int DISPLAY_DEVICE_EVENT_ADDED = 1;
-    public static final int DISPLAY_DEVICE_EVENT_CHANGED = 2;
     public static final int DISPLAY_DEVICE_EVENT_REMOVED = 3;
 
     /**
@@ -75,18 +76,26 @@ class DisplayDeviceRepository implements DisplayAdapter.Listener {
 
     @Override
     public void onDisplayDeviceEvent(DisplayDevice device, int event) {
+        String tag = null;
+        if (DEBUG) {
+            tag = "DisplayDeviceRepository#onDisplayDeviceEvent (event=" + event + ")";
+            Trace.beginAsyncSection(tag, 0);
+        }
         switch (event) {
-            case DISPLAY_DEVICE_EVENT_ADDED:
+            case DisplayAdapter.DISPLAY_DEVICE_EVENT_ADDED:
                 handleDisplayDeviceAdded(device);
                 break;
 
-            case DISPLAY_DEVICE_EVENT_CHANGED:
+            case DisplayAdapter.DISPLAY_DEVICE_EVENT_CHANGED:
                 handleDisplayDeviceChanged(device);
                 break;
 
-            case DISPLAY_DEVICE_EVENT_REMOVED:
+            case DisplayAdapter.DISPLAY_DEVICE_EVENT_REMOVED:
                 handleDisplayDeviceRemoved(device);
                 break;
+        }
+        if (DEBUG) {
+            Trace.endAsyncSection(tag, 0);
         }
     }
 
@@ -156,12 +165,15 @@ class DisplayDeviceRepository implements DisplayAdapter.Listener {
                 Slog.w(TAG, "Attempted to change non-existent display device: " + info);
                 return;
             }
-
+            if (DEBUG) {
+                Trace.traceBegin(Trace.TRACE_TAG_POWER,
+                        "handleDisplayDeviceChanged");
+            }
             int diff = device.mDebugLastLoggedDeviceInfo.diff(info);
             if (diff == DisplayDeviceInfo.DIFF_STATE) {
                 Slog.i(TAG, "Display device changed state: \"" + info.name
                         + "\", " + Display.stateToString(info.state));
-            } else if (diff != 0) {
+            } else if (diff != DisplayDeviceInfo.DIFF_HDR_SDR_RATIO) {
                 Slog.i(TAG, "Display device changed: " + info);
             }
 
@@ -175,7 +187,10 @@ class DisplayDeviceRepository implements DisplayAdapter.Listener {
             device.mDebugLastLoggedDeviceInfo = info;
 
             device.applyPendingDisplayDeviceInfoChangesLocked();
-            sendEventLocked(device, DISPLAY_DEVICE_EVENT_CHANGED);
+            sendChangedEventLocked(device, diff);
+            if (DEBUG) {
+                Trace.traceEnd(Trace.TRACE_TAG_POWER);
+            }
         }
     }
 
@@ -200,11 +215,21 @@ class DisplayDeviceRepository implements DisplayAdapter.Listener {
         }
     }
 
+    @GuardedBy("mSyncRoot")
+    private void sendChangedEventLocked(DisplayDevice device, int diff) {
+        final int size = mListeners.size();
+        for (int i = 0; i < size; i++) {
+            mListeners.get(i).onDisplayDeviceChangedLocked(device, diff);
+        }
+    }
+
     /**
      * Listens to {@link DisplayDevice} events from {@link DisplayDeviceRepository}.
      */
     public interface Listener {
         void onDisplayDeviceEventLocked(DisplayDevice device, int event);
+
+        void onDisplayDeviceChangedLocked(DisplayDevice device, int diff);
 
         // TODO: multi-display - Try to remove the need for requestTraversal...it feels like
         // a shoe-horned method for a shoe-horned feature.

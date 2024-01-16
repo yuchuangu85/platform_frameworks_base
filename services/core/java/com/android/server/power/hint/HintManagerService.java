@@ -16,22 +16,31 @@
 
 package com.android.server.power.hint;
 
+import static com.android.internal.util.ConcurrentUtils.DIRECT_EXECUTOR;
+
+import android.annotation.NonNull;
 import android.app.ActivityManager;
 import android.app.ActivityManagerInternal;
-import android.app.IUidObserver;
+import android.app.StatsManager;
+import android.app.UidObserver;
 import android.content.Context;
 import android.os.Binder;
 import android.os.IBinder;
 import android.os.IHintManager;
 import android.os.IHintSession;
+import android.os.PerformanceHintManager;
 import android.os.Process;
 import android.os.RemoteException;
+import android.os.SystemProperties;
 import android.util.ArrayMap;
+import android.util.ArraySet;
 import android.util.SparseArray;
+import android.util.StatsEvent;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.DumpUtils;
+import com.android.internal.util.FrameworkStatsLog;
 import com.android.internal.util.Preconditions;
 import com.android.server.FgThread;
 import com.android.server.LocalServices;
@@ -40,9 +49,9 @@ import com.android.server.utils.Slogf;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 
 /** An hint service implementation that runs in System Server process. */
@@ -51,17 +60,27 @@ public final class HintManagerService extends SystemService {
     private static final boolean DEBUG = false;
     @VisibleForTesting final long mHintSessionPreferredRate;
 
+    // Multi-level map storing all active AppHintSessions.
+    // First level is keyed by the UID of the client process creating the session.
+    // Second level is keyed by an IBinder passed from client process. This is used to observe
+    // when the process exits. The client generally uses the same IBinder object across multiple
+    // sessions, so the value is a set of AppHintSessions.
     @GuardedBy("mLock")
-    private final ArrayMap<Integer, ArrayMap<IBinder, AppHintSession>> mActiveSessions;
+    private final ArrayMap<Integer, ArrayMap<IBinder, ArraySet<AppHintSession>>> mActiveSessions;
 
     /** Lock to protect HAL handles and listen list. */
     private final Object mLock = new Object();
 
-    @VisibleForTesting final UidObserver mUidObserver;
+    @VisibleForTesting final MyUidObserver mUidObserver;
 
     private final NativeWrapper mNativeWrapper;
 
     private final ActivityManagerInternal mAmInternal;
+
+    private final Context mContext;
+
+    private static final String PROPERTY_SF_ENABLE_CPU_HINT = "debug.sf.enable_adpf_cpu_hint";
+    private static final String PROPERTY_HWUI_ENABLE_HINT_MANAGER = "debug.hwui.use_hint_manager";
 
     @VisibleForTesting final IHintManager.Stub mService = new BinderService();
 
@@ -72,11 +91,12 @@ public final class HintManagerService extends SystemService {
     @VisibleForTesting
     HintManagerService(Context context, Injector injector) {
         super(context);
+        mContext = context;
         mActiveSessions = new ArrayMap<>();
         mNativeWrapper = injector.createNativeWrapper();
         mNativeWrapper.halInit();
         mHintSessionPreferredRate = mNativeWrapper.halGetHintSessionPreferredRate();
-        mUidObserver = new UidObserver();
+        mUidObserver = new MyUidObserver();
         mAmInternal = Objects.requireNonNull(
                 LocalServices.getService(ActivityManagerInternal.class));
     }
@@ -102,6 +122,9 @@ public final class HintManagerService extends SystemService {
         if (phase == SystemService.PHASE_SYSTEM_SERVICES_READY) {
             systemReady();
         }
+        if (phase == SystemService.PHASE_BOOT_COMPLETED) {
+            registerStatsCallbacks();
+        }
     }
 
     private void systemReady() {
@@ -114,6 +137,30 @@ public final class HintManagerService extends SystemService {
             // ignored; both services live in system_server
         }
 
+    }
+
+    private void registerStatsCallbacks() {
+        final StatsManager statsManager = mContext.getSystemService(StatsManager.class);
+        statsManager.setPullAtomCallback(
+                FrameworkStatsLog.ADPF_SYSTEM_COMPONENT_INFO,
+                null, // use default PullAtomMetadata values
+                DIRECT_EXECUTOR,
+                this::onPullAtom);
+    }
+
+    private int onPullAtom(int atomTag, @NonNull List<StatsEvent> data) {
+        if (atomTag == FrameworkStatsLog.ADPF_SYSTEM_COMPONENT_INFO) {
+            final boolean isSurfaceFlingerUsingCpuHint =
+                    SystemProperties.getBoolean(PROPERTY_SF_ENABLE_CPU_HINT, false);
+            final boolean isHwuiHintManagerEnabled =
+                    SystemProperties.getBoolean(PROPERTY_HWUI_ENABLE_HINT_MANAGER, false);
+
+            data.add(FrameworkStatsLog.buildStatsEvent(
+                    FrameworkStatsLog.ADPF_SYSTEM_COMPONENT_INFO,
+                    isSurfaceFlingerUsingCpuHint,
+                    isHwuiHintManagerEnabled));
+        }
+        return android.app.StatsManager.PULL_SUCCESS;
     }
 
     /**
@@ -140,6 +187,10 @@ public final class HintManagerService extends SystemService {
 
         private static native void nativeReportActualWorkDuration(
                 long halPtr, long[] actualDurationNanos, long[] timeStampNanos);
+
+        private static native void nativeSendHint(long halPtr, int hint);
+
+        private static native void nativeSetThreads(long halPtr, int[] tids);
 
         private static native long nativeGetHintSessionPreferredRate();
 
@@ -180,14 +231,24 @@ public final class HintManagerService extends SystemService {
                     timeStampNanos);
         }
 
+        /** Wrapper for HintManager.sendHint */
+        public void halSendHint(long halPtr, int hint) {
+            nativeSendHint(halPtr, hint);
+        }
+
         /** Wrapper for HintManager.nativeGetHintSessionPreferredRate */
         public long halGetHintSessionPreferredRate() {
             return nativeGetHintSessionPreferredRate();
         }
+
+        /** Wrapper for HintManager.nativeSetThreads */
+        public void halSetThreads(long halPtr, int[] tids) {
+            nativeSetThreads(halPtr, tids);
+        }
     }
 
     @VisibleForTesting
-    final class UidObserver extends IUidObserver.Stub {
+    final class MyUidObserver extends UidObserver {
         private final SparseArray<Integer> mProcStatesCache = new SparseArray<>();
 
         public boolean isUidForeground(int uid) {
@@ -201,25 +262,20 @@ public final class HintManagerService extends SystemService {
         public void onUidGone(int uid, boolean disabled) {
             FgThread.getHandler().post(() -> {
                 synchronized (mLock) {
-                    ArrayMap<IBinder, AppHintSession> tokenMap = mActiveSessions.get(uid);
+                    ArrayMap<IBinder, ArraySet<AppHintSession>> tokenMap = mActiveSessions.get(uid);
                     if (tokenMap == null) {
                         return;
                     }
                     for (int i = tokenMap.size() - 1; i >= 0; i--) {
                         // Will remove the session from tokenMap
-                        tokenMap.valueAt(i).close();
+                        ArraySet<AppHintSession> sessionSet = tokenMap.valueAt(i);
+                        for (int j = sessionSet.size() - 1; j >= 0; j--) {
+                            sessionSet.valueAt(j).close();
+                        }
                     }
                     mProcStatesCache.delete(uid);
                 }
             });
-        }
-
-        @Override
-        public void onUidActive(int uid) {
-        }
-
-        @Override
-        public void onUidIdle(int uid, boolean disabled) {
         }
 
         /**
@@ -231,19 +287,17 @@ public final class HintManagerService extends SystemService {
             FgThread.getHandler().post(() -> {
                 synchronized (mLock) {
                     mProcStatesCache.put(uid, procState);
-                    ArrayMap<IBinder, AppHintSession> tokenMap = mActiveSessions.get(uid);
+                    ArrayMap<IBinder, ArraySet<AppHintSession>> tokenMap = mActiveSessions.get(uid);
                     if (tokenMap == null) {
                         return;
                     }
-                    for (AppHintSession s : tokenMap.values()) {
-                        s.onProcStateChanged();
+                    for (ArraySet<AppHintSession> sessionSet : tokenMap.values()) {
+                        for (AppHintSession s : sessionSet) {
+                            s.onProcStateChanged();
+                        }
                     }
                 }
             });
-        }
-
-        @Override
-        public void onUidCachedChanged(int uid, boolean cached) {
         }
     }
 
@@ -255,16 +309,7 @@ public final class HintManagerService extends SystemService {
     private boolean checkTidValid(int uid, int tgid, int [] tids) {
         // Make sure all tids belongs to the same UID (including isolated UID),
         // tids can belong to different application processes.
-        List<Integer> eligiblePids = null;
-        // To avoid deadlock, do not call into AMS if the call is from system.
-        if (uid != Process.SYSTEM_UID) {
-            eligiblePids = mAmInternal.getIsolatedProcesses(uid);
-        }
-        if (eligiblePids == null) {
-            eligiblePids = new ArrayList<>();
-        }
-        eligiblePids.add(tgid);
-
+        List<Integer> isolatedPids = null;
         for (int threadId : tids) {
             final String[] procStatusKeys = new String[] {
                     "Uid:",
@@ -276,7 +321,21 @@ public final class HintManagerService extends SystemService {
             int pidOfThreadId = (int) output[1];
 
             // use PID check for isolated processes, use UID check for non-isolated processes.
-            if (eligiblePids.contains(pidOfThreadId) || uidOfThreadId == uid) {
+            if (pidOfThreadId == tgid || uidOfThreadId == uid) {
+                continue;
+            }
+            // Only call into AM if the tid is either isolated or invalid
+            if (isolatedPids == null) {
+                // To avoid deadlock, do not call into AMS if the call is from system.
+                if (uid == Process.SYSTEM_UID) {
+                    return false;
+                }
+                isolatedPids = mAmInternal.getIsolatedProcesses(uid);
+                if (isolatedPids == null) {
+                    return false;
+                }
+            }
+            if (isolatedPids.contains(pidOfThreadId)) {
                 continue;
             }
             return false;
@@ -305,17 +364,26 @@ public final class HintManagerService extends SystemService {
 
                 long halSessionPtr = mNativeWrapper.halCreateHintSession(callingTgid, callingUid,
                         tids, durationNanos);
-                if (halSessionPtr == 0) return null;
+                if (halSessionPtr == 0) {
+                    return null;
+                }
 
                 AppHintSession hs = new AppHintSession(callingUid, callingTgid, tids, token,
                         halSessionPtr, durationNanos);
+                logPerformanceHintSessionAtom(callingUid, halSessionPtr, durationNanos, tids);
                 synchronized (mLock) {
-                    ArrayMap<IBinder, AppHintSession> tokenMap = mActiveSessions.get(callingUid);
+                    ArrayMap<IBinder, ArraySet<AppHintSession>> tokenMap =
+                            mActiveSessions.get(callingUid);
                     if (tokenMap == null) {
                         tokenMap = new ArrayMap<>(1);
                         mActiveSessions.put(callingUid, tokenMap);
                     }
-                    tokenMap.put(token, hs);
+                    ArraySet<AppHintSession> sessionSet = tokenMap.get(token);
+                    if (sessionSet == null) {
+                        sessionSet = new ArraySet<>(1);
+                        tokenMap.put(token, sessionSet);
+                    }
+                    sessionSet.add(hs);
                     return hs;
                 }
             } finally {
@@ -329,6 +397,18 @@ public final class HintManagerService extends SystemService {
         }
 
         @Override
+        public void setHintSessionThreads(@NonNull IHintSession hintSession, @NonNull int[] tids) {
+            AppHintSession appHintSession = (AppHintSession) hintSession;
+            appHintSession.setThreads(tids);
+        }
+
+        @Override
+        public int[] getHintSessionThreadIds(@NonNull IHintSession hintSession) {
+            AppHintSession appHintSession = (AppHintSession) hintSession;
+            return appHintSession.getThreadIds();
+        }
+
+        @Override
         public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
             if (!DumpUtils.checkDumpPermission(getContext(), TAG, pw)) {
                 return;
@@ -339,13 +419,23 @@ public final class HintManagerService extends SystemService {
                 pw.println("Active Sessions:");
                 for (int i = 0; i < mActiveSessions.size(); i++) {
                     pw.println("Uid " + mActiveSessions.keyAt(i).toString() + ":");
-                    ArrayMap<IBinder, AppHintSession> tokenMap = mActiveSessions.valueAt(i);
+                    ArrayMap<IBinder, ArraySet<AppHintSession>> tokenMap =
+                            mActiveSessions.valueAt(i);
                     for (int j = 0; j < tokenMap.size(); j++) {
-                        pw.println("  Session " + j + ":");
-                        tokenMap.valueAt(j).dump(pw, "    ");
+                        ArraySet<AppHintSession> sessionSet = tokenMap.valueAt(j);
+                        for (int k = 0; k < sessionSet.size(); ++k) {
+                            pw.println("  Session:");
+                            sessionSet.valueAt(k).dump(pw, "    ");
+                        }
                     }
                 }
             }
+        }
+
+        private void logPerformanceHintSessionAtom(int uid, long sessionId,
+                long targetDuration, int[] tids) {
+            FrameworkStatsLog.write(FrameworkStatsLog.PERFORMANCE_HINT_SESSION_REPORTED, uid,
+                    sessionId, targetDuration, tids.length);
         }
     }
 
@@ -353,11 +443,12 @@ public final class HintManagerService extends SystemService {
     final class AppHintSession extends IHintSession.Stub implements IBinder.DeathRecipient {
         protected final int mUid;
         protected final int mPid;
-        protected final int[] mThreadIds;
+        protected int[] mThreadIds;
         protected final IBinder mToken;
         protected long mHalSessionPtr;
         protected long mTargetDurationNanos;
         protected boolean mUpdateAllowed;
+        protected int[] mNewThreadIds;
 
         protected AppHintSession(
                 int uid, int pid, int[] threadIds, IBinder token,
@@ -431,14 +522,69 @@ public final class HintManagerService extends SystemService {
                 if (mHalSessionPtr == 0) return;
                 mNativeWrapper.halCloseHintSession(mHalSessionPtr);
                 mHalSessionPtr = 0;
-                mToken.unlinkToDeath(this, 0);
-                ArrayMap<IBinder, AppHintSession> tokenMap = mActiveSessions.get(mUid);
-                if (tokenMap == null) {
-                    Slogf.w(TAG, "UID %d is note present in active session map", mUid);
+                try {
+                    mToken.unlinkToDeath(this, 0);
+                } catch (NoSuchElementException ignored) {
+                    Slogf.d(TAG, "Death link does not exist for session with UID " + mUid);
                 }
-                tokenMap.remove(mToken);
+                ArrayMap<IBinder, ArraySet<AppHintSession>> tokenMap = mActiveSessions.get(mUid);
+                if (tokenMap == null) {
+                    Slogf.w(TAG, "UID %d is not present in active session map", mUid);
+                    return;
+                }
+                ArraySet<AppHintSession> sessionSet = tokenMap.get(mToken);
+                if (sessionSet == null) {
+                    Slogf.w(TAG, "Token %s is not present in token map", mToken.toString());
+                    return;
+                }
+                sessionSet.remove(this);
+                if (sessionSet.isEmpty()) tokenMap.remove(mToken);
                 if (tokenMap.isEmpty()) mActiveSessions.remove(mUid);
             }
+        }
+
+        @Override
+        public void sendHint(@PerformanceHintManager.Session.Hint int hint) {
+            synchronized (mLock) {
+                if (mHalSessionPtr == 0 || !updateHintAllowed()) {
+                    return;
+                }
+                Preconditions.checkArgument(hint >= 0, "the hint ID the hint value should be"
+                        + " greater than zero.");
+                mNativeWrapper.halSendHint(mHalSessionPtr, hint);
+            }
+        }
+
+        public void setThreads(@NonNull int[] tids) {
+            synchronized (mLock) {
+                if (mHalSessionPtr == 0) {
+                    return;
+                }
+                if (tids.length == 0) {
+                    throw new IllegalArgumentException("Thread id list can't be empty.");
+                }
+                final int callingUid = Binder.getCallingUid();
+                final int callingTgid = Process.getThreadGroupLeader(Binder.getCallingPid());
+                final long identity = Binder.clearCallingIdentity();
+                try {
+                    if (!checkTidValid(callingUid, callingTgid, tids)) {
+                        throw new SecurityException("Some tid doesn't belong to the application.");
+                    }
+                } finally {
+                    Binder.restoreCallingIdentity(identity);
+                }
+                if (!updateHintAllowed()) {
+                    Slogf.v(TAG, "update hint not allowed, storing tids.");
+                    mNewThreadIds = tids;
+                    return;
+                }
+                mNativeWrapper.halSetThreads(mHalSessionPtr, tids);
+                mThreadIds = tids;
+            }
+        }
+
+        public int[] getThreadIds() {
+            return mThreadIds;
         }
 
         private void onProcStateChanged() {
@@ -456,6 +602,11 @@ public final class HintManagerService extends SystemService {
             synchronized (mLock) {
                 if (mHalSessionPtr == 0) return;
                 mNativeWrapper.halResumeHintSession(mHalSessionPtr);
+                if (mNewThreadIds != null) {
+                    mNativeWrapper.halSetThreads(mHalSessionPtr, mNewThreadIds);
+                    mThreadIds = mNewThreadIds;
+                    mNewThreadIds = null;
+                }
             }
         }
 

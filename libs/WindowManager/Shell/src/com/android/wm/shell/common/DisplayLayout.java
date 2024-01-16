@@ -25,13 +25,13 @@ import static android.provider.Settings.Global.DEVELOPMENT_FORCE_DESKTOP_MODE_ON
 import static android.util.RotationUtils.rotateBounds;
 import static android.util.RotationUtils.rotateInsets;
 import static android.view.Display.FLAG_SHOULD_SHOW_SYSTEM_DECORATIONS;
-import static android.view.InsetsState.ITYPE_EXTRA_NAVIGATION_BAR;
 import static android.view.Surface.ROTATION_0;
 import static android.view.Surface.ROTATION_270;
 import static android.view.Surface.ROTATION_90;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.res.Resources;
@@ -45,9 +45,9 @@ import android.view.Display;
 import android.view.DisplayCutout;
 import android.view.DisplayInfo;
 import android.view.Gravity;
-import android.view.InsetsSource;
 import android.view.InsetsState;
 import android.view.Surface;
+import android.view.WindowInsets;
 
 import androidx.annotation.VisibleForTesting;
 
@@ -95,7 +95,7 @@ public class DisplayLayout {
 
     /**
      * Different from {@link #equals(Object)}, this method compares the basic geometry properties
-     * of two {@link DisplayLayout} objects including width, height, rotation, density and cutout.
+     * of two {@link DisplayLayout} objects including width, height, rotation, density, cutout.
      * @return {@code true} if the given {@link DisplayLayout} is identical geometry wise.
      */
     public boolean isSameGeometry(@NonNull DisplayLayout other) {
@@ -300,9 +300,12 @@ public class DisplayLayout {
         return mAllowSeamlessRotationDespiteNavBarMoving;
     }
 
-    /** @return whether the navigation bar will change sides during rotation. */
+    /**
+     * Returns {@code true} if the navigation bar will change sides during rotation and the display
+     * is not square.
+     */
     public boolean navigationBarCanMove() {
-        return mNavigationBarCanMove;
+        return mNavigationBarCanMove && mWidth != mHeight;
     }
 
     /** @return the rotation that would make the physical display "upside down". */
@@ -336,6 +339,12 @@ public class DisplayLayout {
         return navigationBarPosition(res, mWidth, mHeight, mRotation);
     }
 
+    /** @return {@link DisplayCutout} instance. */
+    @Nullable
+    public DisplayCutout getDisplayCutout() {
+        return mCutout;
+    }
+
     /**
      * Calculates the stable insets if we already have the non-decor insets.
      */
@@ -365,23 +374,19 @@ public class DisplayLayout {
 
         // Only navigation bar
         if (hasNavigationBar) {
-            final InsetsSource extraNavBar = insetsState.getSource(ITYPE_EXTRA_NAVIGATION_BAR);
-            final boolean hasExtraNav = extraNavBar != null && extraNavBar.isVisible();
+            final Insets insets = insetsState.calculateInsets(
+                    insetsState.getDisplayFrame(),
+                    WindowInsets.Type.navigationBars(),
+                    false /* ignoreVisibility */);
             int position = navigationBarPosition(res, displayWidth, displayHeight, displayRotation);
             int navBarSize =
                     getNavigationBarSize(res, position, displayWidth > displayHeight, uiMode);
             if (position == NAV_BAR_BOTTOM) {
-                outInsets.bottom = hasExtraNav
-                        ? Math.max(navBarSize, extraNavBar.getFrame().height())
-                        : navBarSize;
+                outInsets.bottom = Math.max(insets.bottom , navBarSize);
             } else if (position == NAV_BAR_RIGHT) {
-                outInsets.right = hasExtraNav
-                        ? Math.max(navBarSize, extraNavBar.getFrame().width())
-                        : navBarSize;
+                outInsets.right = Math.max(insets.right , navBarSize);
             } else if (position == NAV_BAR_LEFT) {
-                outInsets.left = hasExtraNav
-                        ? Math.max(navBarSize, extraNavBar.getFrame().width())
-                        : navBarSize;
+                outInsets.left = Math.max(insets.left , navBarSize);
             }
         }
 
@@ -416,8 +421,9 @@ public class DisplayLayout {
         }
         final DisplayCutout.CutoutPathParserInfo info = cutout.getCutoutPathParserInfo();
         final DisplayCutout.CutoutPathParserInfo newInfo = new DisplayCutout.CutoutPathParserInfo(
-                info.getDisplayWidth(), info.getDisplayHeight(), info.getDensity(),
-                info.getCutoutSpec(), rotation, info.getScale());
+                info.getDisplayWidth(), info.getDisplayHeight(), info.getPhysicalDisplayWidth(),
+                info.getPhysicalDisplayHeight(), info.getDensity(), info.getCutoutSpec(), rotation,
+                info.getScale(), info.getPhysicalPixelDisplaySizeRatio());
         return computeSafeInsets(
                 DisplayCutout.constructDisplayCutout(newBounds, waterfallInsets, newInfo),
                 rotated ? displayHeight : displayWidth,

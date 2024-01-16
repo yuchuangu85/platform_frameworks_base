@@ -15,18 +15,24 @@
  */
 package android.service.quicksettings;
 
-import android.Manifest;
+import android.annotation.NonNull;
 import android.annotation.SdkConstant;
 import android.annotation.SdkConstant.SdkConstantType;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.app.Dialog;
+import android.app.PendingIntent;
 import android.app.Service;
+import android.app.StatusBarManager;
+import android.app.compat.CompatChanges;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.EnabledSince;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
 import android.graphics.drawable.Icon;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -38,6 +44,8 @@ import android.view.View.OnAttachStateChangeListener;
 import android.view.WindowManager;
 
 import com.android.internal.R;
+
+import java.util.Objects;
 
 /**
  * A TileService provides the user a tile that can be added to Quick Settings.
@@ -62,8 +70,8 @@ import com.android.internal.R;
  * <li>{@link #onTileAdded()} and {@link #onTileRemoved()} may be called outside of the
  * {@link #onCreate()} - {@link #onDestroy()} window</li>
  * </ul>
- * <p>TileService will be detected by tiles that match the {@value #ACTION_QS_TILE}
- * and require the permission "android.permission.BIND_QUICK_SETTINGS_TILE".
+ * <p>TileService will resolve against services that match the {@value #ACTION_QS_TILE} action
+ * and require the permission {@code android.permission.BIND_QUICK_SETTINGS_TILE}.
  * The label and icon for the service will be used as the default label and
  * icon for the tile. Here is an example TileService declaration.</p>
  * <pre class="prettyprint">
@@ -147,13 +155,6 @@ public class TileService extends Service {
             "android.service.quicksettings.TOGGLEABLE_TILE";
 
     /**
-     * Used to notify SysUI that Listening has be requested.
-     * @hide
-     */
-    public static final String ACTION_REQUEST_LISTENING =
-            "android.service.quicksettings.action.REQUEST_LISTENING";
-
-    /**
      * @hide
      */
     public static final String EXTRA_SERVICE = "service";
@@ -167,6 +168,17 @@ public class TileService extends Service {
      * @hide
      */
     public static final String EXTRA_STATE = "state";
+
+    /**
+     * The method {@link TileService#startActivityAndCollapse(Intent)} will verify that only
+     * apps targeting {@link android.os.Build.VERSION_CODES#UPSIDE_DOWN_CAKE} or higher will
+     * not be allowed to use it.
+     *
+     * @hide
+     */
+    @ChangeId
+    @EnabledSince(targetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public static final long START_ACTIVITY_NEEDS_PENDING_INTENT = 241766793L;
 
     private final H mHandler = new H(Looper.getMainLooper());
 
@@ -253,7 +265,6 @@ public class TileService extends Service {
      * This will collapse the Quick Settings panel and show the dialog.
      *
      * @param dialog Dialog to show.
-     *
      * @see #isLocked()
      */
     public final void showDialog(Dialog dialog) {
@@ -332,11 +343,36 @@ public class TileService extends Service {
 
     /**
      * Start an activity while collapsing the panel.
+     *
+     * @deprecated for versions {@link android.os.Build.VERSION_CODES#UPSIDE_DOWN_CAKE} and up,
+     * use {@link TileService#startActivityAndCollapse(PendingIntent)} instead.
+     * @throws UnsupportedOperationException if called in versions
+     * {@link android.os.Build.VERSION_CODES#UPSIDE_DOWN_CAKE} and up
      */
+    @Deprecated
     public final void startActivityAndCollapse(Intent intent) {
+        if (CompatChanges.isChangeEnabled(START_ACTIVITY_NEEDS_PENDING_INTENT)) {
+            throw new UnsupportedOperationException(
+                    "startActivityAndCollapse: Starting activity from TileService using an Intent"
+                            + " is not allowed.");
+        }
         startActivity(intent);
         try {
             mService.onStartActivity(mTileToken);
+        } catch (RemoteException e) {
+        }
+    }
+
+    /**
+     * Starts an {@link android.app.Activity}.
+     * Will collapse Quick Settings after launching.
+     *
+     * @param pendingIntent A PendingIntent for an Activity to be launched immediately.
+     */
+    public final void startActivityAndCollapse(@NonNull PendingIntent pendingIntent) {
+        Objects.requireNonNull(pendingIntent);
+        try {
+            mService.startActivity(mTileToken, pendingIntent);
         } catch (RemoteException e) {
         }
     }
@@ -359,7 +395,13 @@ public class TileService extends Service {
         try {
             mTile = mService.getTile(mTileToken);
         } catch (RemoteException e) {
-            throw new RuntimeException("Unable to reach IQSService", e);
+            String name = TileService.this.getClass().getSimpleName();
+            Log.w(TAG, name + " - Couldn't get tile from IQSService.", e);
+            // If we couldn't receive the tile, there's not much reason to continue as users won't
+            // be able to interact. Returning `null` will trigger an unbind in SystemUI and
+            // eventually we'll rebind when needed. This usually means that SystemUI crashed
+            // right after binding and therefore `mService` is outdated.
+            return null;
         }
         if (mTile != null) {
             mTile.setService(mService, mTileToken);
@@ -392,7 +434,7 @@ public class TileService extends Service {
             }
 
             @Override
-            public void onUnlockComplete() throws RemoteException{
+            public void onUnlockComplete() throws RemoteException {
                 mHandler.sendEmptyMessage(H.MSG_UNLOCK_COMPLETE);
             }
         };
@@ -482,14 +524,24 @@ public class TileService extends Service {
      *
      * This method is only applicable to tiles that have {@link #META_DATA_ACTIVE_TILE} defined
      * as true on their TileService Manifest declaration, and will do nothing otherwise.
+     *
+     * For apps targeting {@link Build.VERSION_CODES#TIRAMISU} or later, this call may throw
+     * the following exceptions if the request is not valid:
+     * <ul>
+     *     <li> {@link NullPointerException} if {@code component} is {@code null}.</li>
+     *     <li> {@link SecurityException} if the package of {@code component} does not match
+     *     the calling package or if the calling user cannot act on behalf of the user from the
+     *     {@code context}.</li>
+     *     <li> {@link IllegalArgumentException} if the user of the {@code context} is not the
+     *     current user. Only thrown for apps targeting {@link Build.VERSION_CODES#TIRAMISU}</li>
+     * </ul>
      */
     public static final void requestListeningState(Context context, ComponentName component) {
-        final ComponentName sysuiComponent = ComponentName.unflattenFromString(
-                context.getResources().getString(
-                        com.android.internal.R.string.config_systemUIServiceComponent));
-        Intent intent = new Intent(ACTION_REQUEST_LISTENING);
-        intent.putExtra(Intent.EXTRA_COMPONENT_NAME, component);
-        intent.setPackage(sysuiComponent.getPackageName());
-        context.sendBroadcast(intent, Manifest.permission.BIND_QUICK_SETTINGS_TILE);
+        StatusBarManager sbm = context.getSystemService(StatusBarManager.class);
+        if (sbm == null) {
+            Log.e(TAG, "No StatusBarManager service found");
+            return;
+        }
+        sbm.requestTileServiceListeningState(component);
     }
 }

@@ -16,27 +16,36 @@
 
 package com.android.server.display;
 
+import static android.view.Surface.ROTATION_270;
+import static android.view.Surface.ROTATION_90;
+
 import android.annotation.Nullable;
 import android.content.Context;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.hardware.display.DisplayViewport;
 import android.os.IBinder;
+import android.util.Slog;
 import android.view.Display;
 import android.view.DisplayAddress;
 import android.view.Surface;
 import android.view.SurfaceControl;
 
+import com.android.server.display.mode.DisplayModeDirector;
+
 import java.io.PrintWriter;
 
 /**
- * Represents a physical display device such as the built-in display
- * an external monitor, or a WiFi display.
+ * Represents a display device such as the built-in display, an external monitor, a WiFi display,
+ * or a {@link android.hardware.display.VirtualDisplay}.
  * <p>
  * Display devices are guarded by the {@link DisplayManagerService.SyncRoot} lock.
  * </p>
  */
 abstract class DisplayDevice {
+    private static final String TAG = "DisplayDevice";
+    private static final Display.Mode EMPTY_DISPLAY_MODE = new Display.Mode.Builder().build();
+
     private final DisplayAdapter mDisplayAdapter;
     private final IBinder mDisplayToken;
     private final String mUniqueId;
@@ -107,31 +116,34 @@ abstract class DisplayDevice {
     }
 
     /**
-     * Returns the window token of the level of the WindowManager hierarchy to mirror, or null
-     * if layer mirroring by SurfaceFlinger should not be performed.
-     * For now, only used for mirroring started from MediaProjection.
+     * Returns the if WindowManager is responsible for mirroring on this display. If {@code false},
+     * then SurfaceFlinger performs no layer mirroring on this display.
+     * Only used for mirroring started from MediaProjection.
      */
-    @Nullable
-    public IBinder getWindowTokenClientToMirrorLocked() {
-        return null;
+    public boolean isWindowManagerMirroringLocked() {
+        return false;
     }
 
     /**
-     * Updates the window token of the level of the level of the WindowManager hierarchy to mirror.
-     * If windowToken is null, then no layer mirroring by SurfaceFlinger to should be performed.
-     * For now, only used for mirroring started from MediaProjection.
+     * Updates if WindowManager is responsible for mirroring on this display. If {@code false}, then
+     * SurfaceFlinger performs no layer mirroring to this display.
+     * Only used for mirroring started from MediaProjection.
      */
-    public void setWindowTokenClientToMirrorLocked(IBinder windowToken) {
+    public void setWindowManagerMirroringLocked(boolean isMirroring) {
     }
 
     /**
      * Returns the default size of the surface associated with the display, or null if the surface
-     * is not provided for layer mirroring by SurfaceFlinger.
-     * For now, only used for mirroring started from MediaProjection.
+     * is not provided for layer mirroring by SurfaceFlinger. For non virtual displays, this will
+     * be the actual display device's size, reflecting the current rotation.
      */
     @Nullable
-    public Point getDisplaySurfaceDefaultSize() {
-        return null;
+    public Point getDisplaySurfaceDefaultSizeLocked() {
+        DisplayDeviceInfo displayDeviceInfo = getDisplayDeviceInfoLocked();
+        final boolean isRotated = mCurrentOrientation == ROTATION_90
+                || mCurrentOrientation == ROTATION_270;
+        return isRotated ? new Point(displayDeviceInfo.height, displayDeviceInfo.width)
+                : new Point(displayDeviceInfo.width, displayDeviceInfo.height);
     }
 
     /**
@@ -206,6 +218,36 @@ abstract class DisplayDevice {
             DisplayModeDirector.DesiredDisplayModeSpecs displayModeSpecs) {}
 
     /**
+     * Sets the user preferred display mode. Removes the user preferred display mode and sets
+     * default display mode as the mode chosen by HAL, if 'mode' is null
+     * Returns true if the mode set by user is supported by the display.
+     */
+    public void setUserPreferredDisplayModeLocked(Display.Mode mode) { }
+
+    /**
+     * Returns the user preferred display mode.
+     */
+    public Display.Mode getUserPreferredDisplayModeLocked() {
+        return EMPTY_DISPLAY_MODE;
+    }
+
+    /**
+     * Returns the system preferred display mode.
+     */
+    public Display.Mode getSystemPreferredDisplayModeLocked() {
+        return EMPTY_DISPLAY_MODE;
+    }
+
+    /**
+     * Returns the display mode that was being used when this display was first found by
+     * display manager.
+     * @hide
+     */
+    public Display.Mode getActiveDisplayModeAtStartLocked() {
+        return EMPTY_DISPLAY_MODE;
+    }
+
+    /**
      * Sets the requested color mode.
      */
     public void setRequestedColorModeLocked(int colorMode) {
@@ -235,10 +277,13 @@ abstract class DisplayDevice {
     /**
      * Sets the display layer stack while in a transaction.
      */
-    public final void setLayerStackLocked(SurfaceControl.Transaction t, int layerStack) {
+    public final void setLayerStackLocked(SurfaceControl.Transaction t, int layerStack,
+            int layerStackTag) {
         if (mCurrentLayerStack != layerStack) {
             mCurrentLayerStack = layerStack;
             t.setDisplayLayerStack(mDisplayToken, layerStack);
+            Slog.i(TAG, "[" + layerStackTag + "] Layerstack set to " + layerStack + " for "
+                    + mUniqueId);
         }
     }
 
@@ -319,7 +364,7 @@ abstract class DisplayDevice {
         }
 
         boolean isRotated = (mCurrentOrientation == Surface.ROTATION_90
-                || mCurrentOrientation == Surface.ROTATION_270);
+                || mCurrentOrientation == ROTATION_270);
         DisplayDeviceInfo info = getDisplayDeviceInfoLocked();
         viewport.deviceWidth = isRotated ? info.height : info.width;
         viewport.deviceHeight = isRotated ? info.width : info.height;

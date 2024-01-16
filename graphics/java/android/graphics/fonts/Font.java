@@ -179,7 +179,7 @@ public final class Font {
          */
         public Builder(@NonNull AssetManager am, @NonNull String path) {
             try {
-                mBuffer = createBuffer(am, path, true /* is asset */, 0 /* cookie */);
+                mBuffer = createBuffer(am, path, true /* is asset */, AssetManager.COOKIE_UNKNOWN);
             } catch (IOException e) {
                 mException = e;
             }
@@ -497,8 +497,6 @@ public final class Font {
         private static native long nBuild(
                 long builderPtr, @NonNull ByteBuffer buffer, @NonNull String filePath,
                 @NonNull String localeList, int weight, boolean italic, int ttcIndex);
-        @CriticalNative
-        private static native long nGetReleaseNativeFont();
 
         @FastNative
         private static native long nClone(long fontPtr, long builderPtr, int weight,

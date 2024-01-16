@@ -24,15 +24,17 @@ import static android.media.MediaRoute2Info.TYPE_USB_HEADSET;
 import static android.media.MediaRoute2Info.TYPE_WIRED_HEADPHONES;
 import static android.media.MediaRoute2Info.TYPE_WIRED_HEADSET;
 
+import static com.android.settingslib.media.MediaDevice.SelectionBehavior.SELECTION_BEHAVIOR_TRANSFER;
+
 import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.media.MediaRoute2Info;
 import android.media.MediaRouter2Manager;
+import android.media.RouteListingPreference;
 
 import androidx.annotation.VisibleForTesting;
 
 import com.android.settingslib.R;
-import com.android.settingslib.bluetooth.BluetoothUtils;
 
 /**
  * PhoneMediaDevice extends MediaDevice to represents Phone device.
@@ -48,13 +50,22 @@ public class PhoneMediaDevice extends MediaDevice {
 
     private String mSummary = "";
 
+    private final DeviceIconUtil mDeviceIconUtil;
+
     PhoneMediaDevice(Context context, MediaRouter2Manager routerManager, MediaRoute2Info info,
             String packageName) {
-        super(context, routerManager, info, packageName);
+        this(context, routerManager, info, packageName, null);
+    }
 
+    PhoneMediaDevice(Context context, MediaRouter2Manager routerManager, MediaRoute2Info info,
+            String packageName, RouteListingPreference.Item item) {
+        super(context, routerManager, info, packageName, item);
+        mDeviceIconUtil = new DeviceIconUtil();
         initDeviceRecord();
     }
 
+    // MediaRoute2Info.getType was made public on API 34, but exists since API 30.
+    @SuppressWarnings("NewApi")
     @Override
     public String getName() {
         CharSequence name;
@@ -67,15 +78,25 @@ public class PhoneMediaDevice extends MediaDevice {
                 name = mContext.getString(R.string.media_transfer_wired_usb_device_name);
                 break;
             case TYPE_DOCK:
-            case TYPE_HDMI:
-                name = mRouteInfo.getName();
+                name = mContext.getString(R.string.media_transfer_dock_speaker_device_name);
                 break;
             case TYPE_BUILTIN_SPEAKER:
-            default:
                 name = mContext.getString(R.string.media_transfer_this_device_name);
+                break;
+            case TYPE_HDMI:
+                name = mContext.getString(R.string.media_transfer_external_device_name);
+                break;
+            default:
+                name = mContext.getString(R.string.media_transfer_default_device_name);
                 break;
         }
         return name.toString();
+    }
+
+    @Override
+    public int getSelectionBehavior() {
+        // We don't allow apps to override the selection behavior of system routes.
+        return SELECTION_BEHAVIOR_TRANSFER;
     }
 
     @Override
@@ -85,9 +106,7 @@ public class PhoneMediaDevice extends MediaDevice {
 
     @Override
     public Drawable getIcon() {
-        final Drawable drawable = getIconWithoutBackground();
-        setColorFilter(drawable);
-        return BluetoothUtils.buildAdvancedDrawable(mContext, drawable);
+        return getIconWithoutBackground();
     }
 
     @Override
@@ -95,27 +114,15 @@ public class PhoneMediaDevice extends MediaDevice {
         return mContext.getDrawable(getDrawableResId());
     }
 
+    // MediaRoute2Info.getType was made public on API 34, but exists since API 30.
+    @SuppressWarnings("NewApi")
     @VisibleForTesting
     int getDrawableResId() {
-        int resId;
-        switch (mRouteInfo.getType()) {
-            case TYPE_USB_DEVICE:
-            case TYPE_USB_HEADSET:
-            case TYPE_USB_ACCESSORY:
-            case TYPE_DOCK:
-            case TYPE_HDMI:
-            case TYPE_WIRED_HEADSET:
-            case TYPE_WIRED_HEADPHONES:
-                resId = R.drawable.ic_headphone;
-                break;
-            case TYPE_BUILTIN_SPEAKER:
-            default:
-                resId = R.drawable.ic_smartphone;
-                break;
-        }
-        return resId;
+        return mDeviceIconUtil.getIconResIdFromMediaRouteType(mRouteInfo.getType());
     }
 
+    // MediaRoute2Info.getType was made public on API 34, but exists since API 30.
+    @SuppressWarnings("NewApi")
     @Override
     public String getId() {
         String id;

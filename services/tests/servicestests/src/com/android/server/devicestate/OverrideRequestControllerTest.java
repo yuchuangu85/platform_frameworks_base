@@ -16,9 +16,10 @@
 
 package com.android.server.devicestate;
 
+import static com.android.server.devicestate.OverrideRequest.OVERRIDE_REQUEST_TYPE_BASE_STATE;
+import static com.android.server.devicestate.OverrideRequest.OVERRIDE_REQUEST_TYPE_EMULATED_STATE;
 import static com.android.server.devicestate.OverrideRequestController.STATUS_ACTIVE;
 import static com.android.server.devicestate.OverrideRequestController.STATUS_CANCELED;
-import static com.android.server.devicestate.OverrideRequestController.STATUS_SUSPENDED;
 
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertNull;
@@ -57,8 +58,8 @@ public final class OverrideRequestControllerTest {
 
     @Test
     public void addRequest() {
-        OverrideRequest request = new OverrideRequest(new Binder(), 0 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
+        OverrideRequest request = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                0 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_EMULATED_STATE);
         assertNull(mStatusListener.getLastStatus(request));
 
         mController.addRequest(request);
@@ -66,150 +67,187 @@ public final class OverrideRequestControllerTest {
     }
 
     @Test
-    public void addRequest_suspendExistingRequest() {
-        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
+    public void addRequest_cancelExistingRequestThroughNewRequest() {
+        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                0 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_EMULATED_STATE);
         assertNull(mStatusListener.getLastStatus(firstRequest));
 
         mController.addRequest(firstRequest);
         assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
 
-        OverrideRequest secondRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
+        OverrideRequest secondRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                1 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_EMULATED_STATE);
         assertNull(mStatusListener.getLastStatus(secondRequest));
 
         mController.addRequest(secondRequest);
         assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_ACTIVE);
-        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_SUSPENDED);
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_CANCELED);
     }
 
     @Test
     public void addRequest_cancelActiveRequest() {
-        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
-        OverrideRequest secondRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
+        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                0 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_EMULATED_STATE);
 
         mController.addRequest(firstRequest);
-        mController.addRequest(secondRequest);
 
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_ACTIVE);
-        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_SUSPENDED);
-
-        mController.cancelRequest(secondRequest.getToken());
-
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_CANCELED);
         assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
+
+        mController.cancelOverrideRequest();
+
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_CANCELED);
     }
 
     @Test
-    public void addRequest_cancelSuspendedRequest() {
-        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
-        OverrideRequest secondRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
+    public void addBaseStateRequest() {
+        OverrideRequest request = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                0 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_BASE_STATE);
+        assertNull(mStatusListener.getLastStatus(request));
 
-        mController.addRequest(firstRequest);
-        mController.addRequest(secondRequest);
+        mController.addBaseStateRequest(request);
+        assertEquals(mStatusListener.getLastStatus(request).intValue(), STATUS_ACTIVE);
+    }
 
+    @Test
+    public void addBaseStateRequest_cancelExistingBaseStateRequestThroughNewRequest() {
+        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                0 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_BASE_STATE);
+        assertNull(mStatusListener.getLastStatus(firstRequest));
+
+        mController.addBaseStateRequest(firstRequest);
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
+
+        OverrideRequest secondRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                1 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_BASE_STATE);
+        assertNull(mStatusListener.getLastStatus(secondRequest));
+
+        mController.addBaseStateRequest(secondRequest);
         assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_ACTIVE);
-        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_SUSPENDED);
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_CANCELED);
+    }
 
-        mController.cancelRequest(firstRequest.getToken());
+    @Test
+    public void addBaseStateRequest_cancelActiveBaseStateRequest() {
+        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                0 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_BASE_STATE);
 
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_ACTIVE);
+        mController.addBaseStateRequest(firstRequest);
+
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
+
+        mController.cancelBaseStateOverrideRequest();
+
         assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_CANCELED);
     }
 
     @Test
     public void handleBaseStateChanged() {
-        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
-        OverrideRequest secondRequest = new OverrideRequest(new Binder(), 0 /* pid */,
+        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
                 0 /* requestedState */,
-                DeviceStateRequest.FLAG_CANCEL_WHEN_BASE_CHANGES /* flags */);
+                DeviceStateRequest.FLAG_CANCEL_WHEN_BASE_CHANGES /* flags */,
+                OVERRIDE_REQUEST_TYPE_EMULATED_STATE);
+
+        OverrideRequest baseStateRequest = new OverrideRequest(new Binder(), 0 /* pid */,
+                0 /* uid */,
+                0 /* requestedState */,
+                0 /* flags */, OVERRIDE_REQUEST_TYPE_BASE_STATE);
 
         mController.addRequest(firstRequest);
-        mController.addRequest(secondRequest);
 
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_ACTIVE);
-        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_SUSPENDED);
-
-        mController.handleBaseStateChanged();
-
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_CANCELED);
         assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
+
+        mController.addBaseStateRequest(baseStateRequest);
+
+        assertEquals(mStatusListener.getLastStatus(baseStateRequest).intValue(), STATUS_ACTIVE);
+
+        mController.handleBaseStateChanged(1);
+
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_CANCELED);
+        assertEquals(mStatusListener.getLastStatus(baseStateRequest).intValue(), STATUS_CANCELED);
     }
 
     @Test
     public void handleProcessDied() {
-        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
-        OverrideRequest secondRequest = new OverrideRequest(new Binder(), 1 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
+        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                0 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_EMULATED_STATE);
+
+        OverrideRequest baseStateRequest = new OverrideRequest(new Binder(), 0 /* pid */,
+                0 /* uid */,
+                1 /* requestedState */,
+                0 /* flags */, OVERRIDE_REQUEST_TYPE_BASE_STATE);
 
         mController.addRequest(firstRequest);
-        mController.addRequest(secondRequest);
-
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_ACTIVE);
-        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_SUSPENDED);
-
-        mController.handleProcessDied(1);
-
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_CANCELED);
         assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
 
-        mController.handleProcessDied(0);
+        mController.addBaseStateRequest(baseStateRequest);
+        assertEquals(mStatusListener.getLastStatus(baseStateRequest).intValue(), STATUS_ACTIVE);
 
+        mController.handleProcessDied(0);
         assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_CANCELED);
+        assertEquals(mStatusListener.getLastStatus(baseStateRequest).intValue(), STATUS_CANCELED);
     }
 
     @Test
     public void handleProcessDied_stickyRequests() {
         mController.setStickyRequestsAllowed(true);
 
-        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
-        OverrideRequest secondRequest = new OverrideRequest(new Binder(), 1 /* pid */,
-                0 /* requestedState */, 0 /* flags */);
+        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                0 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_EMULATED_STATE);
+
+        OverrideRequest baseStateRequest = new OverrideRequest(new Binder(), 0 /* pid */,
+                0 /* uid */,
+                1 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_BASE_STATE);
 
         mController.addRequest(firstRequest);
-        mController.addRequest(secondRequest);
-
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_ACTIVE);
-        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_SUSPENDED);
-
-        mController.handleProcessDied(1);
-
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_ACTIVE);
-        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_SUSPENDED);
-
-        mController.cancelStickyRequests();
-
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_CANCELED);
         assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
+
+        mController.addBaseStateRequest(baseStateRequest);
+        assertEquals(mStatusListener.getLastStatus(baseStateRequest).intValue(), STATUS_ACTIVE);
+
+        mController.handleProcessDied(0);
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
+        assertEquals(mStatusListener.getLastStatus(baseStateRequest).intValue(), STATUS_CANCELED);
+
+        mController.cancelStickyRequest();
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_CANCELED);
     }
 
     @Test
     public void handleNewSupportedStates() {
-        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                1 /* requestedState */, 0 /* flags */);
-        OverrideRequest secondRequest = new OverrideRequest(new Binder(), 0 /* pid */,
-                2 /* requestedState */, 0 /* flags */);
+        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                1 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_EMULATED_STATE);
+
+        OverrideRequest baseStateRequest = new OverrideRequest(new Binder(), 0 /* pid */,
+                0 /* uid */,
+                1 /* requestedState */,
+                0 /* flags */, OVERRIDE_REQUEST_TYPE_BASE_STATE);
 
         mController.addRequest(firstRequest);
-        mController.addRequest(secondRequest);
-
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_ACTIVE);
-        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_SUSPENDED);
-
-        mController.handleNewSupportedStates(new int[]{ 0, 1 });
-
-        assertEquals(mStatusListener.getLastStatus(secondRequest).intValue(), STATUS_CANCELED);
         assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
 
-        mController.handleNewSupportedStates(new int[]{ 0 });
+        mController.addBaseStateRequest(baseStateRequest);
+        assertEquals(mStatusListener.getLastStatus(baseStateRequest).intValue(), STATUS_ACTIVE);
 
+        mController.handleNewSupportedStates(new int[]{0, 1},
+                DeviceStateProvider.SUPPORTED_DEVICE_STATES_CHANGED_DEFAULT);
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
+        assertEquals(mStatusListener.getLastStatus(baseStateRequest).intValue(), STATUS_ACTIVE);
+
+        mController.handleNewSupportedStates(new int[]{0},
+                DeviceStateProvider.SUPPORTED_DEVICE_STATES_CHANGED_DEFAULT);
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_CANCELED);
+        assertEquals(mStatusListener.getLastStatus(baseStateRequest).intValue(), STATUS_CANCELED);
+    }
+
+    @Test
+    public void cancelOverrideRequestsTest() {
+        OverrideRequest firstRequest = new OverrideRequest(new Binder(), 0 /* pid */, 0 /* uid */,
+                1 /* requestedState */, 0 /* flags */, OVERRIDE_REQUEST_TYPE_EMULATED_STATE);
+
+        mController.addRequest(firstRequest);
+        assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_ACTIVE);
+
+        mController.cancelOverrideRequest();
         assertEquals(mStatusListener.getLastStatus(firstRequest).intValue(), STATUS_CANCELED);
     }
 
@@ -218,7 +256,7 @@ public final class OverrideRequestControllerTest {
         private Map<OverrideRequest, Integer> mLastStatusMap = new HashMap<>();
 
         @Override
-        public void onStatusChanged(@NonNull OverrideRequest request, int newStatus) {
+        public void onStatusChanged(@NonNull OverrideRequest request, int newStatus, int flags) {
             mLastStatusMap.put(request, newStatus);
         }
 

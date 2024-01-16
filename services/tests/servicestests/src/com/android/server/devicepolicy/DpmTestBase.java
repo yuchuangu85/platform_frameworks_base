@@ -21,7 +21,6 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Matchers.anyInt;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.when;
@@ -68,8 +67,9 @@ public abstract class DpmTestBase {
 
     @Before
     public void setFixtures() throws Exception {
-        mServices = new MockSystemServices(mRealTestContext, "test-data");
-        mMockContext = new DpmMockContext(mServices, mRealTestContext);
+        var mockBinder = new DpmMockContext.MockBinder();
+        mServices = new MockSystemServices(mRealTestContext, "test-data", mockBinder);
+        mMockContext = new DpmMockContext(mServices, mRealTestContext, mockBinder);
 
         admin1 = new ComponentName(mRealTestContext, DummyDeviceAdmins.Admin1.class);
         admin2 = new ComponentName(mRealTestContext, DummyDeviceAdmins.Admin2.class);
@@ -151,7 +151,7 @@ public abstract class DpmTestBase {
 
         doReturn(pi).when(mServices.ipackageManager).getPackageInfo(packageName, 0, userId);
 
-        doReturn(ai.uid).when(mServices.packageManager).getPackageUidAsUser(packageName, userId);
+        mServices.addTestPackageUid(packageName, ai.uid);
     }
 
     protected void markDelegatedCertInstallerAsInstalled() throws Exception {
@@ -221,7 +221,7 @@ public abstract class DpmTestBase {
 
         doReturn(ai).when(mServices.ipackageManager).getApplicationInfo(
                 eq(admin.getPackageName()),
-                anyInt(),
+                anyLong(),
                 eq(UserHandle.getUserId(packageUid)));
 
         // Set up queryBroadcastReceivers().
@@ -248,7 +248,7 @@ public abstract class DpmTestBase {
 
         doReturn(aci).when(mServices.ipackageManager).getReceiverInfo(
                 eq(admin),
-                anyInt(),
+                anyLong(),
                 eq(UserHandle.getUserId(packageUid)));
 
         doReturn(new String[] {admin.getPackageName()}).when(mServices.ipackageManager)

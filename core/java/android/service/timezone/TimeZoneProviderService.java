@@ -26,10 +26,14 @@ import android.content.Intent;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.RemoteException;
+import android.os.SystemClock;
 import android.util.Log;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.os.BackgroundThread;
 
+import java.io.FileDescriptor;
+import java.io.PrintWriter;
 import java.util.Objects;
 
 /**
@@ -40,8 +44,8 @@ import java.util.Objects;
  *
  * <p>Once started, providers are expected to detect the time zone if possible, and report the
  * result via {@link #reportSuggestion(TimeZoneProviderSuggestion)} or {@link
- * #reportUncertain()}. Providers may also report that they have permanently failed
- * by calling {@link #reportPermanentFailure(Throwable)}. See the javadocs for each
+ * #reportUncertain(TimeZoneProviderStatus)}. Providers may also report that they have permanently
+ * failed by calling {@link #reportPermanentFailure(Throwable)}. See the javadocs for each
  * method for details.
  *
  * <p>After starting, providers are expected to issue their first callback within the timeout
@@ -114,9 +118,17 @@ import java.util.Objects;
  *
  * <p>Threading:
  *
- * <p>Calls to {@code report} methods can be made on on any thread and will be passed asynchronously
- * to the system server. Calls to {@link #onStartUpdates(long)} and {@link #onStopUpdates()} will
- * occur on a single thread.
+ * <p>Outgoing calls to {@code report} methods can be made on any thread and will be delivered
+ * asynchronously to the system server. Incoming calls to {@link TimeZoneProviderService}-defined
+ * service methods like {@link #onStartUpdates(long)} and {@link #onStopUpdates()} are also
+ * asynchronous with respect to the system server caller and will be delivered to this service using
+ * a single thread. {@link Service} lifecycle method calls like {@link #onCreate()} and {@link
+ * #onDestroy()} can occur on a different thread from those made to {@link
+ * TimeZoneProviderService}-defined service methods, so implementations must be defensive and not
+ * assume an ordering between them, e.g. a call to {@link #onStopUpdates()} can occur after {@link
+ * #onDestroy()} and should be handled safely. {@link #mLock} is used to ensure that synchronous
+ * calls like {@link #dump(FileDescriptor, PrintWriter, String[])} are safe with respect to
+ * asynchronous behavior.
  *
  * @hide
  */
@@ -156,11 +168,29 @@ public abstract class TimeZoneProviderService extends Service {
 
     private final TimeZoneProviderServiceWrapper mWrapper = new TimeZoneProviderServiceWrapper();
 
+    /** The object used for operations that occur between the main / handler thread. */
+    private final Object mLock = new Object();
+
+    /** The handler used for most operations. */
     private final Handler mHandler = BackgroundThread.getHandler();
 
     /** Set by {@link #mHandler} thread. */
+    @GuardedBy("mLock")
     @Nullable
     private ITimeZoneProviderManager mManager;
+
+    /** Set by {@link #mHandler} thread. */
+    @GuardedBy("mLock")
+    private long mEventFilteringAgeThresholdMillis;
+
+    /**
+     * The type of the last suggestion sent to the system server. Used to de-dupe suggestions client
+     * side and avoid calling into the system server unnecessarily. {@code null} means no previous
+     * event has been sent this cycle; this field is cleared when the service is started.
+     */
+    @GuardedBy("mLock")
+    @Nullable
+    private TimeZoneProviderEvent mLastEventSent;
 
     @Override
     @NonNull
@@ -173,15 +203,42 @@ public abstract class TimeZoneProviderService extends Service {
      * details.
      */
     public final void reportSuggestion(@NonNull TimeZoneProviderSuggestion suggestion) {
+        TimeZoneProviderStatus providerStatus = null;
+        reportSuggestionInternal(suggestion, providerStatus);
+    }
+
+    /**
+     * Indicates a successful time zone detection. See {@link TimeZoneProviderSuggestion} for
+     * details.
+     *
+     * @param providerStatus provider status information that can influence detector service
+     *   behavior and/or be reported via the device UI
+     */
+    public final void reportSuggestion(@NonNull TimeZoneProviderSuggestion suggestion,
+            @NonNull TimeZoneProviderStatus providerStatus) {
+        Objects.requireNonNull(providerStatus);
+        reportSuggestionInternal(suggestion, providerStatus);
+    }
+
+    private void reportSuggestionInternal(@NonNull TimeZoneProviderSuggestion suggestion,
+            @Nullable TimeZoneProviderStatus providerStatus) {
         Objects.requireNonNull(suggestion);
 
         mHandler.post(() -> {
-            ITimeZoneProviderManager manager = mManager;
-            if (manager != null) {
-                try {
-                    manager.onTimeZoneProviderSuggestion(suggestion);
-                } catch (RemoteException | RuntimeException e) {
-                    Log.w(TAG, e);
+            synchronized (mLock) {
+                ITimeZoneProviderManager manager = mManager;
+                if (manager != null) {
+                    try {
+                        TimeZoneProviderEvent thisEvent =
+                                TimeZoneProviderEvent.createSuggestionEvent(
+                                        SystemClock.elapsedRealtime(), suggestion, providerStatus);
+                        if (shouldSendEvent(thisEvent)) {
+                            manager.onTimeZoneProviderEvent(thisEvent);
+                            mLastEventSent = thisEvent;
+                        }
+                    } catch (RemoteException | RuntimeException e) {
+                        Log.w(TAG, e);
+                    }
                 }
             }
         });
@@ -189,17 +246,45 @@ public abstract class TimeZoneProviderService extends Service {
 
     /**
      * Indicates the time zone is not known because of an expected runtime state or error, e.g. when
-     * the provider is unable to detect location, or there was a problem when resolving the location
-     * to a time zone.
+     * the provider is unable to detect location, or there was connectivity issue.
+     *
+     * <p>See {@link #reportUncertain(TimeZoneProviderStatus)} for a more expressive version
      */
     public final void reportUncertain() {
+        TimeZoneProviderStatus providerStatus = null;
+        reportUncertainInternal(providerStatus);
+    }
+
+    /**
+     * Indicates the time zone is not known because of an expected runtime state or error.
+     *
+     * <p>When the status changes then a certain or uncertain report must be made to move the
+     * detector service to the new status.
+     *
+     * @param providerStatus provider status information that can influence detector service
+     *   behavior and/or be reported via the device UI
+     */
+    public final void reportUncertain(@NonNull TimeZoneProviderStatus providerStatus) {
+        Objects.requireNonNull(providerStatus);
+        reportUncertainInternal(providerStatus);
+    }
+
+    private void reportUncertainInternal(@Nullable TimeZoneProviderStatus providerStatus) {
         mHandler.post(() -> {
-            ITimeZoneProviderManager manager = mManager;
-            if (manager != null) {
-                try {
-                    manager.onTimeZoneProviderUncertain();
-                } catch (RemoteException | RuntimeException e) {
-                    Log.w(TAG, e);
+            synchronized (mLock) {
+                ITimeZoneProviderManager manager = mManager;
+                if (manager != null) {
+                    try {
+                        TimeZoneProviderEvent thisEvent =
+                                TimeZoneProviderEvent.createUncertainEvent(
+                                        SystemClock.elapsedRealtime(), providerStatus);
+                        if (shouldSendEvent(thisEvent)) {
+                            manager.onTimeZoneProviderEvent(thisEvent);
+                            mLastEventSent = thisEvent;
+                        }
+                    } catch (RemoteException | RuntimeException e) {
+                        Log.w(TAG, e);
+                    }
                 }
             }
         });
@@ -213,21 +298,56 @@ public abstract class TimeZoneProviderService extends Service {
         Objects.requireNonNull(cause);
 
         mHandler.post(() -> {
-            ITimeZoneProviderManager manager = mManager;
-            if (manager != null) {
-                try {
-                    manager.onTimeZoneProviderPermanentFailure(cause.getMessage());
-                } catch (RemoteException | RuntimeException e) {
-                    Log.w(TAG, e);
+            synchronized (mLock) {
+                ITimeZoneProviderManager manager = mManager;
+                if (manager != null) {
+                    try {
+                        String causeString = cause.getMessage();
+                        TimeZoneProviderEvent thisEvent =
+                                TimeZoneProviderEvent.createPermanentFailureEvent(
+                                        SystemClock.elapsedRealtime(), causeString);
+                        if (shouldSendEvent(thisEvent)) {
+                            manager.onTimeZoneProviderEvent(thisEvent);
+                            mLastEventSent = thisEvent;
+                        }
+                    } catch (RemoteException | RuntimeException e) {
+                        Log.w(TAG, e);
+                    }
                 }
             }
         });
     }
 
+    @GuardedBy("mLock")
+    private boolean shouldSendEvent(TimeZoneProviderEvent newEvent) {
+        // Always send an event if it indicates a state or suggestion change.
+        if (!newEvent.isEquivalentTo(mLastEventSent)) {
+            return true;
+        }
+
+        // Guard against implementations that generate a lot of uninteresting events in a short
+        // space of time and would cause the time_zone_detector to evaluate time zone suggestions
+        // too frequently.
+        //
+        // If the new event and last event sent are equivalent, the client will still send an update
+        // if their creation times are sufficiently different. This enables the time_zone_detector
+        // to better understand how recently the location time zone provider was certain /
+        // uncertain, which can be useful when working out ordering of events, e.g. to work out
+        // whether a suggestion was generated before or after a device left airplane mode.
+        long timeSinceLastEventMillis =
+                newEvent.getCreationElapsedMillis() - mLastEventSent.getCreationElapsedMillis();
+        return timeSinceLastEventMillis > mEventFilteringAgeThresholdMillis;
+    }
+
     private void onStartUpdatesInternal(@NonNull ITimeZoneProviderManager manager,
-            @DurationMillisLong long initializationTimeoutMillis) {
-        mManager = manager;
-        onStartUpdates(initializationTimeoutMillis);
+            @DurationMillisLong long initializationTimeoutMillis,
+            @DurationMillisLong long eventFilteringAgeThresholdMillis) {
+        synchronized (mLock) {
+            mManager = manager;
+            mEventFilteringAgeThresholdMillis =  eventFilteringAgeThresholdMillis;
+            mLastEventSent = null;
+            onStartUpdates(initializationTimeoutMillis);
+        }
     }
 
     /**
@@ -239,8 +359,8 @@ public abstract class TimeZoneProviderService extends Service {
      * <p>Between {@link #onStartUpdates(long)} and {@link #onStopUpdates()} calls, the Android
      * system server holds the latest report from the provider in memory. After an initial report,
      * provider implementations are only required to send a report via {@link
-     * #reportSuggestion(TimeZoneProviderSuggestion)} or via {@link #reportUncertain()} when it
-     * differs from the previous report.
+     * #reportSuggestion(TimeZoneProviderSuggestion, TimeZoneProviderStatus)} or via {@link
+     * #reportUncertain(TimeZoneProviderStatus)} when it differs from the previous report.
      *
      * <p>{@link #reportPermanentFailure(Throwable)} can also be called by provider implementations
      * in rare cases, after which the provider should consider itself stopped and not make any
@@ -252,15 +372,18 @@ public abstract class TimeZoneProviderService extends Service {
      * Android system server may move on to use other providers or detection methods. Providers
      * should therefore make best efforts during this time to generate a report, which could involve
      * increased power usage. Providers should preferably report an explicit {@link
-     * #reportUncertain()} if the time zone(s) cannot be detected within the initialization timeout.
+     * #reportUncertain(TimeZoneProviderStatus)} if the time zone(s) cannot be detected within the
+     * initialization timeout.
      *
      * @see #onStopUpdates() for the signal from the system server to stop sending reports
      */
     public abstract void onStartUpdates(@DurationMillisLong long initializationTimeoutMillis);
 
     private void onStopUpdatesInternal() {
-        onStopUpdates();
-        mManager = null;
+        synchronized (mLock) {
+            onStopUpdates();
+            mManager = null;
+        }
     }
 
     /**
@@ -269,12 +392,22 @@ public abstract class TimeZoneProviderService extends Service {
      */
     public abstract void onStopUpdates();
 
+    /** @hide */
+    @Override
+    protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
+        synchronized (mLock) {
+            writer.append("mLastEventSent=" + mLastEventSent);
+        }
+    }
+
     private class TimeZoneProviderServiceWrapper extends ITimeZoneProvider.Stub {
 
         public void startUpdates(@NonNull ITimeZoneProviderManager manager,
-                @DurationMillisLong long initializationTimeoutMillis) {
+                @DurationMillisLong long initializationTimeoutMillis,
+                @DurationMillisLong long eventFilteringAgeThresholdMillis) {
             Objects.requireNonNull(manager);
-            mHandler.post(() -> onStartUpdatesInternal(manager, initializationTimeoutMillis));
+            mHandler.post(() -> onStartUpdatesInternal(
+                    manager, initializationTimeoutMillis, eventFilteringAgeThresholdMillis));
         }
 
         public void stopUpdates() {

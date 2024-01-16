@@ -39,21 +39,21 @@ class WindowMagnificationConnectionImpl extends IWindowMagnificationConnection.S
     private IWindowMagnificationConnectionCallback mConnectionCallback;
     private final WindowMagnification mWindowMagnification;
     private final Handler mHandler;
-    private final ModeSwitchesController mModeSwitchesController;
 
     WindowMagnificationConnectionImpl(@NonNull WindowMagnification windowMagnification,
-            @Main Handler mainHandler, ModeSwitchesController modeSwitchesController) {
+            @Main Handler mainHandler) {
         mWindowMagnification = windowMagnification;
         mHandler = mainHandler;
-        mModeSwitchesController = modeSwitchesController;
     }
 
     @Override
-    public void enableWindowMagnification(int displayId, float scale, float centerX,
-            float centerY, IRemoteMagnificationAnimationCallback callback) {
+    public void enableWindowMagnification(int displayId, float scale, float centerX, float centerY,
+            float magnificationFrameOffsetRatioX, float magnificationFrameOffsetRatioY,
+            IRemoteMagnificationAnimationCallback callback) {
         mHandler.post(
                 () -> mWindowMagnification.enableWindowMagnification(displayId, scale, centerX,
-                        centerY, callback));
+                        centerY, magnificationFrameOffsetRatioX,
+                        magnificationFrameOffsetRatioY, callback));
     }
 
     @Override
@@ -75,15 +75,33 @@ class WindowMagnificationConnectionImpl extends IWindowMagnificationConnection.S
     }
 
     @Override
+    public void moveWindowMagnifierToPosition(int displayId, float positionX, float positionY,
+            IRemoteMagnificationAnimationCallback callback) {
+        mHandler.post(() -> mWindowMagnification.moveWindowMagnifierToPositionInternal(
+                displayId, positionX, positionY, callback));
+    }
+
+    @Override
     public void showMagnificationButton(int displayId, int magnificationMode) {
         mHandler.post(
-                () -> mModeSwitchesController.showButton(displayId, magnificationMode));
+                () -> mWindowMagnification.showMagnificationButton(displayId, magnificationMode));
     }
 
     @Override
     public void removeMagnificationButton(int displayId) {
         mHandler.post(
-                () -> mModeSwitchesController.removeButton(displayId));
+                () -> mWindowMagnification.removeMagnificationButton(displayId));
+    }
+
+    @Override
+    public void removeMagnificationSettingsPanel(int display) {
+        mHandler.post(() -> mWindowMagnification.hideMagnificationSettingsPanel(display));
+    }
+
+    @Override
+    public void onUserMagnificationScaleChanged(int userId, int displayId, float scale) {
+        mHandler.post(() -> mWindowMagnification.setUserMagnificationScale(
+                userId, displayId, scale));
     }
 
     @Override
@@ -111,10 +129,10 @@ class WindowMagnificationConnectionImpl extends IWindowMagnificationConnection.S
         }
     }
 
-    void onPerformScaleAction(int displayId, float scale) {
+    void onPerformScaleAction(int displayId, float scale, boolean updatePersistence) {
         if (mConnectionCallback != null) {
             try {
-                mConnectionCallback.onPerformScaleAction(displayId, scale);
+                mConnectionCallback.onPerformScaleAction(displayId, scale, updatePersistence);
             } catch (RemoteException e) {
                 Log.e(TAG, "Failed to inform performing scale action", e);
             }
@@ -127,6 +145,26 @@ class WindowMagnificationConnectionImpl extends IWindowMagnificationConnection.S
                 mConnectionCallback.onAccessibilityActionPerformed(displayId);
             } catch (RemoteException e) {
                 Log.e(TAG, "Failed to inform an accessibility action is already performed", e);
+            }
+        }
+    }
+
+    void onChangeMagnificationMode(int displayId, int mode) {
+        if (mConnectionCallback != null) {
+            try {
+                mConnectionCallback.onChangeMagnificationMode(displayId, mode);
+            } catch (RemoteException e) {
+                Log.e(TAG, "Failed to inform changing magnification mode", e);
+            }
+        }
+    }
+
+    void onMove(int displayId) {
+        if (mConnectionCallback != null) {
+            try {
+                mConnectionCallback.onMove(displayId);
+            } catch (RemoteException e) {
+                Log.e(TAG, "Failed to inform taking control by a user", e);
             }
         }
     }

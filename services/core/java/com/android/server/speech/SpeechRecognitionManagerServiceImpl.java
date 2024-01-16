@@ -28,11 +28,14 @@ import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
 import android.os.Binder;
 import android.os.IBinder;
+import android.os.Process;
 import android.os.RemoteException;
 import android.permission.PermissionManager;
+import android.speech.IModelDownloadListener;
 import android.speech.IRecognitionListener;
 import android.speech.IRecognitionService;
 import android.speech.IRecognitionServiceManagerCallback;
+import android.speech.IRecognitionSupportCallback;
 import android.speech.RecognitionService;
 import android.speech.SpeechRecognizer;
 import android.util.Slog;
@@ -49,7 +52,7 @@ import java.util.Set;
 
 final class SpeechRecognitionManagerServiceImpl extends
         AbstractPerUserSystemService<SpeechRecognitionManagerServiceImpl,
-            SpeechRecognitionManagerService> {
+                SpeechRecognitionManagerService> {
     private static final String TAG = SpeechRecognitionManagerServiceImpl.class.getSimpleName();
 
     private static final int MAX_CONCURRENT_CONNECTIONS_BY_CLIENT = 10;
@@ -102,6 +105,12 @@ final class SpeechRecognitionManagerServiceImpl extends
             serviceComponent = getOnDeviceComponentNameLocked();
         }
 
+        if (!onDevice && Process.isIsolated(Binder.getCallingUid())) {
+            Slog.w(TAG, "Isolated process can only start on device speech recognizer.");
+            tryRespondWithError(callback, SpeechRecognizer.ERROR_CLIENT);
+            return;
+        }
+
         if (serviceComponent == null) {
             if (mMaster.debug) {
                 Slog.i(TAG, "Service component is undefined, responding with error.");
@@ -119,13 +128,14 @@ final class SpeechRecognitionManagerServiceImpl extends
         }
 
         IBinder.DeathRecipient deathRecipient =
-                () -> handleClientDeath(creatorCallingUid, service, true /* invoke #cancel */);
+                () -> handleClientDeath(
+                        clientToken, creatorCallingUid, service, true /* invoke #cancel */);
 
         try {
             clientToken.linkToDeath(deathRecipient, 0);
         } catch (RemoteException e) {
             // RemoteException == binder already died, schedule disconnect anyway.
-            handleClientDeath(creatorCallingUid, service, true /* invoke #cancel */);
+            handleClientDeath(clientToken, creatorCallingUid, service, true /* invoke #cancel */);
             return;
         }
 
@@ -138,7 +148,7 @@ final class SpeechRecognitionManagerServiceImpl extends
                                 Intent recognizerIntent,
                                 IRecognitionListener listener,
                                 @NonNull AttributionSource attributionSource)
-                                        throws RemoteException {
+                                throws RemoteException {
                             attributionSource.enforceCallingUid();
                             if (!attributionSource.isTrusted(mMaster.getContext())) {
                                 attributionSource = mMaster.getContext()
@@ -146,6 +156,7 @@ final class SpeechRecognitionManagerServiceImpl extends
                                         .registerAttributionSource(attributionSource);
                             }
                             service.startListening(recognizerIntent, listener, attributionSource);
+                            service.associateClientWithActiveListener(clientToken, listener);
                         }
 
                         @Override
@@ -158,16 +169,34 @@ final class SpeechRecognitionManagerServiceImpl extends
                         public void cancel(
                                 IRecognitionListener listener,
                                 boolean isShutdown) throws RemoteException {
-
                             service.cancel(listener, isShutdown);
 
                             if (isShutdown) {
                                 handleClientDeath(
+                                        clientToken,
                                         creatorCallingUid,
                                         service,
                                         false /* invoke #cancel */);
                                 clientToken.unlinkToDeath(deathRecipient, 0);
                             }
+                        }
+
+                        @Override
+                        public void checkRecognitionSupport(
+                                Intent recognizerIntent,
+                                AttributionSource attributionSource,
+                                IRecognitionSupportCallback callback) {
+                            service.checkRecognitionSupport(
+                                    recognizerIntent, attributionSource, callback);
+                        }
+
+                        @Override
+                        public void triggerModelDownload(
+                                Intent recognizerIntent,
+                                AttributionSource attributionSource,
+                                IModelDownloadListener listener) {
+                            service.triggerModelDownload(
+                                    recognizerIntent, attributionSource, listener);
                         }
                     });
                 } catch (RemoteException e) {
@@ -181,12 +210,16 @@ final class SpeechRecognitionManagerServiceImpl extends
     }
 
     private void handleClientDeath(
-            int callingUid,
+            IBinder clientToken, int callingUid,
             RemoteSpeechRecognitionService service, boolean invokeCancel) {
         if (invokeCancel) {
-            service.shutdown();
+            service.shutdown(clientToken);
         }
-        removeService(callingUid, service);
+        synchronized (mLock) {
+            if (!service.hasActiveSessions()) {
+                removeService(callingUid, service);
+            }
+        }
     }
 
     @GuardedBy("mLock")
@@ -225,7 +258,6 @@ final class SpeechRecognitionManagerServiceImpl extends
                                         service.getServiceComponentName().equals(serviceComponent))
                                 .findFirst();
                 if (existingService.isPresent()) {
-
                     if (mMaster.debug) {
                         Slog.i(TAG, "Reused existing connection to " + serviceComponent);
                     }
@@ -255,9 +287,17 @@ final class SpeechRecognitionManagerServiceImpl extends
     }
 
     private boolean componentMapsToRecognitionService(@NonNull ComponentName serviceComponent) {
-        List<ResolveInfo> resolveInfos =
-                getContext().getPackageManager().queryIntentServicesAsUser(
-                        new Intent(RecognitionService.SERVICE_INTERFACE), 0, getUserId());
+        List<ResolveInfo> resolveInfos;
+
+        final long identityToken = Binder.clearCallingIdentity();
+        try {
+            resolveInfos =
+                    getContext().getPackageManager().queryIntentServicesAsUser(
+                            new Intent(RecognitionService.SERVICE_INTERFACE), 0, getUserId());
+        } finally {
+            Binder.restoreCallingIdentity(identityToken);
+        }
+
         if (resolveInfos == null) {
             return false;
         }

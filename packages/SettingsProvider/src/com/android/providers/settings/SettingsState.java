@@ -33,6 +33,7 @@ import android.os.Message;
 import android.os.SystemClock;
 import android.os.UserHandle;
 import android.provider.Settings;
+import android.provider.Settings.Global;
 import android.providers.settings.SettingsOperationProto;
 import android.text.TextUtils;
 import android.util.ArrayMap;
@@ -41,13 +42,15 @@ import android.util.AtomicFile;
 import android.util.Base64;
 import android.util.Slog;
 import android.util.TimeUtils;
-import android.util.TypedXmlPullParser;
-import android.util.TypedXmlSerializer;
 import android.util.Xml;
 import android.util.proto.ProtoOutputStream;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.FrameworkStatsLog;
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
 
 import libcore.io.IoUtils;
 
@@ -91,11 +94,12 @@ final class SettingsState {
 
     static final int SETTINGS_VERSION_NEW_ENCODING = 121;
 
+    public static final int MAX_LENGTH_PER_STRING = 32768;
     private static final long WRITE_SETTINGS_DELAY_MILLIS = 200;
     private static final long MAX_WRITE_SETTINGS_DELAY_MILLIS = 2000;
 
     public static final int MAX_BYTES_PER_APP_PACKAGE_UNLIMITED = -1;
-    public static final int MAX_BYTES_PER_APP_PACKAGE_LIMITED = 20000;
+    public static final int MAX_BYTES_PER_APP_PACKAGE_LIMITED = 40000;
 
     public static final int VERSION_UNDEFINED = -1;
 
@@ -252,6 +256,26 @@ final class SettingsState {
         }
     }
 
+    public static boolean isConfigSettingsKey(int key) {
+        return getTypeFromKey(key) == SETTINGS_TYPE_CONFIG;
+    }
+
+    public static boolean isGlobalSettingsKey(int key) {
+        return getTypeFromKey(key) == SETTINGS_TYPE_GLOBAL;
+    }
+
+    public static boolean isSystemSettingsKey(int key) {
+        return getTypeFromKey(key) == SETTINGS_TYPE_SYSTEM;
+    }
+
+    public static boolean isSecureSettingsKey(int key) {
+        return getTypeFromKey(key) == SETTINGS_TYPE_SECURE;
+    }
+
+    public static boolean isSsaidSettingsKey(int key) {
+        return getTypeFromKey(key) == SETTINGS_TYPE_SSAID;
+    }
+
     public static String keyToString(int key) {
         return "Key[user=" + getUserIdFromKey(key) + ";type="
                 + settingTypeToString(getTypeFromKey(key)) + "]";
@@ -343,7 +367,6 @@ final class SettingsState {
     }
 
     // The settings provider must hold its lock when calling here.
-    @GuardedBy("mLock")
     public Setting getSettingLocked(String name) {
         if (TextUtils.isEmpty(name)) {
             return mNullSetting;
@@ -375,15 +398,16 @@ final class SettingsState {
             Setting newSetting = new Setting(name, oldSetting.getValue(), null,
                     oldSetting.getPackageName(), oldSetting.getTag(), false,
                     oldSetting.getId());
+            int newSize = getNewMemoryUsagePerPackageLocked(newSetting.getPackageName(), 0,
+                    oldValue, newSetting.getValue(), oldDefaultValue, newSetting.getDefaultValue());
+            checkNewMemoryUsagePerPackageLocked(newSetting.getPackageName(), newSize);
             mSettings.put(name, newSetting);
-            updateMemoryUsagePerPackageLocked(newSetting.getPackageName(), oldValue,
-                    newSetting.getValue(), oldDefaultValue, newSetting.getDefaultValue());
+            updateMemoryUsagePerPackageLocked(newSetting.getPackageName(), newSize);
             scheduleWriteIfNeededLocked();
         }
     }
 
     // The settings provider must hold its lock when calling here.
-    @GuardedBy("mLock")
     public boolean insertSettingOverrideableByRestoreLocked(String name, String value, String tag,
             boolean makeDefault, String packageName) {
         return insertSettingLocked(name, value, tag, makeDefault, false, packageName,
@@ -407,9 +431,29 @@ final class SettingsState {
             return false;
         }
 
+        final boolean isNameTooLong = name.length() > SettingsState.MAX_LENGTH_PER_STRING;
+        final boolean isValueTooLong =
+                value != null && value.length() > SettingsState.MAX_LENGTH_PER_STRING;
+        if (isNameTooLong || isValueTooLong) {
+            // only print the first few bytes of the name in case it is long
+            final String errorMessage = "The " + (isNameTooLong ? "name" : "value")
+                    + " of your setting ["
+                    + (name.length() > 20 ? (name.substring(0, 20) + "...") : name)
+                    + "] is too long. The max length allowed for the string is "
+                    + MAX_LENGTH_PER_STRING + ".";
+            throw new IllegalArgumentException(errorMessage);
+        }
+
         Setting oldState = mSettings.get(name);
         String oldValue = (oldState != null) ? oldState.value : null;
         String oldDefaultValue = (oldState != null) ? oldState.defaultValue : null;
+        String newDefaultValue = makeDefault ? value : oldDefaultValue;
+
+        int newSize = getNewMemoryUsagePerPackageLocked(packageName,
+                oldValue == null ? name.length() : 0 /* deltaKeySize */,
+                oldValue, value, oldDefaultValue, newDefaultValue);
+        checkNewMemoryUsagePerPackageLocked(packageName, newSize);
+
         Setting newState;
 
         if (oldState != null) {
@@ -430,8 +474,7 @@ final class SettingsState {
 
         addHistoricalOperationLocked(HISTORICAL_OPERATION_UPDATE, newState);
 
-        updateMemoryUsagePerPackageLocked(packageName, oldValue, value,
-                oldDefaultValue, newState.getDefaultValue());
+        updateMemoryUsagePerPackageLocked(packageName, newSize);
 
         scheduleWriteIfNeededLocked();
 
@@ -552,13 +595,18 @@ final class SettingsState {
         }
 
         Setting oldState = mSettings.remove(name);
+        if (oldState == null) {
+            return false;
+        }
+        int newSize = getNewMemoryUsagePerPackageLocked(oldState.packageName,
+                -name.length() /* deltaKeySize */,
+                oldState.value, null, oldState.defaultValue, null);
 
         FrameworkStatsLog.write(FrameworkStatsLog.SETTING_CHANGED, name, /* value= */ "",
                 /* newValue= */ "", oldState.value, /* tag */ "", false, getUserIdFromKey(mKey),
                 FrameworkStatsLog.SETTING_CHANGED__REASON__DELETED);
 
-        updateMemoryUsagePerPackageLocked(oldState.packageName, oldState.value,
-                null, oldState.defaultValue, null);
+        updateMemoryUsagePerPackageLocked(oldState.packageName, newSize);
 
         addHistoricalOperationLocked(HISTORICAL_OPERATION_DELETE, oldState);
 
@@ -575,20 +623,23 @@ final class SettingsState {
         }
 
         Setting setting = mSettings.get(name);
+        if (setting == null) {
+            return false;
+        }
 
         Setting oldSetting = new Setting(setting);
         String oldValue = setting.getValue();
         String oldDefaultValue = setting.getDefaultValue();
 
+        int newSize = getNewMemoryUsagePerPackageLocked(setting.packageName, 0, oldValue,
+                oldDefaultValue, oldDefaultValue, oldDefaultValue);
+        checkNewMemoryUsagePerPackageLocked(setting.packageName, newSize);
+
         if (!setting.reset()) {
             return false;
         }
 
-        String newValue = setting.getValue();
-        String newDefaultValue = setting.getDefaultValue();
-
-        updateMemoryUsagePerPackageLocked(setting.packageName, oldValue,
-                newValue, oldDefaultValue, newDefaultValue);
+        updateMemoryUsagePerPackageLocked(setting.packageName, newSize);
 
         addHistoricalOperationLocked(HISTORICAL_OPERATION_RESET, oldSetting);
 
@@ -618,7 +669,7 @@ final class SettingsState {
             return;
         }
         HistoricalOperation operation = new HistoricalOperation(
-                SystemClock.elapsedRealtime(), type,
+                System.currentTimeMillis(), type,
                 setting != null ? new Setting(setting) : null);
         if (mNextHistoricalOpIdx >= mHistoricalOperations.size()) {
             mHistoricalOperations.add(operation);
@@ -696,39 +747,56 @@ final class SettingsState {
     }
 
     @GuardedBy("mLock")
-    private void updateMemoryUsagePerPackageLocked(String packageName, String oldValue,
-            String newValue, String oldDefaultValue, String newDefaultValue) {
-        if (mMaxBytesPerAppPackage == MAX_BYTES_PER_APP_PACKAGE_UNLIMITED) {
+    private boolean isExemptFromMemoryUsageCap(String packageName) {
+        return mMaxBytesPerAppPackage == MAX_BYTES_PER_APP_PACKAGE_UNLIMITED
+                || SYSTEM_PACKAGE_NAME.equals(packageName);
+    }
+
+    @GuardedBy("mLock")
+    private void checkNewMemoryUsagePerPackageLocked(String packageName, int newSize)
+            throws IllegalStateException {
+        if (isExemptFromMemoryUsageCap(packageName)) {
             return;
         }
-
-        if (SYSTEM_PACKAGE_NAME.equals(packageName)) {
-            return;
-        }
-
-        final int oldValueSize = (oldValue != null) ? oldValue.length() : 0;
-        final int newValueSize = (newValue != null) ? newValue.length() : 0;
-        final int oldDefaultValueSize = (oldDefaultValue != null) ? oldDefaultValue.length() : 0;
-        final int newDefaultValueSize = (newDefaultValue != null) ? newDefaultValue.length() : 0;
-        final int deltaSize = newValueSize + newDefaultValueSize
-                - oldValueSize - oldDefaultValueSize;
-
-        Integer currentSize = mPackageToMemoryUsage.get(packageName);
-        final int newSize = Math.max((currentSize != null)
-                ? currentSize + deltaSize : deltaSize, 0);
-
         if (newSize > mMaxBytesPerAppPackage) {
             throw new IllegalStateException("You are adding too many system settings. "
                     + "You should stop using system settings for app specific data"
                     + " package: " + packageName);
         }
+    }
 
+    @GuardedBy("mLock")
+    private int getNewMemoryUsagePerPackageLocked(String packageName, int deltaKeyLength,
+            String oldValue, String newValue, String oldDefaultValue, String newDefaultValue) {
+        if (isExemptFromMemoryUsageCap(packageName)) {
+            return 0;
+        }
+        final int currentSize = mPackageToMemoryUsage.getOrDefault(packageName, 0);
+        final int oldValueLength = (oldValue != null) ? oldValue.length() : 0;
+        final int newValueLength = (newValue != null) ? newValue.length() : 0;
+        final int oldDefaultValueLength = (oldDefaultValue != null) ? oldDefaultValue.length() : 0;
+        final int newDefaultValueLength = (newDefaultValue != null) ? newDefaultValue.length() : 0;
+        final int deltaSize = (deltaKeyLength + newValueLength + newDefaultValueLength
+                - oldValueLength - oldDefaultValueLength) * Character.BYTES;
+        return Math.max(currentSize + deltaSize, 0);
+    }
+
+    @GuardedBy("mLock")
+    private void updateMemoryUsagePerPackageLocked(String packageName, int newSize) {
+        if (isExemptFromMemoryUsageCap(packageName)) {
+            return;
+        }
         if (DEBUG) {
             Slog.i(LOG_TAG, "Settings for package: " + packageName
                     + " size: " + newSize + " bytes.");
         }
-
         mPackageToMemoryUsage.put(packageName, newSize);
+    }
+
+    public boolean hasSetting(String name) {
+        synchronized (mLock) {
+            return hasSettingLocked(name);
+        }
     }
 
     @GuardedBy("mLock")
@@ -777,6 +845,7 @@ final class SettingsState {
 
     private void doWriteState() {
         boolean wroteState = false;
+        String settingFailedToBePersisted = null;
         final int version;
         final ArrayMap<String, Setting> settings;
         final ArrayMap<String, String> namespaceBannedHashes;
@@ -807,15 +876,34 @@ final class SettingsState {
                 final int settingCount = settings.size();
                 for (int i = 0; i < settingCount; i++) {
                     Setting setting = settings.valueAt(i);
-
-                    if (writeSingleSetting(mVersion, serializer, setting.getId(), setting.getName(),
-                            setting.getValue(), setting.getDefaultValue(), setting.getPackageName(),
-                            setting.getTag(), setting.isDefaultFromSystem(),
-                            setting.isValuePreservedInRestore())) {
+                    if (setting.isTransient()) {
                         if (DEBUG_PERSISTENCE) {
-                            Slog.i(LOG_TAG, "[PERSISTED]" + setting.getName() + "="
-                                    + setting.getValue());
+                            Slog.i(LOG_TAG, "[SKIPPED PERSISTING]" + setting.getName());
                         }
+                        continue;
+                    }
+
+                    try {
+                        if (writeSingleSetting(mVersion, serializer, setting.getId(),
+                                setting.getName(),
+                                setting.getValue(), setting.getDefaultValue(),
+                                setting.getPackageName(),
+                                setting.getTag(), setting.isDefaultFromSystem(),
+                                setting.isValuePreservedInRestore())) {
+                            if (DEBUG_PERSISTENCE) {
+                                Slog.i(LOG_TAG, "[PERSISTED]" + setting.getName() + "="
+                                        + setting.getValue());
+                            }
+                        }
+                    } catch (IOException ex) {
+                        Slog.e(LOG_TAG, "[ABORT PERSISTING]" + setting.getName()
+                                + " due to error writing to disk", ex);
+                        // A setting failed to be written. Abort the serialization to avoid leaving
+                        // a partially serialized setting on disk, which can cause parsing errors.
+                        // Note down the problematic setting, so that we can delete it before trying
+                        // again to persist the rest of the settings.
+                        settingFailedToBePersisted = setting.getName();
+                        throw ex;
                     }
                 }
                 serializer.endTag(null, TAG_SETTINGS);
@@ -841,18 +929,22 @@ final class SettingsState {
                     Slog.i(LOG_TAG, "[PERSIST END]");
                 }
             } catch (Throwable t) {
-                Slog.wtf(LOG_TAG, "Failed to write settings, restoring backup", t);
+                Slog.wtf(LOG_TAG, "Failed to write settings, restoring old file", t);
                 if (t instanceof IOException) {
-                    // we failed to create a directory, so log the permissions and existence
-                    // state for the settings file and directory
-                    logSettingsDirectoryInformation(destination.getBaseFile());
                     if (t.getMessage().contains("Couldn't create directory")) {
+                        if (DEBUG) {
+                            // we failed to create a directory, so log the permissions and existence
+                            // state for the settings file and directory
+                            logSettingsDirectoryInformation(destination.getBaseFile());
+                        }
                         // attempt to create the directory with Files.createDirectories, which
                         // throws more informative errors than File.mkdirs.
                         Path parentPath = destination.getBaseFile().getParentFile().toPath();
                         try {
                             Files.createDirectories(parentPath);
-                            Slog.i(LOG_TAG, "Successfully created " + parentPath);
+                            if (DEBUG) {
+                                Slog.i(LOG_TAG, "Successfully created " + parentPath);
+                            }
                         } catch (Throwable t2) {
                             Slog.e(LOG_TAG, "Failed to write " + parentPath
                                     + " with Files.writeDirectories", t2);
@@ -865,7 +957,15 @@ final class SettingsState {
             }
         }
 
-        if (wroteState) {
+        if (!wroteState) {
+            if (settingFailedToBePersisted != null) {
+                synchronized (mLock) {
+                    // Delete the problematic setting. This will schedule a write as well.
+                    deleteSettingLocked(settingFailedToBePersisted);
+                }
+            }
+        } else {
+            // success
             synchronized (mLock) {
                 addHistoricalOperationLocked(HISTORICAL_OPERATION_PERSIST, null);
             }
@@ -1005,7 +1105,9 @@ final class SettingsState {
             in = file.openRead();
         } catch (FileNotFoundException fnfe) {
             Slog.w(LOG_TAG, "No settings state " + mStatePersistFile);
-            logSettingsDirectoryInformation(mStatePersistFile);
+            if (DEBUG) {
+                logSettingsDirectoryInformation(mStatePersistFile);
+            }
             addHistoricalOperationLocked(HISTORICAL_OPERATION_INITIALIZE, null);
             return;
         }
@@ -1016,14 +1118,17 @@ final class SettingsState {
         // Settings file exists but is corrupted. Retry with the fallback file
         final File statePersistFallbackFile = new File(
                 mStatePersistFile.getAbsolutePath() + FALLBACK_FILE_SUFFIX);
-        Slog.i(LOG_TAG, "Failed parsing settings file: " + mStatePersistFile
+        Slog.w(LOG_TAG, "Failed parsing settings file: " + mStatePersistFile
                 + ", retrying with fallback file: " + statePersistFallbackFile);
         try {
             in = new AtomicFile(statePersistFallbackFile).openRead();
         } catch (FileNotFoundException fnfe) {
             final String message = "No fallback file found for: " + mStatePersistFile;
             Slog.wtf(LOG_TAG, message);
-            throw new IllegalStateException(message);
+            if (!isConfigSettingsKey(mKey)) {
+                // Allow partially deserialized config settings because they can be updated later
+                throw new IllegalStateException(message);
+            }
         }
         if (parseStateFromXmlStreamLocked(in)) {
             // Parsed state from fallback file. Restore original file with fallback file
@@ -1035,7 +1140,10 @@ final class SettingsState {
         } else {
             final String message = "Failed parsing settings file: " + mStatePersistFile;
             Slog.wtf(LOG_TAG, message);
-            throw new IllegalStateException(message);
+            if (!isConfigSettingsKey(mKey)) {
+                // Allow partially deserialized config settings because they can be updated later
+                throw new IllegalStateException(message);
+            }
         }
     }
 
@@ -1046,6 +1154,7 @@ final class SettingsState {
             parseStateLocked(parser);
             return true;
         } catch (XmlPullParserException | IOException e) {
+            Slog.e(LOG_TAG, "parse settings xml failed", e);
             return false;
         } finally {
             IoUtils.closeQuietly(in);
@@ -1302,6 +1411,14 @@ final class SettingsState {
                     /* resetToDefault */ true);
         }
 
+        public boolean isTransient() {
+            switch (getTypeFromKey(getKey())) {
+                case SETTINGS_TYPE_GLOBAL:
+                    return ArrayUtils.contains(Global.TRANSIENT_SETTINGS, getName());
+            }
+            return false;
+        }
+
         public boolean update(String value, boolean setDefault, String packageName, String tag,
                 boolean forceNonSystemPackage, boolean overrideableByRestore) {
             return update(value, setDefault, packageName, tag, forceNonSystemPackage,
@@ -1534,5 +1651,12 @@ final class SettingsState {
             return true;
         }
         return false;
+    }
+
+    @VisibleForTesting
+    public int getMemoryUsage(String packageName) {
+        synchronized (mLock) {
+            return mPackageToMemoryUsage.getOrDefault(packageName, 0);
+        }
     }
 }

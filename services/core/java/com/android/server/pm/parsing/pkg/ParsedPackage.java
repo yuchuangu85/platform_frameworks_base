@@ -16,8 +16,9 @@
 
 package com.android.server.pm.parsing.pkg;
 
-import android.annotation.Nullable;
-import android.content.pm.PackageParser;
+import android.content.pm.SigningDetails;
+
+import com.android.server.pm.pkg.AndroidPackage;
 
 /**
  * Methods used for mutation after direct package parsing, mostly done inside
@@ -25,11 +26,14 @@ import android.content.pm.PackageParser;
  *
  * Java disallows defining this as an inner interface, so this must be a separate file.
  *
+ * TODO: Remove extending AndroidPackage, should be an isolated interface with only the methods
+ *  necessary to parse and install
+ *
  * @hide
  */
 public interface ParsedPackage extends AndroidPackage {
 
-    AndroidPackage hideAsFinal();
+    AndroidPackageInternal hideAsFinal();
 
     ParsedPackage addUsesLibrary(int index, String libraryName);
 
@@ -43,9 +47,9 @@ public interface ParsedPackage extends AndroidPackage {
 
     ParsedPackage clearProtectedBroadcasts();
 
-    ParsedPackage setBaseCodePath(String baseCodePath);
+    ParsedPackage setBaseApkPath(String baseApkPath);
 
-    ParsedPackage setCodePath(String codePath);
+    ParsedPackage setPath(String path);
 
     ParsedPackage setNativeLibraryDir(String nativeLibraryDir);
 
@@ -55,11 +59,9 @@ public interface ParsedPackage extends AndroidPackage {
 
     ParsedPackage setPrimaryCpuAbi(String primaryCpuAbi);
 
-    ParsedPackage setRealPackage(@Nullable String realPackage);
-
     ParsedPackage setSecondaryCpuAbi(String secondaryCpuAbi);
 
-    ParsedPackage setSigningDetails(PackageParser.SigningDetails signingDetails);
+    ParsedPackage setSigningDetails(SigningDetails signingDetails);
 
     ParsedPackage setSplitCodePaths(String[] splitCodePaths);
 
@@ -68,6 +70,8 @@ public interface ParsedPackage extends AndroidPackage {
     ParsedPackage setAllComponentsDirectBootAware(boolean allComponentsDirectBootAware);
 
     ParsedPackage setFactoryTest(boolean factoryTest);
+
+    ParsedPackage setApex(boolean isApex);
 
     ParsedPackage markNotActivitiesAsNotExportedIfSingleUser();
 
@@ -98,10 +102,6 @@ public interface ParsedPackage extends AndroidPackage {
     ParsedPackage setStub(boolean isStub);
 
     ParsedPackage setRestrictUpdateHash(byte[] restrictUpdateHash);
-
-    ParsedPackage setSeInfo(String seInfo);
-
-    ParsedPackage setSeInfoUser(String seInfoUser);
 
     ParsedPackage setSecondaryNativeLibraryDir(String secondaryNativeLibraryDir);
 

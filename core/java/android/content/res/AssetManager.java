@@ -43,6 +43,7 @@ import java.io.FileDescriptor;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintWriter;
 import java.lang.ref.Reference;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -76,6 +77,13 @@ public final class AssetManager implements AutoCloseable {
 
     @GuardedBy("sSync") private static ApkAssets[] sSystemApkAssets = new ApkAssets[0];
     @GuardedBy("sSync") private static ArraySet<ApkAssets> sSystemApkAssetsSet;
+
+    /**
+     * Cookie value to use when the actual cookie is unknown. This value tells the system to search
+     * all the ApkAssets for the asset.
+     * @hide
+     */
+    public static final int COOKIE_UNKNOWN = -1;
 
     /**
      * Mode for {@link #open(String, int)}: no specific information about how
@@ -520,6 +528,10 @@ public final class AssetManager implements AutoCloseable {
         if (!mOpen) {
             throw new RuntimeException("AssetManager has been closed");
         }
+        // Let's still check if the native object exists, given all the memory corruptions.
+        if (mObject == 0) {
+            throw new RuntimeException("AssetManager is open but the native object is gone");
+        }
     }
 
     /**
@@ -788,6 +800,21 @@ public final class AssetManager implements AutoCloseable {
             ensureValidLocked();
             // name is checked in JNI.
             return nativeGetResourceIdentifier(mObject, name, defType, defPackage);
+        }
+    }
+
+    /**
+     * To get the parent theme resource id according to the parameter theme resource id.
+     * @param resId theme resource id.
+     * @return the parent theme resource id.
+     * @hide
+     */
+    @StyleRes
+    int getParentThemeIdentifier(@StyleRes int resId) {
+        synchronized (this) {
+            ensureValidLocked();
+            // name is checked in JNI.
+            return nativeGetParentThemeIdentifier(mObject, resId);
         }
     }
 
@@ -1130,6 +1157,7 @@ public final class AssetManager implements AutoCloseable {
     int[] getAttributeResolutionStack(long themePtr, @AttrRes int defStyleAttr,
             @StyleRes int defStyleRes, @StyleRes int xmlStyle) {
         synchronized (this) {
+            ensureValidLocked();
             return nativeAttributeResolutionStack(
                     mObject, themePtr, xmlStyle, defStyleAttr, defStyleRes);
         }
@@ -1430,6 +1458,16 @@ public final class AssetManager implements AutoCloseable {
     }
 
     /**
+     * @hide
+     */
+    Configuration[] getSizeAndUiModeConfigurations() {
+        synchronized (this) {
+            ensureValidLocked();
+            return nativeGetSizeAndUiModeConfigurations(mObject);
+        }
+    }
+
+    /**
      * Change the configuration used when retrieving resources.  Not for use by
      * applications.
      * @hide
@@ -1438,13 +1476,14 @@ public final class AssetManager implements AutoCloseable {
     public void setConfiguration(int mcc, int mnc, @Nullable String locale, int orientation,
             int touchscreen, int density, int keyboard, int keyboardHidden, int navigation,
             int screenWidth, int screenHeight, int smallestScreenWidthDp, int screenWidthDp,
-            int screenHeightDp, int screenLayout, int uiMode, int colorMode, int majorVersion) {
+            int screenHeightDp, int screenLayout, int uiMode, int colorMode, int grammaticalGender,
+            int majorVersion) {
         synchronized (this) {
             ensureValidLocked();
             nativeSetConfiguration(mObject, mcc, mnc, locale, orientation, touchscreen, density,
                     keyboard, keyboardHidden, navigation, screenWidth, screenHeight,
                     smallestScreenWidthDp, screenWidthDp, screenHeightDp, screenLayout, uiMode,
-                    colorMode, majorVersion);
+                    colorMode, grammaticalGender, majorVersion);
         }
     }
 
@@ -1516,6 +1555,15 @@ public final class AssetManager implements AutoCloseable {
         }
     }
 
+    synchronized void dump(PrintWriter pw, String prefix) {
+        pw.println(prefix + "class=" + getClass());
+        pw.println(prefix + "apkAssets=");
+        for (int i = 0; i < mApkAssets.length; i++) {
+            pw.println(prefix + i);
+            mApkAssets[i].dump(pw, prefix + "  ");
+        }
+    }
+
     // AssetManager setup native methods.
     private static native long nativeCreate();
     private static native void nativeDestroy(long ptr);
@@ -1525,7 +1573,7 @@ public final class AssetManager implements AutoCloseable {
             @Nullable String locale, int orientation, int touchscreen, int density, int keyboard,
             int keyboardHidden, int navigation, int screenWidth, int screenHeight,
             int smallestScreenWidthDp, int screenWidthDp, int screenHeightDp, int screenLayout,
-            int uiMode, int colorMode, int majorVersion);
+            int uiMode, int colorMode, int grammaticalGender, int majorVersion);
     private static native @NonNull SparseArray<String> nativeGetAssignedPackageIdentifiers(
             long ptr, boolean includeOverlays, boolean includeLoaders);
 
@@ -1571,6 +1619,7 @@ public final class AssetManager implements AutoCloseable {
     private static native @Nullable String nativeGetResourceEntryName(long ptr, @AnyRes int resid);
     private static native @Nullable String[] nativeGetLocales(long ptr, boolean excludeSystem);
     private static native @Nullable Configuration[] nativeGetSizeConfigurations(long ptr);
+    private static native @Nullable Configuration[] nativeGetSizeAndUiModeConfigurations(long ptr);
     private static native void nativeSetResourceResolutionLoggingEnabled(long ptr, boolean enabled);
     private static native @Nullable String nativeGetLastResourceResolution(long ptr);
 
@@ -1600,6 +1649,8 @@ public final class AssetManager implements AutoCloseable {
     private static native void nativeThemeDump(long ptr, long themePtr, int priority, String tag,
             String prefix);
     static native @NativeConfig int nativeThemeGetChangingConfigurations(long themePtr);
+    @StyleRes
+    private static native int nativeGetParentThemeIdentifier(long ptr, @StyleRes int styleId);
 
     // AssetInputStream related native methods.
     private static native void nativeAssetDestroy(long assetPtr);

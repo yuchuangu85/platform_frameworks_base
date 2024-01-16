@@ -20,6 +20,8 @@ import com.android.keyguard.CarrierText;
 import com.android.systemui.R;
 import com.android.systemui.battery.BatteryMeterView;
 import com.android.systemui.statusbar.phone.KeyguardStatusBarView;
+import com.android.systemui.statusbar.phone.StatusBarLocation;
+import com.android.systemui.statusbar.phone.userswitcher.StatusBarUserSwitcherContainer;
 
 import dagger.Module;
 import dagger.Provides;
@@ -38,5 +40,19 @@ public abstract class KeyguardStatusBarViewModule {
     @KeyguardStatusBarViewScope
     static BatteryMeterView getBatteryMeterView(KeyguardStatusBarView view) {
         return view.findViewById(R.id.battery);
+    }
+
+    /** */
+    @Provides
+    @KeyguardStatusBarViewScope
+    static StatusBarLocation getStatusBarLocation() {
+        return StatusBarLocation.KEYGUARD;
+    }
+
+    /** */
+    @Provides
+    @KeyguardStatusBarViewScope
+    static StatusBarUserSwitcherContainer getUserSwitcherContainer(KeyguardStatusBarView view) {
+        return view.findViewById(R.id.user_switcher_container);
     }
 }

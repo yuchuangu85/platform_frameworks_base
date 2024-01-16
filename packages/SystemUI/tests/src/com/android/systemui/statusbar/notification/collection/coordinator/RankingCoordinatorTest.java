@@ -16,18 +16,25 @@
 
 package com.android.systemui.statusbar.notification.collection.coordinator;
 
+import static android.app.NotificationManager.IMPORTANCE_DEFAULT;
 import static android.app.NotificationManager.Policy.SUPPRESSED_EFFECT_AMBIENT;
 import static android.app.NotificationManager.Policy.SUPPRESSED_EFFECT_NOTIFICATION_LIST;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.Notification;
-import android.service.notification.StatusBarNotification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.testing.AndroidTestingRunner;
 
 import androidx.annotation.Nullable;
@@ -36,12 +43,14 @@ import androidx.test.filters.SmallTest;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.statusbar.RankingBuilder;
+import com.android.systemui.statusbar.SbnBuilder;
 import com.android.systemui.statusbar.notification.collection.ListEntry;
 import com.android.systemui.statusbar.notification.collection.NotifPipeline;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.NotificationEntryBuilder;
 import com.android.systemui.statusbar.notification.collection.listbuilder.pluggable.NotifFilter;
 import com.android.systemui.statusbar.notification.collection.listbuilder.pluggable.NotifSectioner;
+import com.android.systemui.statusbar.notification.collection.listbuilder.pluggable.Pluggable;
 import com.android.systemui.statusbar.notification.collection.provider.HighPriorityProvider;
 import com.android.systemui.statusbar.notification.collection.render.NodeController;
 import com.android.systemui.statusbar.notification.collection.render.SectionHeaderController;
@@ -52,9 +61,9 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 
 @SmallTest
@@ -67,51 +76,64 @@ public class RankingCoordinatorTest extends SysuiTestCase {
     @Mock private NodeController mAlertingHeaderController;
     @Mock private NodeController mSilentNodeController;
     @Mock private SectionHeaderController mSilentHeaderController;
+    @Mock private Pluggable.PluggableListener<NotifFilter> mInvalidationListener;
 
     @Captor private ArgumentCaptor<NotifFilter> mNotifFilterCaptor;
+    @Captor private ArgumentCaptor<StatusBarStateController.StateListener> mStateListenerCaptor;
 
     private NotificationEntry mEntry;
     private NotifFilter mCapturedSuspendedFilter;
     private NotifFilter mCapturedDozingFilter;
+    private StatusBarStateController.StateListener mStatusBarStateCallback;
+    private RankingCoordinator mRankingCoordinator;
 
     private NotifSectioner mAlertingSectioner;
     private NotifSectioner mSilentSectioner;
+    private NotifSectioner mMinimizedSectioner;
+    private ArrayList<NotifSectioner> mSections = new ArrayList<>(3);
 
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
-        RankingCoordinator rankingCoordinator = new RankingCoordinator(
-                mStatusBarStateController, mHighPriorityProvider, mAlertingHeaderController,
-                mSilentHeaderController, mSilentNodeController);
-        mEntry = new NotificationEntryBuilder().build();
+        mRankingCoordinator = new RankingCoordinator(
+                mStatusBarStateController,
+                mHighPriorityProvider,
+                mAlertingHeaderController,
+                mSilentHeaderController,
+                mSilentNodeController);
+        mEntry = spy(new NotificationEntryBuilder().build());
+        mEntry.setRanking(getRankingForUnfilteredNotif().build());
 
-        rankingCoordinator.attach(mNotifPipeline);
+        mRankingCoordinator.attach(mNotifPipeline);
         verify(mNotifPipeline, times(2)).addPreGroupFilter(mNotifFilterCaptor.capture());
         mCapturedSuspendedFilter = mNotifFilterCaptor.getAllValues().get(0);
         mCapturedDozingFilter = mNotifFilterCaptor.getAllValues().get(1);
+        mCapturedDozingFilter.setInvalidationListener(mInvalidationListener);
 
-        mAlertingSectioner = rankingCoordinator.getAlertingSectioner();
-        mSilentSectioner = rankingCoordinator.getSilentSectioner();
+        verify(mStatusBarStateController, times(1)).addCallback(mStateListenerCaptor.capture());
+        mStatusBarStateCallback = mStateListenerCaptor.getAllValues().get(0);
+
+        mAlertingSectioner = mRankingCoordinator.getAlertingSectioner();
+        mSilentSectioner = mRankingCoordinator.getSilentSectioner();
+        mMinimizedSectioner = mRankingCoordinator.getMinimizedSectioner();
+        mSections.addAll(Arrays.asList(mAlertingSectioner, mSilentSectioner, mMinimizedSectioner));
     }
 
     @Test
     public void testSilentHeaderClearableChildrenUpdate() {
-        StatusBarNotification sbn = Mockito.mock(StatusBarNotification.class);
-        Mockito.doReturn("key").when(sbn).getKey();
-        Mockito.doReturn(Mockito.mock(Notification.class)).when(sbn).getNotification();
-        NotificationEntry entry = new NotificationEntryBuilder().setSbn(sbn).build();
-        ListEntry listEntry = new ListEntry("key", 0L) {
+        ListEntry listEntry = new ListEntry(mEntry.getKey(), 0L) {
             @Nullable
             @Override
             public NotificationEntry getRepresentativeEntry() {
-                return entry;
+                return mEntry;
             }
         };
-        Mockito.doReturn(true).when(sbn).isClearable();
+        setRankingAmbient(false);
+        setSbnClearable(true);
         mSilentSectioner.onEntriesUpdated(Arrays.asList(listEntry));
         verify(mSilentHeaderController).setClearSectionEnabled(eq(true));
 
-        Mockito.doReturn(false).when(sbn).isClearable();
+        setSbnClearable(false);
         mSilentSectioner.onEntriesUpdated(Arrays.asList(listEntry));
         verify(mSilentHeaderController).setClearSectionEnabled(eq(false));
     }
@@ -154,6 +176,13 @@ public class RankingCoordinatorTest extends SysuiTestCase {
 
         // THEN don't filter out the notification
         assertFalse(mCapturedDozingFilter.shouldFilterOut(mEntry, 0));
+
+        // WHEN it's not dozing and doze amount is 1
+        when(mStatusBarStateController.isDozing()).thenReturn(false);
+        when(mStatusBarStateController.getDozeAmount()).thenReturn(1f);
+
+        // THEN filter out the notification
+        assertTrue(mCapturedDozingFilter.shouldFilterOut(mEntry, 0));
     }
 
     @Test
@@ -171,7 +200,7 @@ public class RankingCoordinatorTest extends SysuiTestCase {
 
         // WHEN it's not dozing (showing the notification list)
         when(mStatusBarStateController.isDozing()).thenReturn(false);
-
+        
         // THEN filter out the notification
         assertTrue(mCapturedDozingFilter.shouldFilterOut(mEntry, 0));
     }
@@ -190,16 +219,118 @@ public class RankingCoordinatorTest extends SysuiTestCase {
     public void testIncludeInSectionSilent() {
         // GIVEN the entry isn't high priority
         when(mHighPriorityProvider.isHighPriority(mEntry)).thenReturn(false);
+        setRankingAmbient(false);
 
         // THEN entry is in the silent section
         assertFalse(mAlertingSectioner.isInSection(mEntry));
         assertTrue(mSilentSectioner.isInSection(mEntry));
     }
 
+    @Test
+    public void testMinSection() {
+        when(mHighPriorityProvider.isHighPriority(mEntry)).thenReturn(false);
+        setRankingAmbient(true);
+        assertInSection(mEntry, mMinimizedSectioner);
+    }
+
+    @Test
+    public void testSilentSection() {
+        when(mHighPriorityProvider.isHighPriority(mEntry)).thenReturn(false);
+        setRankingAmbient(false);
+        assertInSection(mEntry, mSilentSectioner);
+    }
+
+    @Test
+    public void testClearableSilentSection() {
+        when(mHighPriorityProvider.isHighPriority(mEntry)).thenReturn(false);
+        setSbnClearable(true);
+        setRankingAmbient(false);
+        mSilentSectioner.onEntriesUpdated(Arrays.asList(mEntry));
+        verify(mSilentHeaderController).setClearSectionEnabled(eq(true));
+    }
+
+    @Test
+    public void testClearableMinimizedSection() {
+        when(mHighPriorityProvider.isHighPriority(mEntry)).thenReturn(false);
+        setSbnClearable(true);
+        setRankingAmbient(true);
+        mMinimizedSectioner.onEntriesUpdated(Arrays.asList(mEntry));
+        verify(mSilentHeaderController).setClearSectionEnabled(eq(true));
+    }
+
+    @Test
+    public void testNotClearableSilentSection() {
+        setSbnClearable(false);
+        when(mHighPriorityProvider.isHighPriority(mEntry)).thenReturn(false);
+        setRankingAmbient(false);
+        mSilentSectioner.onEntriesUpdated(Arrays.asList(mEntry));
+        mMinimizedSectioner.onEntriesUpdated(Arrays.asList(mEntry));
+        mAlertingSectioner.onEntriesUpdated(Arrays.asList(mEntry));
+        verify(mSilentHeaderController, times(2)).setClearSectionEnabled(eq(false));
+    }
+
+    @Test
+    public void testNotClearableMinimizedSection() {
+        setSbnClearable(false);
+        when(mHighPriorityProvider.isHighPriority(mEntry)).thenReturn(false);
+        setRankingAmbient(true);
+        mSilentSectioner.onEntriesUpdated(Arrays.asList(mEntry));
+        mMinimizedSectioner.onEntriesUpdated(Arrays.asList(mEntry));
+        mAlertingSectioner.onEntriesUpdated(Arrays.asList(mEntry));
+        verify(mSilentHeaderController, times(2)).setClearSectionEnabled(eq(false));
+    }
+
+    @Test
+    public void statusBarStateCallbackTest() {
+        mStatusBarStateCallback.onDozeAmountChanged(1f, 1f);
+        verify(mInvalidationListener, times(1))
+                .onPluggableInvalidated(mCapturedDozingFilter, "dozeAmount changed to one");
+        reset(mInvalidationListener);
+
+        mStatusBarStateCallback.onDozeAmountChanged(1f, 1f);
+        verify(mInvalidationListener, never()).onPluggableInvalidated(any(), any());
+        reset(mInvalidationListener);
+
+        mStatusBarStateCallback.onDozeAmountChanged(0.6f, 0.6f);
+        verify(mInvalidationListener, times(1))
+                .onPluggableInvalidated(mCapturedDozingFilter, "dozeAmount changed to not one");
+        reset(mInvalidationListener);
+
+        mStatusBarStateCallback.onDozeAmountChanged(0f, 0f);
+        verify(mInvalidationListener, never()).onPluggableInvalidated(any(), any());
+        reset(mInvalidationListener);
+    }
+
+    private void assertInSection(NotificationEntry entry, NotifSectioner section) {
+        for (NotifSectioner current: mSections) {
+            if (current == section) {
+                assertTrue(current.isInSection(entry));
+            } else {
+                assertFalse(current.isInSection(entry));
+            }
+        }
+    }
+
     private RankingBuilder getRankingForUnfilteredNotif() {
-        return new RankingBuilder()
-                .setKey(mEntry.getKey())
+        return new RankingBuilder(mEntry.getRanking())
+                .setChannel(new NotificationChannel("id", null, IMPORTANCE_DEFAULT))
                 .setSuppressedVisualEffects(0)
                 .setSuspended(false);
+    }
+
+    private void setSbnClearable(boolean clearable) {
+        mEntry.setSbn(new SbnBuilder(mEntry.getSbn())
+                .setFlag(mContext, Notification.FLAG_NO_CLEAR, !clearable)
+                .build());
+        assertEquals(clearable, mEntry.getSbn().isClearable());
+    }
+
+    private void setRankingAmbient(boolean ambient) {
+        mEntry.setRanking(new RankingBuilder(mEntry.getRanking())
+                .setImportance(ambient
+                        ? NotificationManager.IMPORTANCE_MIN
+                        : IMPORTANCE_DEFAULT)
+                .build());
+        assertEquals(ambient, mEntry.getRanking().isAmbient());
     }
 }

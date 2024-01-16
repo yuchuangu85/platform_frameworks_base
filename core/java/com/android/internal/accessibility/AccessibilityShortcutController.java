@@ -16,10 +16,12 @@
 
 package com.android.internal.accessibility;
 
+import static android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK;
 import static android.view.WindowManager.LayoutParams.TYPE_KEYGUARD_DIALOG;
 import static android.view.accessibility.AccessibilityManager.ACCESSIBILITY_SHORTCUT_KEY;
 
 import static com.android.internal.accessibility.dialog.AccessibilityTargetHelper.getTargets;
+import static com.android.internal.os.RoSystemProperties.SUPPORT_ONE_HANDED_MODE;
 import static com.android.internal.util.ArrayUtils.convertToLongArray;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
@@ -85,20 +87,36 @@ public class AccessibilityShortcutController {
             new ComponentName("com.android.server.accessibility", "OneHandedMode");
     public static final ComponentName REDUCE_BRIGHT_COLORS_COMPONENT_NAME =
             new ComponentName("com.android.server.accessibility", "ReduceBrightColors");
+    public static final ComponentName FONT_SIZE_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "FontSize");
 
     // The component name for the sub setting of Accessibility button in Accessibility settings
     public static final ComponentName ACCESSIBILITY_BUTTON_COMPONENT_NAME =
             new ComponentName("com.android.server.accessibility", "AccessibilityButton");
 
+    // The component name for the sub setting of Hearing aids in Accessibility settings
+    public static final ComponentName ACCESSIBILITY_HEARING_AIDS_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "HearingAids");
+
+    public static final ComponentName COLOR_INVERSION_TILE_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "ColorInversionTile");
+    public static final ComponentName DALTONIZER_TILE_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "ColorCorrectionTile");
+    public static final ComponentName ONE_HANDED_TILE_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "OneHandedModeTile");
+    public static final ComponentName REDUCE_BRIGHT_COLORS_TILE_SERVICE_COMPONENT_NAME =
+            new ComponentName("com.android.server.accessibility", "ReduceBrightColorsTile");
 
     private static final AudioAttributes VIBRATION_ATTRIBUTES = new AudioAttributes.Builder()
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
             .build();
-    private static Map<ComponentName, ToggleableFrameworkFeatureInfo> sFrameworkShortcutFeaturesMap;
+    private static Map<ComponentName, FrameworkFeatureInfo> sFrameworkShortcutFeaturesMap;
 
     private final Context mContext;
     private final Handler mHandler;
+    private final UserSetupCompleteObserver  mUserSetupCompleteObserver;
+
     private AlertDialog mAlertDialog;
     private boolean mIsShortcutEnabled;
     private boolean mEnabledOnLockScreen;
@@ -106,11 +124,11 @@ public class AccessibilityShortcutController {
 
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({
-            DialogStaus.NOT_SHOWN,
-            DialogStaus.SHOWN,
+            DialogStatus.NOT_SHOWN,
+            DialogStatus.SHOWN,
     })
     /** Denotes the user shortcut type. */
-    private @interface DialogStaus {
+    private @interface DialogStatus {
         int NOT_SHOWN = 0;
         int SHOWN  = 1;
     }
@@ -122,10 +140,10 @@ public class AccessibilityShortcutController {
      * @return An immutable map from placeholder component names to feature
      *         info for toggling a framework feature
      */
-    public static Map<ComponentName, ToggleableFrameworkFeatureInfo>
+    public static Map<ComponentName, FrameworkFeatureInfo>
         getFrameworkShortcutFeaturesMap() {
         if (sFrameworkShortcutFeaturesMap == null) {
-            Map<ComponentName, ToggleableFrameworkFeatureInfo> featuresMap = new ArrayMap<>(4);
+            Map<ComponentName, FrameworkFeatureInfo> featuresMap = new ArrayMap<>(4);
             featuresMap.put(COLOR_INVERSION_COMPONENT_NAME,
                     new ToggleableFrameworkFeatureInfo(
                             Settings.Secure.ACCESSIBILITY_DISPLAY_INVERSION_ENABLED,
@@ -136,16 +154,20 @@ public class AccessibilityShortcutController {
                             Settings.Secure.ACCESSIBILITY_DISPLAY_DALTONIZER_ENABLED,
                             "1" /* Value to enable */, "0" /* Value to disable */,
                             R.string.color_correction_feature_name));
-            featuresMap.put(ONE_HANDED_COMPONENT_NAME,
-                    new ToggleableFrameworkFeatureInfo(
-                            Settings.Secure.ONE_HANDED_MODE_ACTIVATED,
-                            "1" /* Value to enable */, "0" /* Value to disable */,
-                            R.string.one_handed_mode_feature_name));
+            if (SUPPORT_ONE_HANDED_MODE) {
+                featuresMap.put(ONE_HANDED_COMPONENT_NAME,
+                        new ToggleableFrameworkFeatureInfo(
+                                Settings.Secure.ONE_HANDED_MODE_ACTIVATED,
+                                "1" /* Value to enable */, "0" /* Value to disable */,
+                                R.string.one_handed_mode_feature_name));
+            }
             featuresMap.put(REDUCE_BRIGHT_COLORS_COMPONENT_NAME,
                     new ToggleableFrameworkFeatureInfo(
                             Settings.Secure.REDUCE_BRIGHT_COLORS_ACTIVATED,
                             "1" /* Value to enable */, "0" /* Value to disable */,
                             R.string.reduce_bright_colors_feature_name));
+            featuresMap.put(ACCESSIBILITY_HEARING_AIDS_COMPONENT_NAME,
+                    new LaunchableFrameworkFeatureInfo(R.string.hearing_aids_feature_name));
             sFrameworkShortcutFeaturesMap = Collections.unmodifiableMap(featuresMap);
         }
         return sFrameworkShortcutFeaturesMap;
@@ -155,6 +177,7 @@ public class AccessibilityShortcutController {
         mContext = context;
         mHandler = handler;
         mUserId = initialUserId;
+        mUserSetupCompleteObserver = new UserSetupCompleteObserver(handler, initialUserId);
 
         // Keep track of state of shortcut settings
         final ContentObserver co = new ContentObserver(handler) {
@@ -180,6 +203,7 @@ public class AccessibilityShortcutController {
     public void setCurrentUser(int currentUserId) {
         mUserId = currentUserId;
         onSettingsChanged();
+        mUserSetupCompleteObserver.onUserSwitched(currentUserId);
     }
 
     /**
@@ -198,7 +222,7 @@ public class AccessibilityShortcutController {
         final ContentResolver cr = mContext.getContentResolver();
         // Enable the shortcut from the lockscreen by default if the dialog has been shown
         final int dialogAlreadyShown = Settings.Secure.getIntForUser(
-                cr, Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN, DialogStaus.NOT_SHOWN,
+                cr, Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN, DialogStatus.NOT_SHOWN,
                 mUserId);
         mEnabledOnLockScreen = Settings.Secure.getIntForUser(
                 cr, Settings.Secure.ACCESSIBILITY_SHORTCUT_ON_LOCK_SCREEN,
@@ -213,9 +237,7 @@ public class AccessibilityShortcutController {
         Slog.d(TAG, "Accessibility shortcut activated");
         final ContentResolver cr = mContext.getContentResolver();
         final int userId = ActivityManager.getCurrentUser();
-        final int dialogAlreadyShown = Settings.Secure.getIntForUser(
-                cr, Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN, DialogStaus.NOT_SHOWN,
-                userId);
+
         // Play a notification vibration
         Vibrator vibrator = (Vibrator) mContext.getSystemService(Context.VIBRATOR_SERVICE);
         if ((vibrator != null) && vibrator.hasVibrator()) {
@@ -226,7 +248,7 @@ public class AccessibilityShortcutController {
             vibrator.vibrate(vibePattern, -1, VIBRATION_ATTRIBUTES);
         }
 
-        if (dialogAlreadyShown == 0) {
+        if (shouldShowDialog()) {
             // The first time, we show a warning rather than toggle the service to give the user a
             // chance to turn off this feature before stuff gets enabled.
             mAlertDialog = createShortcutWarningDialog(userId);
@@ -242,7 +264,7 @@ public class AccessibilityShortcutController {
             w.setAttributes(attr);
             mAlertDialog.show();
             Settings.Secure.putIntForUser(
-                    cr, Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN, DialogStaus.SHOWN,
+                    cr, Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN, DialogStatus.SHOWN,
                     userId);
         } else {
             playNotificationTone();
@@ -254,6 +276,20 @@ public class AccessibilityShortcutController {
             mFrameworkObjectProvider.getAccessibilityManagerInstance(mContext)
                     .performAccessibilityShortcut();
         }
+    }
+
+    /** Whether the warning dialog should be shown instead of performing the shortcut. */
+    private boolean shouldShowDialog() {
+        if (hasFeatureLeanback()) {
+            // Never show the dialog on TV, instead always perform the shortcut directly.
+            return false;
+        }
+        final ContentResolver cr = mContext.getContentResolver();
+        final int userId = ActivityManager.getCurrentUser();
+        final int dialogAlreadyShown = Settings.Secure.getIntForUser(cr,
+                Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN, DialogStatus.NOT_SHOWN,
+                userId);
+        return dialogAlreadyShown == DialogStatus.NOT_SHOWN;
     }
 
     /**
@@ -312,13 +348,13 @@ public class AccessibilityShortcutController {
                             // If canceled, treat as if the dialog has never been shown
                             Settings.Secure.putIntForUser(mContext.getContentResolver(),
                                     Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN,
-                                    DialogStaus.NOT_SHOWN, userId);
+                                    DialogStatus.NOT_SHOWN, userId);
                         })
                 .setOnCancelListener((DialogInterface d) -> {
                     // If canceled, treat as if the dialog has never been shown
                     Settings.Secure.putIntForUser(mContext.getContentResolver(),
                             Settings.Secure.ACCESSIBILITY_SHORTCUT_DIALOG_SHOWN,
-                            DialogStaus.NOT_SHOWN, userId);
+                            DialogStatus.NOT_SHOWN, userId);
                 })
                 .create();
         return alertDialog;
@@ -366,7 +402,7 @@ public class AccessibilityShortcutController {
         if (targetComponentName == null) {
             return null;
         }
-        final ToggleableFrameworkFeatureInfo frameworkFeatureInfo =
+        final FrameworkFeatureInfo frameworkFeatureInfo =
                 getFrameworkShortcutFeaturesMap().get(targetComponentName);
         if (frameworkFeatureInfo != null) {
             return frameworkFeatureInfo.getLabel(mContext);
@@ -390,7 +426,7 @@ public class AccessibilityShortcutController {
         AccessibilityManager accessibilityManager =
                 mFrameworkObjectProvider.getAccessibilityManagerInstance(mContext);
         return accessibilityManager.getEnabledAccessibilityServiceList(
-                AccessibilityServiceInfo.FEEDBACK_ALL_MASK).contains(serviceInfo);
+                FEEDBACK_ALL_MASK).contains(serviceInfo);
     }
 
     private boolean hasFeatureLeanback() {
@@ -404,9 +440,18 @@ public class AccessibilityShortcutController {
                 ? AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY
                 : AudioAttributes.USAGE_NOTIFICATION_EVENT;
 
+        // Use the default accessibility notification sound instead to avoid users confusing the new
+        // notification received. Point to the default notification sound if the sound does not
+        // exist.
+        final Uri ringtoneUri = Uri.parse("file://"
+                + mContext.getString(R.string.config_defaultAccessibilityNotificationSound));
+        Ringtone tone = mFrameworkObjectProvider.getRingtone(mContext, ringtoneUri);
+        if (tone == null) {
+            tone = mFrameworkObjectProvider.getRingtone(mContext,
+                    Settings.System.DEFAULT_NOTIFICATION_URI);
+        }
+
         // Play a notification tone
-        final Ringtone tone = mFrameworkObjectProvider.getRingtone(mContext,
-                Settings.System.DEFAULT_NOTIFICATION_URI);
         if (tone != null) {
             tone.setAudioAttributes(new AudioAttributes.Builder()
                     .setUsage(audioAttributesUsage)
@@ -551,18 +596,112 @@ public class AccessibilityShortcutController {
         }
     }
 
+    private class UserSetupCompleteObserver extends ContentObserver {
+
+        private boolean mIsRegistered = false;
+        private int mUserId;
+
+        /**
+         * Creates a content observer.
+         *
+         * @param handler The handler to run {@link #onChange} on, or null if none.
+         * @param userId The current user id.
+         */
+        UserSetupCompleteObserver(Handler handler, int userId) {
+            super(handler);
+            mUserId = userId;
+            if (!isUserSetupComplete()) {
+                registerObserver();
+            }
+        }
+
+        private boolean isUserSetupComplete() {
+            return Settings.Secure.getIntForUser(mContext.getContentResolver(),
+                    Settings.Secure.USER_SETUP_COMPLETE, 0, mUserId) == 1;
+        }
+
+        private void registerObserver() {
+            if (mIsRegistered) {
+                return;
+            }
+            mContext.getContentResolver().registerContentObserver(
+                    Settings.Secure.getUriFor(Settings.Secure.USER_SETUP_COMPLETE),
+                    false, this, mUserId);
+            mIsRegistered = true;
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            if (isUserSetupComplete()) {
+                unregisterObserver();
+                setEmptyShortcutTargetIfNeeded();
+            }
+        }
+
+        private void unregisterObserver() {
+            if (!mIsRegistered) {
+                return;
+            }
+            mContext.getContentResolver().unregisterContentObserver(this);
+            mIsRegistered = false;
+        }
+
+        /**
+         * Sets empty shortcut target if shortcut targets is not assigned and there is no any
+         * enabled service matching the default target after the setup wizard completed.
+         *
+         */
+        private void setEmptyShortcutTargetIfNeeded() {
+            if (hasFeatureLeanback()) {
+                // Do not disable the default shortcut on TV.
+                return;
+            }
+
+            final ContentResolver contentResolver = mContext.getContentResolver();
+
+            final String shortcutTargets = Settings.Secure.getStringForUser(contentResolver,
+                    Settings.Secure.ACCESSIBILITY_SHORTCUT_TARGET_SERVICE, mUserId);
+            if (shortcutTargets != null) {
+                return;
+            }
+
+            final String defaultShortcutTarget = mContext.getString(
+                    R.string.config_defaultAccessibilityService);
+            final List<AccessibilityServiceInfo> enabledServices =
+                    mFrameworkObjectProvider.getAccessibilityManagerInstance(
+                            mContext).getEnabledAccessibilityServiceList(FEEDBACK_ALL_MASK);
+            for (int i = enabledServices.size() - 1; i >= 0; i--) {
+                if (TextUtils.equals(defaultShortcutTarget, enabledServices.get(i).getId())) {
+                    return;
+                }
+            }
+
+            Settings.Secure.putStringForUser(contentResolver,
+                    Settings.Secure.ACCESSIBILITY_SHORTCUT_TARGET_SERVICE, "", mUserId);
+        }
+
+        void onUserSwitched(int userId) {
+            if (mUserId == userId) {
+                return;
+            }
+            unregisterObserver();
+            mUserId = userId;
+            if (!isUserSetupComplete()) {
+                registerObserver();
+            }
+        }
+    }
+
     /**
      * Immutable class to hold info about framework features that can be controlled by shortcut
      */
-    public static class ToggleableFrameworkFeatureInfo {
+    public abstract static class FrameworkFeatureInfo {
         private final String mSettingKey;
         private final String mSettingOnValue;
         private final String mSettingOffValue;
         private final int mLabelStringResourceId;
-        // These go to the settings wrapper
-        private int mIconDrawableId;
 
-        ToggleableFrameworkFeatureInfo(String settingKey, String settingOnValue,
+        FrameworkFeatureInfo(String settingKey, String settingOnValue,
                 String settingOffValue, int labelStringResourceId) {
             mSettingKey = settingKey;
             mSettingOnValue = settingOnValue;
@@ -580,7 +719,7 @@ public class AccessibilityShortcutController {
         /**
          * @return The value to write to settings to turn the feature on
          */
-        public String getSettingOnValue() {
+        public String getSettingOnValue()  {
             return mSettingOnValue;
         }
 
@@ -593,6 +732,29 @@ public class AccessibilityShortcutController {
 
         public String getLabel(Context context) {
             return context.getString(mLabelStringResourceId);
+        }
+    }
+    /**
+     * Immutable class to hold framework features that have on/off state settings key and can be
+     * controlled by shortcut.
+     */
+    public static class ToggleableFrameworkFeatureInfo extends FrameworkFeatureInfo {
+
+        ToggleableFrameworkFeatureInfo(String settingKey, String settingOnValue,
+                String settingOffValue, int labelStringResourceId) {
+            super(settingKey, settingOnValue, settingOffValue, labelStringResourceId);
+        }
+    }
+
+    /**
+     * Immutable class to hold framework features that don't have settings key and can be controlled
+     * by shortcut.
+     */
+    public static class LaunchableFrameworkFeatureInfo extends FrameworkFeatureInfo {
+
+        LaunchableFrameworkFeatureInfo(int labelStringResourceId) {
+            super(/* settingKey= */ null, /* settingOnValue= */ null, /* settingOffValue= */ null,
+                    labelStringResourceId);
         }
     }
 

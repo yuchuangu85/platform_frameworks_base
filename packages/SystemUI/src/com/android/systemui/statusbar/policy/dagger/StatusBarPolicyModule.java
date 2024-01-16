@@ -16,10 +16,12 @@
 
 package com.android.systemui.statusbar.policy.dagger;
 
+import android.content.Context;
 import android.content.res.Resources;
 import android.os.UserManager;
 
 import com.android.internal.R;
+import com.android.settingslib.devicestate.DeviceStateRotationLockSettingsManager;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.settings.UserTracker;
@@ -27,10 +29,14 @@ import com.android.systemui.statusbar.connectivity.AccessPointController;
 import com.android.systemui.statusbar.connectivity.AccessPointControllerImpl;
 import com.android.systemui.statusbar.connectivity.NetworkController;
 import com.android.systemui.statusbar.connectivity.NetworkControllerImpl;
+import com.android.systemui.statusbar.connectivity.WifiPickerTrackerFactory;
+import com.android.systemui.statusbar.phone.ConfigurationControllerImpl;
 import com.android.systemui.statusbar.policy.BluetoothController;
 import com.android.systemui.statusbar.policy.BluetoothControllerImpl;
 import com.android.systemui.statusbar.policy.CastController;
 import com.android.systemui.statusbar.policy.CastControllerImpl;
+import com.android.systemui.statusbar.policy.ConfigurationController;
+import com.android.systemui.statusbar.policy.DataSaverController;
 import com.android.systemui.statusbar.policy.DeviceControlsController;
 import com.android.systemui.statusbar.policy.DeviceControlsControllerImpl;
 import com.android.systemui.statusbar.policy.DevicePostureController;
@@ -57,15 +63,16 @@ import com.android.systemui.statusbar.policy.WalletController;
 import com.android.systemui.statusbar.policy.WalletControllerImpl;
 import com.android.systemui.statusbar.policy.ZenModeController;
 import com.android.systemui.statusbar.policy.ZenModeControllerImpl;
-
-import java.util.concurrent.Executor;
-
-import javax.inject.Named;
+import com.android.systemui.statusbar.policy.bluetooth.BluetoothRepository;
+import com.android.systemui.statusbar.policy.bluetooth.BluetoothRepositoryImpl;
 
 import dagger.Binds;
 import dagger.Module;
 import dagger.Provides;
 
+import java.util.concurrent.Executor;
+
+import javax.inject.Named;
 
 /** Dagger Module for code in the statusbar.policy package. */
 @Module
@@ -79,7 +86,15 @@ public interface StatusBarPolicyModule {
 
     /** */
     @Binds
+    BluetoothRepository provideBluetoothRepository(BluetoothRepositoryImpl impl);
+
+    /** */
+    @Binds
     CastController provideCastController(CastControllerImpl controllerImpl);
+
+    /** */
+    @Binds
+    ConfigurationController bindConfigurationController(ConfigurationControllerImpl impl);
 
     /** */
     @Binds
@@ -151,7 +166,7 @@ public interface StatusBarPolicyModule {
             UserManager userManager,
             UserTracker userTracker,
             @Main Executor mainExecutor,
-            AccessPointControllerImpl.WifiPickerTrackerFactory wifiPickerTrackerFactory
+            WifiPickerTrackerFactory wifiPickerTrackerFactory
     ) {
         AccessPointControllerImpl controller = new AccessPointControllerImpl(
                 userManager,
@@ -163,6 +178,14 @@ public interface StatusBarPolicyModule {
         return controller;
     }
 
+    /** Returns a singleton instance of DeviceStateRotationLockSettingsManager */
+    @SysUISingleton
+    @Provides
+    static DeviceStateRotationLockSettingsManager provideAutoRotateSettingsManager(
+            Context context) {
+        return DeviceStateRotationLockSettingsManager.getInstance(context);
+    }
+
     /**
      * Default values for per-device state rotation lock settings.
      */
@@ -171,5 +194,12 @@ public interface StatusBarPolicyModule {
     static String[] providesDeviceStateRotationLockDefaults(@Main Resources resources) {
         return resources.getStringArray(
                 R.array.config_perDeviceStateRotationLockDefaults);
+    }
+
+    /** */
+    @Provides
+    @SysUISingleton
+    static DataSaverController provideDataSaverController(NetworkController networkController) {
+        return networkController.getDataSaverController();
     }
 }

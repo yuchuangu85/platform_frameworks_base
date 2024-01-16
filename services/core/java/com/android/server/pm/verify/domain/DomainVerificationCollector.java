@@ -22,8 +22,6 @@ import android.compat.annotation.ChangeId;
 import android.compat.annotation.EnabledSince;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.pm.parsing.component.ParsedActivity;
-import android.content.pm.parsing.component.ParsedIntentInfo;
 import android.os.Build;
 import android.text.TextUtils;
 import android.util.ArraySet;
@@ -31,7 +29,9 @@ import android.util.Patterns;
 
 import com.android.server.SystemConfig;
 import com.android.server.compat.PlatformCompat;
-import com.android.server.pm.parsing.pkg.AndroidPackage;
+import com.android.server.pm.pkg.AndroidPackage;
+import com.android.server.pm.pkg.component.ParsedActivity;
+import com.android.server.pm.pkg.component.ParsedIntentInfo;
 
 import java.util.List;
 import java.util.Objects;
@@ -187,7 +187,7 @@ public class DomainVerificationCollector {
                 for (int intentIndex = 0; intentIndex < intentsSize && !needsAutoVerify;
                         intentIndex++) {
                     ParsedIntentInfo intent = intents.get(intentIndex);
-                    needsAutoVerify = intent.needsVerification();
+                    needsAutoVerify = intent.getIntentFilter().needsVerification();
                 }
             }
 
@@ -205,10 +205,11 @@ public class DomainVerificationCollector {
             int intentsSize = intents.size();
             for (int intentIndex = 0; intentIndex < intentsSize && underMaxSize; intentIndex++) {
                 ParsedIntentInfo intent = intents.get(intentIndex);
-                if (intent.handlesWebUris(false)) {
-                    int authorityCount = intent.countDataAuthorities();
+                IntentFilter intentFilter = intent.getIntentFilter();
+                if (intentFilter.handlesWebUris(false)) {
+                    int authorityCount = intentFilter.countDataAuthorities();
                     for (int index = 0; index < authorityCount; index++) {
-                        String host = intent.getDataAuthority(index).getHost();
+                        String host = intentFilter.getDataAuthority(index).getHost();
                         if (isValidHost(host) == valid) {
                             totalSize += byteSizeOf(host);
                             underMaxSize = totalSize < MAX_DOMAINS_BYTE_SIZE;
@@ -248,12 +249,13 @@ public class DomainVerificationCollector {
             int intentsSize = intents.size();
             for (int intentIndex = 0; intentIndex < intentsSize && underMaxSize; intentIndex++) {
                 ParsedIntentInfo intent = intents.get(intentIndex);
-                if (checkAutoVerify && !intent.getAutoVerify()) {
+                IntentFilter intentFilter = intent.getIntentFilter();
+                if (checkAutoVerify && !intentFilter.getAutoVerify()) {
                     continue;
                 }
 
-                if (!intent.hasCategory(Intent.CATEGORY_DEFAULT)
-                        || !intent.handlesWebUris(checkAutoVerify)) {
+                if (!intentFilter.hasCategory(Intent.CATEGORY_DEFAULT)
+                        || !intentFilter.handlesWebUris(checkAutoVerify)) {
                     continue;
                 }
 
@@ -271,9 +273,9 @@ public class DomainVerificationCollector {
                 //  app will probably fail. This can be re-configured to work properly by the
                 //  app developer by declaring a separate intent-filter. This may not be worth
                 //  fixing.
-                int authorityCount = intent.countDataAuthorities();
+                int authorityCount = intentFilter.countDataAuthorities();
                 for (int index = 0; index < authorityCount && underMaxSize; index++) {
-                    String host = intent.getDataAuthority(index).getHost();
+                    String host = intentFilter.getDataAuthority(index).getHost();
                     if (isValidHost(host) == valid) {
                         totalSize += byteSizeOf(host);
                         underMaxSize = totalSize < MAX_DOMAINS_BYTE_SIZE;

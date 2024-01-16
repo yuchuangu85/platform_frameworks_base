@@ -55,7 +55,7 @@ using hardware::cas::native::V1_0::IDescrambler;
 struct JMediaCodec : public AHandler {
     JMediaCodec(
             JNIEnv *env, jobject thiz,
-            const char *name, bool nameIsType, bool encoder);
+            const char *name, bool nameIsType, bool encoder, int pid, int uid);
 
     status_t initCheck() const;
 
@@ -175,6 +175,8 @@ struct JMediaCodec : public AHandler {
     bool hasCryptoOrDescrambler() { return mHasCryptoOrDescrambler; }
 
     const sp<ICrypto> &getCrypto() { return mCrypto; }
+
+    std::string getExceptionMessage(const char *msg) const;
 
 protected:
     virtual ~JMediaCodec();

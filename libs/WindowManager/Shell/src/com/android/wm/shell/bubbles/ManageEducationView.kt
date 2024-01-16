@@ -41,9 +41,9 @@ class ManageEducationView constructor(context: Context, positioner: BubblePositi
     private val ANIMATE_DURATION: Long = 200
 
     private val positioner: BubblePositioner = positioner
-    private val manageView by lazy { findViewById<ViewGroup>(R.id.manage_education_view) }
-    private val manageButton by lazy { findViewById<Button>(R.id.manage_button) }
-    private val gotItButton by lazy { findViewById<Button>(R.id.got_it) }
+    private val manageView by lazy { requireViewById<ViewGroup>(R.id.manage_education_view) }
+    private val manageButton by lazy { requireViewById<Button>(R.id.manage_button) }
+    private val gotItButton by lazy { requireViewById<Button>(R.id.got_it) }
 
     private var isHiding = false
     private var realManageButtonRect = Rect()
@@ -101,21 +101,28 @@ class ManageEducationView constructor(context: Context, positioner: BubblePositi
         bubbleExpandedView = expandedView
         expandedView.taskView?.setObscuredTouchRect(Rect(positioner.screenRect))
 
-        layoutParams.width = if (positioner.isLargeScreen)
-            context.resources.getDimensionPixelSize(
-                    R.dimen.bubbles_user_education_width_large_screen)
+        layoutParams.width = if (positioner.isLargeScreen || positioner.isLandscape)
+            context.resources.getDimensionPixelSize(R.dimen.bubbles_user_education_width)
         else ViewGroup.LayoutParams.MATCH_PARENT
 
         alpha = 0f
         visibility = View.VISIBLE
         expandedView.getManageButtonBoundsOnScreen(realManageButtonRect)
-        manageView.setPadding(realManageButtonRect.left - expandedView.manageButtonMargin,
-                manageView.paddingTop, manageView.paddingRight, manageView.paddingBottom)
+        val isRTL = mContext.resources.configuration.layoutDirection == LAYOUT_DIRECTION_RTL
+        if (isRTL) {
+            val rightPadding = positioner.screenRect.right - realManageButtonRect.right -
+                    expandedView.manageButtonMargin
+            manageView.setPadding(manageView.paddingLeft, manageView.paddingTop,
+                    rightPadding, manageView.paddingBottom)
+        } else {
+            manageView.setPadding(realManageButtonRect.left - expandedView.manageButtonMargin,
+            manageView.paddingTop, manageView.paddingRight, manageView.paddingBottom)
+        }
         post {
             manageButton
                 .setOnClickListener {
                     hide()
-                    expandedView.findViewById<View>(R.id.manage_button).performClick()
+                    expandedView.requireViewById<View>(R.id.manage_button).performClick()
                 }
             gotItButton.setOnClickListener { hide() }
             setOnClickListener { hide() }
@@ -123,7 +130,11 @@ class ManageEducationView constructor(context: Context, positioner: BubblePositi
             val offsetViewBounds = Rect()
             manageButton.getDrawingRect(offsetViewBounds)
             manageView.offsetDescendantRectToMyCoords(manageButton, offsetViewBounds)
-            translationX = 0f
+            if (isRTL && (positioner.isLargeScreen || positioner.isLandscape)) {
+                translationX = (positioner.screenRect.right - width).toFloat()
+            } else {
+                translationX = 0f
+            }
             translationY = (realManageButtonRect.top - offsetViewBounds.top).toFloat()
             bringToFront()
             animate()

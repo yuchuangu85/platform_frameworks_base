@@ -16,11 +16,9 @@
 
 package com.android.systemui.statusbar.notification;
 
-import static android.app.WindowConfiguration.ACTIVITY_TYPE_UNDEFINED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
-import static android.app.WindowConfiguration.WINDOWING_MODE_SPLIT_SCREEN_PRIMARY;
-import static android.app.WindowConfiguration.WINDOWING_MODE_SPLIT_SCREEN_SECONDARY;
+import static android.app.WindowConfiguration.WINDOWING_MODE_MULTI_WINDOW;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -31,7 +29,6 @@ import android.app.AppGlobals;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
-import android.app.SynchronousUserSwitchObserver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -51,18 +48,17 @@ import android.util.Pair;
 
 import com.android.internal.messages.nano.SystemMessageProto;
 import com.android.internal.messages.nano.SystemMessageProto.SystemMessage;
-import com.android.systemui.Dependency;
+import com.android.systemui.CoreStartable;
 import com.android.systemui.R;
-import com.android.systemui.SystemUI;
 import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.dagger.qualifiers.UiBackground;
+import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 import com.android.systemui.util.NotificationChannels;
-import com.android.wm.shell.legacysplitscreen.LegacySplitScreen;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.Executor;
 
 import javax.inject.Inject;
@@ -71,47 +67,43 @@ import javax.inject.Inject;
  * splitted screen.
  */
 @SysUISingleton
-public class InstantAppNotifier extends SystemUI
-        implements CommandQueue.Callbacks, KeyguardStateController.Callback {
+public class InstantAppNotifier
+        implements CoreStartable, CommandQueue.Callbacks, KeyguardStateController.Callback {
     private static final String TAG = "InstantAppNotifier";
     public static final int NUM_TASKS_FOR_INSTANT_APP_INFO = 5;
 
+    private final Context mContext;
     private final Handler mHandler = new Handler();
+    private final UserTracker mUserTracker;
+    private final Executor mMainExecutor;
     private final Executor mUiBgExecutor;
     private final ArraySet<Pair<String, Integer>> mCurrentNotifs = new ArraySet<>();
     private final CommandQueue mCommandQueue;
-    private boolean mDockedStackExists;
-    private KeyguardStateController mKeyguardStateController;
-    private final Optional<LegacySplitScreen> mSplitScreenOptional;
+    private final KeyguardStateController mKeyguardStateController;
 
     @Inject
-    public InstantAppNotifier(Context context, CommandQueue commandQueue,
-            @UiBackground Executor uiBgExecutor, Optional<LegacySplitScreen> splitScreenOptional) {
-        super(context);
-        mSplitScreenOptional = splitScreenOptional;
+    public InstantAppNotifier(
+            Context context,
+            CommandQueue commandQueue,
+            UserTracker userTracker,
+            @Main Executor mainExecutor,
+            @UiBackground Executor uiBgExecutor,
+            KeyguardStateController keyguardStateController) {
+        mContext = context;
         mCommandQueue = commandQueue;
+        mUserTracker = userTracker;
+        mMainExecutor = mainExecutor;
         mUiBgExecutor = uiBgExecutor;
+        mKeyguardStateController = keyguardStateController;
     }
 
     @Override
     public void start() {
-        mKeyguardStateController = Dependency.get(KeyguardStateController.class);
-
         // listen for user / profile change.
-        try {
-            ActivityManager.getService().registerUserSwitchObserver(mUserSwitchListener, TAG);
-        } catch (RemoteException e) {
-            // Ignore
-        }
+        mUserTracker.addCallback(mUserSwitchListener, mMainExecutor);
 
         mCommandQueue.addCallback(this);
         mKeyguardStateController.addCallback(this);
-
-        mSplitScreenOptional.ifPresent(splitScreen ->
-                splitScreen.registerInSplitScreenListener(exists -> {
-                    mDockedStackExists = exists;
-                    updateForegroundInstantApps();
-                }));
 
         // Clear out all old notifications on startup (only present in the case where sysui dies)
         NotificationManager noMan = mContext.getSystemService(NotificationManager.class);
@@ -140,13 +132,10 @@ public class InstantAppNotifier extends SystemUI
         updateForegroundInstantApps();
     }
 
-    private final SynchronousUserSwitchObserver mUserSwitchListener =
-            new SynchronousUserSwitchObserver() {
+    private final UserTracker.Callback mUserSwitchListener =
+            new UserTracker.Callback() {
                 @Override
-                public void onUserSwitching(int newUserId) throws RemoteException {}
-
-                @Override
-                public void onUserSwitchComplete(int newUserId) throws RemoteException {
+                public void onUserChanged(int newUser, Context userContext) {
                     mHandler.post(
                             () -> {
                                 updateForegroundInstantApps();
@@ -169,13 +158,10 @@ public class InstantAppNotifier extends SystemUI
                                     focusedTask.configuration.windowConfiguration
                                             .getWindowingMode();
                             if (windowingMode == WINDOWING_MODE_FULLSCREEN
-                                    || windowingMode == WINDOWING_MODE_SPLIT_SCREEN_SECONDARY
+                                    || windowingMode == WINDOWING_MODE_MULTI_WINDOW
                                     || windowingMode == WINDOWING_MODE_FREEFORM) {
                                 checkAndPostForStack(focusedTask, notifs, noMan, pm);
                             }
-                        }
-                        if (mDockedStackExists) {
-                            checkAndPostForPrimaryScreen(notifs, noMan, pm);
                         }
                     } catch (RemoteException e) {
                         e.rethrowFromSystemServer();
@@ -193,25 +179,6 @@ public class InstantAppNotifier extends SystemUI
                                         new UserHandle(v.second));
                             });
                 });
-    }
-
-    /**
-     * Posts an instant app notification if the top activity of the primary container in the
-     * splitted screen is an instant app and the corresponding instant app notification is not
-     * posted yet. If the notification already exists, this method removes it from {@code
-     * notifs} in the arguments.
-     */
-    private void checkAndPostForPrimaryScreen(
-            @NonNull ArraySet<Pair<String, Integer>> notifs,
-            @NonNull NotificationManager noMan,
-            @NonNull IPackageManager pm) {
-        try {
-            final RootTaskInfo info = ActivityTaskManager.getService().getRootTaskInfo(
-                    WINDOWING_MODE_SPLIT_SCREEN_PRIMARY, ACTIVITY_TYPE_UNDEFINED);
-            checkAndPostForStack(info, notifs, noMan, pm);
-        } catch (RemoteException e) {
-            e.rethrowFromSystemServer();
-        }
     }
 
     /**
@@ -295,7 +262,7 @@ public class InstantAppNotifier extends SystemUI
 
         Intent browserIntent = getTaskIntent(taskId, userId);
         Notification.Builder builder =
-                new Notification.Builder(mContext, NotificationChannels.GENERAL);
+                new Notification.Builder(mContext, NotificationChannels.INSTANT);
         if (browserIntent != null && browserIntent.isWebIntent()) {
             // Make sure that this doesn't resolve back to an instant app
             browserIntent
@@ -323,7 +290,7 @@ public class InstantAppNotifier extends SystemUI
                             .setComponent(aiaComponent)
                             .setAction(Intent.ACTION_VIEW)
                             .addCategory(Intent.CATEGORY_BROWSABLE)
-                            .addCategory("unique:" + System.currentTimeMillis())
+                            .setIdentifier("unique:" + System.currentTimeMillis())
                             .putExtra(Intent.EXTRA_PACKAGE_NAME, appInfo.packageName)
                             .putExtra(
                                     Intent.EXTRA_VERSION_CODE,

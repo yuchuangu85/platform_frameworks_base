@@ -38,9 +38,11 @@ import android.app.ActivityManager;
 import android.app.ActivityManager.ProcessCapability;
 import android.net.NetworkPolicyManager;
 import android.os.UserHandle;
+import android.util.ArraySet;
 import android.util.Log;
 import android.util.Slog;
 
+import com.android.internal.annotations.Keep;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.RingBuffer;
 import com.android.server.am.ProcessList;
@@ -77,6 +79,10 @@ public class NetworkPolicyLogger {
     private static final int EVENT_FIREWALL_CHAIN_ENABLED = 12;
     private static final int EVENT_UPDATE_METERED_RESTRICTED_PKGS = 13;
     private static final int EVENT_APP_IDLE_WL_CHANGED = 14;
+    private static final int EVENT_METERED_ALLOWLIST_CHANGED = 15;
+    private static final int EVENT_METERED_DENYLIST_CHANGED = 16;
+    private static final int EVENT_ROAMING_CHANGED = 17;
+    private static final int EVENT_INTERFACES_CHANGED = 18;
 
     private final LogBuffer mNetworkBlockedBuffer = new LogBuffer(MAX_NETWORK_BLOCKED_LOG_SIZE);
     private final LogBuffer mUidStateChangeBuffer = new LogBuffer(MAX_LOG_SIZE);
@@ -89,7 +95,7 @@ public class NetworkPolicyLogger {
     void networkBlocked(int uid, @Nullable UidBlockedState uidBlockedState) {
         synchronized (mLock) {
             if (LOGD || uid == mDebugUid) {
-                Slog.d(TAG, "Blocked state of uid: " + uidBlockedState.toString());
+                Slog.d(TAG, "Blocked state of " + uid + ": " + uidBlockedState);
             }
             if (uidBlockedState == null) {
                 mNetworkBlockedBuffer.networkBlocked(uid, BLOCKED_REASON_NONE, ALLOWED_REASON_NONE,
@@ -245,6 +251,42 @@ public class NetworkPolicyLogger {
         }
     }
 
+    void meteredAllowlistChanged(int uid, boolean added) {
+        synchronized (mLock) {
+            if (LOGD || mDebugUid == uid) {
+                Slog.d(TAG, getMeteredAllowlistChangedLog(uid, added));
+            }
+            mEventsBuffer.meteredAllowlistChanged(uid, added);
+        }
+    }
+
+    void meteredDenylistChanged(int uid, boolean added) {
+        synchronized (mLock) {
+            if (LOGD || mDebugUid == uid) {
+                Slog.d(TAG, getMeteredDenylistChangedLog(uid, added));
+            }
+            mEventsBuffer.meteredDenylistChanged(uid, added);
+        }
+    }
+
+    void roamingChanged(int netId, boolean newRoaming) {
+        synchronized (mLock) {
+            if (LOGD || mDebugUid != INVALID_UID) {
+                Slog.d(TAG, getRoamingChangedLog(netId, newRoaming));
+            }
+            mEventsBuffer.roamingChanged(netId, newRoaming);
+        }
+    }
+
+    void interfacesChanged(int netId, ArraySet<String> newIfaces) {
+        synchronized (mLock) {
+            if (LOGD || mDebugUid != INVALID_UID) {
+                Slog.d(TAG, getInterfacesChangedLog(netId, newIfaces.toString()));
+            }
+            mEventsBuffer.interfacesChanged(netId, newIfaces.toString());
+        }
+    }
+
     void setDebugUid(int uid) {
         mDebugUid = uid;
     }
@@ -297,8 +339,8 @@ public class NetworkPolicyLogger {
         return "App idle state of uid " + uid + ": " + idle;
     }
 
-    private static String getAppIdleWlChangedLog(int uid, boolean isWhitelisted) {
-        return "App idle whitelist state of uid " + uid + ": " + isWhitelisted;
+    private static String getAppIdleWlChangedLog(int uid, boolean isAllowlisted) {
+        return "App idle whitelist state of uid " + uid + ": " + isAllowlisted;
     }
 
     private static String getParoleStateChanged(boolean paroleOn) {
@@ -318,6 +360,22 @@ public class NetworkPolicyLogger {
 
     private static String getFirewallChainEnabledLog(int chain, boolean enabled) {
         return "Firewall chain " + getFirewallChainName(chain) + " state: " + enabled;
+    }
+
+    private static String getMeteredAllowlistChangedLog(int uid, boolean added) {
+        return "metered-allowlist for " + uid + " changed to " + added;
+    }
+
+    private static String getMeteredDenylistChangedLog(int uid, boolean added) {
+        return "metered-denylist for " + uid + " changed to " + added;
+    }
+
+    private static String getRoamingChangedLog(int netId, boolean newRoaming) {
+        return "Roaming of netId=" + netId + " changed to " + newRoaming;
+    }
+
+    private static String getInterfacesChangedLog(int netId, String newIfaces) {
+        return "Interfaces of netId=" + netId + " changed to " + newIfaces;
     }
 
     private static String getFirewallChainName(int chain) {
@@ -462,14 +520,14 @@ public class NetworkPolicyLogger {
             data.timeStamp = System.currentTimeMillis();
         }
 
-        public void appIdleWlChanged(int uid, boolean isWhitelisted) {
+        public void appIdleWlChanged(int uid, boolean isAllowlisted) {
             final Data data = getNextSlot();
             if (data == null) return;
 
             data.reset();
             data.type = EVENT_APP_IDLE_WL_CHANGED;
             data.ifield1 = uid;
-            data.bfield1 = isWhitelisted;
+            data.bfield1 = isAllowlisted;
             data.timeStamp = System.currentTimeMillis();
         }
 
@@ -520,6 +578,50 @@ public class NetworkPolicyLogger {
             data.timeStamp = System.currentTimeMillis();
         }
 
+        public void meteredAllowlistChanged(int uid, boolean added) {
+            final Data data = getNextSlot();
+            if (data == null) return;
+
+            data.reset();
+            data.type = EVENT_METERED_ALLOWLIST_CHANGED;
+            data.ifield1 = uid;
+            data.bfield1 = added;
+            data.timeStamp = System.currentTimeMillis();
+        }
+
+        public void meteredDenylistChanged(int uid, boolean added) {
+            final Data data = getNextSlot();
+            if (data == null) return;
+
+            data.reset();
+            data.type = EVENT_METERED_DENYLIST_CHANGED;
+            data.ifield1 = uid;
+            data.bfield1 = added;
+            data.timeStamp = System.currentTimeMillis();
+        }
+
+        public void roamingChanged(int netId, boolean newRoaming) {
+            final Data data = getNextSlot();
+            if (data == null) return;
+
+            data.reset();
+            data.type = EVENT_ROAMING_CHANGED;
+            data.ifield1 = netId;
+            data.bfield1 = newRoaming;
+            data.timeStamp = System.currentTimeMillis();
+        }
+
+        public void interfacesChanged(int netId, String newIfaces) {
+            final Data data = getNextSlot();
+            if (data == null) return;
+
+            data.reset();
+            data.type = EVENT_INTERFACES_CHANGED;
+            data.ifield1 = netId;
+            data.sfield1 = newIfaces;
+            data.timeStamp = System.currentTimeMillis();
+        }
+
         public void reverseDump(IndentingPrintWriter pw) {
             final Data[] allData = toArray();
             for (int i = allData.length - 1; i >= 0; --i) {
@@ -567,6 +669,14 @@ public class NetworkPolicyLogger {
                     return getUidFirewallRuleChangedLog(data.ifield1, data.ifield2, data.ifield3);
                 case EVENT_FIREWALL_CHAIN_ENABLED:
                     return getFirewallChainEnabledLog(data.ifield1, data.bfield1);
+                case EVENT_METERED_ALLOWLIST_CHANGED:
+                    return getMeteredAllowlistChangedLog(data.ifield1, data.bfield1);
+                case EVENT_METERED_DENYLIST_CHANGED:
+                    return getMeteredDenylistChangedLog(data.ifield1, data.bfield1);
+                case EVENT_ROAMING_CHANGED:
+                    return getRoamingChangedLog(data.ifield1, data.bfield1);
+                case EVENT_INTERFACES_CHANGED:
+                    return getInterfacesChangedLog(data.ifield1, data.sfield1);
                 default:
                     return String.valueOf(data.type);
             }
@@ -584,6 +694,7 @@ public class NetworkPolicyLogger {
      * Note: This class needs to be public for RingBuffer class to be able to create
      * new instances of this.
      */
+    @Keep
     public static final class Data {
         public int type;
         public long timeStamp;

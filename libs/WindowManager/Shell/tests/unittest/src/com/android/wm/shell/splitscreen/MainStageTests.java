@@ -41,6 +41,8 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.util.Optional;
+
 /** Tests for {@link MainStage} */
 @SmallTest
 @RunWith(AndroidJUnit4.class)
@@ -61,14 +63,13 @@ public class MainStageTests extends ShellTestCase {
         MockitoAnnotations.initMocks(this);
         mRootTaskInfo = new TestRunningTaskInfoBuilder().build();
         mMainStage = new MainStage(mContext, mTaskOrganizer, DEFAULT_DISPLAY, mCallbacks,
-                mSyncQueue, mSurfaceSession, mIconProvider, null);
+                mSyncQueue, mSurfaceSession, mIconProvider, Optional.empty());
         mMainStage.onTaskAppeared(mRootTaskInfo, mRootLeash);
     }
 
     @Test
     public void testActiveDeactivate() {
-        mMainStage.activate(mRootTaskInfo.configuration.windowConfiguration.getBounds(), mWct,
-                true /* reparent */);
+        mMainStage.activate(mWct, true /* reparent */);
         assertThat(mMainStage.isActive()).isTrue();
 
         mMainStage.deactivate(mWct);

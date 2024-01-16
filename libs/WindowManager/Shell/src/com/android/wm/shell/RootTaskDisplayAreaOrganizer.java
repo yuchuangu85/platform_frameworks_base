@@ -122,6 +122,8 @@ public class RootTaskDisplayAreaOrganizer extends DisplayAreaOrganizer {
                             + " mDisplayAreasInfo.get():" + mDisplayAreasInfo.get(displayId));
         }
 
+        leash.setUnreleasedWarningCallSite(
+                "RootTaskDisplayAreaOrganizer.onDisplayAreaAppeared");
         mDisplayAreasInfo.put(displayId, displayAreaInfo);
         mLeashes.put(displayId, leash);
 
@@ -145,6 +147,8 @@ public class RootTaskDisplayAreaOrganizer extends DisplayAreaOrganizer {
         }
 
         mDisplayAreasInfo.remove(displayId);
+        mLeashes.get(displayId).release();
+        mLeashes.remove(displayId);
 
         ArrayList<RootTaskDisplayAreaListener> listeners = mListeners.get(displayId);
         if (listeners != null) {
@@ -174,6 +178,25 @@ public class RootTaskDisplayAreaOrganizer extends DisplayAreaOrganizer {
             }
         }
         applyConfigChangesToContext(displayAreaInfo);
+    }
+
+    /**
+     * Returns the list of display ids that are tracked by a {@link DisplayAreaInfo}
+     */
+    public int[] getDisplayIds() {
+        int[] displayIds = new int[mDisplayAreasInfo.size()];
+        for (int i = 0; i < mDisplayAreasInfo.size(); i++) {
+            displayIds[i] = mDisplayAreasInfo.keyAt(i);
+        }
+        return displayIds;
+    }
+
+    /**
+     * Returns the {@link DisplayAreaInfo} of the {@link DisplayAreaInfo#displayId}.
+     */
+    @Nullable
+    public DisplayAreaInfo getDisplayAreaInfo(int displayId) {
+        return mDisplayAreasInfo.get(displayId);
     }
 
     /**

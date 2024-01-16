@@ -18,6 +18,7 @@ package android.location;
 
 import static android.Manifest.permission.ACCESS_COARSE_LOCATION;
 import static android.Manifest.permission.ACCESS_FINE_LOCATION;
+import static android.Manifest.permission.LOCATION_BYPASS;
 import static android.Manifest.permission.LOCATION_HARDWARE;
 import static android.Manifest.permission.WRITE_SECURE_SETTINGS;
 import static android.location.LocationRequest.createFromDeprecatedCriteria;
@@ -180,6 +181,11 @@ public class LocationManager {
      * <p>If present, this provider determines location using GNSS satellites. The responsiveness
      * and accuracy of location fixes may depend on GNSS signal conditions.
      *
+     * <p>Locations returned from this provider are with respect to the primary GNSS antenna
+     * position within the device. {@link #getGnssAntennaInfos()} may be used to determine the GNSS
+     * antenna position with respect to the Android Coordinate System, and convert between them if
+     * necessary. This is generally only necessary for high accuracy applications.
+     *
      * <p>The extras Bundle for locations derived by this location provider may contain the
      * following key/value pairs:
      * <ul>
@@ -187,6 +193,21 @@ public class LocationManager {
      * </ul>
      */
     public static final String GPS_PROVIDER = "gps";
+
+    /**
+     * Standard name of the GNSS hardware location provider.
+     *
+     * <p>This provider is similar to {@link LocationManager#GPS_PROVIDER}, but it directly uses the
+     * HAL GNSS implementation and doesn't go through any provider overrides that may exist. This
+     * provider will only be available when the GPS_PROVIDER is overridden with a proxy using {@link
+     * android.location.provider.LocationProviderBase#ACTION_GNSS_PROVIDER}, and is intended only
+     * for use internally by the location provider system.
+     *
+     * @hide
+     */
+    @SystemApi
+    @RequiresPermission(Manifest.permission.LOCATION_HARDWARE)
+    public static final String GPS_HARDWARE_PROVIDER = "gps_hardware";
 
     /**
      * A special location provider for receiving locations without actively initiating a location
@@ -325,7 +346,7 @@ public class LocationManager {
      *
      * @hide
      */
-    // TODO: @SystemApi
+    @SystemApi
     @SdkConstant(SdkConstantType.BROADCAST_INTENT_ACTION)
     public static final String ACTION_ADAS_GNSS_ENABLED_CHANGED =
             "android.location.action.ADAS_GNSS_ENABLED_CHANGED";
@@ -338,7 +359,7 @@ public class LocationManager {
      *
      * @hide
      */
-    // TODO: @SystemApi
+    @SystemApi
     public static final String EXTRA_ADAS_GNSS_ENABLED = "android.location.extra.ADAS_GNSS_ENABLED";
 
     /**
@@ -492,6 +513,19 @@ public class LocationManager {
     public @NonNull PackageTagsList getIgnoreSettingsAllowlist() {
         try {
             return mService.getIgnoreSettingsAllowlist();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Returns ADAS packages and their associated attribution tags.
+     *
+     * @hide
+     */
+    public @NonNull PackageTagsList getAdasAllowlist() {
+        try {
+            return mService.getAdasAllowlist();
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -656,7 +690,7 @@ public class LocationManager {
      *
      * @hide
      */
-    //TODO: @SystemApi
+    @SystemApi
     public boolean isAdasGnssLocationEnabled() {
         try {
             return mService.isAdasGnssLocationEnabledForUser(mContext.getUser().getIdentifier());
@@ -673,8 +707,9 @@ public class LocationManager {
      *
      * @hide
      */
-    // TODO: @SystemApi
-    @RequiresPermission(WRITE_SECURE_SETTINGS)
+    @SystemApi
+    @RequiresPermission(LOCATION_BYPASS)
+    @RequiresFeature(PackageManager.FEATURE_AUTOMOTIVE)
     public void setAdasGnssLocationEnabled(boolean enabled) {
         try {
             mService.setAdasGnssLocationEnabledForUser(enabled, mContext.getUser().getIdentifier());
@@ -750,6 +785,47 @@ public class LocationManager {
             @NonNull String provider, boolean enabled, @NonNull UserHandle userHandle) {
         Preconditions.checkArgument(provider != null, "invalid null provider");
         return false;
+    }
+
+    /**
+     * Set whether GNSS requests are suspended on the automotive device.
+     *
+     * For devices where GNSS prevents the system from going into a low power state, GNSS should
+     * be suspended right before going into the lower power state and resumed right after the device
+     * wakes up.
+     *
+     * This method disables GNSS and should only be used for power management use cases such as
+     * suspend-to-RAM or suspend-to-disk.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    @RequiresFeature(PackageManager.FEATURE_AUTOMOTIVE)
+    @RequiresPermission(android.Manifest.permission.CONTROL_AUTOMOTIVE_GNSS)
+    public void setAutomotiveGnssSuspended(boolean suspended) {
+        try {
+            mService.setAutomotiveGnssSuspended(suspended);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Return whether GNSS requests are suspended on the automotive device.
+     *
+     * @return true if GNSS requests are suspended and false if they aren't.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    @RequiresFeature(PackageManager.FEATURE_AUTOMOTIVE)
+    @RequiresPermission(android.Manifest.permission.CONTROL_AUTOMOTIVE_GNSS)
+    public boolean isAutomotiveGnssSuspended() {
+        try {
+            return mService.isAutomotiveGnssSuspended();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
     }
 
     /**
@@ -1451,6 +1527,11 @@ public class LocationManager {
      * provider availability update will be sent. As soon as the provider is enabled again, another
      * provider availability update will be sent and location updates will resume.
      *
+     * <p>Locations returned from {@link #GPS_PROVIDER} are with respect to the primary GNSS antenna
+     * position within the device. {@link #getGnssAntennaInfos()} may be used to determine the GNSS
+     * antenna position with respect to the Android Coordinate System, and convert between them if
+     * necessary. This is generally only necessary for high accuracy applications.
+     *
      * <p>When location callbacks are invoked, the system will hold a wakelock on your
      * application's behalf for some period of time, but not indefinitely. If your application
      * requires a long running wakelock within the location callback, you should acquire it
@@ -1569,6 +1650,7 @@ public class LocationManager {
      *
      * @hide
      */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
     @RequiresPermission(allOf = {LOCATION_HARDWARE, ACCESS_FINE_LOCATION})
     public boolean injectLocation(@NonNull Location location) {
         Preconditions.checkArgument(location != null, "invalid null location");
@@ -1753,7 +1835,10 @@ public class LocationManager {
      * @return list of provider names
      *
      * @throws IllegalArgumentException if criteria is null
+     *
+     * @deprecated Criteria based APIs are deprecated, prefer to select a provider explicitly.
      */
+    @Deprecated
     public @NonNull List<String> getProviders(@NonNull Criteria criteria, boolean enabledOnly) {
         Preconditions.checkArgument(criteria != null, "invalid null criteria");
 
@@ -1785,7 +1870,10 @@ public class LocationManager {
      * @return name of the provider that best matches the criteria, or null if none match
      *
      * @throws IllegalArgumentException if criteria is null
+     *
+     * @deprecated Criteria based APIs are deprecated, prefer to select a provider explicitly.
      */
+    @Deprecated
     public @Nullable String getBestProvider(@NonNull Criteria criteria, boolean enabledOnly) {
         Preconditions.checkArgument(criteria != null, "invalid null criteria");
 
@@ -2030,7 +2118,7 @@ public class LocationManager {
 
         try {
             mService.addTestProvider(provider, properties, new ArrayList<>(extraAttributionTags),
-                    mContext.getOpPackageName(), mContext.getFeatureId());
+                    mContext.getOpPackageName(), mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -2052,7 +2140,7 @@ public class LocationManager {
 
         try {
             mService.removeTestProvider(provider, mContext.getOpPackageName(),
-                    mContext.getFeatureId());
+                    mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -2087,7 +2175,7 @@ public class LocationManager {
 
         try {
             mService.setTestProviderLocation(provider, location, mContext.getOpPackageName(),
-                    mContext.getFeatureId());
+                    mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -2117,7 +2205,7 @@ public class LocationManager {
 
         try {
             mService.setTestProviderEnabled(provider, enabled, mContext.getOpPackageName(),
-                    mContext.getFeatureId());
+                    mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -2334,8 +2422,8 @@ public class LocationManager {
      * @return true if the listener was successfully added
      * @throws SecurityException if the ACCESS_FINE_LOCATION permission is not present
      *
-     * @deprecated use {@link #registerGnssStatusCallback(GnssStatus.Callback)} instead. No longer
-     * supported in apps targeting S and above.
+     * @deprecated Use {@link #registerGnssStatusCallback(GnssStatus.Callback, Handler)} or {@link
+     * #registerGnssStatusCallback(Executor, GnssStatus.Callback)} instead.
      */
     @Deprecated
     @RequiresPermission(ACCESS_FINE_LOCATION)
@@ -2445,7 +2533,8 @@ public class LocationManager {
     /**
      * No-op method to keep backward-compatibility.
      *
-     * @deprecated Use {@link #addNmeaListener} instead.
+     * @deprecated Use {@link #addNmeaListener(OnNmeaMessageListener, Handler)} or {@link
+     * #addNmeaListener(Executor, OnNmeaMessageListener)} instead.
      */
     @Deprecated
     @RequiresPermission(ACCESS_FINE_LOCATION)
@@ -2606,6 +2695,13 @@ public class LocationManager {
      * while the {@link #GPS_PROVIDER} is enabled, and while the client app is in the foreground.
      *
      * <p>Not all GNSS chipsets support measurements updates, see {@link #getGnssCapabilities()}.
+     *
+     * <p class="caution">On Android R devices that have not yet upgraded to Android R QPR1, using
+     * this API will cause unavoidable crashes in the client application when GNSS measurements
+     * are received. If a client needs to receive GNSS measurements on Android R devices that have
+     * not been upgraded to QPR1, clients are instead encouraged to use
+     * <a href="https://developer.android.com/reference/androidx/core/location/LocationManagerCompat#registerGnssMeasurementsCallback(android.location.LocationManager,java.util.concurrent.Executor,android.location.GnssMeasurementsEvent.Callback)">LocationManagerCompat.registerGnssMeasurementsCallback()</a>
+     * from the compat libraries instead to avoid this crash.
      *
      * @param executor the executor that the callback runs on
      * @param callback the callback to register
@@ -2850,7 +2946,8 @@ public class LocationManager {
      * @hide
      */
     @SystemApi
-    @RequiresPermission(Manifest.permission.LOCATION_HARDWARE)
+    @RequiresPermission(allOf = {Manifest.permission.LOCATION_HARDWARE,
+            Manifest.permission.INTERACT_ACROSS_USERS})
     public void addProviderRequestChangedListener(
             @NonNull @CallbackExecutor Executor executor,
             @NonNull ChangedListener listener) {
@@ -3584,7 +3681,7 @@ public class LocationManager {
         }
 
         @Override
-        protected Boolean recompute(Integer userId) {
+        public Boolean recompute(Integer userId) {
             Preconditions.checkArgument(userId >= 0);
 
             if (mManager == null) {

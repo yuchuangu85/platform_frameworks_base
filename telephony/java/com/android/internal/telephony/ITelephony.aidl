@@ -17,9 +17,11 @@
 package com.android.internal.telephony;
 
 import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.os.Bundle;
+import android.os.ICancellationSignal;
 import android.os.IBinder;
 import android.os.Messenger;
 import android.os.ParcelFileDescriptor;
@@ -34,6 +36,7 @@ import android.telephony.CallForwardingInfo;
 import android.telephony.CarrierRestrictionRules;
 import android.telephony.CellIdentity;
 import android.telephony.CellInfo;
+import android.telephony.CellBroadcastIdRange;
 import android.telephony.ClientRequestStats;
 import android.telephony.ThermalMitigationRequest;
 import android.telephony.gba.UaSecurityProtocolIdentifier;
@@ -64,10 +67,17 @@ import android.telephony.ims.aidl.IImsRcsFeature;
 import android.telephony.ims.aidl.IImsRegistration;
 import android.telephony.ims.aidl.IImsRegistrationCallback;
 import android.telephony.ims.aidl.IRcsConfigCallback;
+import android.telephony.satellite.ISatelliteDatagramCallback;
+import android.telephony.satellite.ISatelliteTransmissionUpdateCallback;
+import android.telephony.satellite.ISatelliteProvisionStateCallback;
+import android.telephony.satellite.ISatelliteStateCallback;
+import android.telephony.satellite.SatelliteCapabilities;
+import android.telephony.satellite.SatelliteDatagram;
 import com.android.ims.internal.IImsServiceFeatureCallback;
 import com.android.internal.telephony.CellNetworkScanResult;
 import com.android.internal.telephony.IBooleanConsumer;
 import com.android.internal.telephony.ICallForwardingInfoCallback;
+import com.android.internal.telephony.IccLogicalChannelRequest;
 import com.android.internal.telephony.IImsStateCallback;
 import com.android.internal.telephony.IIntegerConsumer;
 import com.android.internal.telephony.INumberVerificationCallback;
@@ -243,6 +253,44 @@ interface ITelephony {
     boolean setRadioPower(boolean turnOn);
 
     /**
+     * Vote on powering off the radio for a reason. The radio will be turned on only when there is
+     * no reason to power it off. When any of the voters want to power it off, it will be turned
+     * off. In case of emergency, the radio will be turned on even if there are some reasons for
+     * powering it off, and these radio off votes will be cleared.
+     * Multiple apps can vote for the same reason and the last vote will take effect. Each app is
+     * responsible for its vote. A powering-off vote of a reason will be maintained until it is
+     * cleared by calling {@link clearRadioPowerOffForReason} for that reason, or an emergency call
+     * is made, or the device is rebooted. When an app comes backup from a crash, it needs to make
+     * sure if its vote is as expected. An app can use the API {@link getRadioPowerOffReasons} to
+     * check its vote.
+     *
+     * @param subId The subscription ID.
+     * @param reason The reason for powering off radio.
+     * @return true on success and false on failure.
+     */
+    boolean requestRadioPowerOffForReason(int subId, int reason);
+
+    /**
+     * Remove the vote on powering off the radio for a reasonas, requested by
+     * {@link requestRadioPowerOffForReason}.
+     *
+     * @param subId The subscription ID.
+     * @param reason The reason for powering off radio.
+     * @return true on success and false on failure.
+     */
+    boolean clearRadioPowerOffForReason(int subId, int reason);
+
+    /**
+     * Get reasons for powering off radio, as requested by {@link requestRadioPowerOffForReason}.
+     *
+     * @param subId The subscription ID.
+     * @param callingPackage The package making the call.
+     * @param callingFeatureId The feature in the package.
+     * @return List of reasons for powering off radio.
+     */
+    List getRadioPowerOffReasons(int subId, String callingPackage, String callingFeatureId);
+
+    /**
      * This method has been removed due to security and stability issues.
      */
     @UnsupportedAppUsage
@@ -269,13 +317,13 @@ interface ITelephony {
      * Allow mobile data connections.
      */
     @UnsupportedAppUsage
-    boolean enableDataConnectivity();
+    boolean enableDataConnectivity(String callingPackage);
 
     /**
      * Disallow mobile data connections.
      */
     @UnsupportedAppUsage
-    boolean disableDataConnectivity();
+    boolean disableDataConnectivity(String callingPackage);
 
     /**
      * Report whether data connectivity is possible.
@@ -582,67 +630,35 @@ interface ITelephony {
     /**
      * Sets minimum time in milli-seconds between onCellInfoChanged
      */
-    void setCellInfoListRate(int rateInMillis);
-
-    /**
-     * Opens a logical channel to the ICC card using the physical slot index.
-     *
-     * Input parameters equivalent to TS 27.007 AT+CCHO command.
-     *
-     * @param slotIndex The physical slot index of the target ICC card
-     * @param callingPackage the name of the package making the call.
-     * @param AID Application id. See ETSI 102.221 and 101.220.
-     * @param p2 P2 parameter (described in ISO 7816-4).
-     * @return an IccOpenLogicalChannelResponse object.
-     */
-    IccOpenLogicalChannelResponse iccOpenLogicalChannelBySlot(
-            int slotIndex, String callingPackage, String AID, int p2);
+    void setCellInfoListRate(int rateInMillis, int subId);
 
     /**
      * Opens a logical channel to the ICC card.
      *
      * Input parameters equivalent to TS 27.007 AT+CCHO command.
      *
-     * @param subId The subscription to use.
-     * @param callingPackage the name of the package making the call.
-     * @param AID Application id. See ETSI 102.221 and 101.220.
-     * @param p2 P2 parameter (described in ISO 7816-4).
+     * @param request the parcelable used to indicate how to open the logical channel.
      * @return an IccOpenLogicalChannelResponse object.
      */
-    IccOpenLogicalChannelResponse iccOpenLogicalChannel(
-            int subId, String callingPackage, String AID, int p2);
-
-    /**
-     * Closes a previously opened logical channel to the ICC card using the physical slot index.
-     *
-     * Input parameters equivalent to TS 27.007 AT+CCHC command.
-     *
-     * @param slotIndex The physical slot index of the target ICC card
-     * @param channel is the channel id to be closed as returned by a
-     *            successful iccOpenLogicalChannel.
-     * @return true if the channel was closed successfully.
-     */
-    boolean iccCloseLogicalChannelBySlot(int slotIndex, int channel);
+    IccOpenLogicalChannelResponse iccOpenLogicalChannel(in IccLogicalChannelRequest request);
 
     /**
      * Closes a previously opened logical channel to the ICC card.
      *
      * Input parameters equivalent to TS 27.007 AT+CCHC command.
      *
-     * @param subId The subscription to use.
-     * @param channel is the channel id to be closed as returned by a
-     *            successful iccOpenLogicalChannel.
+     * @param request the parcelable used to indicate how to close the logical channel.
      * @return true if the channel was closed successfully.
      */
-    @UnsupportedAppUsage(trackingBug = 171933273)
-    boolean iccCloseLogicalChannel(int subId, int channel);
+    boolean iccCloseLogicalChannel(in IccLogicalChannelRequest request);
 
     /**
-     * Transmit an APDU to the ICC card over a logical channel using the physical slot index.
+     * Transmit an APDU to the ICC card over a logical channel using the physical slot index and port index.
      *
      * Input parameters equivalent to TS 27.007 AT+CGLA command.
      *
      * @param slotIndex The physical slot index of the target ICC card
+     * @param portIndex The unique index referring to a port belonging to the SIM slot
      * @param channel is the channel id to be closed as returned by a
      *            successful iccOpenLogicalChannel.
      * @param cla Class of the APDU command.
@@ -655,7 +671,7 @@ interface ITelephony {
      * @return The APDU response from the ICC card with the status appended at
      *            the end.
      */
-    String iccTransmitApduLogicalChannelBySlot(int slotIndex, int channel, int cla, int instruction,
+    String iccTransmitApduLogicalChannelByPort(int slotIndex, int portIndex, int channel, int cla, int instruction,
             int p1, int p2, int p3, String data);
 
     /**
@@ -681,11 +697,12 @@ interface ITelephony {
             int p1, int p2, int p3, String data);
 
     /**
-     * Transmit an APDU to the ICC card over the basic channel using the physical slot index.
+     * Transmit an APDU to the ICC card over the basic channel using the physical slot index and port index.
      *
      * Input parameters equivalent to TS 27.007 AT+CSIM command.
      *
      * @param slotIndex The physical slot index of the target ICC card
+     * @param portIndex The unique index referring to a port belonging to the SIM slot
      * @param callingPackage the name of the package making the call.
      * @param cla Class of the APDU command.
      * @param instruction Instruction of the APDU command.
@@ -697,7 +714,7 @@ interface ITelephony {
      * @return The APDU response from the ICC card with the status appended at
      *            the end.
      */
-    String iccTransmitApduBasicChannelBySlot(int slotIndex, String callingPackage, int cla,
+    String iccTransmitApduBasicChannelByPort(int slotIndex, int portIndex, String callingPackage, int cla,
             int instruction, int p1, int p2, int p3, String data);
 
     /**
@@ -989,8 +1006,9 @@ interface ITelephony {
      * @param subId user preferred subId.
      * @param reason the reason the data enable change is taking place
      * @param enable true to turn on, else false
+     * @param callingPackage the package that changed the data enabled state
      */
-     void setDataEnabledForReason(int subId, int reason, boolean enable);
+     void setDataEnabledForReason(int subId, int reason, boolean enable, String callingPackage);
 
     /**
      * Return whether data is enabled for certain reason
@@ -1006,14 +1024,6 @@ interface ITelephony {
      * @return {@code true} if manual network selection is allowed, otherwise return {@code false}.
      */
      boolean isManualNetworkSelectionAllowed(int subId);
-
-    /**
-     * Get P-CSCF address from PCO after data connection is established or modified.
-     * @param apnType the apnType, "ims" for IMS APN, "emergency" for EMERGENCY APN
-     * @param callingPackage The package making the call.
-     * @param callingFeatureId The feature in the package.
-     */
-    String[] getPcscfAddress(String apnType, String callingPackage, String callingFeatureId);
 
     /**
      * Set IMS registration state
@@ -1318,6 +1328,16 @@ interface ITelephony {
     String getImeiForSlot(int slotIndex, String callingPackage, String callingFeatureId);
 
     /**
+     * Returns the primary IMEI of the device
+     *
+     * @param callingPackage The package name of the caller
+     * @param callingFeatureId The feature Id of the calling package
+     * @throws UnsupportedOperationException if the radio doesn't support this feature.
+     * @throws SecurityException if the caller does not have the required permission/privileges
+     */
+    String getPrimaryImei(String callingPackage, String callingFeatureId);
+
+    /**
      * Returns the Type Allocation Code from the IMEI for the given slot.
      *
      * @param slotIndex - Which slot to retrieve the Type Allocation Code from.
@@ -1355,11 +1375,6 @@ interface ITelephony {
             String callingFeatureId);
 
     /**
-     * Returns the subscription ID associated with the specified PhoneAccount.
-     */
-    int getSubIdForPhoneAccount(in PhoneAccount phoneAccount);
-
-    /**
      * Returns the subscription ID associated with the specified PhoneAccountHandle.
      */
     int getSubIdForPhoneAccountHandle(in PhoneAccountHandle phoneAccountHandle,
@@ -1370,7 +1385,7 @@ interface ITelephony {
      */
     PhoneAccountHandle getPhoneAccountHandleForSubscriptionId(int subscriptionId);
 
-    void factoryReset(int subId);
+    void factoryReset(int subId, String callingPackage);
 
     /**
      * Returns users's current locale based on the SIM.
@@ -1525,7 +1540,7 @@ interface ITelephony {
      */
     CarrierRestrictionRules getAllowedCarriers();
 
-   /**
+    /**
      * Returns carrier id of the given subscription.
      * <p>To recognize carrier as a first class identity, assign each carrier with a canonical
      * integer a.k.a carrier id.
@@ -1831,6 +1846,22 @@ interface ITelephony {
      */
     void setCarrierTestOverride(int subId, String mccmnc, String imsi, String iccid, String gid1,
             String gid2, String plmn, String spn, String carrierPrivilegeRules, String apn);
+
+    /**
+     * Forcibly sets a package as a carrier provisioning package.
+     *
+     * This override is ephemeral, and will disappear upon phone process restart (including
+     * device reboot).
+     *
+     * WARNING: This API is meant for testing purposes only. This enables automated testing for
+     * cases where the carrier service package is used as a permissioning gate for features such as
+     * restricted carrier network access (restricted APNs and Merged Carrier Wifi)
+     *
+     * @param carrierServicePackage The package that should be marked as the carrier service
+     *     package, or {@code null} to disable the override.
+     */
+    void setCarrierServicePackageOverride(int subId, String carrierServicePackage,
+                String callingPackage);
 
     /**
      * A test API to return installed carrier id list version.
@@ -2163,6 +2194,12 @@ interface ITelephony {
     int getRadioHalVersion();
 
     /**
+     * Get the HAL Version of a specific service
+     * encoded as 100 * MAJOR_VERSION + MINOR_VERSION or -1 if unknown
+     */
+    int getHalVersion(int service);
+
+    /**
      * Get the current calling package name.
      */
     String getCurrentPackageName();
@@ -2185,7 +2222,7 @@ interface ITelephony {
 
     List<RadioAccessSpecifier> getSystemSelectionChannels(int subId);
 
-    boolean isMvnoMatched(int subId, int mvnoType, String mvnoMatchData);
+    boolean isMvnoMatched(int slotIndex, int mvnoType, String mvnoMatchData);
 
     /**
      * Enqueue a pending sms Consumer, which will answer with the user specified selection for an
@@ -2193,6 +2230,11 @@ interface ITelephony {
      */
     oneway void enqueueSmsPickResult(String callingPackage, String callingAttributeTag,
         IIntegerConsumer subIdResult);
+
+    /**
+     * Show error dialog to switch to managed profile.
+     */
+    oneway void showSwitchToManagedProfileDialog();
 
     /**
      * Returns the MMS user agent.
@@ -2533,6 +2575,16 @@ interface ITelephony {
     void getSlicingConfig(in ResultReceiver callback);
 
     /**
+     * Check whether the given premium capability is available for purchase from the carrier.
+     */
+    boolean isPremiumCapabilityAvailableForPurchase(int capability, int subId);
+
+    /**
+     * Purchase the given premium capability from the carrier.
+     */
+    void purchasePremiumCapability(int capability, IIntegerConsumer callback, int subId);
+
+    /**
      * Register an IMS connection state callback
      */
     void registerImsStateCallback(int subId, int feature, in IImsStateCallback cb,
@@ -2575,4 +2627,421 @@ interface ITelephony {
      * registration technology specified, false if it is not required.
      */
     boolean isRcsProvisioningRequiredForCapability(int subId, int capability, int tech);
+
+    /**
+     * Sets a voice service state from telecom based on the current PhoneAccounts registered. See
+     * PhoneAccount#CAPABILITY_VOICE_CALLING_AVAILABLE.
+     */
+    void setVoiceServiceStateOverride(int subId, boolean hasService, String callingPackage);
+
+    /**
+     * Returns the package name that provides the {@link CarrierService} implementation for the
+     * specified {@code logicalSlotIndex}, or {@code null} if no package with carrier privileges
+     * declares one.
+     *
+     * @param logicalSlotIndex The slot index to fetch the {@link CarrierService} package for
+     * @return The system-selected package that provides the {@link CarrierService} implementation
+     * for the slot, or {@code null} if none is resolved
+     */
+    String getCarrierServicePackageNameForLogicalSlot(int logicalSlotIndex);
+
+    /**
+     * set removable eSIM as default eUICC.
+     *
+     * @hide
+     */
+    void setRemovableEsimAsDefaultEuicc(boolean isDefault, String callingPackage);
+
+    /**
+     * Returns whether the removable eSIM is default eUICC or not.
+     *
+     * @hide
+     */
+    boolean isRemovableEsimDefaultEuicc(String callingPackage);
+
+    /**
+     * Get the component name of the default app to direct respond-via-message intent for the
+     * user associated with this subscription, update the cache if there is no respond-via-message
+     * application currently configured for this user.
+     * @return component name of the app and class to direct Respond Via Message intent to, or
+     * {@code null} if the functionality is not supported.
+     * @hide
+     */
+    ComponentName getDefaultRespondViaMessageApplication(int subId, boolean updateIfNeeded);
+
+    /**
+     * Get the SIM state for the logical SIM slot index.
+     *
+     * @param slotIndex Logical SIM slot index.
+     */
+    int getSimStateForSlotIndex(int slotIndex);
+
+    /**
+     * Request telephony to persist state for debugging emergency call failures.
+     *
+     * @param dropBoxTag Tag to use when persisting data to dropbox service.
+     * @param enableLogcat whether to collect logcat output
+     * @param logcatStartTimestampMillis timestamp from when logcat buffers would be persisted
+     * @param enableTelecomDump whether to collect telecom dumpsys
+     * @param enableTelephonyDump whether to collect telephony dumpsys
+     *
+     * @hide
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.DUMP)")
+    void persistEmergencyCallDiagnosticData(String dropboxTag, boolean enableLogcat,
+        long logcatStartTimestampMillis, boolean enableTelecomDump, boolean enableTelephonyDump);
+    /**
+     * Set whether the radio is able to connect with null ciphering or integrity
+     * algorithms. This is a global setting and will apply to all active subscriptions
+     * and all new subscriptions after this.
+     *
+     * <p>Requires Permission:
+     *   {@link android.Manifest.permission#MODIFY_PHONE_STATE MODIFY_PHONE_STATE}
+     *
+     * @param enabled when true, null  cipher and integrity algorithms are allowed.
+     * @hide
+     */
+    void setNullCipherAndIntegrityEnabled(boolean enabled);
+
+    /**
+     * Get whether the radio is able to connect with null ciphering or integrity
+     * algorithms. Note that this retrieves the phone-global preference and not
+     * the state of the radio.
+     *
+     * @hide
+     */
+    boolean isNullCipherAndIntegrityPreferenceEnabled();
+
+    /**
+     * Get current broadcast ranges.
+     */
+    List<CellBroadcastIdRange> getCellBroadcastIdRanges(int subId);
+
+    /**
+     * Set reception of cell broadcast messages with the list of the given ranges
+     */
+    void setCellBroadcastIdRanges(int subId, in List<CellBroadcastIdRange> ranges,
+            IIntegerConsumer callback);
+
+    /**
+     * Returns whether the domain selection service is supported.
+     *
+     * @return {@code true} if the domain selection service is supported.
+     */
+    boolean isDomainSelectionSupported();
+
+    /**
+     * Get the carrier restriction status of the device.
+     */
+    void getCarrierRestrictionStatus(IIntegerConsumer internalCallback, String packageName);
+
+    /**
+     * Request to enable or disable the satellite modem.
+     *
+     * @param subId The subId of the subscription to enable or disable the satellite modem for.
+     * @param enable True to enable the satellite modem and false to disable.
+     * @param isDemoModeEnabled True if demo mode is enabled and false otherwise.
+     * @param callback The callback to get the result of the request.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void requestSatelliteEnabled(int subId, boolean enable, boolean isDemoModeEnabled,
+            in IIntegerConsumer callback);
+
+    /**
+     * Request to get whether the satellite modem is enabled.
+     *
+     * @param subId The subId of the subscription to request whether satellite is enabled for.
+     * @param receiver Result receiver to get the error code of the request and whether the
+     *                 satellite modem is enabled.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void requestIsSatelliteEnabled(int subId, in ResultReceiver receiver);
+
+    /**
+     * Request to get whether the satellite service demo mode is enabled.
+     *
+     * @param subId The subId of the subscription to request whether the satellite demo mode is
+     *              enabled for.
+     * @param receiver Result receiver to get the error code of the request and whether the
+     *                 satellite demo mode is enabled.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void requestIsDemoModeEnabled(int subId, in ResultReceiver receiver);
+
+    /**
+     * Request to get whether the satellite service is supported on the device.
+     *
+     * @param subId The subId of the subscription to check whether satellite is supported for.
+     * @param receiver Result receiver to get the error code of the request and whether the
+     *                 satellite service is supported on the device.
+     */
+    void requestIsSatelliteSupported(int subId, in ResultReceiver receiver);
+
+    /**
+     * Request to get the capabilities of the satellite service.
+     *
+     * @param subId The subId of the subscription to get the capabilities for.
+     * @param receiver Result receiver to get the error code of the request and the requested
+     *                 capabilities of the satellite service.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void requestSatelliteCapabilities(int subId, in ResultReceiver receiver);
+
+    /**
+     * Start receiving satellite transmission updates.
+     *
+     * @param subId The subId of the subscription to stop satellite transmission updates for.
+     * @param resultCallback The callback to get the result of the request.
+     * @param callback The callback to handle transmission updates.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void startSatelliteTransmissionUpdates(int subId, in IIntegerConsumer resultCallback,
+            in ISatelliteTransmissionUpdateCallback callback);
+
+    /**
+     * Stop receiving satellite transmission updates.
+     *
+     * @param subId The subId of the subscritpion to stop satellite transmission updates for.
+     * @param resultCallback The callback to get the result of the request.
+     * @param callback The callback that was passed to startSatelliteTransmissionUpdates.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void stopSatelliteTransmissionUpdates(int subId, in IIntegerConsumer resultCallback,
+            in ISatelliteTransmissionUpdateCallback callback);
+
+    /**
+     * Register the subscription with a satellite provider.
+     * This is needed to register the subscription if the provider allows dynamic registration.
+     *
+     * @param subId The subId of the subscription to be provisioned.
+     * @param token The token to be used as a unique identifier for provisioning with satellite
+     *              gateway.
+     * @provisionData Data from the provisioning app that can be used by provisioning server
+     * @param callback The callback to get the result of the request.
+     *
+     * @return The signal transport used by callers to cancel the provision request.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    ICancellationSignal provisionSatelliteService(int subId, in String token,
+            in byte[] provisionData, in IIntegerConsumer callback);
+
+    /**
+     * Unregister the subscription with the satellite provider.
+     * This is needed to unregister the subscription if the provider allows dynamic registration.
+     * Once deprovisioned,
+     * {@link SatelliteCallback.SatelliteProvisionStateListener#onSatelliteProvisionStateChanged}
+     * should report as deprovisioned.
+     *
+     * @param subId The subId of the subscription to be deprovisioned.
+     * @param token The token of the device/subscription to be deprovisioned.
+     * @param callback The callback to get the result of the request.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void deprovisionSatelliteService(int subId, in String token, in IIntegerConsumer callback);
+
+
+    /**
+     * Registers for provision state changed from satellite modem.
+     *
+     * @param subId The subId of the subscription to register for provision state changed.
+     * @param callback The callback to handle the satellite provision state changed event.
+     *
+     * @return The {@link SatelliteError} result of the operation.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    int registerForSatelliteProvisionStateChanged(int subId,
+            in ISatelliteProvisionStateCallback callback);
+
+    /**
+     * Unregisters for provision state changed from satellite modem.
+     * If callback was not registered before, the request will be ignored.
+     *
+     * @param subId The subId of the subscription to unregister for provision state changed.
+     * @param callback The callback that was passed to registerForSatelliteProvisionStateChanged.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void unregisterForSatelliteProvisionStateChanged(int subId,
+            in ISatelliteProvisionStateCallback callback);
+
+    /**
+     * Request to get whether the device is provisioned with a satellite provider.
+     *
+     * @param subId The subId of the subscription to get whether the device is provisioned for.
+     * @param receiver Result receiver to get the error code of the request and whether the
+     *                 device is provisioned with a satellite provider.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void requestIsSatelliteProvisioned(int subId, in ResultReceiver receiver);
+
+    /**
+     * Registers for modem state changed from satellite modem.
+     *
+     * @param subId The subId of the subscription to register for satellite modem state changed.
+     * @param callback The callback to handle the satellite modem state changed event.
+     *
+     * @return The {@link SatelliteError} result of the operation.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    int registerForSatelliteModemStateChanged(int subId, ISatelliteStateCallback callback);
+
+    /**
+     * Unregisters for modem state changed from satellite modem.
+     * If callback was not registered before, the request will be ignored.
+     *
+     * @param subId The subId of the subscription to unregister for satellite modem state changed.
+     * @param callback The callback that was passed to registerForSatelliteStateChanged.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void unregisterForSatelliteModemStateChanged(int subId, ISatelliteStateCallback callback);
+
+   /**
+     * Register to receive incoming datagrams over satellite.
+     *
+     * @param subId The subId of the subscription to register for incoming satellite datagrams.
+     * @param callback The callback to handle the incoming datagrams.
+     *
+     * @return The {@link SatelliteError} result of the operation.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    int registerForSatelliteDatagram(int subId, ISatelliteDatagramCallback callback);
+
+   /**
+     * Unregister to stop receiving incoming datagrams over satellite.
+     * If callback was not registered before, the request will be ignored.
+     *
+     * @param subId The subId of the subscription to unregister for incoming satellite datagrams.
+     * @param callback The callback that was passed to registerForSatelliteDatagram.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void unregisterForSatelliteDatagram(int subId, ISatelliteDatagramCallback callback);
+
+   /**
+    * Poll pending satellite datagrams over satellite.
+    *
+    * @param subId The subId of the subscription used for receiving datagrams.
+    * @param callback The callback to get the result of the request.
+    */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+                + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void pollPendingSatelliteDatagrams(int subId, IIntegerConsumer callback);
+
+   /**
+    * Send datagram over satellite.
+    *
+    * @param subId The subId of the subscription to send satellite datagrams for.
+    * @param datagramType Type of datagram.
+    * @param datagram Datagram to send over satellite.
+    * @param needFullScreenPointingUI this is used to indicate pointingUI app to open in
+    *                                 full screen mode.
+    * @param callback The callback to get the result of the request.
+    */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void sendSatelliteDatagram(int subId, int datagramType,
+             in SatelliteDatagram datagram, in boolean needFullScreenPointingUI,
+             IIntegerConsumer callback);
+
+    /**
+     * Request to get whether satellite communication is allowed for the current location.
+     *
+     * @param subId The subId of the subscription to get whether satellite communication is allowed
+     *              for the current location for.
+     * @param receiver Result receiver to get the error code of the request and whether satellite
+     *                 communication is allowed for the current location.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void requestIsSatelliteCommunicationAllowedForCurrentLocation(int subId,
+            in ResultReceiver receiver);
+
+    /**
+     * Request to get the time after which the satellite will be visible.
+     *
+     * @param subId The subId to get the time after which the satellite will be visible for.
+     * @param receiver Result receiver to get the error code of the request and the requested
+     *                 time after which the satellite will be visible.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void requestTimeForNextSatelliteVisibility(int subId, in ResultReceiver receiver);
+
+    /**
+     * Inform whether the device is aligned with the satellite within in margin for demo mode.
+     *
+     * @param isAligned {@true} Device is aligned with the satellite for demo mode
+     *                  {@false} Device is not aligned with the satellite for demo mode
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+            + "android.Manifest.permission.SATELLITE_COMMUNICATION)")
+    void onDeviceAlignedWithSatellite(int subId, in boolean isAligned);
+
+    /**
+     * This API can be used by only CTS to update satellite vendor service package name.
+     *
+     * @param servicePackageName The package name of the satellite vendor service.
+     * @return {@code true} if the satellite vendor service is set successfully,
+     * {@code false} otherwise.
+     */
+    boolean setSatelliteServicePackageName(in String servicePackageName);
+
+    /**
+     * This API can be used by only CTS to update satellite gateway service package name.
+     *
+     * @param servicePackageName The package name of the satellite gateway service.
+     * @return {@code true} if the satellite gateway service is set successfully,
+     * {@code false} otherwise.
+     */
+    boolean setSatelliteGatewayServicePackageName(in String servicePackageName);
+
+    /**
+     * This API can be used by only CTS to update the timeout duration in milliseconds that
+     * satellite should stay at listening mode to wait for the next incoming page before disabling
+     * listening mode.
+     *
+     * @param timeoutMillis The timeout duration in millisecond.
+     * @return {@code true} if the timeout duration is set successfully, {@code false} otherwise.
+     */
+    boolean setSatelliteListeningTimeoutDuration(in long timeoutMillis);
+
+    /**
+     * This API can be used by only CTS to update satellite pointing UI app package and class names.
+     *
+     * @param packageName The package name of the satellite pointing UI app.
+     * @param className The class name of the satellite pointing UI app.
+     * @return {@code true} if the satellite pointing UI app package and class is set successfully,
+     * {@code false} otherwise.
+     */
+    boolean setSatellitePointingUiClassName(in String packageName, in String className);
+
+    /**
+     * This API can be used by only CTS to update the timeout duration in milliseconds whether
+     * the device is aligned with the satellite for demo mode
+     *
+     * @param timeoutMillis The timeout duration in millisecond.
+     * @return {@code true} if the timeout duration is set successfully, {@code false} otherwise.
+     */
+    boolean setSatelliteDeviceAlignedTimeoutDuration(long timeoutMillis);
+
+    /**
+     * Test method to confirm the file contents are not altered.
+     */
+     @JavaPassthrough(annotation="@android.annotation.RequiresPermission("
+                 + "android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE)")
+     List<String> getShaIdFromAllowList(String pkgName, int carrierId);
 }

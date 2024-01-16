@@ -20,6 +20,7 @@ import static java.lang.Float.isNaN;
 
 import android.annotation.NonNull;
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.PorterDuff;
@@ -29,6 +30,7 @@ import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.os.Looper;
 import android.util.AttributeSet;
+import android.view.MotionEvent;
 import android.view.View;
 
 import androidx.annotation.Nullable;
@@ -37,6 +39,8 @@ import androidx.core.graphics.ColorUtils;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.colorextraction.ColorExtractor;
+import com.android.systemui.shade.TouchLogger;
+import com.android.systemui.util.LargeScreenUtils;
 
 import java.util.concurrent.Executor;
 
@@ -57,7 +61,9 @@ public class ScrimView extends View {
     private float mViewAlpha = 1.0f;
     private Drawable mDrawable;
     private PorterDuffColorFilter mColorFilter;
+    private String mScrimName;
     private int mTintColor;
+    private boolean mBlendWithMainColor = true;
     private Runnable mChangeRunnable;
     private Executor mChangeRunnableExecutor;
     private Executor mExecutor;
@@ -101,6 +107,13 @@ public class ScrimView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         if (mDrawable.getAlpha() > 0) {
+            Resources res = getResources();
+            // Scrim behind notification shade has sharp (not rounded) corners on large screens
+            // which scrim itself cannot know, so we set it here.
+            if (mDrawable instanceof ScrimDrawable) {
+                ((ScrimDrawable) mDrawable).setShouldUseLargeScreenSize(
+                        LargeScreenUtils.shouldUseLargeScreenShadeHeader(res));
+            }
             mDrawable.draw(canvas);
         }
     }
@@ -169,6 +182,15 @@ public class ScrimView extends View {
         });
     }
 
+    /**
+     * Set corner radius of the bottom edge of the Notification scrim.
+     */
+    public void setBottomEdgeRadius(float radius) {
+        if (mDrawable instanceof ScrimDrawable) {
+            ((ScrimDrawable) mDrawable).setBottomEdgeRadius(radius);
+        }
+    }
+
     @VisibleForTesting
     Drawable getDrawable() {
         return mDrawable;
@@ -192,6 +214,19 @@ public class ScrimView extends View {
     }
 
     /**
+     * The call to {@link #setTint} will blend with the main color, with the amount
+     * determined by the alpha of the tint. Set to false to avoid this blend.
+     */
+    public void setBlendWithMainColor(boolean blend) {
+        mBlendWithMainColor = blend;
+    }
+
+    /** @return true if blending tint color with main color */
+    public boolean shouldBlendWithMainColor() {
+        return mBlendWithMainColor;
+    }
+
+    /**
      * Tints this view, optionally animating it.
      * @param color The color.
      * @param animated If we should animate.
@@ -211,8 +246,11 @@ public class ScrimView extends View {
             // Optimization to blend colors and avoid a color filter
             ScrimDrawable drawable = (ScrimDrawable) mDrawable;
             float tintAmount = Color.alpha(mTintColor) / 255f;
-            int mainTinted = ColorUtils.blendARGB(mColors.getMainColor(), mTintColor,
-                    tintAmount);
+
+            int mainTinted = mTintColor;
+            if (mBlendWithMainColor) {
+                mainTinted = ColorUtils.blendARGB(mColors.getMainColor(), mTintColor, tintAmount);
+            }
             drawable.setColor(mainTinted, animated);
         } else {
             boolean hasAlpha = Color.alpha(mTintColor) != 0;
@@ -299,6 +337,15 @@ public class ScrimView extends View {
         if (mDrawable instanceof ScrimDrawable) {
             ((ScrimDrawable) mDrawable).setBottomEdgeConcave(clipScrim);
         }
+    }
+
+    public void setScrimName(String scrimName) {
+        mScrimName = scrimName;
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        return TouchLogger.logDispatchTouch(mScrimName, ev, super.dispatchTouchEvent(ev));
     }
 
     /**

@@ -16,15 +16,13 @@
 
 package com.android.systemui.screenshot;
 
-import static android.view.Display.DEFAULT_DISPLAY;
-
 import static com.android.systemui.screenshot.ScreenshotController.ACTION_TYPE_EDIT;
 import static com.android.systemui.screenshot.ScreenshotController.ACTION_TYPE_SHARE;
 import static com.android.systemui.screenshot.ScreenshotController.EXTRA_ACTION_INTENT;
 import static com.android.systemui.screenshot.ScreenshotController.EXTRA_DISALLOW_ENTER_PIP;
 import static com.android.systemui.screenshot.ScreenshotController.EXTRA_ID;
 import static com.android.systemui.screenshot.ScreenshotController.EXTRA_SMART_ACTIONS_ENABLED;
-import static com.android.systemui.statusbar.phone.StatusBar.SYSTEM_DIALOG_REASON_SCREENSHOT;
+import static com.android.systemui.statusbar.phone.CentralSurfaces.SYSTEM_DIALOG_REASON_SCREENSHOT;
 
 import android.app.ActivityOptions;
 import android.app.PendingIntent;
@@ -35,10 +33,9 @@ import android.util.Log;
 import android.view.RemoteAnimationAdapter;
 import android.view.WindowManagerGlobal;
 
+import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.settings.DisplayTracker;
 import com.android.systemui.shared.system.ActivityManagerWrapper;
-import com.android.systemui.statusbar.phone.StatusBar;
-
-import java.util.Optional;
 
 import javax.inject.Inject;
 
@@ -49,17 +46,20 @@ import javax.inject.Inject;
 public class ActionProxyReceiver extends BroadcastReceiver {
     private static final String TAG = "ActionProxyReceiver";
 
-    private final StatusBar mStatusBar;
     private final ActivityManagerWrapper mActivityManagerWrapper;
     private final ScreenshotSmartActions mScreenshotSmartActions;
+    private final DisplayTracker mDisplayTracker;
+    private final ActivityStarter mActivityStarter;
 
     @Inject
-    public ActionProxyReceiver(Optional<StatusBar> statusBar,
-            ActivityManagerWrapper activityManagerWrapper,
-            ScreenshotSmartActions screenshotSmartActions) {
-        mStatusBar = statusBar.orElse(null);
+    public ActionProxyReceiver(ActivityManagerWrapper activityManagerWrapper,
+            ScreenshotSmartActions screenshotSmartActions,
+            DisplayTracker displayTracker,
+            ActivityStarter activityStarter) {
         mActivityManagerWrapper = activityManagerWrapper;
         mScreenshotSmartActions = screenshotSmartActions;
+        mDisplayTracker = displayTracker;
+        mActivityStarter = activityStarter;
     }
 
     @Override
@@ -71,6 +71,8 @@ public class ActionProxyReceiver extends BroadcastReceiver {
             ActivityOptions opts = ActivityOptions.makeBasic();
             opts.setDisallowEnterPictureInPictureWhileLaunching(
                     intent.getBooleanExtra(EXTRA_DISALLOW_ENTER_PIP, false));
+            opts.setPendingIntentBackgroundActivityStartMode(
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
             try {
                 actionIntent.send(context, 0, null, null, null, null, opts.toBundle());
                 if (intent.getBooleanExtra(ScreenshotController.EXTRA_OVERRIDE_TRANSITION, false)) {
@@ -78,7 +80,8 @@ public class ActionProxyReceiver extends BroadcastReceiver {
                             ScreenshotController.SCREENSHOT_REMOTE_RUNNER, 0, 0);
                     try {
                         WindowManagerGlobal.getWindowManagerService()
-                                .overridePendingAppTransitionRemote(runner, DEFAULT_DISPLAY);
+                                .overridePendingAppTransitionRemote(runner,
+                                        mDisplayTracker.getDefaultDisplayId());
                     } catch (Exception e) {
                         Log.e(TAG, "Error overriding screenshot app transition", e);
                     }
@@ -89,20 +92,16 @@ public class ActionProxyReceiver extends BroadcastReceiver {
 
         };
 
-        if (mStatusBar != null) {
-            mStatusBar.executeRunnableDismissingKeyguard(startActivityRunnable, null,
-                    true /* dismissShade */, true /* afterKeyguardGone */,
-                    true /* deferred */);
-        } else {
-            startActivityRunnable.run();
-        }
+        mActivityStarter.executeRunnableDismissingKeyguard(startActivityRunnable, null,
+                true /* dismissShade */, true /* afterKeyguardGone */,
+                true /* deferred */);
 
         if (intent.getBooleanExtra(EXTRA_SMART_ACTIONS_ENABLED, false)) {
             String actionType = Intent.ACTION_EDIT.equals(intent.getAction())
                     ? ACTION_TYPE_EDIT
                     : ACTION_TYPE_SHARE;
             mScreenshotSmartActions.notifyScreenshotAction(
-                    context, intent.getStringExtra(EXTRA_ID), actionType, false, null);
+                    intent.getStringExtra(EXTRA_ID), actionType, false, null);
         }
     }
 }

@@ -16,22 +16,21 @@
 
 package com.android.server;
 
+import static android.os.ParcelFileDescriptor.MODE_READ_WRITE;
 import static android.system.OsConstants.O_RDONLY;
 
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.IPackageManager;
 import android.os.Build;
 import android.os.DropBoxManager;
 import android.os.Environment;
 import android.os.FileUtils;
 import android.os.MessageQueue.OnFileDescriptorEventListener;
+import android.os.ParcelFileDescriptor;
 import android.os.RecoverySystem;
-import android.os.RemoteException;
-import android.os.ServiceManager;
 import android.os.SystemProperties;
-import android.os.storage.StorageManager;
+import android.os.TombstoneWithHeadersProto;
 import android.provider.Downloads;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -39,14 +38,18 @@ import android.text.TextUtils;
 import android.util.AtomicFile;
 import android.util.EventLog;
 import android.util.Slog;
-import android.util.TypedXmlPullParser;
-import android.util.TypedXmlSerializer;
 import android.util.Xml;
+import android.util.proto.ProtoOutputStream;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.util.FrameworkStatsLog;
 import com.android.internal.util.XmlUtils;
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
+import com.android.server.am.DropboxRateLimiter;
+import com.android.server.os.TombstoneProtos;
+import com.android.server.os.TombstoneProtos.Tombstone;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
@@ -57,10 +60,16 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.AbstractMap;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Map;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Performs a number of miscellaneous, non-system-critical actions
@@ -81,6 +90,11 @@ public class BootReceiver extends BroadcastReceiver {
 
     private static final String TAG_TOMBSTONE = "SYSTEM_TOMBSTONE";
     private static final String TAG_TOMBSTONE_PROTO = "SYSTEM_TOMBSTONE_PROTO";
+    private static final String TAG_TOMBSTONE_PROTO_WITH_HEADERS =
+            "SYSTEM_TOMBSTONE_PROTO_WITH_HEADERS";
+
+    // Directory to store temporary tombstones.
+    private static final File TOMBSTONE_TMP_DIR = new File("/data/tombstones");
 
     // The pre-froyo package and class of the system updater, which
     // ran in the system process.  We need to remove its packages here
@@ -99,11 +113,13 @@ public class BootReceiver extends BroadcastReceiver {
 
     // example: fs_stat,/dev/block/platform/soc/by-name/userdata,0x5
     private static final String FS_STAT_PATTERN = "fs_stat,[^,]*/([^/,]+),(0x[0-9a-fA-F]+)";
-    private static final int FS_STAT_FS_FIXED = 0x400; // should match with fs_mgr.cpp:FsStatFlags
+    private static final int FS_STAT_FSCK_FS_FIXED =
+            0x400; // should match with fs_mgr.cpp:FsStatFlags
     private static final String FSCK_PASS_PATTERN = "Pass ([1-9]E?):";
     private static final String FSCK_TREE_OPTIMIZATION_PATTERN =
             "Inode [0-9]+ extent tree.*could be shorter";
-    private static final String FSCK_FS_MODIFIED = "FILE SYSTEM WAS MODIFIED";
+    private static final String E2FSCK_FS_MODIFIED = "FILE SYSTEM WAS MODIFIED";
+    private static final String F2FS_FSCK_FS_MODIFIED = "[FSCK] Unreachable";
     // ro.boottime.init.mount_all. + postfix for mount_all duration
     private static final String[] MOUNT_DURATION_PROPS_POSTFIX =
             new String[] { "early", "default", "late" };
@@ -141,15 +157,7 @@ public class BootReceiver extends BroadcastReceiver {
                     Slog.e(TAG, "Can't log boot events", e);
                 }
                 try {
-                    boolean onlyCore = false;
-                    try {
-                        onlyCore = IPackageManager.Stub.asInterface(ServiceManager.getService(
-                                "package")).isOnlyCoreApps();
-                    } catch (RemoteException e) {
-                    }
-                    if (!onlyCore) {
-                        removeOldUpdatePackages(context);
-                    }
+                    removeOldUpdatePackages(context);
                 } catch (Exception e) {
                     Slog.e(TAG, "Can't remove old update packages", e);
                 }
@@ -281,14 +289,8 @@ public class BootReceiver extends BroadcastReceiver {
         HashMap<String, Long> timestamps = readTimestamps();
 
         if (SystemProperties.getLong("ro.runtime.firstboot", 0) == 0) {
-            if (StorageManager.inCryptKeeperBounce()) {
-                // Encrypted, first boot to get PIN/pattern/password so data is tmpfs
-                // Don't set ro.runtime.firstboot so that we will do this again
-                // when data is properly mounted
-            } else {
-                String now = Long.toString(System.currentTimeMillis());
-                SystemProperties.set("ro.runtime.firstboot", now);
-            }
+            String now = Long.toString(System.currentTimeMillis());
+            SystemProperties.set("ro.runtime.firstboot", now);
             if (db != null) db.addText("SYSTEM_BOOT", headers);
 
             // Negative sizes mean to take the *tail* of the file (see FileUtils.readTextFile())
@@ -315,35 +317,106 @@ public class BootReceiver extends BroadcastReceiver {
         writeTimestamps(timestamps);
     }
 
+    private static final DropboxRateLimiter sDropboxRateLimiter = new DropboxRateLimiter();
+
+    /**
+     * Reset the dropbox rate limiter.
+     */
+    @VisibleForTesting
+    public static void resetDropboxRateLimiter() {
+        sDropboxRateLimiter.reset();
+    }
+
     /**
      * Add a tombstone to the DropBox.
      *
      * @param ctx Context
      * @param tombstone path to the tombstone
+     * @param tombstoneProto the parsed proto tombstone
+     * @param processName the name of the process corresponding to the tombstone
+     * @param tmpFileLock the lock for reading/writing tmp files
      */
-    public static void addTombstoneToDropBox(Context ctx, File tombstone, boolean proto) {
+    public static void addTombstoneToDropBox(
+                Context ctx, File tombstone, Tombstone tombstoneProto, String processName,
+                ReentrantLock tmpFileLock) {
         final DropBoxManager db = ctx.getSystemService(DropBoxManager.class);
         if (db == null) {
             Slog.e(TAG, "Can't log tombstone: DropBoxManager not available");
             return;
         }
 
+        // Check if we should rate limit and abort early if needed.
+        DropboxRateLimiter.RateLimitResult rateLimitResult =
+                sDropboxRateLimiter.shouldRateLimit(TAG_TOMBSTONE_PROTO_WITH_HEADERS, processName);
+        if (rateLimitResult.shouldRateLimit()) return;
+
         HashMap<String, Long> timestamps = readTimestamps();
         try {
-            if (proto) {
-                if (recordFileTimestamp(tombstone, timestamps)) {
-                    db.addFile(TAG_TOMBSTONE_PROTO, tombstone, 0);
+            // Remove the memory data from the proto.
+            Tombstone tombstoneProtoWithoutMemory = removeMemoryFromTombstone(tombstoneProto);
+
+            final byte[] tombstoneBytes = tombstoneProtoWithoutMemory.toByteArray();
+
+            // Use JNI to call the c++ proto to text converter and add the headers to the tombstone.
+            String tombstoneWithoutMemory = new StringBuilder(getBootHeadersToLogAndUpdate())
+                    .append(rateLimitResult.createHeader())
+                    .append(getTombstoneText(tombstoneBytes))
+                    .toString();
+
+            // Add the tombstone without memory data to dropbox.
+            db.addText(TAG_TOMBSTONE, tombstoneWithoutMemory);
+
+            // Add the tombstone proto to dropbox.
+            if (recordFileTimestamp(tombstone, timestamps)) {
+                tmpFileLock.lock();
+                try {
+                    addAugmentedProtoToDropbox(tombstone, tombstoneBytes, db, rateLimitResult);
+                } finally {
+                    tmpFileLock.unlock();
                 }
-            } else {
-                final String headers = getBootHeadersToLogAndUpdate();
-                addFileToDropBox(db, timestamps, headers, tombstone.getPath(), LOG_SIZE,
-                                 TAG_TOMBSTONE);
             }
         } catch (IOException e) {
             Slog.e(TAG, "Can't log tombstone", e);
         }
         writeTimestamps(timestamps);
     }
+
+    private static void addAugmentedProtoToDropbox(
+                File tombstone, byte[] tombstoneBytes, DropBoxManager db,
+                DropboxRateLimiter.RateLimitResult rateLimitResult) throws IOException {
+        final File tombstoneProtoWithHeaders = File.createTempFile(
+                tombstone.getName(), ".tmp", TOMBSTONE_TMP_DIR);
+        Files.setPosixFilePermissions(
+                tombstoneProtoWithHeaders.toPath(),
+                PosixFilePermissions.fromString("rw-rw----"));
+
+        // Write the new proto container proto with headers.
+        try (ParcelFileDescriptor pfd = ParcelFileDescriptor.open(
+                    tombstoneProtoWithHeaders, MODE_READ_WRITE)) {
+            ProtoOutputStream protoStream =
+                    new ProtoOutputStream(pfd.getFileDescriptor());
+            protoStream.write(TombstoneWithHeadersProto.TOMBSTONE, tombstoneBytes);
+            protoStream.write(
+                    TombstoneWithHeadersProto.DROPPED_COUNT,
+                    rateLimitResult.droppedCountSinceRateLimitActivated());
+            protoStream.flush();
+
+            // Add the proto to dropbox.
+            db.addFile(TAG_TOMBSTONE_PROTO_WITH_HEADERS, tombstoneProtoWithHeaders, 0);
+        } catch (FileNotFoundException ex) {
+            Slog.e(TAG, "failed to open for write: " + tombstoneProtoWithHeaders, ex);
+            throw ex;
+        } catch (IOException ex) {
+            Slog.e(TAG, "IO exception during write: " + tombstoneProtoWithHeaders, ex);
+        } finally {
+            // Remove the temporary file and unlock the lock.
+            if (tombstoneProtoWithHeaders != null) {
+                tombstoneProtoWithHeaders.delete();
+            }
+        }
+    }
+
+    private static native String getTombstoneText(byte[] tombstoneBytes);
 
     private static void addLastkToDropBox(
             DropBoxManager db, HashMap<String, Long> timestamps,
@@ -360,6 +433,31 @@ public class BootReceiver extends BroadcastReceiver {
           }
         }
         addFileWithFootersToDropBox(db, timestamps, headers, footers, filename, maxSize, tag);
+    }
+
+    /** Removes memory information from the Tombstone proto. */
+    @VisibleForTesting
+    public static Tombstone removeMemoryFromTombstone(Tombstone tombstoneProto) {
+        Tombstone.Builder tombstoneBuilder = tombstoneProto.toBuilder()
+                .clearMemoryMappings()
+                .clearThreads()
+                .putAllThreads(tombstoneProto.getThreadsMap().entrySet()
+                        .stream()
+                        .map(BootReceiver::clearMemoryDump)
+                        .collect(Collectors.toMap(e->e.getKey(), e->e.getValue())));
+
+        if (tombstoneProto.hasSignalInfo()) {
+            tombstoneBuilder.setSignalInfo(
+                    tombstoneProto.getSignalInfo().toBuilder().clearFaultAdjacentMetadata());
+        }
+
+        return tombstoneBuilder.build();
+    }
+
+    private static AbstractMap.SimpleEntry<Integer, TombstoneProtos.Thread> clearMemoryDump(
+            Map.Entry<Integer, TombstoneProtos.Thread> e) {
+        return new AbstractMap.SimpleEntry<Integer, TombstoneProtos.Thread>(
+            e.getKey(), e.getValue().toBuilder().clearMemoryDump().build());
     }
 
     private static void addFileToDropBox(
@@ -467,9 +565,9 @@ public class BootReceiver extends BroadcastReceiver {
         int lineNumber = 0;
         int lastFsStatLineNumber = 0;
         for (String line : lines) { // should check all lines
-            if (line.contains(FSCK_FS_MODIFIED)) {
+            if (line.contains(E2FSCK_FS_MODIFIED) || line.contains(F2FS_FSCK_FS_MODIFIED)) {
                 uploadNeeded = true;
-            } else if (line.contains("fs_stat")){
+            } else if (line.contains("fs_stat")) {
                 Matcher matcher = pattern.matcher(line);
                 if (matcher.find()) {
                     handleFsckFsStat(matcher, lines, lastFsStatLineNumber, lineNumber);
@@ -481,12 +579,13 @@ public class BootReceiver extends BroadcastReceiver {
             lineNumber++;
         }
 
-        if (uploadEnabled && uploadNeeded ) {
+        if (uploadEnabled && uploadNeeded) {
             addFileToDropBox(db, timestamps, headers, "/dev/fscklogs/log", maxSize, tag);
         }
 
-        // Remove the file so we don't re-upload if the runtime restarts.
-        file.delete();
+        // Rename the file so we don't re-upload if the runtime restarts.
+        File pfile = new File("/dev/fscklogs/fsck");
+        file.renameTo(pfile);
     }
 
     private static void logFsMountTime() {
@@ -680,7 +779,7 @@ public class BootReceiver extends BroadcastReceiver {
     public static int fixFsckFsStat(String partition, int statOrg, String[] lines,
             int startLineNumber, int endLineNumber) {
         int stat = statOrg;
-        if ((stat & FS_STAT_FS_FIXED) != 0) {
+        if ((stat & FS_STAT_FSCK_FS_FIXED) != 0) {
             // fs was fixed. should check if quota warning was caused by tree optimization.
             // This is not a real fix but optimization, so should not be counted as a fs fix.
             Pattern passPattern = Pattern.compile(FSCK_PASS_PATTERN);
@@ -693,7 +792,8 @@ public class BootReceiver extends BroadcastReceiver {
             String otherFixLine = null;
             for (int i = startLineNumber; i < endLineNumber; i++) {
                 String line = lines[i];
-                if (line.contains(FSCK_FS_MODIFIED)) { // no need to parse above this
+                if (line.contains(E2FSCK_FS_MODIFIED)
+                        || line.contains(F2FS_FSCK_FS_MODIFIED)) { // no need to parse above this
                     break;
                 } else if (line.startsWith("Pass ")) {
                     Matcher matcher = passPattern.matcher(line);
@@ -721,9 +821,9 @@ public class BootReceiver extends BroadcastReceiver {
                     }
                 } else if (line.startsWith("Update quota info") && currentPass.equals("5")) {
                     // follows "[QUOTA WARNING]", ignore
-                } else if (line.startsWith("Timestamp(s) on inode") &&
-                        line.contains("beyond 2310-04-04 are likely pre-1970") &&
-                        currentPass.equals("1")) {
+                } else if (line.startsWith("Timestamp(s) on inode")
+                        && line.contains("beyond 2310-04-04 are likely pre-1970")
+                        && currentPass.equals("1")) {
                     Slog.i(TAG, "fs_stat, partition:" + partition + " found timestamp adjustment:"
                             + line);
                     // followed by next line, "Fix? yes"
@@ -751,7 +851,7 @@ public class BootReceiver extends BroadcastReceiver {
             } else if ((foundTreeOptimization && foundQuotaFix) || foundTimestampAdjustment) {
                 // not a real fix, so clear it.
                 Slog.i(TAG, "fs_stat, partition:" + partition + " fix ignored");
-                stat &= ~FS_STAT_FS_FIXED;
+                stat &= ~FS_STAT_FSCK_FS_FIXED;
             }
         }
         return stat;

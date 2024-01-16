@@ -15,95 +15,197 @@
  */
 package com.android.keyguard;
 
+import static com.android.settingslib.Utils.getColorAttrDefaultColor;
+import static com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants.ColorId.NUM_PAD_BACKGROUND;
+import static com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants.ColorId.NUM_PAD_BACKGROUND_PRESSED;
+import static com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants.ColorId.NUM_PAD_BUTTON;
+import static com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants.ColorId.NUM_PAD_KEY;
+import static com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants.ColorId.NUM_PAD_PRESSED;
+import static com.android.systemui.util.ColorUtilKt.getPrivateAttrColorIfUnset;
+
 import android.animation.AnimatorSet;
+import android.animation.ArgbEvaluator;
 import android.animation.ValueAnimator;
+import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.content.Context;
-import android.content.res.ColorStateList;
 import android.content.res.TypedArray;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
 import android.view.ContextThemeWrapper;
+import android.widget.TextView;
 
 import androidx.annotation.StyleRes;
 
-import com.android.systemui.R;
-import com.android.systemui.animation.Interpolators;
-import com.android.systemui.util.Utils;
+import com.android.app.animation.Interpolators;
 
 /**
  * Provides background color and radius animations for key pad buttons.
  */
 class NumPadAnimator {
-    private AnimatorSet mAnimator;
     private ValueAnimator mExpandAnimator;
+    private AnimatorSet mExpandAnimatorSet;
     private ValueAnimator mContractAnimator;
+    private AnimatorSet mContractAnimatorSet;
     private GradientDrawable mBackground;
-    private RippleDrawable mRipple;
-    private int mNormalColor;
-    private int mHighlightColor;
+    private Drawable mImageButton;
+    private TextView mDigitTextView;
+    private int mNormalBackgroundColor;
+    private int mPressedBackgroundColor;
+    private int mTextColorPrimary;
+    private int mTextColorPressed;
     private int mStyle;
+    private float mStartRadius;
+    private float mEndRadius;
+    private int mHeight;
+    private int mWidth;
 
-    NumPadAnimator(Context context, final RippleDrawable drawable, @StyleRes int style) {
+    private static final int EXPAND_ANIMATION_MS = 100;
+    private static final int EXPAND_COLOR_ANIMATION_MS = 50;
+    private static final int CONTRACT_ANIMATION_DELAY_MS = 33;
+    private static final int CONTRACT_ANIMATION_MS = 417;
+
+    NumPadAnimator(Context context, final Drawable drawable,
+            @StyleRes int style, Drawable buttonImage) {
+        this(context, drawable, style, null, buttonImage);
+    }
+
+    NumPadAnimator(Context context, final Drawable drawable, @StyleRes int style,
+            @Nullable TextView digitTextView, @Nullable Drawable buttonImage) {
         mStyle = style;
-        mRipple = (RippleDrawable) drawable.mutate();
-        mBackground = (GradientDrawable) mRipple.findDrawableByLayerId(R.id.background);
+        mBackground = (GradientDrawable) drawable;
+        mDigitTextView = digitTextView;
+        mImageButton = buttonImage;
 
         reloadColors(context);
-
-        // Actual values will be updated later, usually during an onLayout() call
-        mAnimator = new AnimatorSet();
-        mExpandAnimator = ValueAnimator.ofFloat(0f, 1f);
-        mExpandAnimator.setDuration(50);
-        mExpandAnimator.setInterpolator(Interpolators.LINEAR);
-        mExpandAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
-                public void onAnimationUpdate(ValueAnimator anim) {
-                    mBackground.setCornerRadius((float) anim.getAnimatedValue());
-                    mRipple.invalidateSelf();
-                }
-        });
-
-        mContractAnimator = ValueAnimator.ofFloat(1f, 0f);
-        mContractAnimator.setStartDelay(33);
-        mContractAnimator.setDuration(417);
-        mContractAnimator.setInterpolator(Interpolators.FAST_OUT_SLOW_IN);
-        mContractAnimator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
-                public void onAnimationUpdate(ValueAnimator anim) {
-                    mBackground.setCornerRadius((float) anim.getAnimatedValue());
-                    mRipple.invalidateSelf();
-                }
-        });
-        mAnimator.playSequentially(mExpandAnimator, mContractAnimator);
     }
 
-    void onLayout(int height) {
-        float startRadius = height / 2f;
-        float endRadius = height / 4f;
-        mBackground.setCornerRadius(startRadius);
-        mExpandAnimator.setFloatValues(startRadius, endRadius);
-        mContractAnimator.setFloatValues(endRadius, startRadius);
+    public void expand() {
+        mExpandAnimatorSet.cancel();
+        mContractAnimatorSet.cancel();
+        mExpandAnimatorSet.start();
     }
 
-    void start() {
-        mAnimator.cancel();
-        mAnimator.start();
+    public void contract() {
+        mExpandAnimatorSet.cancel();
+        mContractAnimatorSet.cancel();
+        mContractAnimatorSet.start();
+    }
+
+    public void setProgress(float progress) {
+        mBackground.setCornerRadius(mEndRadius + (mStartRadius - mEndRadius) * progress);
+        int height = (int) (mHeight * 0.7f + mHeight * 0.3 * progress);
+        int difference = mHeight - height;
+
+        int left = 0;
+        int top = difference / 2;
+        int right = mWidth;
+        int bottom = mHeight - difference / 2;
+        mBackground.setBounds(left, top, right, bottom);
+    }
+
+    void onLayout(int width, int height) {
+        boolean shouldUpdateHeight = height != mHeight;
+        mWidth = width;
+        mHeight = height;
+        mStartRadius = height / 2f;
+        mEndRadius = height / 4f;
+        mExpandAnimator.setFloatValues(mStartRadius, mEndRadius);
+        mContractAnimator.setFloatValues(mEndRadius, mStartRadius);
+        // Set initial corner radius.
+        if (shouldUpdateHeight) {
+            mBackground.setCornerRadius(mStartRadius);
+        }
     }
 
     /**
      * Reload colors from resources.
      **/
     void reloadColors(Context context) {
-        int[] customAttrs = {android.R.attr.colorControlNormal,
-                android.R.attr.colorControlHighlight};
+        boolean isNumPadKey = mImageButton == null;
 
+        int[] customAttrs = {android.R.attr.colorControlNormal};
         ContextThemeWrapper ctw = new ContextThemeWrapper(context, mStyle);
-        TypedArray a = ctw.obtainStyledAttributes(customAttrs);
-        mNormalColor = Utils.getPrivateAttrColorIfUnset(ctw, a, 0, 0,
-                com.android.internal.R.attr.colorSurface);
-        mHighlightColor = a.getColor(1, 0);
+        @SuppressLint("ResourceType") TypedArray a = ctw.obtainStyledAttributes(customAttrs);
+        mNormalBackgroundColor = getPrivateAttrColorIfUnset(ctw, a, 0, 0,
+                NUM_PAD_BACKGROUND);
         a.recycle();
 
-        mBackground.setColor(mNormalColor);
-        mRipple.setColor(ColorStateList.valueOf(mHighlightColor));
+        mPressedBackgroundColor = getColorAttrDefaultColor(context, NUM_PAD_BACKGROUND_PRESSED);
+        mTextColorPressed = getColorAttrDefaultColor(context, NUM_PAD_PRESSED);
+
+        mBackground.setColor(mNormalBackgroundColor);
+        mTextColorPrimary = isNumPadKey
+                ? getColorAttrDefaultColor(context, NUM_PAD_KEY)
+                : getColorAttrDefaultColor(context, NUM_PAD_BUTTON);
+        createAnimators();
+    }
+
+    private void createAnimators() {
+        // Actual values will be updated later, usually during an onLayout() call
+        mExpandAnimator = ValueAnimator.ofFloat(0f, 1f);
+        mExpandAnimator.setDuration(EXPAND_ANIMATION_MS);
+        mExpandAnimator.setInterpolator(Interpolators.LINEAR);
+        mExpandAnimator.addUpdateListener(
+                anim -> mBackground.setCornerRadius((float) anim.getAnimatedValue()));
+
+        ValueAnimator expandBackgroundColorAnimator = ValueAnimator.ofObject(new ArgbEvaluator(),
+                mNormalBackgroundColor, mPressedBackgroundColor);
+        expandBackgroundColorAnimator.setDuration(EXPAND_COLOR_ANIMATION_MS);
+        expandBackgroundColorAnimator.setInterpolator(Interpolators.LINEAR);
+        expandBackgroundColorAnimator.addUpdateListener(
+                animator -> mBackground.setColor((int) animator.getAnimatedValue()));
+
+        ValueAnimator expandTextColorAnimator =
+                ValueAnimator.ofObject(new ArgbEvaluator(),
+                mTextColorPrimary, mTextColorPressed);
+        expandTextColorAnimator.setInterpolator(Interpolators.LINEAR);
+        expandTextColorAnimator.setDuration(EXPAND_COLOR_ANIMATION_MS);
+        expandTextColorAnimator.addUpdateListener(valueAnimator -> {
+            if (mDigitTextView != null) {
+                mDigitTextView.setTextColor((int) valueAnimator.getAnimatedValue());
+            }
+            if (mImageButton != null) {
+                mImageButton.setTint((int) valueAnimator.getAnimatedValue());
+            }
+        });
+
+        mExpandAnimatorSet = new AnimatorSet();
+        mExpandAnimatorSet.playTogether(mExpandAnimator,
+                expandBackgroundColorAnimator, expandTextColorAnimator);
+
+        mContractAnimator = ValueAnimator.ofFloat(1f, 0f);
+        mContractAnimator.setStartDelay(CONTRACT_ANIMATION_DELAY_MS);
+        mContractAnimator.setDuration(CONTRACT_ANIMATION_MS);
+        mContractAnimator.setInterpolator(Interpolators.FAST_OUT_SLOW_IN);
+        mContractAnimator.addUpdateListener(
+                anim -> mBackground.setCornerRadius((float) anim.getAnimatedValue()));
+        ValueAnimator contractBackgroundColorAnimator = ValueAnimator.ofObject(new ArgbEvaluator(),
+                mPressedBackgroundColor, mNormalBackgroundColor);
+        contractBackgroundColorAnimator.setInterpolator(Interpolators.LINEAR);
+        contractBackgroundColorAnimator.setStartDelay(CONTRACT_ANIMATION_DELAY_MS);
+        contractBackgroundColorAnimator.setDuration(CONTRACT_ANIMATION_MS);
+        contractBackgroundColorAnimator.addUpdateListener(
+                animator -> mBackground.setColor((int) animator.getAnimatedValue()));
+
+        ValueAnimator contractTextColorAnimator =
+                ValueAnimator.ofObject(new ArgbEvaluator(), mTextColorPressed,
+                mTextColorPrimary);
+        contractTextColorAnimator.setInterpolator(Interpolators.LINEAR);
+        contractTextColorAnimator.setStartDelay(CONTRACT_ANIMATION_DELAY_MS);
+        contractTextColorAnimator.setDuration(CONTRACT_ANIMATION_MS);
+        contractTextColorAnimator.addUpdateListener(valueAnimator -> {
+            if (mDigitTextView != null) {
+                mDigitTextView.setTextColor((int) valueAnimator.getAnimatedValue());
+            }
+            if (mImageButton != null) {
+                mImageButton.setTint((int) valueAnimator.getAnimatedValue());
+            }
+        });
+
+        mContractAnimatorSet = new AnimatorSet();
+        mContractAnimatorSet.playTogether(mContractAnimator,
+                contractBackgroundColorAnimator, contractTextColorAnimator);
     }
 }
 

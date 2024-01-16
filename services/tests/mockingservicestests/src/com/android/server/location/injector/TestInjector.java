@@ -33,9 +33,9 @@ public class TestInjector implements Injector {
     private final FakeScreenInteractiveHelper mScreenInteractiveHelper;
     private final FakeDeviceStationaryHelper mDeviceStationaryHelper;
     private final FakeDeviceIdleHelper mDeviceIdleHelper;
-    private final LocationAttributionHelper mLocationAttributionHelper;
     private final FakeEmergencyHelper mEmergencyHelper;
     private final LocationUsageLogger mLocationUsageLogger;
+    private final FakePackageResetHelper mPackageResetHelper;
 
     public TestInjector(Context context) {
         mUserInfoHelper = new FakeUserInfoHelper();
@@ -49,9 +49,9 @@ public class TestInjector implements Injector {
         mScreenInteractiveHelper = new FakeScreenInteractiveHelper();
         mDeviceStationaryHelper = new FakeDeviceStationaryHelper();
         mDeviceIdleHelper = new FakeDeviceIdleHelper();
-        mLocationAttributionHelper = new LocationAttributionHelper(mAppOpsHelper);
         mEmergencyHelper = new FakeEmergencyHelper();
         mLocationUsageLogger = new LocationUsageLogger();
+        mPackageResetHelper = new FakePackageResetHelper();
     }
 
     @Override
@@ -110,11 +110,6 @@ public class TestInjector implements Injector {
     }
 
     @Override
-    public LocationAttributionHelper getLocationAttributionHelper() {
-        return mLocationAttributionHelper;
-    }
-
-    @Override
     public EmergencyHelper getEmergencyHelper() {
         return mEmergencyHelper;
     }
@@ -122,5 +117,10 @@ public class TestInjector implements Injector {
     @Override
     public LocationUsageLogger getLocationUsageLogger() {
         return mLocationUsageLogger;
+    }
+
+    @Override
+    public FakePackageResetHelper getPackageResetHelper() {
+        return mPackageResetHelper;
     }
 }

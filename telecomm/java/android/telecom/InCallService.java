@@ -16,12 +16,14 @@
 
 package android.telecom;
 
+import android.annotation.CallbackExecutor;
 import android.annotation.NonNull;
 import android.annotation.SdkConstant;
 import android.annotation.SystemApi;
 import android.app.Service;
 import android.app.UiModeManager;
 import android.bluetooth.BluetoothDevice;
+import android.content.ComponentName;
 import android.content.Intent;
 import android.hardware.camera2.CameraManager;
 import android.net.Uri;
@@ -30,6 +32,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.OutcomeReceiver;
 import android.view.Surface;
 
 import com.android.internal.os.SomeArgs;
@@ -38,6 +41,8 @@ import com.android.internal.telecom.IInCallService;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
+import java.util.concurrent.Executor;
 
 /**
  * This service is implemented by an app that wishes to provide functionality for managing
@@ -47,7 +52,7 @@ import java.util.List;
  * in a call.  It also provides the user with a means to initiate calls and see a history of calls
  * on their device.  A device is bundled with a system provided default dialer/phone app.  The user
  * may choose a single app to take over this role from the system app.  An app which wishes to
- * fulfill one this role uses the {@link android.app.role.RoleManager} to request that they fill the
+ * fulfill this role uses the {@link android.app.role.RoleManager} to request that they fill the
  * {@link android.app.role.RoleManager#ROLE_DIALER} role.
  * <p>
  * The default phone app provides a user interface while the device is in a call, and the device is
@@ -63,13 +68,23 @@ import java.util.List;
  *     UI, as well as an ongoing call UI.</li>
  * </ul>
  * <p>
- * Note: If the app filling the {@link android.app.role.RoleManager#ROLE_DIALER} crashes during
- * {@link InCallService} binding, the Telecom framework will automatically fall back to using the
- * dialer app pre-loaded on the device.  The system will display a notification to the user to let
- * them know that the app has crashed and that their call was continued using the pre-loaded dialer
- * app.
+ * Note: If the app filling the {@link android.app.role.RoleManager#ROLE_DIALER} returns a
+ * {@code null} {@link InCallService} during binding, the Telecom framework will automatically fall
+ * back to using the dialer app preloaded on the device.  The system will display a notification to
+ * the user to let them know that their call was continued using the preloaded dialer app.  Your
+ * app should never return a {@code null} binding; doing so means it does not fulfil the
+ * requirements of {@link android.app.role.RoleManager#ROLE_DIALER}.
  * <p>
- * The pre-loaded dialer will ALWAYS be used when the user places an emergency call, even if your
+ * Note: If your app fills {@link android.app.role.RoleManager#ROLE_DIALER} and makes changes at
+ * runtime which cause it to no longer fulfil the requirements of this role,
+ * {@link android.app.role.RoleManager} will automatically remove your app from the role and close
+ * your app.  For example, if you use
+ * {@link android.content.pm.PackageManager#setComponentEnabledSetting(ComponentName, int, int)} to
+ * programmatically disable the {@link InCallService} your app declares in its manifest, your app
+ * will no longer fulfil the requirements expected of
+ * {@link android.app.role.RoleManager#ROLE_DIALER}.
+ * <p>
+ * The preloaded dialer will ALWAYS be used when the user places an emergency call, even if your
  * app fills the {@link android.app.role.RoleManager#ROLE_DIALER} role.  To ensure an optimal
  * experience when placing an emergency call, the default dialer should ALWAYS use
  * {@link android.telecom.TelecomManager#placeCall(Uri, Bundle)} to place calls (including
@@ -258,6 +273,11 @@ public abstract class InCallService extends Service {
     private static final int MSG_ON_RTT_INITIATION_FAILURE = 11;
     private static final int MSG_ON_HANDOVER_FAILED = 12;
     private static final int MSG_ON_HANDOVER_COMPLETE = 13;
+    private static final int MSG_ON_CALL_ENDPOINT_CHANGED = 14;
+    private static final int MSG_ON_AVAILABLE_CALL_ENDPOINTS_CHANGED = 15;
+    private static final int MSG_ON_MUTE_STATE_CHANGED = 16;
+
+    private CallEndpoint mCallEndpoint;
 
     /** Default Handler used to consolidate binder method calls onto a single thread. */
     private final Handler mHandler = new Handler(Looper.getMainLooper()) {
@@ -339,6 +359,23 @@ public abstract class InCallService extends Service {
                     mPhone.internalOnHandoverComplete(callId);
                     break;
                 }
+                case MSG_ON_CALL_ENDPOINT_CHANGED: {
+                    CallEndpoint endpoint = (CallEndpoint) msg.obj;
+                    if (!Objects.equals(mCallEndpoint, endpoint)) {
+                        mCallEndpoint = endpoint;
+                        InCallService.this.onCallEndpointChanged(mCallEndpoint);
+                    }
+                    break;
+                }
+                case MSG_ON_AVAILABLE_CALL_ENDPOINTS_CHANGED: {
+                    InCallService.this.onAvailableCallEndpointsChanged(
+                            (List<CallEndpoint>) msg.obj);
+                    break;
+                }
+                case MSG_ON_MUTE_STATE_CHANGED: {
+                    InCallService.this.onMuteStateChanged((boolean) msg.obj);
+                    break;
+                }
                 default:
                     break;
             }
@@ -378,6 +415,22 @@ public abstract class InCallService extends Service {
         @Override
         public void onCallAudioStateChanged(CallAudioState callAudioState) {
             mHandler.obtainMessage(MSG_ON_CALL_AUDIO_STATE_CHANGED, callAudioState).sendToTarget();
+        }
+
+        @Override
+        public void onCallEndpointChanged(CallEndpoint callEndpoint) {
+            mHandler.obtainMessage(MSG_ON_CALL_ENDPOINT_CHANGED, callEndpoint).sendToTarget();
+        }
+
+        @Override
+        public void onAvailableCallEndpointsChanged(List<CallEndpoint> availableEndpoints) {
+            mHandler.obtainMessage(MSG_ON_AVAILABLE_CALL_ENDPOINTS_CHANGED, availableEndpoints)
+                    .sendToTarget();
+        }
+
+        @Override
+        public void onMuteStateChanged(boolean isMuted) {
+            mHandler.obtainMessage(MSG_ON_MUTE_STATE_CHANGED, isMuted).sendToTarget();
         }
 
         @Override
@@ -548,7 +601,11 @@ public abstract class InCallService extends Service {
      *
      * @return An object encapsulating the audio state. Returns null if the service is not
      *         fully initialized.
+     * @deprecated Use {@link #getCurrentCallEndpoint()},
+     * {@link #onAvailableCallEndpointsChanged(List)} and
+     * {@link #onMuteStateChanged(boolean)} instead.
      */
+    @Deprecated
     public final CallAudioState getCallAudioState() {
         return mPhone == null ? null : mPhone.getCallAudioState();
     }
@@ -570,7 +627,10 @@ public abstract class InCallService extends Service {
      * be change to the {@link #getCallAudioState()}.
      *
      * @param route The audio route to use.
+     * @deprecated Use {@link #requestCallEndpointChange(CallEndpoint, Executor, OutcomeReceiver)}
+     * instead.
      */
+    @Deprecated
     public final void setAudioRoute(int route) {
         if (mPhone != null) {
             mPhone.setAudioRoute(route);
@@ -585,11 +645,42 @@ public abstract class InCallService extends Service {
      * {@link CallAudioState#getSupportedBluetoothDevices()}
      *
      * @param bluetoothDevice The bluetooth device to connect to.
+     * @deprecated Use {@link #requestCallEndpointChange(CallEndpoint, Executor, OutcomeReceiver)}
+     * instead.
      */
+    @Deprecated
     public final void requestBluetoothAudio(@NonNull BluetoothDevice bluetoothDevice) {
         if (mPhone != null) {
             mPhone.requestBluetoothAudio(bluetoothDevice.getAddress());
         }
+    }
+
+    /**
+     * Request audio routing to a specific CallEndpoint. Clients should not define their own
+     * CallEndpoint when requesting a change. Instead, the new endpoint should be one of the valid
+     * endpoints provided by {@link #onAvailableCallEndpointsChanged(List)}.
+     * When this request is honored, there will be change to the {@link #getCurrentCallEndpoint()}.
+     *
+     * @param endpoint The call endpoint to use.
+     * @param executor The executor of where the callback will execute.
+     * @param callback The callback to notify the result of the endpoint change.
+     */
+    public final void requestCallEndpointChange(@NonNull CallEndpoint endpoint,
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull OutcomeReceiver<Void, CallEndpointException> callback) {
+        if (mPhone != null) {
+            mPhone.requestCallEndpointChange(endpoint, executor, callback);
+        }
+    }
+
+    /**
+     * Obtains the current CallEndpoint.
+     *
+     * @return An object encapsulating the CallEndpoint.
+     */
+    @NonNull
+    public final CallEndpoint getCurrentCallEndpoint() {
+        return mCallEndpoint;
     }
 
     /**
@@ -637,8 +728,36 @@ public abstract class InCallService extends Service {
      * Called when the audio state changes.
      *
      * @param audioState The new {@link CallAudioState}.
+     * @deprecated Use {@link #onCallEndpointChanged(CallEndpoint)},
+     * {@link #onAvailableCallEndpointsChanged(List)} and
+     * {@link #onMuteStateChanged(boolean)} instead.
      */
+    @Deprecated
     public void onCallAudioStateChanged(CallAudioState audioState) {
+    }
+
+    /**
+     * Called when the current CallEndpoint changes.
+     *
+     * @param callEndpoint The current CallEndpoint {@link CallEndpoint}.
+     */
+    public void onCallEndpointChanged(@NonNull CallEndpoint callEndpoint) {
+    }
+
+    /**
+     * Called when the available CallEndpoint changes.
+     *
+     * @param availableEndpoints The set of available CallEndpoint {@link CallEndpoint}.
+     */
+    public void onAvailableCallEndpointsChanged(@NonNull List<CallEndpoint> availableEndpoints) {
+    }
+
+    /**
+     * Called when the mute state changes.
+     *
+     * @param isMuted The current mute state.
+     */
+    public void onMuteStateChanged(boolean isMuted) {
     }
 
     /**

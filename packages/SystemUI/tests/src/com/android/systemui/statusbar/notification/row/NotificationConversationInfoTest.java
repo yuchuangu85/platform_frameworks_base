@@ -62,6 +62,7 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.os.Handler;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.service.notification.StatusBarNotification;
 import android.test.suitebuilder.annotation.SmallTest;
 import android.testing.AndroidTestingRunner;
@@ -76,10 +77,10 @@ import com.android.settingslib.notification.ConversationIconFactory;
 import com.android.systemui.R;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.people.widget.PeopleSpaceWidgetManager;
+import com.android.systemui.shade.ShadeController;
 import com.android.systemui.statusbar.SbnBuilder;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.NotificationEntryBuilder;
-import com.android.systemui.statusbar.phone.ShadeController;
 import com.android.systemui.wmshell.BubblesManager;
 import com.android.systemui.wmshell.BubblesTestActivity;
 
@@ -131,6 +132,8 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
     private INotificationManager mMockINotificationManager;
     @Mock
     private PackageManager mMockPackageManager;
+    @Mock
+    private UserManager mUserManager;
     @Mock
     private OnUserInteractionCallback mOnUserInteractionCallback;
     @Mock
@@ -236,9 +239,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
     @Test
     public void testBindNotification_SetsShortcutIcon() {
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -261,9 +264,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
     public void testBindNotification_SetsTextApplicationName() {
         when(mMockPackageManager.getApplicationLabel(any())).thenReturn("App Name");
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -314,9 +317,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setGroup(group.getId());
 
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -340,9 +343,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
     @Test
     public void testBindNotification_GroupNameHiddenIfNoGroup() {
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -365,9 +368,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
     @Test
     public void testBindNotification_noDelegate() {
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -401,9 +404,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
                 .setShortcutInfo(mShortcutInfo)
                 .build();
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -427,9 +430,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
     public void testBindNotification_SetsOnClickListenerForSettings() {
         final CountDownLatch latch = new CountDownLatch(1);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -457,9 +460,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
     @Test
     public void testBindNotification_SettingsButtonInvisibleWhenNoClickListener() {
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -482,9 +485,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
     public void testBindNotification_SettingsButtonInvisibleWhenDeviceUnprovisioned() {
         final CountDownLatch latch = new CountDownLatch(1);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -511,9 +514,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportance(IMPORTANCE_LOW);
         mConversationChannel.setImportantConversation(true);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -540,9 +543,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(false);
         mConversationChannel.setAllowBubbles(true);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -572,9 +575,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(false);
         mConversationChannel.setAllowBubbles(true);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -610,9 +613,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(false);
         mConversationChannel.setAllowBubbles(false);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -639,9 +642,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(false);
         mConversationChannel.setAllowBubbles(false);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -675,9 +678,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(false);
         mConversationChannel.setAllowBubbles(true);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -704,9 +707,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(false);
 
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -735,7 +738,7 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
                 .isEqualTo(GONE);
 
         // no changes until hit done
-        assertFalse(mNotificationInfo.shouldBeSaved());
+        assertFalse(mNotificationInfo.shouldBeSavedOnClose());
         verify(mMockINotificationManager, never()).updateNotificationChannelForPackage(
                 anyString(), anyInt(), any());
         assertFalse(mConversationChannel.isImportantConversation());
@@ -749,9 +752,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportance(IMPORTANCE_LOW);
         mConversationChannel.setImportantConversation(false);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -779,7 +782,7 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
                 .isEqualTo(GONE);
 
         // no changes until hit done
-        assertFalse(mNotificationInfo.shouldBeSaved());
+        assertFalse(mNotificationInfo.shouldBeSavedOnClose());
         verify(mMockINotificationManager, never()).updateNotificationChannelForPackage(
                 anyString(), anyInt(), any());
         assertFalse(mConversationChannel.isImportantConversation());
@@ -793,9 +796,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(false);
 
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -825,7 +828,7 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
                 .isEqualTo(VISIBLE);
 
         // no changes until save
-        assertFalse(mNotificationInfo.shouldBeSaved());
+        assertFalse(mNotificationInfo.shouldBeSavedOnClose());
         verify(mMockINotificationManager, never()).updateNotificationChannelForPackage(
                 anyString(), anyInt(), any());
         assertEquals(IMPORTANCE_DEFAULT, mConversationChannel.getImportance());
@@ -838,9 +841,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(false);
 
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -868,6 +871,7 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         assertTrue(captor.getValue().isImportantConversation());
         assertTrue(captor.getValue().canBubble());
         assertEquals(IMPORTANCE_DEFAULT, captor.getValue().getImportance());
+        assertFalse(mNotificationInfo.shouldBeSavedOnClose());
     }
 
     @Test
@@ -876,9 +880,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportance(9);
 
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -913,9 +917,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(true);
 
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -954,9 +958,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
 
         // WHEN we indicate no selected action
         mNotificationInfo.bindNotification(
-                -1, // no action selected by default
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -984,10 +988,11 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(false);
 
         // WHEN we indicate the selected action should be "Favorite"
+        mNotificationInfo.setSelectedAction(NotificationConversationInfo.ACTION_FAVORITE);
         mNotificationInfo.bindNotification(
-                NotificationConversationInfo.ACTION_FAVORITE, // "Favorite" selected by default
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -1015,9 +1020,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setOriginalImportance(IMPORTANCE_HIGH);
         mConversationChannel.setImportantConversation(true);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -1044,6 +1049,7 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         assertFalse(captor.getValue().isImportantConversation());
         assertFalse(captor.getValue().canBubble());
         assertEquals(IMPORTANCE_HIGH, captor.getValue().getImportance());
+        assertFalse(mNotificationInfo.shouldBeSavedOnClose());
     }
 
     @Test
@@ -1052,9 +1058,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setOriginalImportance(IMPORTANCE_HIGH);
         mConversationChannel.setImportantConversation(false);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -1089,9 +1095,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setOriginalImportance(IMPORTANCE_HIGH);
 
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -1125,9 +1131,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setAllowBubbles(true);
 
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -1155,14 +1161,50 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         assertFalse(captor.getValue().isImportantConversation());
         assertFalse(captor.getValue().canBubble());
         assertEquals(IMPORTANCE_LOW, captor.getValue().getImportance());
+        assertFalse(mNotificationInfo.shouldBeSavedOnClose());
+    }
+
+    @Test
+    public void testSilence_closeGutsThenTryToSave() {
+        mConversationChannel.setImportance(IMPORTANCE_DEFAULT);
+        mConversationChannel.setImportantConversation(true);
+        mConversationChannel.setAllowBubbles(true);
+
+        mNotificationInfo.bindNotification(
+                mShortcutManager,
+                mMockPackageManager,
+                mUserManager,
+                mPeopleSpaceWidgetManager,
+                mMockINotificationManager,
+                mOnUserInteractionCallback,
+                TEST_PACKAGE_NAME,
+                mNotificationChannel,
+                mEntry,
+                mBubbleMetadata,
+                null,
+                mIconFactory,
+                mContext,
+                true,
+                mTestHandler,
+                mTestHandler, null, Optional.of(mBubblesManager),
+                mShadeController);
+
+        mNotificationInfo.findViewById(R.id.silence).performClick();
+        mNotificationInfo.handleCloseControls(false, false);
+        mNotificationInfo.findViewById(R.id.done).performClick();
+
+        mTestableLooper.processAllMessages();
+
+        assertEquals(IMPORTANCE_DEFAULT, mConversationChannel.getImportance());
+        assertFalse(mNotificationInfo.shouldBeSavedOnClose());
     }
 
     @Test
     public void testBindNotification_createsNewChannel() throws Exception {
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -1186,9 +1228,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
     public void testBindNotification_doesNotCreateNewChannelIfExists() throws Exception {
         mNotificationChannel.setConversationId("", CONVERSATION_ID);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -1210,12 +1252,13 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
 
     @Test
     public void testSelectPriorityRequestsPinPeopleTile() {
+        when(mUserManager.isSameProfileGroup(anyInt(), anyInt())).thenReturn(true);
         //WHEN channel is default importance
         mNotificationChannel.setImportantConversation(false);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -1242,11 +1285,45 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
     }
 
     @Test
-    public void testSelectDefaultDoesNotRequestPinPeopleTile() {
+    public void testSelectPriorityRequestsPinPeopleTile_noMultiuser() {
+        when(mUserManager.isSameProfileGroup(anyInt(), anyInt())).thenReturn(false);
+        //WHEN channel is default importance
+        mNotificationChannel.setImportantConversation(false);
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
+                mPeopleSpaceWidgetManager,
+                mMockINotificationManager,
+                mOnUserInteractionCallback,
+                TEST_PACKAGE_NAME,
+                mNotificationChannel,
+                mEntry,
+                mBubbleMetadata,
+                null,
+                mIconFactory,
+                mContext,
+                true,
+                mTestHandler,
+                mTestHandler, null, Optional.of(mBubblesManager),
+                mShadeController);
+
+        // WHEN user clicks "priority"
+        mNotificationInfo.setSelectedAction(NotificationConversationInfo.ACTION_FAVORITE);
+
+        // and then done
+        mNotificationInfo.findViewById(R.id.done).performClick();
+
+        // No widget prompt; on a secondary user
+        verify(mPeopleSpaceWidgetManager, never()).requestPinAppWidget(any(), any());
+    }
+
+    @Test
+    public void testSelectDefaultDoesNotRequestPinPeopleTile() {
+        mNotificationInfo.bindNotification(
+                mShortcutManager,
+                mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,
@@ -1279,9 +1356,9 @@ public class NotificationConversationInfoTest extends SysuiTestCase {
         mConversationChannel.setImportantConversation(true);
 
         mNotificationInfo.bindNotification(
-                -1,
                 mShortcutManager,
                 mMockPackageManager,
+                mUserManager,
                 mPeopleSpaceWidgetManager,
                 mMockINotificationManager,
                 mOnUserInteractionCallback,

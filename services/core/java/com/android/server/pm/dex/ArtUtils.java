@@ -21,9 +21,9 @@ import static com.android.server.pm.InstructionSets.getAppDexInstructionSets;
 import android.annotation.NonNull;
 
 import com.android.server.pm.PackageDexOptimizer;
-import com.android.server.pm.PackageSetting;
-import com.android.server.pm.parsing.pkg.AndroidPackage;
 import com.android.server.pm.parsing.pkg.AndroidPackageUtils;
+import com.android.server.pm.pkg.AndroidPackage;
+import com.android.server.pm.pkg.PackageState;
 
 import java.io.File;
 import java.util.Arrays;
@@ -39,19 +39,17 @@ public final class ArtUtils {
      * Create the ART-representation of package info.
      */
     public static ArtPackageInfo createArtPackageInfo(
-            AndroidPackage pkg, PackageSetting pkgSetting) {
+            AndroidPackage pkg, PackageState packageState) {
         return new ArtPackageInfo(
                 pkg.getPackageName(),
-                Arrays.asList(getAppDexInstructionSets(
-                        AndroidPackageUtils.getPrimaryCpuAbi(pkg, pkgSetting),
-                        AndroidPackageUtils.getSecondaryCpuAbi(pkg, pkgSetting))),
+                Arrays.asList(getAppDexInstructionSets(packageState.getPrimaryCpuAbi(),
+                        packageState.getSecondaryCpuAbi())),
                 AndroidPackageUtils.getAllCodePaths(pkg),
-                getOatDir(pkg, pkgSetting));
+                getOatDir(pkg, packageState));
     }
 
-    private static String getOatDir(AndroidPackage pkg, @NonNull PackageSetting pkgSetting) {
-        if (!AndroidPackageUtils.canHaveOatDir(pkg,
-                pkgSetting.getPkgState().isUpdatedSystemApp())) {
+    private static String getOatDir(AndroidPackage pkg, @NonNull PackageState packageState) {
+        if (!AndroidPackageUtils.canHaveOatDir(packageState, pkg)) {
             return null;
         }
         File codePath = new File(pkg.getPath());

@@ -17,6 +17,7 @@
 package com.android.settingslib;
 
 import static android.app.admin.DevicePolicyManager.KEYGUARD_DISABLE_FEATURES_NONE;
+import static android.app.admin.DevicePolicyManager.MTE_NOT_CONTROLLED_BY_POLICY;
 import static android.app.admin.DevicePolicyManager.PROFILE_KEYGUARD_FEATURES_AFFECT_OWNER;
 
 import android.annotation.NonNull;
@@ -31,9 +32,11 @@ import android.content.pm.PackageManager;
 import android.content.pm.UserInfo;
 import android.content.res.TypedArray;
 import android.graphics.drawable.Drawable;
+import android.os.Build;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.os.UserManager.EnforcingUser;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
@@ -42,6 +45,7 @@ import android.util.Log;
 import android.view.MenuItem;
 import android.widget.TextView;
 
+import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 
 import com.android.internal.widget.LockPatternUtils;
@@ -115,30 +119,17 @@ public class RestrictedLockUtilsInternal extends RestrictedLockUtils {
             return enforcedAdmin;
         }
 
-        final int restrictionSource = enforcingUsers.get(0).getUserRestrictionSource();
-        final int adminUserId = enforcingUsers.get(0).getUserHandle().getIdentifier();
-        if (restrictionSource == UserManager.RESTRICTION_SOURCE_PROFILE_OWNER) {
-            // Check if it is a profile owner of the user under consideration.
-            if (adminUserId == userId) {
-                return getProfileOwner(context, userRestriction, adminUserId);
-            } else {
-                // Check if it is a profile owner of a managed profile of the current user.
-                // Otherwise it is in a separate user and we return a default EnforcedAdmin.
-                final UserInfo parentUser = um.getProfileParent(adminUserId);
-                return (parentUser != null && parentUser.id == userId)
-                        ? getProfileOwner(context, userRestriction, adminUserId)
-                        : EnforcedAdmin.createDefaultEnforcedAdminWithRestriction(userRestriction);
-            }
-        } else if (restrictionSource == UserManager.RESTRICTION_SOURCE_DEVICE_OWNER) {
-            // When the restriction is enforced by device owner, return the device owner admin only
-            // if the admin is for the {@param userId} otherwise return a default EnforcedAdmin.
-            return adminUserId == userId
-                    ? getDeviceOwner(context, userRestriction)
-                    : EnforcedAdmin.createDefaultEnforcedAdminWithRestriction(userRestriction);
+        final EnforcingUser enforcingUser = enforcingUsers.get(0);
+        final int restrictionSource = enforcingUser.getUserRestrictionSource();
+        if (restrictionSource == UserManager.RESTRICTION_SOURCE_SYSTEM) {
+            return null;
         }
 
-        // If the restriction is enforced by system then return null.
-        return null;
+        final EnforcedAdmin admin = getProfileOrDeviceOwner(context, enforcingUser.getUserHandle());
+        if (admin != null) {
+            return admin;
+        }
+        return EnforcedAdmin.createDefaultEnforcedAdminWithRestriction(userRestriction);
     }
 
     public static boolean hasBaseUserRestriction(Context context,
@@ -726,6 +717,26 @@ public class RestrictedLockUtilsInternal extends RestrictedLockUtils {
             textView.setCompoundDrawables(null, null, null, null);
         }
         textView.setText(sb);
+    }
+
+    /**
+     * Checks whether MTE (Advanced memory protection) controls are disabled by the enterprise
+     * policy.
+     */
+    @RequiresApi(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public static EnforcedAdmin checkIfMteIsDisabled(Context context) {
+        final DevicePolicyManager dpm = context.getSystemService(DevicePolicyManager.class);
+        if (dpm.getMtePolicy() == MTE_NOT_CONTROLLED_BY_POLICY) {
+            return null;
+        }
+        EnforcedAdmin admin =
+                RestrictedLockUtils.getProfileOrDeviceOwner(
+                        context, UserHandle.of(UserHandle.USER_SYSTEM));
+        if (admin != null) {
+            return admin;
+        }
+        int profileId = getManagedProfileId(context, UserHandle.USER_SYSTEM);
+        return RestrictedLockUtils.getProfileOrDeviceOwner(context, UserHandle.of(profileId));
     }
 
     /**

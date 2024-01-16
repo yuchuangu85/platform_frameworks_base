@@ -16,40 +16,93 @@
 
 #include "SkiaCanvas.h"
 
+#include <SkAndroidFrameworkUtils.h>
+#include <SkAnimatedImage.h>
+#include <SkBitmap.h>
+#include <SkBlendMode.h>
+#include <SkCanvas.h>
+#include <SkCanvasPriv.h>
+#include <SkCanvasStateUtils.h>
+#include <SkColorFilter.h>
+#include <SkDrawable.h>
+#include <SkFont.h>
+#include <SkGraphics.h>
+#include <SkImage.h>
+#include <SkImagePriv.h>
+#include <SkMatrix.h>
+#include <SkPaint.h>
+#include <SkPicture.h>
+#include <SkRRect.h>
+#include <SkRSXform.h>
+#include <SkRect.h>
+#include <SkRefCnt.h>
+#include <SkShader.h>
+#include <SkTextBlob.h>
+#include <SkVertices.h>
+#include <log/log.h>
+#include <ui/FatVector.h>
+
+#include <memory>
+#include <optional>
+#include <utility>
+
 #include "CanvasProperty.h"
+#include "Mesh.h"
 #include "NinePatchUtils.h"
 #include "VectorDrawable.h"
+#include "effects/GainmapRenderer.h"
 #include "hwui/Bitmap.h"
 #include "hwui/MinikinUtils.h"
 #include "hwui/PaintFilter.h"
 #include "pipeline/skia/AnimatedDrawables.h"
 #include "pipeline/skia/HolePunch.h"
 
-#include <SkAndroidFrameworkUtils.h>
-#include <SkAnimatedImage.h>
-#include <SkCanvasPriv.h>
-#include <SkCanvasStateUtils.h>
-#include <SkColorFilter.h>
-#include <SkDeque.h>
-#include <SkDrawable.h>
-#include <SkFont.h>
-#include <SkGraphics.h>
-#include <SkImage.h>
-#include <SkImagePriv.h>
-#include <SkPicture.h>
-#include <SkRSXform.h>
-#include <SkShader.h>
-#include <SkTemplates.h>
-#include <SkTextBlob.h>
-#include <SkVertices.h>
-
-#include <memory>
-#include <optional>
-#include <utility>
-
 namespace android {
 
 using uirenderer::PaintUtils;
+
+class SkiaCanvas::Clip {
+public:
+    Clip(const SkRect& rect, SkClipOp op, const SkMatrix& m)
+            : mType(Type::Rect), mOp(op), mMatrix(m), mRRect(SkRRect::MakeRect(rect)) {}
+    Clip(const SkRRect& rrect, SkClipOp op, const SkMatrix& m)
+            : mType(Type::RRect), mOp(op), mMatrix(m), mRRect(rrect) {}
+    Clip(const SkPath& path, SkClipOp op, const SkMatrix& m)
+            : mType(Type::Path), mOp(op), mMatrix(m), mPath(std::in_place, path) {}
+
+    void apply(SkCanvas* canvas) const {
+        canvas->setMatrix(mMatrix);
+        switch (mType) {
+            case Type::Rect:
+                // Don't anti-alias rectangular clips
+                canvas->clipRect(mRRect.rect(), mOp, false);
+                break;
+            case Type::RRect:
+                // Ensure rounded rectangular clips are anti-aliased
+                canvas->clipRRect(mRRect, mOp, true);
+                break;
+            case Type::Path:
+                // Ensure path clips are anti-aliased
+                canvas->clipPath(mPath.value(), mOp, true);
+                break;
+        }
+    }
+
+private:
+    enum class Type {
+        Rect,
+        RRect,
+        Path,
+    };
+
+    Type mType;
+    SkClipOp mOp;
+    SkMatrix mMatrix;
+
+    // These are logically a union (tracked separately due to non-POD path).
+    std::optional<SkPath> mPath;
+    SkRRect mRRect;
+};
 
 Canvas* Canvas::create_canvas(const SkBitmap& bitmap) {
     return new SkiaCanvas(bitmap);
@@ -126,7 +179,7 @@ int SkiaCanvas::save(SaveFlags::Flags flags) {
 // operation. It does this by explicitly saving off the clip & matrix state
 // when requested and playing it back after the SkCanvas::restore.
 void SkiaCanvas::restore() {
-    const auto* rec = this->currentSaveRec();
+    const SaveRec* rec = this->currentSaveRec();
     if (!rec) {
         // Fast path - no record for this frame.
         mCanvas->restore();
@@ -182,7 +235,7 @@ int SkiaCanvas::saveUnclippedLayer(int left, int top, int right, int bottom) {
     return SkAndroidFrameworkUtils::SaveBehind(mCanvas, &bounds);
 }
 
-void SkiaCanvas::restoreUnclippedLayer(int restoreCount, const SkPaint& paint) {
+void SkiaCanvas::restoreUnclippedLayer(int restoreCount, const Paint& paint) {
 
     while (mCanvas->getSaveCount() > restoreCount + 1) {
         this->restore();
@@ -194,61 +247,21 @@ void SkiaCanvas::restoreUnclippedLayer(int restoreCount, const SkPaint& paint) {
     }
 }
 
-class SkiaCanvas::Clip {
-public:
-    Clip(const SkRect& rect, SkClipOp op, const SkMatrix& m)
-            : mType(Type::Rect), mOp(op), mMatrix(m), mRRect(SkRRect::MakeRect(rect)) {}
-    Clip(const SkRRect& rrect, SkClipOp op, const SkMatrix& m)
-            : mType(Type::RRect), mOp(op), mMatrix(m), mRRect(rrect) {}
-    Clip(const SkPath& path, SkClipOp op, const SkMatrix& m)
-            : mType(Type::Path), mOp(op), mMatrix(m), mPath(std::in_place, path) {}
-
-    void apply(SkCanvas* canvas) const {
-        canvas->setMatrix(mMatrix);
-        switch (mType) {
-            case Type::Rect:
-                // Don't anti-alias rectangular clips
-                canvas->clipRect(mRRect.rect(), mOp, false);
-                break;
-            case Type::RRect:
-                // Ensure rounded rectangular clips are anti-aliased
-                canvas->clipRRect(mRRect, mOp, true);
-                break;
-            case Type::Path:
-                // Ensure path clips are anti-aliased
-                canvas->clipPath(mPath.value(), mOp, true);
-                break;
-        }
-    }
-
-private:
-    enum class Type {
-        Rect,
-        RRect,
-        Path,
-    };
-
-    Type mType;
-    SkClipOp mOp;
-    SkMatrix mMatrix;
-
-    // These are logically a union (tracked separately due to non-POD path).
-    std::optional<SkPath> mPath;
-    SkRRect mRRect;
-};
-
 const SkiaCanvas::SaveRec* SkiaCanvas::currentSaveRec() const {
-    const SaveRec* rec = mSaveStack ? static_cast<const SaveRec*>(mSaveStack->back()) : nullptr;
+    const SaveRec* rec = (mSaveStack && !mSaveStack->empty())
+                                 ? static_cast<const SaveRec*>(&mSaveStack->back())
+                                 : nullptr;
     int currentSaveCount = mCanvas->getSaveCount();
-    SkASSERT(!rec || currentSaveCount >= rec->saveCount);
+    LOG_FATAL_IF(!(!rec || currentSaveCount >= rec->saveCount));
 
     return (rec && rec->saveCount == currentSaveCount) ? rec : nullptr;
 }
 
-void SkiaCanvas::punchHole(const SkRRect& rect) {
+void SkiaCanvas::punchHole(const SkRRect& rect, float alpha) {
     SkPaint paint = SkPaint();
-    paint.setColor(0);
-    paint.setBlendMode(SkBlendMode::kClear);
+    paint.setColor(SkColors::kBlack);
+    paint.setAlphaf(alpha);
+    paint.setBlendMode(SkBlendMode::kDstOut);
     mCanvas->drawRRect(rect, paint);
 }
 
@@ -269,13 +282,12 @@ void SkiaCanvas::recordPartialSave(SaveFlags::Flags flags) {
     }
 
     if (!mSaveStack) {
-        mSaveStack.reset(new SkDeque(sizeof(struct SaveRec), 8));
+        mSaveStack.reset(new std::deque<SaveRec>());
     }
 
-    SaveRec* rec = static_cast<SaveRec*>(mSaveStack->push_back());
-    rec->saveCount = mCanvas->getSaveCount();
-    rec->saveFlags = flags;
-    rec->clipIndex = mClipStack.size();
+    mSaveStack->emplace_back(mCanvas->getSaveCount(),  // saveCount
+                             flags,                    // saveFlags
+                             mClipStack.size());       // clipIndex
 }
 
 template <typename T>
@@ -290,7 +302,7 @@ void SkiaCanvas::recordClip(const T& clip, SkClipOp op) {
 
 // Applies and optionally removes all clips >= index.
 void SkiaCanvas::applyPersistentClips(size_t clipStartIndex) {
-    SkASSERT(clipStartIndex <= mClipStack.size());
+    LOG_FATAL_IF(clipStartIndex > mClipStack.size());
     const auto begin = mClipStack.cbegin() + clipStartIndex;
     const auto end = mClipStack.cend();
 
@@ -306,7 +318,7 @@ void SkiaCanvas::applyPersistentClips(size_t clipStartIndex) {
     // If the current/post-restore save rec is also persisting clips, we
     // leave them on the stack to be reapplied part of the next restore().
     // Otherwise we're done and just pop them.
-    const auto* rec = this->currentSaveRec();
+    const SaveRec* rec = this->currentSaveRec();
     if (!rec || (rec->saveFlags & SaveFlags::Clip)) {
         mClipStack.erase(begin, end);
     }
@@ -396,6 +408,22 @@ bool SkiaCanvas::clipPath(const SkPath* path, SkClipOp op) {
     return !mCanvas->isClipEmpty();
 }
 
+bool SkiaCanvas::replaceClipRect_deprecated(float left, float top, float right, float bottom) {
+    SkRect rect = SkRect::MakeLTRB(left, top, right, bottom);
+
+    // Emulated clip rects are not recorded for partial saves, since
+    // partial saves have been removed from the public API.
+    SkAndroidFrameworkUtils::ResetClip(mCanvas);
+    mCanvas->clipRect(rect, SkClipOp::kIntersect);
+    return !mCanvas->isClipEmpty();
+}
+
+bool SkiaCanvas::replaceClipPath_deprecated(const SkPath* path) {
+    SkAndroidFrameworkUtils::ResetClip(mCanvas);
+    mCanvas->clipPath(*path, SkClipOp::kIntersect, true);
+    return !mCanvas->isClipEmpty();
+}
+
 // ----------------------------------------------------------------------------
 // Canvas state operations: Filters
 // ----------------------------------------------------------------------------
@@ -439,13 +467,13 @@ void SkiaCanvas::drawColor(int color, SkBlendMode mode) {
     mCanvas->drawColor(color, mode);
 }
 
-void SkiaCanvas::onFilterPaint(SkPaint& paint) {
+void SkiaCanvas::onFilterPaint(Paint& paint) {
     if (mPaintFilter) {
-        mPaintFilter->filter(&paint);
+        mPaintFilter->filterFullPaint(&paint);
     }
 }
 
-void SkiaCanvas::drawPaint(const SkPaint& paint) {
+void SkiaCanvas::drawPaint(const Paint& paint) {
     mCanvas->drawPaint(filterPaint(paint));
 }
 
@@ -546,26 +574,71 @@ void SkiaCanvas::drawVertices(const SkVertices* vertices, SkBlendMode mode, cons
     applyLooper(&paint, [&](const SkPaint& p) { mCanvas->drawVertices(vertices, mode, p); });
 }
 
+void SkiaCanvas::drawMesh(const Mesh& mesh, sk_sp<SkBlender> blender, const Paint& paint) {
+    GrDirectContext* context = nullptr;
+    auto recordingContext = mCanvas->recordingContext();
+    if (recordingContext) {
+        context = recordingContext->asDirectContext();
+    }
+    mesh.updateSkMesh(context);
+    mCanvas->drawMesh(mesh.getSkMesh(), blender, paint);
+}
+
 // ----------------------------------------------------------------------------
 // Canvas draw operations: Bitmaps
 // ----------------------------------------------------------------------------
 
+bool SkiaCanvas::useGainmapShader(Bitmap& bitmap) {
+    // If the bitmap doesn't have a gainmap, don't use the gainmap shader
+    if (!bitmap.hasGainmap()) return false;
+
+    // If we don't have an owned canvas, then we're either hardware accelerated or drawing
+    // to a picture - use the gainmap shader out of caution. Ideally a picture canvas would
+    // use a drawable here instead to defer making that decision until the last possible
+    // moment
+    if (!mCanvasOwned) return true;
+
+    auto info = mCanvasOwned->imageInfo();
+
+    // If it's an unknown colortype then it's not a bitmap-backed canvas
+    if (info.colorType() == SkColorType::kUnknown_SkColorType) return true;
+
+    skcms_TransferFunction tfn;
+    info.colorSpace()->transferFn(&tfn);
+
+    auto transferType = skcms_TransferFunction_getType(&tfn);
+    switch (transferType) {
+        case skcms_TFType_HLGish:
+        case skcms_TFType_HLGinvish:
+        case skcms_TFType_PQish:
+            return true;
+        case skcms_TFType_Invalid:
+        case skcms_TFType_sRGBish:
+            return false;
+    }
+}
+
 void SkiaCanvas::drawBitmap(Bitmap& bitmap, float left, float top, const Paint* paint) {
     auto image = bitmap.makeImage();
-    applyLooper(paint, [&](const SkPaint& p) {
-        auto sampling = SkSamplingOptions(p.getFilterQuality());
-        mCanvas->drawImage(image, left, top, sampling, &p);
+
+    if (useGainmapShader(bitmap)) {
+        Paint gainmapPaint = paint ? *paint : Paint();
+        sk_sp<SkShader> gainmapShader = uirenderer::MakeGainmapShader(
+                image, bitmap.gainmap()->bitmap->makeImage(), bitmap.gainmap()->info,
+                SkTileMode::kClamp, SkTileMode::kClamp, gainmapPaint.sampling());
+        gainmapPaint.setShader(gainmapShader);
+        return drawRect(left, top, left + bitmap.width(), top + bitmap.height(), gainmapPaint);
+    }
+
+    applyLooper(paint, [&](const Paint& p) {
+        mCanvas->drawImage(image, left, top, p.sampling(), &p);
     });
 }
 
 void SkiaCanvas::drawBitmap(Bitmap& bitmap, const SkMatrix& matrix, const Paint* paint) {
-    auto image = bitmap.makeImage();
     SkAutoCanvasRestore acr(mCanvas, true);
     mCanvas->concat(matrix);
-    applyLooper(paint, [&](const SkPaint& p) {
-        auto sampling = SkSamplingOptions(p.getFilterQuality());
-        mCanvas->drawImage(image, 0, 0, sampling, &p);
-    });
+    drawBitmap(bitmap, 0, 0, paint);
 }
 
 void SkiaCanvas::drawBitmap(Bitmap& bitmap, float srcLeft, float srcTop, float srcRight,
@@ -575,16 +648,20 @@ void SkiaCanvas::drawBitmap(Bitmap& bitmap, float srcLeft, float srcTop, float s
     SkRect srcRect = SkRect::MakeLTRB(srcLeft, srcTop, srcRight, srcBottom);
     SkRect dstRect = SkRect::MakeLTRB(dstLeft, dstTop, dstRight, dstBottom);
 
-    applyLooper(paint, [&](const SkPaint& p) {
-        auto sampling = SkSamplingOptions(p.getFilterQuality());
-        mCanvas->drawImageRect(image, srcRect, dstRect, sampling, &p,
+    if (useGainmapShader(bitmap)) {
+        Paint gainmapPaint = paint ? *paint : Paint();
+        sk_sp<SkShader> gainmapShader = uirenderer::MakeGainmapShader(
+                image, bitmap.gainmap()->bitmap->makeImage(), bitmap.gainmap()->info,
+                SkTileMode::kClamp, SkTileMode::kClamp, gainmapPaint.sampling());
+        gainmapShader = gainmapShader->makeWithLocalMatrix(SkMatrix::RectToRect(srcRect, dstRect));
+        gainmapPaint.setShader(gainmapShader);
+        return drawRect(dstLeft, dstTop, dstRight, dstBottom, gainmapPaint);
+    }
+
+    applyLooper(paint, [&](const Paint& p) {
+        mCanvas->drawImageRect(image, srcRect, dstRect, p.sampling(), &p,
                                SkCanvas::kFast_SrcRectConstraint);
     });
-}
-
-static SkFilterMode paintToFilter(const Paint* paint) {
-    return paint && paint->isFilterBitmap() ? SkFilterMode::kLinear
-                                            : SkFilterMode::kNearest;
 }
 
 void SkiaCanvas::drawBitmapMesh(Bitmap& bitmap, int meshWidth, int meshHeight,
@@ -626,7 +703,7 @@ void SkiaCanvas::drawBitmapMesh(Bitmap& bitmap, int meshWidth, int meshHeight,
             texsPtr += 1;
             y += dy;
         }
-        SkASSERT(texsPtr - texs == ptCount);
+        LOG_FATAL_IF((texsPtr - texs) != ptCount);
     }
 
     // cons up indices
@@ -649,14 +726,14 @@ void SkiaCanvas::drawBitmapMesh(Bitmap& bitmap, int meshWidth, int meshHeight,
             // bump to the next row
             index += 1;
         }
-        SkASSERT(indexPtr - indices == indexCount);
+        LOG_FATAL_IF((indexPtr - indices) != indexCount);
     }
 
 // double-check that we have legal indices
-#ifdef SK_DEBUG
+#if !defined(NDEBUG)
     {
         for (int i = 0; i < indexCount; i++) {
-            SkASSERT((unsigned)indices[i] < (unsigned)ptCount);
+            LOG_FATAL_IF((unsigned)indices[i] >= (unsigned)ptCount);
         }
     }
 #endif
@@ -668,13 +745,13 @@ void SkiaCanvas::drawBitmapMesh(Bitmap& bitmap, int meshWidth, int meshHeight,
     if (paint) {
         pnt = *paint;
     }
-    SkSamplingOptions sampling(paintToFilter(&pnt));
+    SkSamplingOptions sampling = pnt.sampling();
     pnt.setShader(image->makeShader(sampling));
 
     auto v = builder.detach();
-    applyLooper(&pnt, [&](const SkPaint& p) {
+    applyLooper(&pnt, [&](const Paint& p) {
         SkPaint copy(p);
-        auto s = SkSamplingOptions(p.getFilterQuality());
+        auto s = p.sampling();
         if (s != sampling) {
             // applyLooper changed the quality?
             copy.setShader(image->makeShader(s));
@@ -698,18 +775,19 @@ void SkiaCanvas::drawNinePatch(Bitmap& bitmap, const Res_png_9patch& chunk, floa
         numFlags = (lattice.fXCount + 1) * (lattice.fYCount + 1);
     }
 
-    SkAutoSTMalloc<25, SkCanvas::Lattice::RectType> flags(numFlags);
-    SkAutoSTMalloc<25, SkColor> colors(numFlags);
+    // Most times, we do not have very many flags/colors, so the stack allocated part of
+    // FatVector will save us a heap allocation.
+    FatVector<SkCanvas::Lattice::RectType, 25> flags(numFlags);
+    FatVector<SkColor, 25> colors(numFlags);
     if (numFlags > 0) {
-        NinePatchUtils::SetLatticeFlags(&lattice, flags.get(), numFlags, chunk, colors.get());
+        NinePatchUtils::SetLatticeFlags(&lattice, flags.data(), numFlags, chunk, colors.data());
     }
 
     lattice.fBounds = nullptr;
     SkRect dst = SkRect::MakeLTRB(dstLeft, dstTop, dstRight, dstBottom);
     auto image = bitmap.makeImage();
-    applyLooper(paint, [&](const SkPaint& p) {
-        auto filter = SkSamplingOptions(p.getFilterQuality()).filter;
-        mCanvas->drawImageLattice(image.get(), lattice, dst, filter, &p);
+    applyLooper(paint, [&](const Paint& p) {
+        mCanvas->drawImageLattice(image.get(), lattice, dst, p.filterMode(), &p);
     });
 }
 

@@ -26,6 +26,7 @@ import android.os.RemoteException;
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.Objects;
 import java.util.UUID;
 
@@ -172,11 +173,12 @@ public final class IncrementalStorage {
      *
      * @param path             Relative path of the new file.
      * @param size             Size of the new file in bytes.
+     * @param mode             File access permission mode.
      * @param metadata         Metadata bytes.
      * @param v4signatureBytes Serialized V4SignatureProto.
      * @param content          Optionally set file content.
      */
-    public void makeFile(@NonNull String path, long size, @Nullable UUID id,
+    public void makeFile(@NonNull String path, long size, int mode, @Nullable UUID id,
             @Nullable byte[] metadata, @Nullable byte[] v4signatureBytes, @Nullable byte[] content)
             throws IOException {
         try {
@@ -189,7 +191,7 @@ public final class IncrementalStorage {
             params.metadata = (metadata == null ? new byte[0] : metadata);
             params.fileId = idToBytes(id);
             params.signature = v4signatureBytes;
-            int res = mService.makeFile(mId, path, params, content);
+            int res = mService.makeFile(mId, path, mode, params, content);
             if (res != 0) {
                 throw new IOException("makeFile() failed with errno " + -res);
             }
@@ -197,7 +199,6 @@ public final class IncrementalStorage {
             e.rethrowFromSystemServer();
         }
     }
-
 
     /**
      * Creates a file in Incremental storage. The content of the file is mapped from a range inside
@@ -505,8 +506,8 @@ public final class IncrementalStorage {
 
         final V4Signature.HashingInfo hashingInfo = V4Signature.HashingInfo.fromByteArray(
                 signature.hashingInfo);
-        final V4Signature.SigningInfo signingInfo = V4Signature.SigningInfo.fromByteArray(
-                signature.signingInfo);
+        final V4Signature.SigningInfos signingInfos = V4Signature.SigningInfos.fromByteArray(
+                signature.signingInfos);
 
         if (hashingInfo.hashAlgorithm != V4Signature.HASHING_ALGORITHM_SHA256) {
             throw new IOException("Unsupported hashAlgorithm: " + hashingInfo.hashAlgorithm);
@@ -515,12 +516,12 @@ public final class IncrementalStorage {
             throw new IOException("Unsupported log2BlockSize: " + hashingInfo.log2BlockSize);
         }
         if (hashingInfo.salt != null && hashingInfo.salt.length > 0) {
-            throw new IOException("Unsupported salt: " + hashingInfo.salt);
+            throw new IOException("Unsupported salt: " + Arrays.toString(hashingInfo.salt));
         }
         if (hashingInfo.rawRootHash.length != INCFS_MAX_HASH_SIZE) {
             throw new IOException("rawRootHash has to be " + INCFS_MAX_HASH_SIZE + " bytes");
         }
-        if (signingInfo.additionalData.length > INCFS_MAX_ADD_DATA_SIZE) {
+        if (signingInfos.signingInfo.additionalData.length > INCFS_MAX_ADD_DATA_SIZE) {
             throw new IOException(
                     "additionalData has to be at most " + INCFS_MAX_ADD_DATA_SIZE + " bytes");
         }

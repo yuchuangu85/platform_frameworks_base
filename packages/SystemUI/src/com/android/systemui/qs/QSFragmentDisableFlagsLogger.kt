@@ -1,9 +1,9 @@
 package com.android.systemui.qs
 
-import com.android.systemui.log.LogBuffer
-import com.android.systemui.log.LogLevel
 import com.android.systemui.log.dagger.QSFragmentDisableLog
-import com.android.systemui.statusbar.DisableFlagsLogger
+import com.android.systemui.log.LogBuffer
+import com.android.systemui.log.core.LogLevel
+import com.android.systemui.statusbar.disableflags.DisableFlagsLogger
 import javax.inject.Inject
 
 /** A helper class for logging disable flag changes made in [QSFragment]. */
@@ -34,7 +34,6 @@ class QSFragmentDisableFlagsLogger @Inject constructor(
             },
             {
                 disableFlagsLogger.getDisableFlagsString(
-                    old = null,
                     new = DisableFlagsLogger.DisableState(int1, int2),
                     newAfterLocalModification =
                         DisableFlagsLogger.DisableState(long1.toInt(), long2.toInt())

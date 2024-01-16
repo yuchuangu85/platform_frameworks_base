@@ -21,9 +21,9 @@ import android.annotation.Nullable;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Parcel;
 import android.os.Parcelable;
-import android.util.TypedXmlSerializer;
 
 import com.android.internal.util.ArrayUtils;
+import com.android.modules.utils.TypedXmlSerializer;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -256,7 +256,7 @@ public class Signature implements Parcelable {
         try {
             if (obj != null) {
                 Signature other = (Signature)obj;
-                // Note, some classes, such as PackageParser.SigningDetails, rely on equals
+                // Note, some classes, such as SigningDetails, rely on equals
                 // only comparing the mSignature arrays without the flags.
                 return this == other || Arrays.equals(mSignature, other.mSignature);
             }
@@ -312,7 +312,7 @@ public class Signature implements Parcelable {
      * @hide
      */
     public static boolean areExactMatch(Signature[] a, Signature[] b) {
-        return (a.length == b.length) && ArrayUtils.containsAll(a, b)
+        return (ArrayUtils.size(a) == ArrayUtils.size(b)) && ArrayUtils.containsAll(a, b)
                 && ArrayUtils.containsAll(b, a);
     }
 

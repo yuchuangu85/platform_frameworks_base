@@ -24,10 +24,10 @@ import android.app.GrantedUriPermission;
 import android.app.IApplicationThread;
 import android.app.IActivityClientController;
 import android.app.IActivityController;
-import android.app.IAppTask;
 import android.app.IAssistDataReceiver;
 import android.app.IInstrumentationWatcher;
 import android.app.IProcessObserver;
+import android.app.IScreenCaptureObserver;
 import android.app.IServiceConnection;
 import android.app.IStopUserCallback;
 import android.app.ITaskStackListener;
@@ -64,13 +64,17 @@ import android.os.Debug;
 import android.os.IBinder;
 import android.os.IProgressListener;
 import android.os.ParcelFileDescriptor;
+import android.os.RemoteCallback;
 import android.os.StrictMode;
 import android.os.WorkSource;
 import android.service.voice.IVoiceInteractionSession;
 import android.view.IRecentsAnimationRunner;
+import android.view.IRemoteAnimationRunner;
 import android.view.RemoteAnimationDefinition;
 import android.view.RemoteAnimationAdapter;
 import android.window.IWindowOrganizerController;
+import android.window.BackAnimationAdapter;
+import android.window.BackNavigationInfo;
 import android.window.SplashScreenView;
 import com.android.internal.app.IVoiceInteractor;
 import com.android.internal.os.IResultReceiver;
@@ -102,14 +106,6 @@ interface IActivityTaskManager {
             in ProfilerInfo profilerInfo, in Bundle options, int userId);
     boolean startNextMatchingActivity(in IBinder callingActivity,
             in Intent intent, in Bundle options);
-
-    /**
-    *  The DreamActivity has to be started in a special way that does not involve the PackageParser.
-    *  The DreamActivity is a framework component inserted in the dream application process. Hence,
-    *  it is not declared in the application's manifest and cannot be parsed. startDreamActivity
-    *  creates the activity and starts it without reaching out to the PackageParser.
-    */
-    boolean startDreamActivity(in Intent intent);
     int startActivityIntentSender(in IApplicationThread caller,
             in IIntentSender target, in IBinder whitelistToken, in Intent fillInIntent,
             in String resolvedType, in IBinder resultTo, in String resultWho, int requestCode,
@@ -126,15 +122,20 @@ interface IActivityTaskManager {
             int callingUid, in Intent intent, in String resolvedType,
             in IVoiceInteractionSession session, in IVoiceInteractor interactor, int flags,
             in ProfilerInfo profilerInfo, in Bundle options, int userId);
+    String getVoiceInteractorPackageName(in IBinder callingVoiceInteractor);
     int startAssistantActivity(in String callingPackage, in String callingFeatureId, int callingPid,
             int callingUid, in Intent intent, in String resolvedType, in Bundle options, int userId);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.MANAGE_GAME_ACTIVITY)")
+    int startActivityFromGameSession(IApplicationThread caller, in String callingPackage,
+            in String callingFeatureId, int callingPid, int callingUid, in Intent intent,
+            int taskId, int userId);
     void startRecentsActivity(in Intent intent, in long eventTime,
             in IRecentsAnimationRunner recentsAnimationRunner);
     int startActivityFromRecents(int taskId, in Bundle options);
     int startActivityAsCaller(in IApplicationThread caller, in String callingPackage,
             in Intent intent, in String resolvedType, in IBinder resultTo, in String resultWho,
             int requestCode, int flags, in ProfilerInfo profilerInfo, in Bundle options,
-            IBinder permissionToken, boolean ignoreTargetSecurity, int userId);
+            boolean ignoreTargetSecurity, int userId);
 
     boolean isActivityStartAllowedOnDisplay(int displayId, in Intent intent, in String resolvedType,
             int userId);
@@ -150,7 +151,7 @@ interface IActivityTaskManager {
     boolean removeTask(int taskId);
     void removeAllVisibleRecentTasks();
     List<ActivityManager.RunningTaskInfo> getTasks(int maxNum, boolean filterOnlyVisibleRecents,
-            boolean keepIntentExtra);
+            boolean keepIntentExtra, int displayId);
     void moveTaskToFront(in IApplicationThread app, in String callingPackage, int task,
             int flags, in Bundle options);
     ParceledListSlice<ActivityManager.RecentTaskInfo> getRecentTasks(int maxNum, int flags,
@@ -164,7 +165,11 @@ interface IActivityTaskManager {
     ActivityTaskManager.RootTaskInfo getFocusedRootTaskInfo();
     Rect getTaskBounds(int taskId);
 
+    /** Focuses the top task on a display if it isn't already focused. Used for Recents. */
+    void focusTopTask(int displayId);
+
     void cancelRecentsAnimation(boolean restoreHomeRootTaskPosition);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.UPDATE_LOCK_TASK_PACKAGES)")
     void updateLockTaskPackages(int userId, in String[] packages);
     boolean isInLockTaskMode();
     int getLockTaskModeState();
@@ -175,19 +180,6 @@ interface IActivityTaskManager {
     int addAppTask(in IBinder activityToken, in Intent intent,
             in ActivityManager.TaskDescription description, in Bitmap thumbnail);
     Point getAppTaskThumbnailSize();
-    /**
-     * Only callable from the system. This token grants a temporary permission to call
-     * #startActivityAsCallerWithToken. The token will time out after
-     * START_AS_CALLER_TOKEN_TIMEOUT if it is not used.
-     *
-     * @param delegatorToken The Binder token referencing the system Activity that wants to delegate
-     *        the #startActivityAsCaller to another app. The "caller" will be the caller of this
-     *        activity's token, not the delegate's caller (which is probably the delegator itself).
-     *
-     * @return Returns a token that can be given to a "delegate" app that may call
-     *         #startActivityAsCaller
-     */
-    IBinder requestStartActivityPermissionToken(in IBinder delegatorToken);
 
     oneway void releaseSomeActivities(in IApplicationThread app);
     Bitmap getTaskDescriptionIcon(in String filename, int userId);
@@ -201,9 +193,8 @@ interface IActivityTaskManager {
      * @param taskId The id of the task to set the bounds for.
      * @param bounds The new bounds.
      * @param resizeMode Resize mode defined as {@code ActivityTaskManager#RESIZE_MODE_*} constants.
-     * @return Return true on success. Otherwise false.
      */
-    boolean resizeTask(int taskId, in Rect bounds, int resizeMode);
+    void resizeTask(int taskId, in Rect bounds, int resizeMode);
     void moveRootTaskToDisplay(int taskId, int displayId);
 
     void moveTaskToRootTask(int taskId, int rootTaskId, boolean toTop);
@@ -236,7 +227,7 @@ interface IActivityTaskManager {
             in IBinder activityToken, int flags);
     boolean isAssistDataAllowedOnCurrentActivity();
     boolean requestAssistDataForTask(in IAssistDataReceiver receiver, int taskId,
-            in String callingPackageName);
+            in String callingPackageName, String callingAttributionTag);
 
     /**
      * Notify the system that the keyguard is going away.
@@ -252,11 +243,6 @@ interface IActivityTaskManager {
     /** Returns an interface enabling the management of window organizers. */
     IWindowOrganizerController getWindowOrganizerController();
 
-    /**
-     * Sets whether we are currently in an interactive split screen resize operation where we
-     * are changing the docked stack size.
-     */
-    void setSplitScreenResizing(boolean resizing);
     boolean supportsLocalVoiceInteraction();
 
     // Get device configuration
@@ -266,12 +252,28 @@ interface IActivityTaskManager {
     void cancelTaskWindowTransition(int taskId);
 
     /**
+     * Fetches the snapshot for the task with the given id, taking a new snapshot if it is not in
+     * the task snapshot cache and it is requested.
+     *
      * @param taskId the id of the task to retrieve the sAutoapshots for
      * @param isLowResolution if set, if the snapshot needs to be loaded from disk, this will load
      *                          a reduced resolution of it, which is much faster
+     * @param takeSnapshotIfNeeded if set, call {@link #takeTaskSnapshot} to trigger the snapshot
+                                   if no cache exists.
      * @return a graphic buffer representing a screenshot of a task
      */
-    android.window.TaskSnapshot getTaskSnapshot(int taskId, boolean isLowResolution);
+    android.window.TaskSnapshot getTaskSnapshot(
+            int taskId, boolean isLowResolution, boolean takeSnapshotIfNeeded);
+
+    /**
+     * Requests for a new snapshot to be taken for the task with the given id, storing it in the
+     * task snapshot cache only if requested.
+     *
+     * @param taskId the id of the task to take a snapshot of
+     * @param updateCache whether to store the new snapshot in the system's task snapshot cache
+     * @return a graphic buffer representing a screenshot of a task
+     */
+    android.window.TaskSnapshot takeTaskSnapshot(int taskId, boolean updateCache);
 
     /**
      * Return the user id of last resumed activity.
@@ -293,7 +295,7 @@ interface IActivityTaskManager {
      * a short predefined amount of time.
      */
     void registerRemoteAnimationForNextActivityStart(in String packageName,
-           in RemoteAnimationAdapter adapter);
+            in RemoteAnimationAdapter adapter, in IBinder launchCookie);
 
     /**
      * Registers remote animations for a display.
@@ -344,4 +346,34 @@ interface IActivityTaskManager {
      * @param caller is the IApplicationThread representing the calling process.
      */
     void setRunningRemoteTransitionDelegate(in IApplicationThread caller);
+
+    /**
+     * Prepare the back navigation in the server. This setups the leashed for sysui to animate
+     * the back gesture and returns the data needed for the animation.
+     * @param navigationObserver a remote callback to nofify shell when the focused window is gone,
+                                 or an unexpected transition has happened on the navigation target.
+     * @param adaptor a remote animation to be run for the back navigation plays the animation.
+     * @return Returns the back navigation info.
+     */
+    android.window.BackNavigationInfo startBackNavigation(
+            in RemoteCallback navigationObserver, in BackAnimationAdapter adaptor);
+
+    /**
+     * registers a callback to be invoked when the screen is captured.
+     *
+     * @param observer callback to be registered.
+     * @param activityToken The token for the activity to set the callback to.
+     * @hide
+     */
+    void registerScreenCaptureObserver(IBinder activityToken, IScreenCaptureObserver observer);
+
+    /**
+     * unregisters the screen capture callback which was registered with
+     * {@link #registerScreenCaptureObserver(ScreenCaptureObserver)}.
+     *
+     * @param observer callback to be unregistered.
+     * @param activityToken The token for the activity to unset the callback from.
+     * @hide
+     */
+    void unregisterScreenCaptureObserver(IBinder activityToken, IScreenCaptureObserver observer);
 }

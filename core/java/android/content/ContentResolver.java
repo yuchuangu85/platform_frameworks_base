@@ -920,12 +920,18 @@ public abstract class ContentResolver implements ContentInterface {
             return null;
         }
 
-        // XXX would like to have an acquireExistingUnstableProvider for this.
-        IContentProvider provider = acquireExistingProvider(url);
+        IContentProvider provider = null;
+        try {
+            provider = acquireProvider(url);
+        } catch (Exception e) {
+            // if unable to acquire the provider, then it should try to get the type
+            // using getTypeAnonymous via ActivityManagerService
+        }
         if (provider != null) {
             try {
                 final StringResultListener resultListener = new StringResultListener();
-                provider.getTypeAsync(url, new RemoteCallback(resultListener));
+                provider.getTypeAsync(mContext.getAttributionSource(),
+                        url, new RemoteCallback(resultListener));
                 resultListener.waitForResult(CONTENT_PROVIDER_TIMEOUT_MILLIS);
                 if (resultListener.exception != null) {
                     throw resultListener.exception;
@@ -939,7 +945,11 @@ public abstract class ContentResolver implements ContentInterface {
                 Log.w(TAG, "Failed to get type for: " + url + " (" + e.getMessage() + ")");
                 return null;
             } finally {
-                releaseProvider(provider);
+                try {
+                    releaseProvider(provider);
+                } catch (java.lang.NullPointerException e) {
+                    // does nothing, Binder connection already null
+                }
             }
         }
 
@@ -949,7 +959,7 @@ public abstract class ContentResolver implements ContentInterface {
 
         try {
             final StringResultListener resultListener = new StringResultListener();
-            ActivityManager.getService().getProviderMimeTypeAsync(
+            ActivityManager.getService().getMimeTypeFilterAsync(
                     ContentProvider.getUriWithoutUserId(url),
                     resolveUserId(url),
                     new RemoteCallback(resultListener));
@@ -980,7 +990,7 @@ public abstract class ContentResolver implements ContentInterface {
         @Override
         public void onResult(Bundle result) {
             synchronized (this) {
-                ParcelableException e = result.getParcelable(REMOTE_CALLBACK_ERROR);
+                ParcelableException e = result.getParcelable(REMOTE_CALLBACK_ERROR, android.os.ParcelableException.class);
                 if (e != null) {
                     Throwable t = e.getCause();
                     if (t instanceof RuntimeException) {
@@ -1021,7 +1031,7 @@ public abstract class ContentResolver implements ContentInterface {
     private static class UriResultListener extends ResultListener<Uri> {
         @Override
         protected Uri getResultFromBundle(Bundle result) {
-            return result.getParcelable(REMOTE_CALLBACK_RESULT);
+            return result.getParcelable(REMOTE_CALLBACK_RESULT, android.net.Uri.class);
         }
     }
 
@@ -1059,7 +1069,7 @@ public abstract class ContentResolver implements ContentInterface {
         }
 
         try {
-            return provider.getStreamTypes(url, mimeTypeFilter);
+            return provider.getStreamTypes(mContext.getAttributionSource(), url, mimeTypeFilter);
         } catch (RemoteException e) {
             // Arbitrary and not worth documenting, as Activity
             // Manager will kill this process shortly anyway.
@@ -1526,7 +1536,8 @@ public abstract class ContentResolver implements ContentInterface {
 
     /**
      * Synonym for {@link #openOutputStream(Uri, String)
-     * openOutputStream(uri, "w")}.
+     * openOutputStream(uri, "w")}. Please note the implementation of "w" is up to each
+     * Provider implementation and it may or may not truncate.
      *
      * @param uri The desired URI.
      * @return an OutputStream or {@code null} if the provider recently crashed.
@@ -1552,7 +1563,8 @@ public abstract class ContentResolver implements ContentInterface {
      *
      * @param uri The desired URI.
      * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
-     *             or "rwt". See{@link ParcelFileDescriptor#parseMode} for more details.
+     *             or "rwt". Please note the exact implementation of these may differ for each
+     *             Provider implementation - for example, "w" may or may not truncate.
      * @return an OutputStream or {@code null} if the provider recently crashed.
      * @throws FileNotFoundException if the provided URI could not be opened.
      * @see #openAssetFileDescriptor(Uri, String)
@@ -1609,7 +1621,8 @@ public abstract class ContentResolver implements ContentInterface {
      *
      * @param uri The desired URI to open.
      * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
-     *             or "rwt". See{@link ParcelFileDescriptor#parseMode} for more details.
+     *             or "rwt". Please note the exact implementation of these may differ for each
+     *             Provider implementation - for example, "w" may or may not truncate.
      * @return Returns a new ParcelFileDescriptor pointing to the file or {@code null} if the
      * provider recently crashed. You own this descriptor and are responsible for closing it
      * when done.
@@ -1652,7 +1665,8 @@ public abstract class ContentResolver implements ContentInterface {
      *
      * @param uri The desired URI to open.
      * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
-     *             or "rwt". See{@link ParcelFileDescriptor#parseMode} for more details.
+     *             or "rwt". Please note the exact implementation of these may differ for each
+     *             Provider implementation - for example, "w" may or may not truncate.
      * @param cancellationSignal A signal to cancel the operation in progress,
      *         or null if none. If the operation is canceled, then
      *         {@link OperationCanceledException} will be thrown.
@@ -1746,7 +1760,8 @@ public abstract class ContentResolver implements ContentInterface {
      *
      * @param uri The desired URI to open.
      * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
-     *             or "rwt". See{@link ParcelFileDescriptor#parseMode} for more details.
+     *             or "rwt". Please note the exact implementation of these may differ for each
+     *             Provider implementation - for example, "w" may or may not truncate.
      * @return Returns a new ParcelFileDescriptor pointing to the file or {@code null} if the
      * provider recently crashed. You own this descriptor and are responsible for closing it
      * when done.
@@ -1800,7 +1815,8 @@ public abstract class ContentResolver implements ContentInterface {
      *
      * @param uri The desired URI to open.
      * @param mode The string representation of the file mode. Can be "r", "w", "wt", "wa", "rw"
-     *             or "rwt". See{@link ParcelFileDescriptor#parseMode} for more details.
+     *             or "rwt". Please note "w" is write only and "wt" is write and truncate.
+     *             See{@link ParcelFileDescriptor#parseMode} for more details.
      * @param cancellationSignal A signal to cancel the operation in progress, or null if
      *            none. If the operation is canceled, then
      *            {@link OperationCanceledException} will be thrown.
@@ -2664,6 +2680,46 @@ public abstract class ContentResolver implements ContentInterface {
                 ContentProvider.getUserIdFromUri(uri, mContext.getUserId()));
     }
 
+    /**
+     * Same as {@link #registerContentObserver(Uri, boolean, ContentObserver)}, but the observer
+     * registered will get content change notifications for the specified user.
+     * {@link ContentObserver#onChange(boolean, Collection, int, UserHandle)} should be
+     * overwritten to get the corresponding {@link UserHandle} for that notification.
+     *
+     * <p> If you don't hold the {@link android.Manifest.permission#INTERACT_ACROSS_USERS_FULL}
+     * permission, you can register the {@link ContentObserver} only for current user.
+     *
+     * @param uri                  The URI to watch for changes. This can be a specific row URI,
+     *                             or a base URI for a whole class of content.
+     * @param notifyForDescendants When false, the observer will be notified
+     *                             whenever a change occurs to the exact URI specified by
+     *                             <code>uri</code> or to one of the URI's ancestors in the path
+     *                             hierarchy. When true, the observer will also be notified
+     *                             whenever a change occurs to the URI's descendants in the path
+     *                             hierarchy.
+     * @param observer             The object that receives callbacks when changes occur.
+     * @param userHandle           The UserHandle of the user the content change notifications are
+     *                             for.
+     * @hide
+     * @see #unregisterContentObserver
+     */
+    @RequiresPermission(value = android.Manifest.permission.INTERACT_ACROSS_USERS_FULL,
+            conditional = true)
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public final void registerContentObserverAsUser(@NonNull Uri uri,
+            boolean notifyForDescendants,
+            @NonNull ContentObserver observer,
+            @NonNull UserHandle userHandle) {
+        Objects.requireNonNull(uri, "uri");
+        Objects.requireNonNull(observer, "observer");
+        Objects.requireNonNull(userHandle, "userHandle");
+        registerContentObserver(
+                ContentProvider.getUriWithoutUserId(uri),
+                notifyForDescendants,
+                observer,
+                userHandle.getIdentifier());
+    }
+
     /** @hide - designated user version */
     @UnsupportedAppUsage
     public final void registerContentObserver(Uri uri, boolean notifyForDescendents,
@@ -3193,6 +3249,21 @@ public abstract class ContentResolver implements ContentInterface {
     }
 
     /**
+     * Returns the package name of the syncadapter that matches a given account type, authority
+     * and user.
+     * @hide
+     */
+    @Nullable
+    public static String getSyncAdapterPackageAsUser(@NonNull String accountType,
+            @NonNull String authority, @UserIdInt int userId) {
+        try {
+            return getContentService().getSyncAdapterPackageAsUser(accountType, authority, userId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Check if the provider should be synced when a network tickle is received
      * <p>This method requires the caller to hold the permission
      * {@link android.Manifest.permission#READ_SYNC_SETTINGS}.
@@ -3289,7 +3360,7 @@ public abstract class ContentResolver implements ContentInterface {
      * @param authority the provider to specify in the sync request
      * @param extras extra parameters to go along with the sync request
      * @param pollFrequency how frequently the sync should be performed, in seconds.
-     * On Android API level 24 and above, a minmam interval of 15 minutes is enforced.
+     * On Android API level 24 and above, a minimum interval of 15 minutes is enforced.
      * On previous versions, the minimum interval is 1 hour.
      * @throws IllegalArgumentException if an illegal extra was set or if any of the parameters
      * are null.
@@ -3806,7 +3877,7 @@ public abstract class ContentResolver implements ContentInterface {
         CursorWrapperInner(Cursor cursor, IContentProvider contentProvider) {
             super(cursor);
             mContentProvider = contentProvider;
-            mCloseGuard.open("close");
+            mCloseGuard.open("CursorWrapperInner.close");
         }
 
         @Override

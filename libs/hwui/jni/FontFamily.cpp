@@ -24,6 +24,7 @@
 #include "SkData.h"
 #include "SkFontMgr.h"
 #include "SkRefCnt.h"
+#include "SkStream.h"
 #include "SkTypeface.h"
 #include "Utils.h"
 #include "fonts/Font.h"
@@ -44,6 +45,7 @@
 
 namespace android {
 
+namespace {
 struct NativeFamilyBuilder {
     NativeFamilyBuilder(uint32_t langId, int variant)
         : langId(langId), variant(static_cast<minikin::FamilyVariant>(variant)) {}
@@ -52,6 +54,7 @@ struct NativeFamilyBuilder {
     std::vector<std::shared_ptr<minikin::Font>> fonts;
     std::vector<minikin::FontVariation> axes;
 };
+}  // namespace
 
 static inline NativeFamilyBuilder* toNativeBuilder(jlong ptr) {
     return reinterpret_cast<NativeFamilyBuilder*>(ptr);
@@ -84,9 +87,9 @@ static jlong FontFamily_create(CRITICAL_JNI_PARAMS_COMMA jlong builderPtr) {
     if (builder->fonts.empty()) {
         return 0;
     }
-    std::shared_ptr<minikin::FontFamily> family = std::make_shared<minikin::FontFamily>(
+    std::shared_ptr<minikin::FontFamily> family = minikin::FontFamily::create(
             builder->langId, builder->variant, std::move(builder->fonts),
-            true /* isCustomFallback */);
+            true /* isCustomFallback */, false /* isDefaultFallback */);
     if (family->getCoverage().length() == 0) {
         return 0;
     }

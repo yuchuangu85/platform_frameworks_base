@@ -17,14 +17,15 @@
 package androidx.window.extensions.embedding;
 
 import static android.os.Process.THREAD_PRIORITY_DISPLAY;
+import static android.view.RemoteAnimationTarget.MODE_CHANGING;
 import static android.view.RemoteAnimationTarget.MODE_CLOSING;
+import static android.view.RemoteAnimationTarget.MODE_OPENING;
 import static android.view.WindowManager.TRANSIT_OLD_ACTIVITY_CLOSE;
 import static android.view.WindowManager.TRANSIT_OLD_ACTIVITY_OPEN;
-import static android.view.WindowManager.TRANSIT_OLD_TASK_CLOSE;
 import static android.view.WindowManager.TRANSIT_OLD_TASK_FRAGMENT_CHANGE;
 import static android.view.WindowManager.TRANSIT_OLD_TASK_FRAGMENT_CLOSE;
 import static android.view.WindowManager.TRANSIT_OLD_TASK_FRAGMENT_OPEN;
-import static android.view.WindowManager.TRANSIT_OLD_TASK_OPEN;
+import static android.view.WindowManagerPolicyConstants.TYPE_LAYER_OFFSET;
 
 import android.animation.Animator;
 import android.animation.ValueAnimator;
@@ -83,9 +84,6 @@ class TaskFragmentAnimationRunner extends IRemoteAnimationRunner.Stub {
 
     @Override
     public void onAnimationCancelled() {
-        if (TaskFragmentAnimationController.DEBUG) {
-            Log.v(TAG, "onAnimationCancelled");
-        }
         mHandler.post(this::cancelAnimation);
     }
 
@@ -111,6 +109,7 @@ class TaskFragmentAnimationRunner extends IRemoteAnimationRunner.Stub {
     }
 
     /** Creates the animator given the transition type and windows. */
+    @NonNull
     private Animator createAnimator(@WindowManager.TransitionOldType int transit,
             @NonNull RemoteAnimationTarget[] targets,
             @NonNull IRemoteAnimationFinishedCallback finishedCallback) {
@@ -160,17 +159,16 @@ class TaskFragmentAnimationRunner extends IRemoteAnimationRunner.Stub {
     }
 
     /** List of {@link TaskFragmentAnimationAdapter} to handle animations on all window targets. */
+    @NonNull
     private List<TaskFragmentAnimationAdapter> createAnimationAdapters(
             @WindowManager.TransitionOldType int transit,
             @NonNull RemoteAnimationTarget[] targets) {
         switch (transit) {
             case TRANSIT_OLD_ACTIVITY_OPEN:
             case TRANSIT_OLD_TASK_FRAGMENT_OPEN:
-            case TRANSIT_OLD_TASK_OPEN:
                 return createOpenAnimationAdapters(targets);
             case TRANSIT_OLD_ACTIVITY_CLOSE:
             case TRANSIT_OLD_TASK_FRAGMENT_CLOSE:
-            case TRANSIT_OLD_TASK_CLOSE:
                 return createCloseAnimationAdapters(targets);
             case TRANSIT_OLD_TASK_FRAGMENT_CHANGE:
                 return createChangeAnimationAdapters(targets);
@@ -179,20 +177,27 @@ class TaskFragmentAnimationRunner extends IRemoteAnimationRunner.Stub {
         }
     }
 
+    @NonNull
     private List<TaskFragmentAnimationAdapter> createOpenAnimationAdapters(
             @NonNull RemoteAnimationTarget[] targets) {
-        return createOpenCloseAnimationAdapters(targets,
+        return createOpenCloseAnimationAdapters(targets, true /* isOpening */,
                 mAnimationSpec::loadOpenAnimation);
     }
 
+    @NonNull
     private List<TaskFragmentAnimationAdapter> createCloseAnimationAdapters(
             @NonNull RemoteAnimationTarget[] targets) {
-        return createOpenCloseAnimationAdapters(targets,
+        return createOpenCloseAnimationAdapters(targets, false /* isOpening */,
                 mAnimationSpec::loadCloseAnimation);
     }
 
+    /**
+     * Creates {@link TaskFragmentAnimationAdapter} for OPEN and CLOSE types of transition.
+     * @param isOpening {@code true} for OPEN type, {@code false} for CLOSE type.
+     */
+    @NonNull
     private List<TaskFragmentAnimationAdapter> createOpenCloseAnimationAdapters(
-            @NonNull RemoteAnimationTarget[] targets,
+            @NonNull RemoteAnimationTarget[] targets, boolean isOpening,
             @NonNull BiFunction<RemoteAnimationTarget, Rect, Animation> animationProvider) {
         // We need to know if the target window is only a partial of the whole animation screen.
         // If so, we will need to adjust it to make the whole animation screen looks like one.
@@ -203,51 +208,58 @@ class TaskFragmentAnimationRunner extends IRemoteAnimationRunner.Stub {
         for (RemoteAnimationTarget target : targets) {
             if (target.mode != MODE_CLOSING) {
                 openingTargets.add(target);
-                openingWholeScreenBounds.union(target.localBounds);
+                openingWholeScreenBounds.union(target.screenSpaceBounds);
             } else {
                 closingTargets.add(target);
-                closingWholeScreenBounds.union(target.localBounds);
+                closingWholeScreenBounds.union(target.screenSpaceBounds);
+                // Union the start bounds since this may be the ClosingChanging animation.
+                closingWholeScreenBounds.union(target.startBounds);
             }
         }
 
+        // For OPEN transition, open windows should be above close windows.
+        // For CLOSE transition, open windows should be below close windows.
+        int offsetLayer = TYPE_LAYER_OFFSET;
         final List<TaskFragmentAnimationAdapter> adapters = new ArrayList<>();
         for (RemoteAnimationTarget target : openingTargets) {
-            adapters.add(createOpenCloseAnimationAdapter(target, animationProvider,
-                    openingWholeScreenBounds));
+            final TaskFragmentAnimationAdapter adapter = createOpenCloseAnimationAdapter(target,
+                    animationProvider, openingWholeScreenBounds);
+            if (isOpening) {
+                adapter.overrideLayer(offsetLayer++);
+            }
+            adapters.add(adapter);
         }
         for (RemoteAnimationTarget target : closingTargets) {
-            adapters.add(createOpenCloseAnimationAdapter(target, animationProvider,
-                    closingWholeScreenBounds));
+            final TaskFragmentAnimationAdapter adapter = createOpenCloseAnimationAdapter(target,
+                    animationProvider, closingWholeScreenBounds);
+            if (!isOpening) {
+                adapter.overrideLayer(offsetLayer++);
+            }
+            adapters.add(adapter);
         }
         return adapters;
     }
 
+    @NonNull
     private TaskFragmentAnimationAdapter createOpenCloseAnimationAdapter(
             @NonNull RemoteAnimationTarget target,
             @NonNull BiFunction<RemoteAnimationTarget, Rect, Animation> animationProvider,
             @NonNull Rect wholeAnimationBounds) {
         final Animation animation = animationProvider.apply(target, wholeAnimationBounds);
-        final Rect targetBounds = target.localBounds;
-        if (targetBounds.left == wholeAnimationBounds.left
-                && targetBounds.right != wholeAnimationBounds.right) {
-            // This is the left split of the whole animation window.
-            return new TaskFragmentAnimationAdapter.SplitAdapter(animation, target,
-                    true /* isLeftHalf */, wholeAnimationBounds.width());
-        } else if (targetBounds.left != wholeAnimationBounds.left
-                && targetBounds.right == wholeAnimationBounds.right) {
-            // This is the right split of the whole animation window.
-            return new TaskFragmentAnimationAdapter.SplitAdapter(animation, target,
-                    false /* isLeftHalf */, wholeAnimationBounds.width());
-        }
-        // Open/close window that fills the whole animation.
-        return new TaskFragmentAnimationAdapter(animation, target);
+        return new TaskFragmentAnimationAdapter(animation, target, target.leash,
+                wholeAnimationBounds);
     }
 
+    @NonNull
     private List<TaskFragmentAnimationAdapter> createChangeAnimationAdapters(
             @NonNull RemoteAnimationTarget[] targets) {
+        if (shouldUseJumpCutForChangeAnimation(targets)) {
+            return new ArrayList<>();
+        }
+
         final List<TaskFragmentAnimationAdapter> adapters = new ArrayList<>();
         for (RemoteAnimationTarget target : targets) {
-            if (target.startBounds != null) {
+            if (target.mode == MODE_CHANGING) {
                 // This is the target with bounds change.
                 final Animation[] animations =
                         mAnimationSpec.createChangeBoundsChangeAnimations(target);
@@ -273,5 +285,25 @@ class TaskFragmentAnimationRunner extends IRemoteAnimationRunner.Stub {
             adapters.add(new TaskFragmentAnimationAdapter(animation, target));
         }
         return adapters;
+    }
+
+    /**
+     * Whether we should use jump cut for the change transition.
+     * This normally happens when opening a new secondary with the existing primary using a
+     * different split layout. This can be complicated, like from horizontal to vertical split with
+     * new split pairs.
+     * Uses a jump cut animation to simplify.
+     */
+    private boolean shouldUseJumpCutForChangeAnimation(@NonNull RemoteAnimationTarget[] targets) {
+        boolean hasOpeningWindow = false;
+        boolean hasClosingWindow = false;
+        for (RemoteAnimationTarget target : targets) {
+            if (target.hasAnimatingParent) {
+                continue;
+            }
+            hasOpeningWindow |= target.mode == MODE_OPENING;
+            hasClosingWindow |= target.mode == MODE_CLOSING;
+        }
+        return hasOpeningWindow && hasClosingWindow;
     }
 }

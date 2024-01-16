@@ -46,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
+import java.util.Objects;
 
 /**
  * The Paint class holds the style and color information about how to draw
@@ -135,6 +136,13 @@ public class Paint {
      *
      * <p>Enabling this flag will cause all draw operations that support
      * antialiasing to use it.</p>
+     *
+     * <p>Notable draw operations that do <b>not</b> support antialiasing include:</p>
+     * <ul>
+     *      <li>{@link android.graphics.Canvas#drawBitmapMesh}</li>
+     *      <li>{@link android.graphics.Canvas#drawPatch}</li>
+     *      <li>{@link android.graphics.Canvas#drawVertices}</li>
+     * </ul>
      *
      * @see #Paint(int)
      * @see #setFlags(int)
@@ -2131,6 +2139,120 @@ public class Paint {
     }
 
     /**
+     * Returns the font metrics value for the given text.
+     *
+     * If the text is rendered with multiple font files, this function returns the large ascent and
+     * descent that are enough for drawing all font files.
+     *
+     * The context range is used for shaping context. Some script, e.g. Arabic or Devanagari,
+     * changes letter shape based on its location or surrounding characters.
+     *
+     * @param text a text to be measured.
+     * @param start a starting offset in the text.
+     * @param count a length of the text to be measured.
+     * @param contextStart a context starting offset in the text.
+     * @param contextCount a length of the context to be used.
+     * @param isRtl true if measuring on RTL context, otherwise false.
+     * @param outMetrics the output font metrics.
+     */
+    public void getFontMetricsInt(
+            @NonNull CharSequence text,
+            @IntRange(from = 0) int start, @IntRange(from = 0) int count,
+            @IntRange(from = 0) int contextStart, @IntRange(from = 0) int contextCount,
+            boolean isRtl,
+            @NonNull FontMetricsInt outMetrics) {
+
+        if (text == null) {
+            throw new IllegalArgumentException("text must not be null");
+        }
+        if (start < 0 || start >= text.length()) {
+            throw new IllegalArgumentException("start argument is out of bounds.");
+        }
+        if (count < 0 || start + count > text.length()) {
+            throw new IllegalArgumentException("count argument is out of bounds.");
+        }
+        if (contextStart < 0 || contextStart >= text.length()) {
+            throw new IllegalArgumentException("ctxStart argument is out of bounds.");
+        }
+        if (contextCount < 0 || contextStart + contextCount > text.length()) {
+            throw new IllegalArgumentException("ctxCount argument is out of bounds.");
+        }
+        if (outMetrics == null) {
+            throw new IllegalArgumentException("outMetrics must not be null.");
+        }
+
+        if (count == 0) {
+            getFontMetricsInt(outMetrics);
+            return;
+        }
+
+        if (text instanceof String) {
+            nGetFontMetricsIntForText(mNativePaint, (String) text, start, count, contextStart,
+                    contextCount, isRtl, outMetrics);
+        } else {
+            char[] buf = TemporaryBuffer.obtain(contextCount);
+            try {
+                TextUtils.getChars(text, contextStart, contextStart + contextCount, buf, 0);
+                nGetFontMetricsIntForText(mNativePaint, buf, start - contextStart, count, 0,
+                        contextCount, isRtl, outMetrics);
+            } finally {
+                TemporaryBuffer.recycle(buf);
+            }
+        }
+
+    }
+
+    /**
+     * Returns the font metrics value for the given text.
+     *
+     * If the text is rendered with multiple font files, this function returns the large ascent and
+     * descent that are enough for drawing all font files.
+     *
+     * The context range is used for shaping context. Some script, e.g. Arabic or Devanagari,
+     * changes letter shape based on its location or surrounding characters.
+     *
+     * @param text a text to be measured.
+     * @param start a starting offset in the text.
+     * @param count a length of the text to be measured.
+     * @param contextStart a context starting offset in the text.
+     * @param contextCount a length of the context to be used.
+     * @param isRtl true if measuring on RTL context, otherwise false.
+     * @param outMetrics the output font metrics.
+     */
+    public void getFontMetricsInt(@NonNull char[] text,
+            @IntRange(from = 0) int start, @IntRange(from = 0) int count,
+            @IntRange(from = 0) int contextStart, @IntRange(from = 0) int contextCount,
+            boolean isRtl,
+            @NonNull FontMetricsInt outMetrics) {
+        if (text == null) {
+            throw new IllegalArgumentException("text must not be null");
+        }
+        if (start < 0 || start >= text.length) {
+            throw new IllegalArgumentException("start argument is out of bounds.");
+        }
+        if (count < 0 || start + count > text.length) {
+            throw new IllegalArgumentException("count argument is out of bounds.");
+        }
+        if (contextStart < 0 || contextStart >= text.length) {
+            throw new IllegalArgumentException("ctxStart argument is out of bounds.");
+        }
+        if (contextCount < 0 || contextStart + contextCount > text.length) {
+            throw new IllegalArgumentException("ctxCount argument is out of bounds.");
+        }
+        if (outMetrics == null) {
+            throw new IllegalArgumentException("outMetrics must not be null.");
+        }
+
+        if (count == 0) {
+            getFontMetricsInt(outMetrics);
+            return;
+        }
+
+        nGetFontMetricsIntForText(mNativePaint, text, start, count, contextStart, contextCount,
+                isRtl, outMetrics);
+    }
+
+    /**
      * Convenience method for callers that want to have FontMetrics values as
      * integers.
      */
@@ -2162,6 +2284,23 @@ public class Paint {
             return "FontMetricsInt: top=" + top + " ascent=" + ascent +
                     " descent=" + descent + " bottom=" + bottom +
                     " leading=" + leading;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof FontMetricsInt)) return false;
+            FontMetricsInt that = (FontMetricsInt) o;
+            return top == that.top
+                    && ascent == that.ascent
+                    && descent == that.descent
+                    && bottom == that.bottom
+                    && leading == that.leading;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(top, ascent, descent, bottom, leading);
         }
     }
 
@@ -3004,6 +3143,128 @@ public class Paint {
         return result;
     }
 
+
+    /**
+     * Measure the advance of each character within a run of text and also return the cursor
+     * position within the run.
+     *
+     * @see #getRunAdvance(char[], int, int, int, int, boolean, int) for more details.
+     *
+     * @param text the text to measure. Cannot be null.
+     * @param start the start index of the range to measure, inclusive
+     * @param end the end index of the range to measure, exclusive
+     * @param contextStart the start index of the shaping context, inclusive
+     * @param contextEnd the end index of the shaping context, exclusive
+     * @param isRtl whether the run is in RTL direction
+     * @param offset index of caret position
+     * @param advances the array that receives the computed character advances
+     * @param advancesIndex the start index from which the advances array is filled
+     * @return width measurement between start and offset
+     * @throws IndexOutOfBoundsException if a) contextStart or contextEnd is out of array's range
+     * or contextStart is larger than contextEnd,
+     * b) start or end is not within the range [contextStart, contextEnd), or start is larger than
+     * end,
+     * c) offset is not within the range [start, end),
+     * d) advances.length - advanceIndex is smaller than the length of the run, which equals to
+     * end - start.
+     *
+     */
+    public float getRunCharacterAdvance(@NonNull char[] text, int start, int end, int contextStart,
+            int contextEnd, boolean isRtl, int offset,
+            @Nullable float[] advances, int advancesIndex) {
+        if (text == null) {
+            throw new IllegalArgumentException("text cannot be null");
+        }
+        if (contextStart < 0 || contextEnd > text.length) {
+            throw new IndexOutOfBoundsException("Invalid Context Range: " + contextStart + ", "
+                    + contextEnd + " must be in 0, " + text.length);
+        }
+
+        if (start < contextStart || contextEnd < end) {
+            throw new IndexOutOfBoundsException("Invalid start/end range: " + start + ", " + end
+                    + " must be in " + contextStart + ", " + contextEnd);
+        }
+
+        if (offset < start || end < offset) {
+            throw new IndexOutOfBoundsException("Invalid offset position: " + offset
+                    + " must be in " + start + ", " + end);
+        }
+
+        if (advances != null && advances.length < advancesIndex - start + end) {
+            throw new IndexOutOfBoundsException("Given array doesn't have enough space to receive "
+                    + "the result, advances.length: " + advances.length + " advanceIndex: "
+                    + advancesIndex + " needed space: " + (offset - start));
+        }
+
+        if (end == start) {
+            return 0.0f;
+        }
+
+        return nGetRunCharacterAdvance(mNativePaint, text, start, end, contextStart, contextEnd,
+                isRtl, offset, advances, advancesIndex);
+    }
+
+    /**
+     * @see #getRunCharacterAdvance(char[], int, int, int, int, boolean, int, float[], int)
+     *
+     * @param text the text to measure. Cannot be null.
+     * @param start the index of the start of the range to measure
+     * @param end the index + 1 of the end of the range to measure
+     * @param contextStart the index of the start of the shaping context
+     * @param contextEnd the index + 1 of the end of the shaping context
+     * @param isRtl whether the run is in RTL direction
+     * @param offset index of caret position
+     * @param advances the array that receives the computed character advances
+     * @param advancesIndex the start index from which the advances array is filled
+     * @return width measurement between start and offset
+     * @throws IndexOutOfBoundsException if a) contextStart or contextEnd is out of array's range
+     * or contextStart is larger than contextEnd,
+     * b) start or end is not within the range [contextStart, contextEnd), or end is larger than
+     * start,
+     * c) offset is not within the range [start, end),
+     * d) advances.length - advanceIndex is smaller than the run length, which equals to
+     * end - start.
+     */
+    public float getRunCharacterAdvance(@NonNull CharSequence text, int start, int end,
+            int contextStart, int contextEnd, boolean isRtl, int offset,
+            @Nullable float[] advances, int advancesIndex) {
+        if (text == null) {
+            throw new IllegalArgumentException("text cannot be null");
+        }
+        if (contextStart < 0 || contextEnd > text.length()) {
+            throw new IndexOutOfBoundsException("Invalid Context Range: " + contextStart + ", "
+                    + contextEnd + " must be in 0, " + text.length());
+        }
+
+        if (start < contextStart || contextEnd < end) {
+            throw new IndexOutOfBoundsException("Invalid start/end range: " + start + ", " + end
+                    + " must be in " + contextStart + ", " + contextEnd);
+        }
+
+        if (offset < start || end < offset) {
+            throw new IndexOutOfBoundsException("Invalid offset position: " + offset
+                    + " must be in " + start + ", " + end);
+        }
+
+        if (advances != null && advances.length < advancesIndex - start + end) {
+            throw new IndexOutOfBoundsException("Given array doesn't have enough space to receive "
+                    + "the result, advances.length: " + advances.length + " advanceIndex: "
+                    + advancesIndex + " needed space: " + (offset - start));
+        }
+
+        if (end == start) {
+            return 0.0f;
+        }
+
+        char[] buf = TemporaryBuffer.obtain(contextEnd - contextStart);
+        TextUtils.getChars(text, contextStart, contextEnd, buf, 0);
+        final float result = getRunCharacterAdvance(buf, start - contextStart, end - contextStart,
+                0, contextEnd - contextStart, isRtl, offset - contextStart,
+                advances, advancesIndex);
+        TemporaryBuffer.recycle(buf);
+        return result;
+    }
+
     /**
      * Get the character offset within the string whose position is closest to the specified
      * horizontal position.
@@ -3115,8 +3376,18 @@ public class Paint {
     private static native boolean nHasGlyph(long paintPtr, int bidiFlags, String string);
     private static native float nGetRunAdvance(long paintPtr, char[] text, int start, int end,
             int contextStart, int contextEnd, boolean isRtl, int offset);
+    private static native float nGetRunCharacterAdvance(long paintPtr, char[] text, int start,
+            int end, int contextStart, int contextEnd, boolean isRtl, int offset, float[] advances,
+            int advancesIndex);
     private static native int nGetOffsetForAdvance(long paintPtr, char[] text, int start, int end,
             int contextStart, int contextEnd, boolean isRtl, float advance);
+    private static native void nGetFontMetricsIntForText(long paintPtr, char[] text,
+            int start, int count, int ctxStart, int ctxCount, boolean isRtl,
+            FontMetricsInt outMetrics);
+    private static native void nGetFontMetricsIntForText(long paintPtr, String text,
+            int start, int count, int ctxStart, int ctxCount, boolean isRtl,
+            FontMetricsInt outMetrics);
+
 
 
     // ---------------- @FastNative ------------------------
@@ -3129,7 +3400,6 @@ public class Paint {
     private static native float nGetFontMetrics(long paintPtr, FontMetrics metrics);
     @FastNative
     private static native int nGetFontMetricsInt(long paintPtr, FontMetricsInt fmi);
-
 
     // ---------------- @CriticalNative ------------------------
 

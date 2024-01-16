@@ -19,21 +19,27 @@ package com.android.wm.shell.common;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.content.res.Configuration;
+import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
 import android.os.RemoteException;
+import android.util.ArraySet;
 import android.util.Slog;
 import android.util.SparseArray;
 import android.view.Display;
 import android.view.IDisplayWindowListener;
 import android.view.IWindowManager;
 import android.view.InsetsState;
+import android.window.WindowContainerTransaction;
 
 import androidx.annotation.BinderThread;
 
 import com.android.wm.shell.common.DisplayChangeController.OnDisplayChangingListener;
 import com.android.wm.shell.common.annotations.ShellMainThread;
+import com.android.wm.shell.sysui.ShellInit;
 
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 
 /**
  * This module deals with display rotations coming from WM. When WM starts a rotation: after it has
@@ -53,19 +59,23 @@ public class DisplayController {
     private final SparseArray<DisplayRecord> mDisplays = new SparseArray<>();
     private final ArrayList<OnDisplaysChangedListener> mDisplayChangedListeners = new ArrayList<>();
 
-    public DisplayController(Context context, IWindowManager wmService,
+    public DisplayController(Context context, IWindowManager wmService, ShellInit shellInit,
             ShellExecutor mainExecutor) {
         mMainExecutor = mainExecutor;
         mContext = context;
         mWmService = wmService;
-        mChangeController = new DisplayChangeController(mWmService, mainExecutor);
+        // TODO: Inject this instead
+        mChangeController = new DisplayChangeController(mWmService, shellInit, mainExecutor);
         mDisplayContainerListener = new DisplayWindowListenerImpl();
+        // Note, add this after DisplaceChangeController is constructed to ensure that is
+        // initialized first
+        shellInit.addInitCallback(this::onInit, this);
     }
 
     /**
      * Initializes the window listener.
      */
-    public void initialize() {
+    public void onInit() {
         try {
             int[] displayIds = mWmService.registerDisplayWindowListener(mDisplayContainerListener);
             for (int i = 0; i < displayIds.length; i++) {
@@ -98,6 +108,14 @@ public class DisplayController {
     public @Nullable Context getDisplayContext(int displayId) {
         final DisplayRecord r = mDisplays.get(displayId);
         return r != null ? r.mContext : null;
+    }
+
+    /**
+     *  Get the InsetsState of a display.
+     */
+    public InsetsState getInsetsState(int displayId) {
+        final DisplayRecord r = mDisplays.get(displayId);
+        return r != null ? r.mInsetsState : null;
     }
 
     /**
@@ -139,14 +157,14 @@ public class DisplayController {
      * Adds a display rotation controller.
      */
     public void addDisplayChangingController(OnDisplayChangingListener controller) {
-        mChangeController.addRotationListener(controller);
+        mChangeController.addDisplayChangeListener(controller);
     }
 
     /**
      * Removes a display rotation controller.
      */
     public void removeDisplayChangingController(OnDisplayChangingListener controller) {
-        mChangeController.removeRotationListener(controller);
+        mChangeController.removeDisplayChangeListener(controller);
     }
 
     private void onDisplayAdded(int displayId) {
@@ -170,6 +188,26 @@ public class DisplayController {
             for (int i = 0; i < mDisplayChangedListeners.size(); ++i) {
                 mDisplayChangedListeners.get(i).onDisplayAdded(displayId);
             }
+        }
+    }
+
+
+    /** Called when a display rotate requested. */
+    public void onDisplayRotateRequested(WindowContainerTransaction wct, int displayId,
+            int fromRotation, int toRotation) {
+        synchronized (mDisplays) {
+            final DisplayRecord dr = mDisplays.get(displayId);
+            if (dr == null) {
+                Slog.w(TAG, "Skipping Display rotate on non-added display.");
+                return;
+            }
+
+            if (dr.mDisplayLayout != null) {
+                dr.mDisplayLayout.rotateTo(dr.mContext.getResources(), toRotation);
+            }
+
+            mChangeController.dispatchOnDisplayChange(
+                    wct, displayId, fromRotation, toRotation, null /* newDisplayAreaInfo */);
         }
     }
 
@@ -238,6 +276,21 @@ public class DisplayController {
         }
     }
 
+    private void onKeepClearAreasChanged(int displayId, Set<Rect> restricted,
+            Set<Rect> unrestricted) {
+        synchronized (mDisplays) {
+            if (mDisplays.get(displayId) == null || getDisplay(displayId) == null) {
+                Slog.w(TAG, "Skipping onKeepClearAreasChanged on unknown"
+                        + " display, displayId=" + displayId);
+                return;
+            }
+            for (int i = mDisplayChangedListeners.size() - 1; i >= 0; --i) {
+                mDisplayChangedListeners.get(i)
+                    .onKeepClearAreasChanged(displayId, restricted, unrestricted);
+            }
+        }
+    }
+
     private static class DisplayRecord {
         private int mDisplayId;
         private Context mContext;
@@ -296,6 +349,15 @@ public class DisplayController {
                 DisplayController.this.onFixedRotationFinished(displayId);
             });
         }
+
+        @Override
+        public void onKeepClearAreasChanged(int displayId, List<Rect> restricted,
+                List<Rect> unrestricted) {
+            mMainExecutor.execute(() -> {
+                DisplayController.this.onKeepClearAreasChanged(displayId,
+                        new ArraySet<>(restricted), new ArraySet<>(unrestricted));
+            });
+        }
     }
 
     /**
@@ -330,5 +392,11 @@ public class DisplayController {
          * Called when fixed rotation on a display is finished.
          */
         default void onFixedRotationFinished(int displayId) {}
+
+        /**
+         * Called when keep-clear areas on a display have changed.
+         */
+        default void onKeepClearAreasChanged(int displayId, Set<Rect> restricted,
+                Set<Rect> unrestricted) {}
     }
 }

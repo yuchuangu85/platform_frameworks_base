@@ -16,6 +16,8 @@
 
 package com.android.systemui.util.concurrency;
 
+import static com.android.systemui.Dependency.TIME_TICK_HANDLER_NAME;
+
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
@@ -23,21 +25,32 @@ import android.os.Process;
 
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Background;
+import com.android.systemui.dagger.qualifiers.BroadcastRunning;
 import com.android.systemui.dagger.qualifiers.LongRunning;
 import com.android.systemui.dagger.qualifiers.Main;
-import com.android.systemui.dagger.qualifiers.UiBackground;
-
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 
 import dagger.Module;
 import dagger.Provides;
+
+import java.util.concurrent.Executor;
+
+import javax.inject.Named;
 
 /**
  * Dagger Module for classes found within the concurrent package.
  */
 @Module
 public abstract class SysUIConcurrencyModule {
+
+    // Slow BG executor can potentially affect UI if UI is waiting for an updated state from this
+    // thread
+    private static final Long BG_SLOW_DISPATCH_THRESHOLD = 1000L;
+    private static final Long BG_SLOW_DELIVERY_THRESHOLD = 1000L;
+    private static final Long LONG_SLOW_DISPATCH_THRESHOLD = 2500L;
+    private static final Long LONG_SLOW_DELIVERY_THRESHOLD = 2500L;
+    private static final Long BROADCAST_SLOW_DISPATCH_THRESHOLD = 1000L;
+    private static final Long BROADCAST_SLOW_DELIVERY_THRESHOLD = 1000L;
+
     /** Background Looper */
     @Provides
     @SysUISingleton
@@ -46,6 +59,21 @@ public abstract class SysUIConcurrencyModule {
         HandlerThread thread = new HandlerThread("SysUiBg",
                 Process.THREAD_PRIORITY_BACKGROUND);
         thread.start();
+        thread.getLooper().setSlowLogThresholdMs(BG_SLOW_DISPATCH_THRESHOLD,
+                BG_SLOW_DELIVERY_THRESHOLD);
+        return thread.getLooper();
+    }
+
+    /** BroadcastRunning Looper (for sending and receiving broadcasts) */
+    @Provides
+    @SysUISingleton
+    @BroadcastRunning
+    public static Looper provideBroadcastRunningLooper() {
+        HandlerThread thread = new HandlerThread("BroadcastRunning",
+                Process.THREAD_PRIORITY_BACKGROUND);
+        thread.start();
+        thread.getLooper().setSlowLogThresholdMs(BROADCAST_SLOW_DISPATCH_THRESHOLD,
+                BROADCAST_SLOW_DELIVERY_THRESHOLD);
         return thread.getLooper();
     }
 
@@ -57,6 +85,8 @@ public abstract class SysUIConcurrencyModule {
         HandlerThread thread = new HandlerThread("SysUiLng",
                 Process.THREAD_PRIORITY_BACKGROUND);
         thread.start();
+        thread.getLooper().setSlowLogThresholdMs(LONG_SLOW_DISPATCH_THRESHOLD,
+                LONG_SLOW_DELIVERY_THRESHOLD);
         return thread.getLooper();
     }
 
@@ -81,12 +111,33 @@ public abstract class SysUIConcurrencyModule {
     }
 
     /**
-     * Provide a Long running Executor by default.
+     * Provide a BroadcastRunning Executor (for sending and receiving broadcasts).
+     */
+    @Provides
+    @SysUISingleton
+    @BroadcastRunning
+    public static Executor provideBroadcastRunningExecutor(@BroadcastRunning Looper looper) {
+        return new ExecutorImpl(looper);
+    }
+
+    /**
+     * Provide a Long running Executor.
      */
     @Provides
     @SysUISingleton
     @LongRunning
     public static Executor provideLongRunningExecutor(@LongRunning Looper looper) {
+        return new ExecutorImpl(looper);
+    }
+
+    /**
+     * Provide a Long running Executor.
+     */
+    @Provides
+    @SysUISingleton
+    @LongRunning
+    public static DelayableExecutor provideLongRunningDelayableExecutor(
+            @LongRunning Looper looper) {
         return new ExecutorImpl(looper);
     }
 
@@ -149,18 +200,6 @@ public abstract class SysUIConcurrencyModule {
         return new RepeatableExecutorImpl(exec);
     }
 
-    /**
-     * Provide an Executor specifically for running UI operations on a separate thread.
-     *
-     * Keep submitted runnables short and to the point, just as with any other UI code.
-     */
-    @Provides
-    @SysUISingleton
-    @UiBackground
-    public static Executor provideUiBackgroundExecutor() {
-        return Executors.newSingleThreadExecutor();
-    }
-
     /** */
     @Provides
     @Main
@@ -175,5 +214,15 @@ public abstract class SysUIConcurrencyModule {
     public static MessageRouter providesBackgroundMessageRouter(
             @Background DelayableExecutor executor) {
         return new MessageRouterImpl(executor);
+    }
+
+    /** */
+    @Provides
+    @SysUISingleton
+    @Named(TIME_TICK_HANDLER_NAME)
+    public static Handler provideTimeTickHandler() {
+        HandlerThread thread = new HandlerThread("TimeTick");
+        thread.start();
+        return new Handler(thread.getLooper());
     }
 }

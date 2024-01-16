@@ -16,72 +16,29 @@
 
 package com.android.keyguard;
 
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.test.suitebuilder.annotation.SmallTest;
 import android.testing.AndroidTestingRunner;
+import android.testing.TestableLooper;
 
-import com.android.systemui.SysuiTestCase;
-import com.android.systemui.keyguard.KeyguardUnlockAnimationController;
-import com.android.systemui.shared.system.smartspace.SmartspaceTransitionController;
-import com.android.systemui.statusbar.phone.DozeParameters;
-import com.android.systemui.statusbar.phone.UnlockedScreenOffAnimationController;
-import com.android.systemui.statusbar.policy.ConfigurationController;
-import com.android.systemui.statusbar.policy.KeyguardStateController;
+import com.android.systemui.plugins.ClockConfig;
+import com.android.systemui.plugins.ClockController;
+import com.android.systemui.statusbar.notification.AnimatableProperty;
+import com.android.systemui.statusbar.policy.ConfigurationController.ConfigurationListener;
 
-import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.Captor;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
 
 @SmallTest
+@TestableLooper.RunWithLooper(setAsMainLooper = true)
 @RunWith(AndroidTestingRunner.class)
-public class KeyguardStatusViewControllerTest extends SysuiTestCase {
-
-    @Mock
-    private KeyguardStatusView mKeyguardStatusView;
-    @Mock
-    private KeyguardSliceViewController mKeyguardSliceViewController;
-    @Mock
-    private KeyguardClockSwitchController mKeyguardClockSwitchController;
-    @Mock
-    private KeyguardStateController mKeyguardStateController;
-    @Mock
-    private KeyguardUpdateMonitor mKeyguardUpdateMonitor;
-    @Mock
-    ConfigurationController mConfigurationController;
-    @Mock
-    DozeParameters mDozeParameters;
-    @Mock
-    KeyguardUnlockAnimationController mKeyguardUnlockAnimationController;
-    @Mock
-    SmartspaceTransitionController mSmartSpaceTransitionController;
-    @Mock
-    UnlockedScreenOffAnimationController mUnlockedScreenOffAnimationController;
-    @Captor
-    private ArgumentCaptor<KeyguardUpdateMonitorCallback> mKeyguardUpdateMonitorCallbackCaptor;
-
-    private KeyguardStatusViewController mController;
-
-    @Before
-    public void setup() {
-        MockitoAnnotations.initMocks(this);
-
-        mController = new KeyguardStatusViewController(
-                mKeyguardStatusView,
-                mKeyguardSliceViewController,
-                mKeyguardClockSwitchController,
-                mKeyguardStateController,
-                mKeyguardUpdateMonitor,
-                mConfigurationController,
-                mDozeParameters,
-                mKeyguardUnlockAnimationController,
-                mSmartSpaceTransitionController,
-                mUnlockedScreenOffAnimationController);
-    }
+public class KeyguardStatusViewControllerTest extends KeyguardStatusViewControllerBaseTest {
 
     @Test
     public void dozeTimeTick_updatesSlice() {
@@ -96,24 +53,75 @@ public class KeyguardStatusViewControllerTest extends SysuiTestCase {
     }
 
     @Test
-    public void timeFormatUpdateNotifiesClockSwitchController() {
-        mController.onViewAttached();
+    public void setTranslationYExcludingMedia_forwardsCallToView() {
+        float translationY = 123f;
 
-        verify(mKeyguardUpdateMonitor).registerCallback(
-                mKeyguardUpdateMonitorCallbackCaptor.capture());
+        mController.setTranslationY(translationY, /* excludeMedia= */true);
 
-        mKeyguardUpdateMonitorCallbackCaptor.getValue().onTimeFormatChanged("");
-        verify(mKeyguardClockSwitchController).refreshFormat();
+        verify(mKeyguardStatusView).setChildrenTranslationY(translationY, /* excludeMedia= */true);
     }
 
     @Test
-    public void userChangeNotifiesClockSwitchController() {
+    public void onLocaleListChangedNotifiesClockSwitchController() {
+        ArgumentCaptor<ConfigurationListener> configurationListenerArgumentCaptor =
+                ArgumentCaptor.forClass(ConfigurationListener.class);
+
         mController.onViewAttached();
+        verify(mConfigurationController).addCallback(configurationListenerArgumentCaptor.capture());
 
-        verify(mKeyguardUpdateMonitor).registerCallback(
-                mKeyguardUpdateMonitorCallbackCaptor.capture());
+        configurationListenerArgumentCaptor.getValue().onLocaleListChanged();
+        verify(mKeyguardClockSwitchController).onLocaleListChanged();
+    }
 
-        mKeyguardUpdateMonitorCallbackCaptor.getValue().onUserSwitchComplete(0);
-        verify(mKeyguardClockSwitchController).refreshFormat();
+    @Test
+    public void updatePosition_primaryClockAnimation() {
+        ClockController mockClock = mock(ClockController.class);
+        when(mKeyguardClockSwitchController.getClock()).thenReturn(mockClock);
+        when(mockClock.getConfig()).thenReturn(new ClockConfig("MOCK", false, true));
+
+        mController.updatePosition(10, 15, 20f, true);
+
+        verify(mControllerMock).setProperty(AnimatableProperty.Y, 15f, true);
+        verify(mKeyguardClockSwitchController).updatePosition(
+                10, 20f, KeyguardStatusViewController.CLOCK_ANIMATION_PROPERTIES, true);
+        verify(mControllerMock).setProperty(AnimatableProperty.SCALE_X, 1f, true);
+        verify(mControllerMock).setProperty(AnimatableProperty.SCALE_Y, 1f, true);
+    }
+
+    @Test
+    public void updatePosition_alternateClockAnimation() {
+        ClockController mockClock = mock(ClockController.class);
+        when(mKeyguardClockSwitchController.getClock()).thenReturn(mockClock);
+        when(mockClock.getConfig()).thenReturn(new ClockConfig("MOCK", true, true));
+
+        mController.updatePosition(10, 15, 20f, true);
+
+        verify(mControllerMock).setProperty(AnimatableProperty.Y, 15f, true);
+        verify(mKeyguardClockSwitchController).updatePosition(
+                10, 1f, KeyguardStatusViewController.CLOCK_ANIMATION_PROPERTIES, true);
+        verify(mControllerMock).setProperty(AnimatableProperty.SCALE_X, 20f, true);
+        verify(mControllerMock).setProperty(AnimatableProperty.SCALE_Y, 20f, true);
+    }
+
+    @Test
+    public void splitShadeEnabledPassedToClockSwitchController() {
+        mController.setSplitShadeEnabled(true);
+        verify(mKeyguardClockSwitchController, times(1)).setSplitShadeEnabled(true);
+        verify(mKeyguardClockSwitchController, times(0)).setSplitShadeEnabled(false);
+    }
+
+    @Test
+    public void splitShadeDisabledPassedToClockSwitchController() {
+        mController.setSplitShadeEnabled(false);
+        verify(mKeyguardClockSwitchController, times(1)).setSplitShadeEnabled(false);
+        verify(mKeyguardClockSwitchController, times(0)).setSplitShadeEnabled(true);
+    }
+
+    @Test
+    public void correctlyDump() {
+        mController.onInit();
+        verify(mDumpManager).registerDumpable(eq(mController.getInstanceName()), eq(mController));
+        mController.onDestroy();
+        verify(mDumpManager, times(1)).unregisterDumpable(eq(mController.getInstanceName()));
     }
 }

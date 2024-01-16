@@ -17,6 +17,7 @@
 package com.android.server.powerstats;
 
 import android.content.Context;
+import android.util.IndentingPrintWriter;
 import android.util.Slog;
 
 import com.android.internal.util.FileRotator;
@@ -27,6 +28,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.util.Date;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -53,7 +55,7 @@ public class PowerStatsDataStorage {
 
     private static class DataElement {
         private static final int LENGTH_FIELD_WIDTH = 4;
-        private static final int MAX_DATA_ELEMENT_SIZE = 1000;
+        private static final int MAX_DATA_ELEMENT_SIZE = 32768;
 
         private byte[] mData;
 
@@ -220,18 +222,17 @@ public class PowerStatsDataStorage {
     public void write(byte[] data) {
         if (data != null && data.length > 0) {
             mLock.lock();
-
-            long currentTimeMillis = System.currentTimeMillis();
             try {
+                long currentTimeMillis = System.currentTimeMillis();
                 DataElement dataElement = new DataElement(data);
                 mFileRotator.rewriteActive(new DataRewriter(dataElement.toByteArray()),
                         currentTimeMillis);
                 mFileRotator.maybeRotate(currentTimeMillis);
             } catch (IOException e) {
                 Slog.e(TAG, "Failed to write to on-device storage: " + e);
+            } finally {
+                mLock.unlock();
             }
-
-            mLock.unlock();
         }
     }
 
@@ -240,21 +241,78 @@ public class PowerStatsDataStorage {
      * DataElement retrieved from on-device storage, callback is called.
      */
     public void read(DataElementReadCallback callback) throws IOException {
-        mFileRotator.readMatching(new DataReader(callback), Long.MIN_VALUE, Long.MAX_VALUE);
+        mLock.lock();
+        try {
+            mFileRotator.readMatching(new DataReader(callback), Long.MIN_VALUE, Long.MAX_VALUE);
+        } finally {
+            mLock.unlock();
+        }
     }
 
     /**
      * Deletes all stored log data.
      */
     public void deleteLogs() {
-        File[] files = mDataStorageDir.listFiles();
-        for (int i = 0; i < files.length; i++) {
-            int versionDot = mDataStorageFilename.lastIndexOf('.');
-            String beforeVersionDot = mDataStorageFilename.substring(0, versionDot);
-            // Check that the stems before the version match.
-            if (files[i].getName().startsWith(beforeVersionDot)) {
-                files[i].delete();
+        mLock.lock();
+        try {
+            File[] files = mDataStorageDir.listFiles();
+            for (int i = 0; i < files.length; i++) {
+                int versionDot = mDataStorageFilename.lastIndexOf('.');
+                String beforeVersionDot = mDataStorageFilename.substring(0, versionDot);
+                // Check that the stems before the version match.
+                if (files[i].getName().startsWith(beforeVersionDot)) {
+                    files[i].delete();
+                }
             }
+        } finally {
+            mLock.unlock();
+        }
+    }
+
+    /**
+     * Dump stats about stored data.
+     */
+    public void dump(IndentingPrintWriter ipw) {
+        mLock.lock();
+        try {
+            final int versionDot = mDataStorageFilename.lastIndexOf('.');
+            final String beforeVersionDot = mDataStorageFilename.substring(0, versionDot);
+            final File[] files = mDataStorageDir.listFiles();
+
+            int number = 0;
+            int dataSize = 0;
+            long earliestLogEpochTime = Long.MAX_VALUE;
+            for (int i = 0; i < files.length; i++) {
+                // Check that the stems before the version match.
+                final File file = files[i];
+                final String fileName = file.getName();
+                if (files[i].getName().startsWith(beforeVersionDot)) {
+                    number++;
+                    dataSize += file.length();
+                    final int firstTimeChar = fileName.lastIndexOf('.') + 1;
+                    final int endChar = fileName.lastIndexOf('-');
+                    try {
+                        final Long startTime =
+                                Long.parseLong(fileName.substring(firstTimeChar, endChar));
+                        if (startTime != null && startTime < earliestLogEpochTime) {
+                            earliestLogEpochTime = startTime;
+                        }
+                    } catch (NumberFormatException nfe) {
+                        Slog.e(TAG,
+                                "Failed to extract start time from file : " + fileName, nfe);
+                    }
+                }
+            }
+
+            if (earliestLogEpochTime != Long.MAX_VALUE) {
+                ipw.println("Earliest data time : " + new Date(earliestLogEpochTime));
+            } else {
+                ipw.println("Failed to parse earliest data time!!!");
+            }
+            ipw.println("# files : " + number);
+            ipw.println("Total data size (B) : " + dataSize);
+        } finally {
+            mLock.unlock();
         }
     }
 }

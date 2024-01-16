@@ -16,33 +16,37 @@
 
 package com.android.systemui.accessibility;
 
+import static android.provider.Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW;
 import static android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_MAGNIFICATION_OVERLAY;
 
+import static com.android.systemui.accessibility.AccessibilityLogger.MagnificationSettingsEvent;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_MAGNIFICATION_OVERLAP;
 
 import android.annotation.MainThread;
 import android.annotation.Nullable;
 import android.content.Context;
-import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManager;
 import android.os.Handler;
+import android.util.SparseArray;
 import android.view.Display;
 import android.view.SurfaceControl;
+import android.view.WindowManagerGlobal;
 import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.IRemoteMagnificationAnimationCallback;
 import android.view.accessibility.IWindowMagnificationConnection;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.graphics.SfVsyncFrameCallbackProvider;
-import com.android.systemui.SystemUI;
+import com.android.systemui.CoreStartable;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.model.SysUiState;
 import com.android.systemui.recents.OverviewProxyService;
+import com.android.systemui.settings.DisplayTracker;
 import com.android.systemui.statusbar.CommandQueue;
+import com.android.systemui.util.settings.SecureSettings;
 
-import java.io.FileDescriptor;
 import java.io.PrintWriter;
 
 import javax.inject.Inject;
@@ -54,78 +58,125 @@ import javax.inject.Inject;
  * when {@code IStatusBar#requestWindowMagnificationConnection(boolean)} is called.
  */
 @SysUISingleton
-public class WindowMagnification extends SystemUI implements WindowMagnifierCallback,
-        CommandQueue.Callbacks {
+public class WindowMagnification implements CoreStartable, CommandQueue.Callbacks {
     private static final String TAG = "WindowMagnification";
 
     private final ModeSwitchesController mModeSwitchesController;
+    private final Context mContext;
     private final Handler mHandler;
     private final AccessibilityManager mAccessibilityManager;
     private final CommandQueue mCommandQueue;
     private final OverviewProxyService mOverviewProxyService;
+    private final DisplayTracker mDisplayTracker;
+    private final AccessibilityLogger mA11yLogger;
 
     private WindowMagnificationConnectionImpl mWindowMagnificationConnectionImpl;
-    private Configuration mLastConfiguration;
     private SysUiState mSysUiState;
 
-    private static class AnimationControllerSupplier extends
-            DisplayIdIndexSupplier<WindowMagnificationAnimationController> {
+    @VisibleForTesting
+    SparseArray<SparseArray<Float>> mUsersScales = new SparseArray();
+
+    private static class ControllerSupplier extends
+            DisplayIdIndexSupplier<WindowMagnificationController> {
 
         private final Context mContext;
         private final Handler mHandler;
         private final WindowMagnifierCallback mWindowMagnifierCallback;
         private final SysUiState mSysUiState;
+        private final SecureSettings mSecureSettings;
 
-        AnimationControllerSupplier(Context context, Handler handler,
+        ControllerSupplier(Context context, Handler handler,
                 WindowMagnifierCallback windowMagnifierCallback,
-                DisplayManager displayManager, SysUiState sysUiState) {
+                DisplayManager displayManager, SysUiState sysUiState,
+                SecureSettings secureSettings) {
             super(displayManager);
             mContext = context;
             mHandler = handler;
             mWindowMagnifierCallback = windowMagnifierCallback;
             mSysUiState = sysUiState;
+            mSecureSettings = secureSettings;
         }
 
         @Override
-        protected WindowMagnificationAnimationController createInstance(Display display) {
+        protected WindowMagnificationController createInstance(Display display) {
             final Context windowContext = mContext.createWindowContext(display,
                     TYPE_ACCESSIBILITY_MAGNIFICATION_OVERLAY, /* options */ null);
-            final WindowMagnificationController controller = new WindowMagnificationController(
+            windowContext.setTheme(com.android.systemui.R.style.Theme_SystemUI);
+            return new WindowMagnificationController(
                     windowContext,
-                    mHandler, new SfVsyncFrameCallbackProvider(), null,
-                    new SurfaceControl.Transaction(), mWindowMagnifierCallback, mSysUiState);
-            return new WindowMagnificationAnimationController(windowContext, controller);
+                    mHandler,
+                    new WindowMagnificationAnimationController(windowContext),
+                    new SfVsyncFrameCallbackProvider(),
+                    null,
+                    new SurfaceControl.Transaction(),
+                    mWindowMagnifierCallback,
+                    mSysUiState,
+                    WindowManagerGlobal::getWindowSession,
+                    mSecureSettings);
         }
     }
 
     @VisibleForTesting
-    DisplayIdIndexSupplier<WindowMagnificationAnimationController> mAnimationControllerSupplier;
+    DisplayIdIndexSupplier<WindowMagnificationController> mMagnificationControllerSupplier;
+
+    private static class SettingsSupplier extends
+            DisplayIdIndexSupplier<MagnificationSettingsController> {
+
+        private final Context mContext;
+        private final MagnificationSettingsController.Callback mSettingsControllerCallback;
+        private final SecureSettings mSecureSettings;
+
+        SettingsSupplier(Context context,
+                MagnificationSettingsController.Callback settingsControllerCallback,
+                DisplayManager displayManager,
+                SecureSettings secureSettings) {
+            super(displayManager);
+            mContext = context;
+            mSettingsControllerCallback = settingsControllerCallback;
+            mSecureSettings = secureSettings;
+        }
+
+        @Override
+        protected MagnificationSettingsController createInstance(Display display) {
+            final Context windowContext = mContext.createWindowContext(display,
+                    TYPE_ACCESSIBILITY_MAGNIFICATION_OVERLAY, /* options */ null);
+            windowContext.setTheme(com.android.systemui.R.style.Theme_SystemUI);
+            return new MagnificationSettingsController(
+                    windowContext,
+                    new SfVsyncFrameCallbackProvider(),
+                    mSettingsControllerCallback,
+                    mSecureSettings);
+        }
+    }
+
+    @VisibleForTesting
+    DisplayIdIndexSupplier<MagnificationSettingsController> mMagnificationSettingsSupplier;
 
     @Inject
     public WindowMagnification(Context context, @Main Handler mainHandler,
             CommandQueue commandQueue, ModeSwitchesController modeSwitchesController,
-            SysUiState sysUiState, OverviewProxyService overviewProxyService) {
-        super(context);
+            SysUiState sysUiState, OverviewProxyService overviewProxyService,
+            SecureSettings secureSettings, DisplayTracker displayTracker,
+            DisplayManager displayManager, AccessibilityLogger a11yLogger) {
+        mContext = context;
         mHandler = mainHandler;
-        mLastConfiguration = new Configuration(context.getResources().getConfiguration());
         mAccessibilityManager = mContext.getSystemService(AccessibilityManager.class);
         mCommandQueue = commandQueue;
         mModeSwitchesController = modeSwitchesController;
         mSysUiState = sysUiState;
         mOverviewProxyService = overviewProxyService;
-        mAnimationControllerSupplier = new AnimationControllerSupplier(context,
-                mHandler, this, context.getSystemService(DisplayManager.class), sysUiState);
-    }
+        mDisplayTracker = displayTracker;
+        mA11yLogger = a11yLogger;
+        mMagnificationControllerSupplier = new ControllerSupplier(context,
+                mHandler, mWindowMagnifierCallback,
+                displayManager, sysUiState, secureSettings);
+        mMagnificationSettingsSupplier = new SettingsSupplier(context,
+                mMagnificationSettingsControllerCallback, displayManager, secureSettings);
 
-    @Override
-    public void onConfigurationChanged(Configuration newConfig) {
-        final int configDiff = newConfig.diff(mLastConfiguration);
-        mLastConfiguration.setTo(newConfig);
-        mAnimationControllerSupplier.forEach(
-                animationController -> animationController.onConfigurationChanged(configDiff));
-        if (mModeSwitchesController != null) {
-            mModeSwitchesController.onConfigurationChanged(configDiff);
-        }
+        mModeSwitchesController.setClickListenerDelegate(
+                displayId -> mHandler.post(() -> {
+                    toggleSettingsPanelVisibility(displayId);
+                }));
     }
 
     @Override
@@ -143,82 +194,270 @@ public class WindowMagnification extends SystemUI implements WindowMagnifierCall
 
     private void updateSysUiStateFlag() {
         //TODO(b/187510533): support multi-display once SysuiState supports it.
-        final WindowMagnificationAnimationController controller =
-                mAnimationControllerSupplier.valueAt(Display.DEFAULT_DISPLAY);
+        final WindowMagnificationController controller =
+                mMagnificationControllerSupplier.valueAt(mDisplayTracker.getDefaultDisplayId());
         if (controller != null) {
-            controller.updateSysUiStateFlag();
+            controller.updateSysUIStateFlag();
         } else {
             // The instance is initialized when there is an IPC request. Considering
             // self-crash cases, we need to reset the flag in such situation.
             mSysUiState.setFlag(SYSUI_STATE_MAGNIFICATION_OVERLAP, false)
-                    .commitUpdate(Display.DEFAULT_DISPLAY);
+                    .commitUpdate(mDisplayTracker.getDefaultDisplayId());
         }
     }
 
     @MainThread
     void enableWindowMagnification(int displayId, float scale, float centerX, float centerY,
+            float magnificationFrameOffsetRatioX, float magnificationFrameOffsetRatioY,
             @Nullable IRemoteMagnificationAnimationCallback callback) {
-        final WindowMagnificationAnimationController windowMagnificationAnimationController =
-                mAnimationControllerSupplier.get(displayId);
-        if (windowMagnificationAnimationController != null) {
-            windowMagnificationAnimationController.enableWindowMagnification(scale, centerX,
-                    centerY, callback);
+        final WindowMagnificationController windowMagnificationController =
+                mMagnificationControllerSupplier.get(displayId);
+        if (windowMagnificationController != null) {
+            windowMagnificationController.enableWindowMagnification(scale, centerX, centerY,
+                    magnificationFrameOffsetRatioX, magnificationFrameOffsetRatioY, callback);
         }
     }
 
     @MainThread
     void setScale(int displayId, float scale) {
-        final WindowMagnificationAnimationController windowMagnificationAnimationController =
-                mAnimationControllerSupplier.get(displayId);
-        if (windowMagnificationAnimationController != null) {
-            windowMagnificationAnimationController.setScale(scale);
+        final WindowMagnificationController windowMagnificationController =
+                mMagnificationControllerSupplier.get(displayId);
+        if (windowMagnificationController != null) {
+            windowMagnificationController.setScale(scale);
         }
     }
 
     @MainThread
     void moveWindowMagnifier(int displayId, float offsetX, float offsetY) {
-        final WindowMagnificationAnimationController windowMagnificationAnimationController =
-                mAnimationControllerSupplier.get(displayId);
-        if (windowMagnificationAnimationController != null) {
-            windowMagnificationAnimationController.moveWindowMagnifier(offsetX, offsetY);
+        final WindowMagnificationController windowMagnificationcontroller =
+                mMagnificationControllerSupplier.get(displayId);
+        if (windowMagnificationcontroller != null) {
+            windowMagnificationcontroller.moveWindowMagnifier(offsetX, offsetY);
+        }
+    }
+
+    @MainThread
+    void moveWindowMagnifierToPositionInternal(int displayId, float positionX, float positionY,
+            IRemoteMagnificationAnimationCallback callback) {
+        final WindowMagnificationController windowMagnificationController =
+                mMagnificationControllerSupplier.get(displayId);
+        if (windowMagnificationController != null) {
+            windowMagnificationController.moveWindowMagnifierToPosition(positionX, positionY,
+                    callback);
         }
     }
 
     @MainThread
     void disableWindowMagnification(int displayId,
             @Nullable IRemoteMagnificationAnimationCallback callback) {
-        final WindowMagnificationAnimationController windowMagnificationAnimationController =
-                mAnimationControllerSupplier.get(displayId);
-        if (windowMagnificationAnimationController != null) {
-            windowMagnificationAnimationController.deleteWindowMagnification(callback);
+        final WindowMagnificationController windowMagnificationController =
+                mMagnificationControllerSupplier.get(displayId);
+        if (windowMagnificationController != null) {
+            windowMagnificationController.deleteWindowMagnification(callback);
         }
     }
 
-    @Override
-    public void onWindowMagnifierBoundsChanged(int displayId, Rect frame) {
-        if (mWindowMagnificationConnectionImpl != null) {
-            mWindowMagnificationConnectionImpl.onWindowMagnifierBoundsChanged(displayId, frame);
+    @MainThread
+    void toggleSettingsPanelVisibility(int displayId) {
+        final MagnificationSettingsController magnificationSettingsController =
+                mMagnificationSettingsSupplier.get(displayId);
+        if (magnificationSettingsController != null) {
+            magnificationSettingsController.toggleSettingsPanelVisibility();
         }
     }
 
-    @Override
-    public void onSourceBoundsChanged(int displayId, Rect sourceBounds) {
-        if (mWindowMagnificationConnectionImpl != null) {
-            mWindowMagnificationConnectionImpl.onSourceBoundsChanged(displayId, sourceBounds);
+    @MainThread
+    void hideMagnificationSettingsPanel(int displayId) {
+        final MagnificationSettingsController magnificationSettingsController =
+                mMagnificationSettingsSupplier.get(displayId);
+        if (magnificationSettingsController != null) {
+            magnificationSettingsController.closeMagnificationSettings();
         }
     }
 
-    @Override
-    public void onPerformScaleAction(int displayId, float scale) {
-        if (mWindowMagnificationConnectionImpl != null) {
-            mWindowMagnificationConnectionImpl.onPerformScaleAction(displayId, scale);
+    boolean isMagnificationSettingsPanelShowing(int displayId) {
+        final MagnificationSettingsController magnificationSettingsController =
+                mMagnificationSettingsSupplier.get(displayId);
+        if (magnificationSettingsController != null) {
+            return magnificationSettingsController.isMagnificationSettingsShowing();
+        }
+        return false;
+    }
+
+    @MainThread
+    void showMagnificationButton(int displayId, int magnificationMode) {
+        // not to show mode switch button if settings panel is already showing to
+        // prevent settings panel be covered by the button.
+        if (isMagnificationSettingsPanelShowing(displayId)) {
+            return;
+        }
+        mModeSwitchesController.showButton(displayId, magnificationMode);
+    }
+
+    @MainThread
+    void removeMagnificationButton(int displayId) {
+        mModeSwitchesController.removeButton(displayId);
+    }
+
+    @MainThread
+    void setUserMagnificationScale(int userId, int displayId, float scale) {
+        SparseArray<Float> scales = mUsersScales.get(userId);
+        if (scales == null) {
+            scales = new SparseArray<>();
+            mUsersScales.put(userId, scales);
+        }
+        if (scales.contains(displayId) && scales.get(displayId) == scale) {
+            return;
+        }
+        scales.put(displayId, scale);
+
+        final MagnificationSettingsController magnificationSettingsController =
+                mMagnificationSettingsSupplier.get(displayId);
+        magnificationSettingsController.setMagnificationScale(scale);
+    }
+
+    @VisibleForTesting
+    final WindowMagnifierCallback mWindowMagnifierCallback = new WindowMagnifierCallback() {
+        @Override
+        public void onWindowMagnifierBoundsChanged(int displayId, Rect frame) {
+            if (mWindowMagnificationConnectionImpl != null) {
+                mWindowMagnificationConnectionImpl.onWindowMagnifierBoundsChanged(displayId, frame);
+            }
+        }
+
+        @Override
+        public void onSourceBoundsChanged(int displayId, Rect sourceBounds) {
+            if (mWindowMagnificationConnectionImpl != null) {
+                mWindowMagnificationConnectionImpl.onSourceBoundsChanged(displayId, sourceBounds);
+            }
+        }
+
+        @Override
+        public void onPerformScaleAction(int displayId, float scale, boolean updatePersistence) {
+            if (mWindowMagnificationConnectionImpl != null) {
+                mWindowMagnificationConnectionImpl.onPerformScaleAction(
+                        displayId, scale, updatePersistence);
+            }
+        }
+
+        @Override
+        public void onAccessibilityActionPerformed(int displayId) {
+            if (mWindowMagnificationConnectionImpl != null) {
+                mWindowMagnificationConnectionImpl.onAccessibilityActionPerformed(displayId);
+            }
+        }
+
+        @Override
+        public void onMove(int displayId) {
+            if (mWindowMagnificationConnectionImpl != null) {
+                mWindowMagnificationConnectionImpl.onMove(displayId);
+            }
+        }
+
+        @Override
+        public void onClickSettingsButton(int displayId) {
+            mHandler.post(() -> {
+                toggleSettingsPanelVisibility(displayId);
+            });
+        }
+    };
+
+    @VisibleForTesting
+    final MagnificationSettingsController.Callback mMagnificationSettingsControllerCallback =
+            new MagnificationSettingsController.Callback() {
+        @Override
+        public void onSetMagnifierSize(int displayId, int index) {
+            mHandler.post(() -> onSetMagnifierSizeInternal(displayId, index));
+            mA11yLogger.log(MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_WINDOW_SIZE_SELECTED);
+        }
+
+        @Override
+        public void onSetDiagonalScrolling(int displayId, boolean enable) {
+            mHandler.post(() -> onSetDiagonalScrollingInternal(displayId, enable));
+        }
+
+        @Override
+        public void onEditMagnifierSizeMode(int displayId, boolean enable) {
+            mHandler.post(() -> onEditMagnifierSizeModeInternal(displayId, enable));
+            mA11yLogger.log(enable
+                    ? MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_SIZE_EDITING_ACTIVATED
+                    : MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_SIZE_EDITING_DEACTIVATED);
+        }
+
+        @Override
+        public void onMagnifierScale(int displayId, float scale, boolean updatePersistence) {
+            if (mWindowMagnificationConnectionImpl != null) {
+                mWindowMagnificationConnectionImpl.onPerformScaleAction(
+                        displayId, scale, updatePersistence);
+            }
+        }
+
+        @Override
+        public void onModeSwitch(int displayId, int newMode) {
+            mHandler.post(() -> onModeSwitchInternal(displayId, newMode));
+        }
+
+        @Override
+        public void onSettingsPanelVisibilityChanged(int displayId, boolean shown) {
+            mHandler.post(() -> onSettingsPanelVisibilityChangedInternal(displayId, shown));
+            mA11yLogger.log(shown
+                    ? MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_PANEL_OPENED
+                    : MagnificationSettingsEvent.MAGNIFICATION_SETTINGS_PANEL_CLOSED);
+        }
+    };
+
+    @MainThread
+    private void onSetMagnifierSizeInternal(int displayId, int index) {
+        final WindowMagnificationController windowMagnificationController =
+                mMagnificationControllerSupplier.get(displayId);
+        if (windowMagnificationController != null) {
+            windowMagnificationController.changeMagnificationSize(index);
         }
     }
 
-    @Override
-    public void onAccessibilityActionPerformed(int displayId) {
-        if (mWindowMagnificationConnectionImpl != null) {
-            mWindowMagnificationConnectionImpl.onAccessibilityActionPerformed(displayId);
+    @MainThread
+    private void onSetDiagonalScrollingInternal(int displayId, boolean enable) {
+        final WindowMagnificationController windowMagnificationController =
+                mMagnificationControllerSupplier.get(displayId);
+        if (windowMagnificationController != null) {
+            windowMagnificationController.setDiagonalScrolling(enable);
+        }
+    }
+
+    @MainThread
+    private void onEditMagnifierSizeModeInternal(int displayId, boolean enable) {
+        final WindowMagnificationController windowMagnificationController =
+                mMagnificationControllerSupplier.get(displayId);
+        if (windowMagnificationController != null && windowMagnificationController.isActivated()) {
+            windowMagnificationController.setEditMagnifierSizeMode(enable);
+        }
+    }
+
+    @MainThread
+    private void onModeSwitchInternal(int displayId, int newMode) {
+        final WindowMagnificationController windowMagnificationController =
+                mMagnificationControllerSupplier.get(displayId);
+        final boolean isWindowMagnifierActivated = windowMagnificationController.isActivated();
+        final boolean isSwitchToWindowMode = (newMode == ACCESSIBILITY_MAGNIFICATION_MODE_WINDOW);
+        final boolean changed = isSwitchToWindowMode ^ isWindowMagnifierActivated;
+        if (changed) {
+            final MagnificationSettingsController magnificationSettingsController =
+                    mMagnificationSettingsSupplier.get(displayId);
+            if (magnificationSettingsController != null) {
+                magnificationSettingsController.closeMagnificationSettings();
+            }
+            if (mWindowMagnificationConnectionImpl != null) {
+                mWindowMagnificationConnectionImpl.onChangeMagnificationMode(displayId, newMode);
+            }
+        }
+    }
+
+    @MainThread
+    private void onSettingsPanelVisibilityChangedInternal(int displayId, boolean shown) {
+        final WindowMagnificationController windowMagnificationController =
+                mMagnificationControllerSupplier.get(displayId);
+        if (windowMagnificationController != null && windowMagnificationController.isActivated()) {
+            windowMagnificationController.updateDragHandleResourcesIfNeeded(shown);
         }
     }
 
@@ -232,16 +471,16 @@ public class WindowMagnification extends SystemUI implements WindowMagnifierCall
     }
 
     @Override
-    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+    public void dump(PrintWriter pw, String[] args) {
         pw.println(TAG);
-        mAnimationControllerSupplier.forEach(
-                animationController -> animationController.dump(pw));
+        mMagnificationControllerSupplier.forEach(
+                magnificationController -> magnificationController.dump(pw));
     }
 
     private void setWindowMagnificationConnection() {
         if (mWindowMagnificationConnectionImpl == null) {
             mWindowMagnificationConnectionImpl = new WindowMagnificationConnectionImpl(this,
-                    mHandler, mModeSwitchesController);
+                    mHandler);
         }
         mAccessibilityManager.setWindowMagnificationConnection(
                 mWindowMagnificationConnectionImpl);

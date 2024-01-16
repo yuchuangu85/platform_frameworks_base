@@ -18,6 +18,7 @@ package android.hardware.biometrics;
 
 import static android.hardware.biometrics.BiometricManager.Authenticators;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
@@ -157,6 +158,11 @@ public interface BiometricConstants {
     int BIOMETRIC_ERROR_SENSOR_PRIVACY_ENABLED = 18;
 
     /**
+     * A power press stopped this biometric operation.
+     * @hide
+     */
+    int BIOMETRIC_ERROR_POWER_PRESSED = 19;
+    /**
      * This constant is only used by SystemUI. It notifies SystemUI that authentication was paused
      * because the authentication attempt was unsuccessful.
      * @hide
@@ -268,4 +274,38 @@ public interface BiometricConstants {
      */
     int BIOMETRIC_SYSTEM_EVENT_EARLY_USER_CANCEL = 1;
 
+    /**
+     * No lockout.
+     * @hide
+     */
+    int BIOMETRIC_LOCKOUT_NONE = 0;
+    /**
+     * The biometric is in a temporary lockout state that will expire after some time.
+     * @hide
+     */
+    int BIOMETRIC_LOCKOUT_TIMED = 1;
+    /**
+     * The biometric is locked out until a reset occurs. Resets are typically triggered by
+     * successfully authenticating via a stronger method than the one that is locked out.
+     * @hide
+     */
+    int BIOMETRIC_LOCKOUT_PERMANENT = 2;
+
+    /**
+     * @hide
+     */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef({BIOMETRIC_LOCKOUT_NONE, BIOMETRIC_LOCKOUT_TIMED, BIOMETRIC_LOCKOUT_PERMANENT})
+    @interface LockoutMode {}
+
+    //
+    // Other miscellaneous constants
+    //
+
+    /**
+     * Returned from {@link BiometricManager#getLastAuthenticationTime(int)} when there has
+     * been no successful authentication for the given authenticator since boot.
+     */
+    @FlaggedApi(Flags.FLAG_LAST_AUTHENTICATION_TIME)
+    long BIOMETRIC_NO_AUTHENTICATION = -1;
 }

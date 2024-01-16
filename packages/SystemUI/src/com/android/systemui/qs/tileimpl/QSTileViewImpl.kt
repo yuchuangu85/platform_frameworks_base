@@ -25,15 +25,18 @@ import android.content.res.Configuration
 import android.content.res.Resources.ID_NULL
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.RippleDrawable
+import android.os.Trace
 import android.service.quicksettings.Tile
 import android.text.TextUtils
 import android.util.Log
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.Switch
@@ -43,10 +46,12 @@ import com.android.settingslib.Utils
 import com.android.systemui.FontSizeUtils
 import com.android.systemui.R
 import com.android.systemui.animation.LaunchableView
+import com.android.systemui.animation.LaunchableViewDelegate
 import com.android.systemui.plugins.qs.QSIconView
 import com.android.systemui.plugins.qs.QSTile
 import com.android.systemui.plugins.qs.QSTile.BooleanState
 import com.android.systemui.plugins.qs.QSTileView
+import com.android.systemui.qs.logging.QSLogger
 import com.android.systemui.qs.tileimpl.QSIconViewImpl.QS_ANIM_LENGTH
 import java.util.Objects
 
@@ -68,6 +73,12 @@ open class QSTileViewImpl @JvmOverloads constructor(
         internal const val TILE_STATE_RES_PREFIX = "tile_states_"
     }
 
+    private var _position: Int = INVALID
+
+    override fun setPosition(position: Int) {
+        _position = position
+    }
+
     override var heightOverride: Int = HeightOverrideable.NO_OVERRIDE
         set(value) {
             if (field == value) return
@@ -82,23 +93,21 @@ open class QSTileViewImpl @JvmOverloads constructor(
             updateHeight()
         }
 
-    private val colorActive = Utils.getColorAttrDefaultColor(context,
-            com.android.internal.R.attr.colorAccentPrimary)
-    private val colorInactive = Utils.getColorAttrDefaultColor(context, R.attr.offStateColor)
-    private val colorUnavailable = Utils.applyAlpha(UNAVAILABLE_ALPHA, colorInactive)
+    private val colorActive = Utils.getColorAttrDefaultColor(context, R.attr.shadeActive)
+    private val colorInactive = Utils.getColorAttrDefaultColor(context, R.attr.shadeInactive)
+    private val colorUnavailable = Utils.getColorAttrDefaultColor(context, R.attr.shadeDisabled)
 
-    private val colorLabelActive =
-            Utils.getColorAttrDefaultColor(context, android.R.attr.textColorPrimaryInverse)
-    private val colorLabelInactive =
-            Utils.getColorAttrDefaultColor(context, android.R.attr.textColorPrimary)
-    private val colorLabelUnavailable = Utils.applyAlpha(UNAVAILABLE_ALPHA, colorLabelInactive)
+    private val colorLabelActive = Utils.getColorAttrDefaultColor(context, R.attr.onShadeActive)
+    private val colorLabelInactive = Utils.getColorAttrDefaultColor(context, R.attr.onShadeInactive)
+    private val colorLabelUnavailable =
+        Utils.getColorAttrDefaultColor(context, R.attr.outline)
 
     private val colorSecondaryLabelActive =
-            Utils.getColorAttrDefaultColor(context, android.R.attr.textColorSecondaryInverse)
+        Utils.getColorAttrDefaultColor(context, R.attr.onShadeActiveVariant)
     private val colorSecondaryLabelInactive =
-            Utils.getColorAttrDefaultColor(context, android.R.attr.textColorSecondary)
+            Utils.getColorAttrDefaultColor(context, R.attr.onShadeInactiveVariant)
     private val colorSecondaryLabelUnavailable =
-            Utils.applyAlpha(UNAVAILABLE_ALPHA, colorSecondaryLabelInactive)
+        Utils.getColorAttrDefaultColor(context, R.attr.outline)
 
     private lateinit var label: TextView
     protected lateinit var secondaryLabel: TextView
@@ -106,7 +115,11 @@ open class QSTileViewImpl @JvmOverloads constructor(
     protected lateinit var sideView: ViewGroup
     private lateinit var customDrawableView: ImageView
     private lateinit var chevronView: ImageView
+    private var mQsLogger: QSLogger? = null
 
+    /**
+     * Controls if tile background is set to a [RippleDrawable] see [setClickable]
+     */
     protected var showRippleEffect = true
 
     private lateinit var ripple: RippleDrawable
@@ -131,12 +144,20 @@ open class QSTileViewImpl @JvmOverloads constructor(
     private var lastStateDescription: CharSequence? = null
     private var tileState = false
     private var lastState = INVALID
-    private var blockVisibilityChanges = false
-    private var lastVisibility = View.VISIBLE
+    private val launchableViewDelegate = LaunchableViewDelegate(
+        this,
+        superSetVisibility = { super.setVisibility(it) },
+    )
+    private var lastDisabledByPolicy = false
 
     private val locInScreen = IntArray(2)
 
     init {
+        val typedValue = TypedValue()
+        if (!getContext().theme.resolveAttribute(R.attr.isQsTheme, typedValue, true)) {
+            throw IllegalStateException("QSViewImpl must be inflated with a theme that contains " +
+                    "Theme.SystemUI.QuickSettings")
+        }
         setId(generateViewId())
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL or Gravity.START
@@ -163,9 +184,19 @@ open class QSTileViewImpl @JvmOverloads constructor(
         updateResources()
     }
 
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        Trace.traceBegin(Trace.TRACE_TAG_APP, "QSTileViewImpl#onMeasure")
+        super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+        Trace.endSection()
+    }
+
     override fun resetOverride() {
         heightOverride = HeightOverrideable.NO_OVERRIDE
         updateHeight()
+    }
+
+    fun setQsLogger(qsLogger: QSLogger) {
+        mQsLogger = qsLogger
     }
 
     fun updateResources() {
@@ -249,7 +280,7 @@ open class QSTileViewImpl @JvmOverloads constructor(
         }
         // Limit how much we affect the height, so we don't have rounding artifacts when the tile
         // is too short.
-        val constrainedSquishiness = 0.1f + squishinessFraction * 0.9f
+        val constrainedSquishiness = constrainSquishiness(squishinessFraction)
         bottom = top + (actualHeight * constrainedSquishiness).toInt()
         scrollY = (actualHeight - height) / 2
     }
@@ -286,9 +317,15 @@ open class QSTileViewImpl @JvmOverloads constructor(
     }
 
     override fun onStateChanged(state: QSTile.State) {
-        post {
-            handleStateChanged(state)
-        }
+        // We cannot use the handler here because sometimes, the views are not attached (if they
+        // are in a page that the ViewPager hasn't attached). Instead, we use a runnable where
+        // all its instances are `equal` to each other, so they can be used to remove them from the
+        // queue.
+        // This means that at any given time there's at most one enqueued runnable to change state.
+        // However, as we only ever care about the last state posted, this is fine.
+        val runnable = StateChangeRunnable(state.copy())
+        removeCallbacks(runnable)
+        post(runnable)
     }
 
     override fun getDetailY(): Int {
@@ -317,6 +354,10 @@ open class QSTileViewImpl @JvmOverloads constructor(
         return labelContainer
     }
 
+    override fun getLabel(): View {
+        return label
+    }
+
     override fun getSecondaryLabel(): View {
         return secondaryLabel
     }
@@ -326,33 +367,11 @@ open class QSTileViewImpl @JvmOverloads constructor(
     }
 
     override fun setShouldBlockVisibilityChanges(block: Boolean) {
-        blockVisibilityChanges = block
-
-        if (block) {
-            lastVisibility = visibility
-        } else {
-            visibility = lastVisibility
-        }
+        launchableViewDelegate.setShouldBlockVisibilityChanges(block)
     }
 
     override fun setVisibility(visibility: Int) {
-        if (blockVisibilityChanges) {
-            lastVisibility = visibility
-            return
-        }
-
-        super.setVisibility(visibility)
-    }
-
-    override fun setTransitionVisibility(visibility: Int) {
-        if (blockVisibilityChanges) {
-            // View.setTransitionVisibility just sets the visibility flag, so we don't have to save
-            // the transition visibility separately from the normal visibility.
-            lastVisibility = visibility
-            return
-        }
-
-        super.setTransitionVisibility(visibility)
+        launchableViewDelegate.setVisibility(visibility)
     }
 
     // Accessibility
@@ -373,15 +392,28 @@ open class QSTileViewImpl @JvmOverloads constructor(
         super.onInitializeAccessibilityNodeInfo(info)
         // Clear selected state so it is not announce by talkback.
         info.isSelected = false
+        info.text = if (TextUtils.isEmpty(secondaryLabel.text)) {
+            "${label.text}"
+        } else {
+            "${label.text}, ${secondaryLabel.text}"
+        }
+        if (lastDisabledByPolicy) {
+            info.addAction(
+                    AccessibilityNodeInfo.AccessibilityAction(
+                            AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK.id,
+                            resources.getString(
+                                R.string.accessibility_tile_disabled_by_policy_action_description
+                            )
+                    )
+            )
+        }
         if (!TextUtils.isEmpty(accessibilityClass)) {
-            info.className = accessibilityClass
+            info.className = if (lastDisabledByPolicy) {
+                Button::class.java.name
+            } else {
+                accessibilityClass
+            }
             if (Switch::class.java.name == accessibilityClass) {
-                val label = resources.getString(
-                        if (tileState) R.string.switch_bar_on else R.string.switch_bar_off)
-                // Set the text here for tests in
-                // android.platform.test.scenario.sysui.quicksettings. Can be removed when
-                // UiObject2 has a new getStateDescription() API and tests are updated.
-                info.text = label
                 info.isChecked = tileState
                 info.isCheckable = true
                 if (isLongClickable) {
@@ -392,6 +424,10 @@ open class QSTileViewImpl @JvmOverloads constructor(
                                             R.string.accessibility_long_click_tile)))
                 }
             }
+        }
+        if (_position != INVALID) {
+            info.collectionItemInfo =
+                AccessibilityNodeInfo.CollectionItemInfo(_position, 1, 0, 1, false)
         }
     }
 
@@ -408,7 +444,6 @@ open class QSTileViewImpl @JvmOverloads constructor(
 
     protected open fun handleStateChanged(state: QSTile.State) {
         val allowAnimations = animationsEnabled()
-        showRippleEffect = state.showRippleEffect
         isClickable = state.state != Tile.STATE_UNAVAILABLE
         isLongClickable = state.handlesLongClick
         icon.setIcon(state, allowAnimations)
@@ -416,12 +451,15 @@ open class QSTileViewImpl @JvmOverloads constructor(
 
         // State handling and description
         val stateDescription = StringBuilder()
-        val stateText = getStateText(state)
+        val arrayResId = SubtitleArrayMapping.getSubtitleId(state.spec)
+        val stateText = state.getStateText(arrayResId, resources)
+        state.secondaryLabel = state.getSecondaryLabel(stateText)
         if (!TextUtils.isEmpty(stateText)) {
             stateDescription.append(stateText)
-            if (TextUtils.isEmpty(state.secondaryLabel)) {
-                state.secondaryLabel = stateText
-            }
+        }
+        if (state.disabledByPolicy && state.state != Tile.STATE_UNAVAILABLE) {
+            stateDescription.append(", ")
+            stateDescription.append(getUnavailableText(state.spec))
         }
         if (!TextUtils.isEmpty(state.stateDescription)) {
             stateDescription.append(", ")
@@ -463,38 +501,43 @@ open class QSTileViewImpl @JvmOverloads constructor(
         }
 
         // Colors
-        if (state.state != lastState) {
+        if (state.state != lastState || state.disabledByPolicy != lastDisabledByPolicy) {
             singleAnimator.cancel()
+            mQsLogger?.logTileBackgroundColorUpdateIfInternetTile(
+                    state.spec,
+                    state.state,
+                    state.disabledByPolicy,
+                    getBackgroundColorForState(state.state, state.disabledByPolicy))
             if (allowAnimations) {
                 singleAnimator.setValues(
                         colorValuesHolder(
                                 BACKGROUND_NAME,
                                 paintColor,
-                                getBackgroundColorForState(state.state)
+                                getBackgroundColorForState(state.state, state.disabledByPolicy)
                         ),
                         colorValuesHolder(
                                 LABEL_NAME,
                                 label.currentTextColor,
-                                getLabelColorForState(state.state)
+                                getLabelColorForState(state.state, state.disabledByPolicy)
                         ),
                         colorValuesHolder(
                                 SECONDARY_LABEL_NAME,
                                 secondaryLabel.currentTextColor,
-                                getSecondaryLabelColorForState(state.state)
+                                getSecondaryLabelColorForState(state.state, state.disabledByPolicy)
                         ),
                         colorValuesHolder(
                                 CHEVRON_NAME,
                                 chevronView.imageTintList?.defaultColor ?: 0,
-                                getChevronColorForState(state.state)
+                                getChevronColorForState(state.state, state.disabledByPolicy)
                         )
                     )
                 singleAnimator.start()
             } else {
                 setAllColors(
-                    getBackgroundColorForState(state.state),
-                    getLabelColorForState(state.state),
-                    getSecondaryLabelColorForState(state.state),
-                    getChevronColorForState(state.state)
+                    getBackgroundColorForState(state.state, state.disabledByPolicy),
+                    getLabelColorForState(state.state, state.disabledByPolicy),
+                    getSecondaryLabelColorForState(state.state, state.disabledByPolicy),
+                    getChevronColorForState(state.state, state.disabledByPolicy)
                 )
             }
         }
@@ -505,6 +548,7 @@ open class QSTileViewImpl @JvmOverloads constructor(
         label.isEnabled = !state.disabledByPolicy
 
         lastState = state.state
+        lastDisabledByPolicy = state.disabledByPolicy
     }
 
     private fun setAllColors(
@@ -552,18 +596,9 @@ open class QSTileViewImpl @JvmOverloads constructor(
         }
     }
 
-    private fun getStateText(state: QSTile.State): String {
-        if (state.disabledByPolicy) {
-            return context.getString(R.string.tile_disabled)
-        }
-
-        return if (state.state == Tile.STATE_UNAVAILABLE || state is BooleanState) {
-            var arrayResId = SubtitleArrayMapping.getSubtitleId(state.spec)
-            val array = resources.getStringArray(arrayResId)
-            array[state.state]
-        } else {
-            ""
-        }
+    private fun getUnavailableText(spec: String?): String {
+        val arrayResId = SubtitleArrayMapping.getSubtitleId(spec)
+        return resources.getStringArray(arrayResId)[Tile.STATE_UNAVAILABLE]
     }
 
     /*
@@ -580,11 +615,11 @@ open class QSTileViewImpl @JvmOverloads constructor(
         return locInScreen.get(1) >= -height
     }
 
-    private fun getBackgroundColorForState(state: Int): Int {
-        return when (state) {
-            Tile.STATE_ACTIVE -> colorActive
-            Tile.STATE_INACTIVE -> colorInactive
-            Tile.STATE_UNAVAILABLE -> colorUnavailable
+    private fun getBackgroundColorForState(state: Int, disabledByPolicy: Boolean = false): Int {
+        return when {
+            state == Tile.STATE_UNAVAILABLE || disabledByPolicy -> colorUnavailable
+            state == Tile.STATE_ACTIVE -> colorActive
+            state == Tile.STATE_INACTIVE -> colorInactive
             else -> {
                 Log.e(TAG, "Invalid state $state")
                 0
@@ -592,11 +627,11 @@ open class QSTileViewImpl @JvmOverloads constructor(
         }
     }
 
-    private fun getLabelColorForState(state: Int): Int {
-        return when (state) {
-            Tile.STATE_ACTIVE -> colorLabelActive
-            Tile.STATE_INACTIVE -> colorLabelInactive
-            Tile.STATE_UNAVAILABLE -> colorLabelUnavailable
+    private fun getLabelColorForState(state: Int, disabledByPolicy: Boolean = false): Int {
+        return when {
+            state == Tile.STATE_UNAVAILABLE || disabledByPolicy -> colorLabelUnavailable
+            state == Tile.STATE_ACTIVE -> colorLabelActive
+            state == Tile.STATE_INACTIVE -> colorLabelInactive
             else -> {
                 Log.e(TAG, "Invalid state $state")
                 0
@@ -604,11 +639,11 @@ open class QSTileViewImpl @JvmOverloads constructor(
         }
     }
 
-    private fun getSecondaryLabelColorForState(state: Int): Int {
-        return when (state) {
-            Tile.STATE_ACTIVE -> colorSecondaryLabelActive
-            Tile.STATE_INACTIVE -> colorSecondaryLabelInactive
-            Tile.STATE_UNAVAILABLE -> colorSecondaryLabelUnavailable
+    private fun getSecondaryLabelColorForState(state: Int, disabledByPolicy: Boolean = false): Int {
+        return when {
+            state == Tile.STATE_UNAVAILABLE || disabledByPolicy -> colorSecondaryLabelUnavailable
+            state == Tile.STATE_ACTIVE -> colorSecondaryLabelActive
+            state == Tile.STATE_INACTIVE -> colorSecondaryLabelInactive
             else -> {
                 Log.e(TAG, "Invalid state $state")
                 0
@@ -616,42 +651,37 @@ open class QSTileViewImpl @JvmOverloads constructor(
         }
     }
 
-    private fun getChevronColorForState(state: Int): Int = getSecondaryLabelColorForState(state)
-}
+    private fun getChevronColorForState(state: Int, disabledByPolicy: Boolean = false): Int =
+            getSecondaryLabelColorForState(state, disabledByPolicy)
 
-@VisibleForTesting
-internal object SubtitleArrayMapping {
-    private val subtitleIdsMap = mapOf<String?, Int>(
-        "internet" to R.array.tile_states_internet,
-        "wifi" to R.array.tile_states_wifi,
-        "cell" to R.array.tile_states_cell,
-        "battery" to R.array.tile_states_battery,
-        "dnd" to R.array.tile_states_dnd,
-        "flashlight" to R.array.tile_states_flashlight,
-        "rotation" to R.array.tile_states_rotation,
-        "bt" to R.array.tile_states_bt,
-        "airplane" to R.array.tile_states_airplane,
-        "location" to R.array.tile_states_location,
-        "hotspot" to R.array.tile_states_hotspot,
-        "inversion" to R.array.tile_states_inversion,
-        "saver" to R.array.tile_states_saver,
-        "dark" to R.array.tile_states_dark,
-        "work" to R.array.tile_states_work,
-        "cast" to R.array.tile_states_cast,
-        "night" to R.array.tile_states_night,
-        "screenrecord" to R.array.tile_states_screenrecord,
-        "reverse" to R.array.tile_states_reverse,
-        "reduce_brightness" to R.array.tile_states_reduce_brightness,
-        "cameratoggle" to R.array.tile_states_cameratoggle,
-        "mictoggle" to R.array.tile_states_mictoggle,
-        "controls" to R.array.tile_states_controls,
-        "wallet" to R.array.tile_states_wallet,
-        "alarm" to R.array.tile_states_alarm
+    @VisibleForTesting
+    internal fun getCurrentColors(): List<Int> = listOf(
+            paintColor,
+            label.currentTextColor,
+            secondaryLabel.currentTextColor,
+            chevronView.imageTintList?.defaultColor ?: 0
     )
 
-    fun getSubtitleId(spec: String?): Int {
-        return subtitleIdsMap.getOrDefault(spec, R.array.tile_states_default)
+    inner class StateChangeRunnable(private val state: QSTile.State) : Runnable {
+        override fun run() {
+            handleStateChanged(state)
+        }
+
+        // We want all instances of this runnable to be equal to each other, so they can be used to
+        // remove previous instances from the Handler/RunQueue of this view
+        override fun equals(other: Any?): Boolean {
+            return other is StateChangeRunnable
+        }
+
+        // This makes sure that all instances have the same hashcode (because they are `equal`)
+        override fun hashCode(): Int {
+            return StateChangeRunnable::class.hashCode()
+        }
     }
+}
+
+fun constrainSquishiness(squish: Float): Float {
+    return 0.1f + squish * 0.9f
 }
 
 private fun colorValuesHolder(name: String, vararg values: Int): PropertyValuesHolder {

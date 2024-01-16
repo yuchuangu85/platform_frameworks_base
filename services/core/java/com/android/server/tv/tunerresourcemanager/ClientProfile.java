@@ -15,6 +15,8 @@
  */
 package com.android.server.tv.tunerresourcemanager;
 
+import android.media.tv.tunerresourcemanager.TunerResourceManager;
+
 import java.util.HashSet;
 import java.util.Set;
 
@@ -50,8 +52,6 @@ public final class ClientProfile {
      */
     private final int mProcessId;
 
-    private boolean mIsForeground;
-
     /**
      * All the clients that share the same resource would be under the same group id.
      *
@@ -65,6 +65,11 @@ public final class ClientProfile {
     private int mNiceValue;
 
     /**
+     * The handle of the primary frontend resource
+     */
+    private int mPrimaryUsingFrontendHandle = TunerResourceManager.INVALID_RESOURCE_HANDLE;
+
+    /**
      * List of the frontend handles that are used by the current client.
      */
     private Set<Integer> mUsingFrontendHandles = new HashSet<>();
@@ -73,6 +78,13 @@ public final class ClientProfile {
      * List of the client ids that share frontend with the current client.
      */
     private Set<Integer> mShareFeClientIds = new HashSet<>();
+
+    private Set<Integer> mUsingDemuxHandles = new HashSet<>();
+
+    /**
+     * Client id sharee that has shared frontend with the current client.
+     */
+    private Integer mShareeFeClientId = INVALID_RESOURCE_ID;
 
     /**
      * List of the Lnb handles that are used by the current client.
@@ -88,6 +100,12 @@ public final class ClientProfile {
      * CiCam id that is used by the client.
      */
     private int mUsingCiCamId = INVALID_RESOURCE_ID;
+
+    /**
+     * If the priority is overwritten through
+     * {@link TunerResourceManagerService#setPriority(int, int)}.
+     */
+    private boolean mIsPriorityOverwritten = false;
 
     /**
      * Optional arbitrary priority value given by the client.
@@ -121,17 +139,10 @@ public final class ClientProfile {
     }
 
     /**
-     * Set the current isForeground status.
+     * If the client priority is overwrttien.
      */
-    public void setForeground(boolean isForeground) {
-        mIsForeground = isForeground;
-    }
-
-    /**
-     * Get the previous recorded isForeground status.
-     */
-    public boolean isForeground() {
-        return mIsForeground;
+    public boolean isPriorityOverwritten() {
+        return mIsPriorityOverwritten;
     }
 
     public int getGroupId() {
@@ -153,6 +164,17 @@ public final class ClientProfile {
         mPriority = priority;
     }
 
+    /**
+     * Overwrite the client priority.
+     */
+    public void overwritePriority(int priority) {
+        if (priority < 0) {
+            return;
+        }
+        mIsPriorityOverwritten = true;
+        mPriority = priority;
+    }
+
     public void setNiceValue(int niceValue) {
         mNiceValue = niceValue;
     }
@@ -164,6 +186,22 @@ public final class ClientProfile {
      */
     public void useFrontend(int frontendHandle) {
         mUsingFrontendHandles.add(frontendHandle);
+    }
+
+    /**
+     * Set the primary frontend used by the client
+     *
+     * @param frontendHandle being used.
+     */
+    public void setPrimaryFrontend(int frontendHandle) {
+        mPrimaryUsingFrontendHandle = frontendHandle;
+    }
+
+    /**
+     * Get the primary frontend used by the client
+     */
+    public int getPrimaryFrontend() {
+        return mPrimaryUsingFrontendHandle;
     }
 
     /**
@@ -192,12 +230,47 @@ public final class ClientProfile {
         return mShareFeClientIds;
     }
 
+    public Integer getShareeFeClientId() {
+        return mShareeFeClientId;
+    }
+
+    public void setShareeFeClientId(Integer shareeFeClientId) {
+        mShareeFeClientId = shareeFeClientId;
+    }
+
     /**
      * Called when the client released a frontend.
      */
     public void releaseFrontend() {
         mUsingFrontendHandles.clear();
         mShareFeClientIds.clear();
+        mShareeFeClientId = INVALID_RESOURCE_ID;
+        mPrimaryUsingFrontendHandle = TunerResourceManager.INVALID_RESOURCE_HANDLE;
+    }
+
+    /**
+     * Set when the client starts to use a Demux.
+     *
+     * @param demuxHandle the demux being used.
+     */
+    public void useDemux(int demuxHandle) {
+        mUsingDemuxHandles.add(demuxHandle);
+    }
+
+    /**
+     * Get the set of demux handles in use.
+     */
+    public Set<Integer> getInUseDemuxHandles() {
+        return mUsingDemuxHandles;
+    }
+
+    /**
+     * Called when the client released a Demux.
+     *
+     * @param demuxHandle the demux handl being released.
+     */
+    public void releaseDemux(int demuxHandle) {
+        mUsingDemuxHandles.remove(demuxHandle);
     }
 
     /**
@@ -268,6 +341,7 @@ public final class ClientProfile {
     public void reclaimAllResources() {
         mUsingFrontendHandles.clear();
         mShareFeClientIds.clear();
+        mPrimaryUsingFrontendHandle = TunerResourceManager.INVALID_RESOURCE_HANDLE;
         mUsingLnbHandles.clear();
         mUsingCasSystemId = INVALID_RESOURCE_ID;
         mUsingCiCamId = INVALID_RESOURCE_ID;

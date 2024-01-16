@@ -16,10 +16,10 @@
 
 package com.android.dynsystem;
 
-import static android.os.AsyncTask.Status.FINISHED;
-import static android.os.AsyncTask.Status.PENDING;
 import static android.os.AsyncTask.Status.RUNNING;
+import static android.os.image.DynamicSystemClient.ACTION_HIDE_NOTIFICATION;
 import static android.os.image.DynamicSystemClient.ACTION_NOTIFY_IF_IN_USE;
+import static android.os.image.DynamicSystemClient.ACTION_NOTIFY_KEYGUARD_DISMISSED;
 import static android.os.image.DynamicSystemClient.ACTION_START_INSTALL;
 import static android.os.image.DynamicSystemClient.CAUSE_ERROR_EXCEPTION;
 import static android.os.image.DynamicSystemClient.CAUSE_ERROR_INVALID_URL;
@@ -27,6 +27,8 @@ import static android.os.image.DynamicSystemClient.CAUSE_ERROR_IO;
 import static android.os.image.DynamicSystemClient.CAUSE_INSTALL_CANCELLED;
 import static android.os.image.DynamicSystemClient.CAUSE_INSTALL_COMPLETED;
 import static android.os.image.DynamicSystemClient.CAUSE_NOT_SPECIFIED;
+import static android.os.image.DynamicSystemClient.KEY_ENABLE_WHEN_COMPLETED;
+import static android.os.image.DynamicSystemClient.KEY_ONE_SHOT;
 import static android.os.image.DynamicSystemClient.STATUS_IN_PROGRESS;
 import static android.os.image.DynamicSystemClient.STATUS_IN_USE;
 import static android.os.image.DynamicSystemClient.STATUS_NOT_STARTED;
@@ -77,8 +79,6 @@ public class DynamicSystemInstallationService extends Service
 
     private static final String TAG = "DynamicSystemInstallationService";
 
-    // TODO (b/131866826): This is currently for test only. Will move this to System API.
-    static final String KEY_ENABLE_WHEN_COMPLETED = "KEY_ENABLE_WHEN_COMPLETED";
     static final String KEY_DSU_SLOT = "KEY_DSU_SLOT";
     static final String DEFAULT_DSU_SLOT = "dsu";
     static final String KEY_PUBKEY = "KEY_PUBKEY";
@@ -110,20 +110,23 @@ public class DynamicSystemInstallationService extends Service
     private static final int EVENT_DSU_PROGRESS_UPDATE = 120000;
     private static final int EVENT_DSU_INSTALL_COMPLETE = 120001;
     private static final int EVENT_DSU_INSTALL_FAILED = 120002;
+    private static final int EVENT_DSU_INSTALL_INSUFFICIENT_SPACE = 120003;
 
     protected static void logEventProgressUpdate(
-            String partition,
-            long installedSize,
-            long partitionSize,
+            String partitionName,
+            long installedBytes,
+            long totalBytes,
             int partitionNumber,
-            int totalPartitionNumber) {
+            int totalPartitionNumber,
+            int totalProgressPercentage) {
         EventLog.writeEvent(
                 EVENT_DSU_PROGRESS_UPDATE,
-                partition,
-                installedSize,
-                partitionSize,
+                partitionName,
+                installedBytes,
+                totalBytes,
                 partitionNumber,
-                totalPartitionNumber);
+                totalPartitionNumber,
+                totalProgressPercentage);
     }
 
     protected static void logEventComplete() {
@@ -132,6 +135,10 @@ public class DynamicSystemInstallationService extends Service
 
     protected static void logEventFailed(String cause) {
         EventLog.writeEvent(EVENT_DSU_INSTALL_FAILED, cause);
+    }
+
+    protected static void logEventInsufficientSpace() {
+        EventLog.writeEvent(EVENT_DSU_INSTALL_INSUFFICIENT_SPACE);
     }
 
     /*
@@ -165,6 +172,8 @@ public class DynamicSystemInstallationService extends Service
 
     // This is for testing only now
     private boolean mEnableWhenCompleted;
+    private boolean mOneShot;
+    private boolean mHideNotification;
 
     private InstallationAsyncTask.Progress mInstallTaskProgress;
     private InstallationAsyncTask mInstallTask;
@@ -222,6 +231,10 @@ public class DynamicSystemInstallationService extends Service
             executeRebootToNormalCommand();
         } else if (ACTION_NOTIFY_IF_IN_USE.equals(action)) {
             executeNotifyIfInUseCommand();
+        } else if (ACTION_HIDE_NOTIFICATION.equals(action)) {
+            executeHideNotificationCommand();
+        } else if (ACTION_NOTIFY_KEYGUARD_DISMISSED.equals(action)) {
+            executeNotifyKeyguardDismissed();
         }
 
         return Service.START_NOT_STICKY;
@@ -231,10 +244,11 @@ public class DynamicSystemInstallationService extends Service
     public void onProgressUpdate(InstallationAsyncTask.Progress progress) {
         logEventProgressUpdate(
                 progress.partitionName,
-                progress.installedSize,
-                progress.partitionSize,
+                progress.installedBytes,
+                progress.totalBytes,
                 progress.partitionNumber,
-                progress.totalPartitionNumber);
+                progress.totalPartitionNumber,
+                progress.totalProgressPercentage);
 
         mInstallTaskProgress = progress;
         postStatus(STATUS_IN_PROGRESS, CAUSE_NOT_SPECIFIED, null);
@@ -255,6 +269,8 @@ public class DynamicSystemInstallationService extends Service
 
         if (result == RESULT_CANCELLED) {
             logEventFailed("Dynamic System installation task is canceled by the user.");
+        } else if (detail instanceof InstallationAsyncTask.InsufficientSpaceException) {
+            logEventInsufficientSpace();
         } else {
             logEventFailed("error: " + detail);
         }
@@ -308,6 +324,7 @@ public class DynamicSystemInstallationService extends Service
         long systemSize = intent.getLongExtra(DynamicSystemClient.KEY_SYSTEM_SIZE, 0);
         long userdataSize = intent.getLongExtra(DynamicSystemClient.KEY_USERDATA_SIZE, 0);
         mEnableWhenCompleted = intent.getBooleanExtra(KEY_ENABLE_WHEN_COMPLETED, false);
+        mOneShot = intent.getBooleanExtra(KEY_ONE_SHOT, true);
         String dsuSlot = intent.getStringExtra(KEY_DSU_SLOT);
         String publicKey = intent.getStringExtra(KEY_PUBKEY);
 
@@ -374,9 +391,9 @@ public class DynamicSystemInstallationService extends Service
         boolean enabled = false;
 
         if (mInstallTask != null && mInstallTask.isCompleted()) {
-            enabled = mInstallTask.commit();
+            enabled = mInstallTask.commit(mOneShot);
         } else if (isDynamicSystemInstalled()) {
-            enabled = mDynSystem.setEnable(true, true);
+            enabled = mDynSystem.setEnable(true, mOneShot);
         } else {
             Log.e(TAG, "Trying to reboot to AOT while there is no complete installation");
             return;
@@ -402,17 +419,28 @@ public class DynamicSystemInstallationService extends Service
         mDynSystem.remove();
     }
 
+    private boolean isDsuSlotLocked() {
+        // Slot names ending with ".lock" are a customized installation.
+        // We expect the client app to provide custom UI to enter/exit DSU mode.
+        // We will ignore the ACTION_REBOOT_TO_NORMAL command and will not show
+        // notifications in this case.
+        return mDynSystem.getActiveDsuSlot().endsWith(".lock");
+    }
+
     private void executeRebootToNormalCommand() {
         if (!isInDynamicSystem()) {
             Log.e(TAG, "It's already running in normal system.");
             return;
         }
-
+        if (isDsuSlotLocked()) {
+            Log.e(TAG, "Ignore the reboot intent for a locked DSU slot");
+            return;
+        }
         if (!mDynSystem.setEnable(/* enable = */ false, /* oneShot = */ false)) {
             Log.e(TAG, "Failed to disable DynamicSystem.");
 
             // Dismiss status bar and show a toast.
-            sendBroadcast(new Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS));
+            closeSystemDialogs();
             Toast.makeText(this,
                     getString(R.string.toast_failed_to_disable_dynsystem),
                     Toast.LENGTH_LONG).show();
@@ -429,12 +457,16 @@ public class DynamicSystemInstallationService extends Service
     private void executeNotifyIfInUseCommand() {
         switch (getStatus()) {
             case STATUS_IN_USE:
-                startForeground(NOTIFICATION_ID,
-                        buildNotification(STATUS_IN_USE, CAUSE_NOT_SPECIFIED));
+                if (!mHideNotification && !isDsuSlotLocked()) {
+                    startForeground(NOTIFICATION_ID,
+                            buildNotification(STATUS_IN_USE, CAUSE_NOT_SPECIFIED));
+                }
                 break;
             case STATUS_READY:
-                startForeground(NOTIFICATION_ID,
-                        buildNotification(STATUS_READY, CAUSE_NOT_SPECIFIED));
+                if (!mHideNotification && !isDsuSlotLocked()) {
+                    startForeground(NOTIFICATION_ID,
+                            buildNotification(STATUS_READY, CAUSE_NOT_SPECIFIED));
+                }
                 break;
             case STATUS_IN_PROGRESS:
                 break;
@@ -442,6 +474,20 @@ public class DynamicSystemInstallationService extends Service
             default:
                 stopSelf();
         }
+    }
+
+    private void executeHideNotificationCommand() {
+        mHideNotification = true;
+        switch (getStatus()) {
+            case STATUS_IN_USE:
+            case STATUS_READY:
+                stopForeground(STOP_FOREGROUND_REMOVE);
+                break;
+        }
+    }
+
+    private void executeNotifyKeyguardDismissed() {
+        postStatus(STATUS_NOT_STARTED, CAUSE_INSTALL_CANCELLED, null);
     }
 
     private void resetTaskAndStop() {
@@ -483,23 +529,46 @@ public class DynamicSystemInstallationService extends Service
 
         switch (status) {
             case STATUS_IN_PROGRESS:
-                builder.setContentText(getString(R.string.notification_install_inprogress));
+                String msgInProgress = getString(R.string.notification_install_inprogress);
 
-                if (mInstallTaskProgress != null) {
-                    int max = 1024;
-                    int progress = 0;
+                if (mInstallTaskProgress == null) {
+                    builder.setContentText(msgInProgress);
+                } else {
+                    if (mInstallTaskProgress.totalPartitionNumber > 0) {
+                        builder.setContentText(
+                                String.format(
+                                        "%s: %s partition [%d/%d]",
+                                        msgInProgress,
+                                        mInstallTaskProgress.partitionName,
+                                        mInstallTaskProgress.partitionNumber,
+                                        mInstallTaskProgress.totalPartitionNumber));
 
-                    int currentMax = max >> mInstallTaskProgress.partitionNumber;
-                    progress = max - currentMax * 2;
+                        // totalProgressPercentage is defined iff totalPartitionNumber is defined
+                        builder.setProgress(
+                                100,
+                                mInstallTaskProgress.totalProgressPercentage,
+                                /* indeterminate = */ false);
+                    } else {
+                        builder.setContentText(
+                                String.format(
+                                        "%s: %s partition",
+                                        msgInProgress, mInstallTaskProgress.partitionName));
 
-                    long currentProgress =
-                            (mInstallTaskProgress.installedSize >> 20)
-                                    * currentMax
-                                    / Math.max(mInstallTaskProgress.partitionSize >> 20, 1);
+                        int max = 1024;
+                        int progress = 0;
 
-                    progress += (int) currentProgress;
+                        int currentMax = max >> mInstallTaskProgress.partitionNumber;
+                        progress = max - currentMax * 2;
 
-                    builder.setProgress(max, progress, false);
+                        long currentProgress =
+                                (mInstallTaskProgress.installedBytes >> 20)
+                                        * currentMax
+                                        / Math.max(mInstallTaskProgress.totalBytes >> 20, 1);
+
+                        progress += (int) currentProgress;
+
+                        builder.setProgress(max, progress, false);
+                    }
                 }
                 builder.addAction(new Notification.Action.Builder(
                         null, getString(R.string.notification_action_cancel),
@@ -609,10 +678,11 @@ public class DynamicSystemInstallationService extends Service
         if (status == STATUS_IN_PROGRESS && mInstallTaskProgress != null) {
             msg.append(
                     String.format(
-                            ", partition name: %s, progress: %d/%d",
+                            ", partition name: %s, progress: %d/%d, total_progress: %d%%",
                             mInstallTaskProgress.partitionName,
-                            mInstallTaskProgress.installedSize,
-                            mInstallTaskProgress.partitionSize));
+                            mInstallTaskProgress.installedBytes,
+                            mInstallTaskProgress.totalBytes,
+                            mInstallTaskProgress.totalProgressPercentage));
         }
         if (detail != null) {
             msg.append(", detail: " + detail);
@@ -639,7 +709,7 @@ public class DynamicSystemInstallationService extends Service
         // TODO: send more info to the clients
         if (mInstallTaskProgress != null) {
             bundle.putLong(
-                    DynamicSystemClient.KEY_INSTALLED_SIZE, mInstallTaskProgress.installedSize);
+                    DynamicSystemClient.KEY_INSTALLED_SIZE, mInstallTaskProgress.installedBytes);
         }
 
         if (detail != null) {

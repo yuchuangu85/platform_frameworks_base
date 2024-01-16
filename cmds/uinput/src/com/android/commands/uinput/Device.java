@@ -45,6 +45,7 @@ public class Device {
     private static final int MSG_OPEN_UINPUT_DEVICE = 1;
     private static final int MSG_CLOSE_UINPUT_DEVICE = 2;
     private static final int MSG_INJECT_EVENT = 3;
+    private static final int MSG_SYNC_EVENT = 4;
 
     private final int mId;
     private final HandlerThread mThread;
@@ -61,7 +62,7 @@ public class Device {
     }
 
     private static native long nativeOpenUinputDevice(String name, int id, int vid, int pid,
-            int bus, int ffEffectsMax, DeviceCallback callback);
+            int bus, int ffEffectsMax, String port, DeviceCallback callback);
     private static native void nativeCloseUinputDevice(long ptr);
     private static native void nativeInjectEvent(long ptr, int type, int code, int value);
     private static native void nativeConfigure(int handle, int code, int[] configs);
@@ -69,7 +70,7 @@ public class Device {
 
     public Device(int id, String name, int vid, int pid, int bus,
             SparseArray<int[]> configuration, int ffEffectsMax,
-            SparseArray<InputAbsInfo> absInfo) {
+            SparseArray<InputAbsInfo> absInfo, String port) {
         mId = id;
         mThread = new HandlerThread("UinputDeviceHandler");
         mThread.start();
@@ -87,6 +88,11 @@ public class Device {
             args.arg1 = name;
         } else {
             args.arg1 = id + ":" + vid + ":" + pid;
+        }
+        if (port != null) {
+            args.arg2 = port;
+        } else {
+            args.arg2 = "uinput:" + id + ":" + vid + ":" + pid;
         }
 
         mHandler.obtainMessage(MSG_OPEN_UINPUT_DEVICE, args).sendToTarget();
@@ -111,6 +117,16 @@ public class Device {
      */
     public void addDelay(int delay) {
         mTimeToSend = Math.max(SystemClock.uptimeMillis(), mTimeToSend) + delay;
+    }
+
+    /**
+     * Synchronize the uinput command queue by writing a sync response with the provided syncToken
+     * to the output stream when this event is processed.
+     *
+     * @param syncToken  The token for this sync command.
+     */
+    public void syncEvent(String syncToken) {
+        mHandler.sendMessageAtTime(mHandler.obtainMessage(MSG_SYNC_EVENT, syncToken), mTimeToSend);
     }
 
     /**
@@ -142,7 +158,7 @@ public class Device {
                 case MSG_OPEN_UINPUT_DEVICE:
                     SomeArgs args = (SomeArgs) msg.obj;
                     mPtr = nativeOpenUinputDevice((String) args.arg1, args.argi1, args.argi2,
-                            args.argi3, args.argi4, args.argi5,
+                            args.argi3, args.argi4, args.argi5, (String) args.arg2,
                             new DeviceCallback());
                     break;
                 case MSG_INJECT_EVENT:
@@ -166,6 +182,9 @@ public class Device {
                         mCond.notify();
                     }
                     break;
+                case MSG_SYNC_EVENT:
+                    handleSyncEvent((String) msg.obj);
+                    break;
                 default:
                     throw new IllegalArgumentException("Unknown device message");
             }
@@ -178,6 +197,18 @@ public class Device {
         public void resumeEvents() {
             getLooper().myQueue().removeSyncBarrier(mBarrierToken);
             mBarrierToken = 0;
+        }
+
+        private void handleSyncEvent(String syncToken) {
+            final JSONObject json = new JSONObject();
+            try {
+                json.put("reason", "sync");
+                json.put("id", mId);
+                json.put("syncToken", syncToken);
+            } catch (JSONException e) {
+                throw new RuntimeException("Could not create JSON object ", e);
+            }
+            writeOutputObject(json);
         }
     }
 
@@ -206,7 +237,7 @@ public class Device {
         }
 
         public void onDeviceVibrating(int value) {
-            JSONObject json = new JSONObject();
+            final JSONObject json = new JSONObject();
             try {
                 json.put("reason", "vibrating");
                 json.put("id", mId);
@@ -214,12 +245,7 @@ public class Device {
             } catch (JSONException e) {
                 throw new RuntimeException("Could not create JSON object ", e);
             }
-            try {
-                mOutputStream.write(json.toString().getBytes());
-                mOutputStream.flush();
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
+            writeOutputObject(json);
         }
 
         public void onDeviceError() {
@@ -227,6 +253,15 @@ public class Device {
             Message msg = mHandler.obtainMessage(MSG_CLOSE_UINPUT_DEVICE);
             msg.setAsynchronous(true);
             msg.sendToTarget();
+        }
+    }
+
+    private void writeOutputObject(JSONObject json) {
+        try {
+            mOutputStream.write(json.toString().getBytes());
+            mOutputStream.flush();
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
     }
 }

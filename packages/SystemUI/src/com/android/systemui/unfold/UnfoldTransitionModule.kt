@@ -17,15 +17,22 @@
 package com.android.systemui.unfold
 
 import android.content.Context
-import android.hardware.SensorManager
 import android.hardware.devicestate.DeviceStateManager
-import android.os.Handler
-import android.view.IWindowManager
+import android.os.SystemProperties
+import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.keyguard.LifecycleScreenStatusProvider
 import com.android.systemui.unfold.config.UnfoldTransitionConfig
+import com.android.systemui.unfold.system.SystemUnfoldSharedModule
+import com.android.systemui.unfold.updates.FoldProvider
+import com.android.systemui.unfold.updates.FoldStateProvider
+import com.android.systemui.unfold.updates.RotationChangeProvider
+import com.android.systemui.unfold.updates.screen.ScreenStatusProvider
 import com.android.systemui.unfold.util.NaturalRotationUnfoldProgressProvider
 import com.android.systemui.unfold.util.ScopedUnfoldTransitionProgressProvider
+import com.android.systemui.unfold.util.UnfoldOnlyProgressProvider
+import com.android.systemui.unfold.util.UnfoldTransitionATracePrefix
+import com.android.systemui.util.time.SystemClockImpl
 import com.android.wm.shell.unfold.ShellUnfoldProgressProvider
 import dagger.Lazy
 import dagger.Module
@@ -33,56 +40,70 @@ import dagger.Provides
 import java.util.Optional
 import java.util.concurrent.Executor
 import javax.inject.Named
+import javax.inject.Provider
 import javax.inject.Singleton
 
-@Module
+@Module(includes = [UnfoldSharedModule::class, SystemUnfoldSharedModule::class])
 class UnfoldTransitionModule {
+
+    @Provides @UnfoldTransitionATracePrefix fun tracingTagPrefix() = "systemui"
+
+    /** A globally available FoldStateListener that allows one to query the fold state. */
+    @Provides
+    @Singleton
+    fun providesFoldStateListener(
+        deviceStateManager: DeviceStateManager,
+        @Application context: Context,
+        @Main executor: Executor
+    ): DeviceStateManager.FoldStateListener {
+        val listener = DeviceStateManager.FoldStateListener(context)
+        deviceStateManager.registerCallback(executor, listener)
+
+        return listener
+    }
 
     @Provides
     @Singleton
-    fun provideUnfoldTransitionProgressProvider(
-        context: Context,
+    fun providesFoldStateLoggingProvider(
         config: UnfoldTransitionConfig,
-        screenStatusProvider: Lazy<LifecycleScreenStatusProvider>,
-        deviceStateManager: DeviceStateManager,
-        sensorManager: SensorManager,
-        @Main executor: Executor,
-        @Main handler: Handler
-    ) =
-        if (config.isEnabled) {
-            Optional.of(
-                createUnfoldTransitionProgressProvider(
-                    context,
-                    config,
-                    screenStatusProvider.get(),
-                    deviceStateManager,
-                    sensorManager,
-                    handler,
-                    executor
-                )
-            )
+        foldStateProvider: Lazy<FoldStateProvider>
+    ): Optional<FoldStateLoggingProvider> =
+        if (config.isHingeAngleEnabled) {
+            Optional.of(FoldStateLoggingProviderImpl(foldStateProvider.get(), SystemClockImpl()))
         } else {
             Optional.empty()
         }
 
     @Provides
     @Singleton
-    fun provideUnfoldTransitionConfig(context: Context): UnfoldTransitionConfig =
-        createConfig(context)
+    fun providesFoldStateLogger(
+        optionalFoldStateLoggingProvider: Optional<FoldStateLoggingProvider>
+    ): Optional<FoldStateLogger> =
+        optionalFoldStateLoggingProvider.map { FoldStateLoggingProvider ->
+            FoldStateLogger(FoldStateLoggingProvider)
+        }
 
     @Provides
     @Singleton
     fun provideNaturalRotationProgressProvider(
         context: Context,
-        windowManager: IWindowManager,
+        rotationChangeProvider: RotationChangeProvider,
         unfoldTransitionProgressProvider: Optional<UnfoldTransitionProgressProvider>
-    ) =
-        unfoldTransitionProgressProvider.map {
-            provider -> NaturalRotationUnfoldProgressProvider(
-                context,
-                windowManager,
-                provider
-            )
+    ): Optional<NaturalRotationUnfoldProgressProvider> =
+        unfoldTransitionProgressProvider.map { provider ->
+            NaturalRotationUnfoldProgressProvider(context, rotationChangeProvider, provider)
+        }
+
+    @Provides
+    @Singleton
+    @Named(UNFOLD_ONLY_PROVIDER)
+    fun provideUnfoldOnlyProvider(
+        foldProvider: FoldProvider,
+        @Main executor: Executor,
+        sourceProvider: Optional<UnfoldTransitionProgressProvider>
+    ): Optional<UnfoldTransitionProgressProvider> =
+        sourceProvider.map { provider ->
+            UnfoldOnlyProgressProvider(foldProvider, executor, provider)
         }
 
     @Provides
@@ -90,22 +111,44 @@ class UnfoldTransitionModule {
     @Singleton
     fun provideStatusBarScopedTransitionProvider(
         source: Optional<NaturalRotationUnfoldProgressProvider>
-    ) =
-        source.map {
-            provider -> ScopedUnfoldTransitionProgressProvider(provider)
-        }
+    ): Optional<ScopedUnfoldTransitionProgressProvider> =
+        source.map { provider -> ScopedUnfoldTransitionProgressProvider(provider) }
 
     @Provides
     @Singleton
     fun provideShellProgressProvider(
         config: UnfoldTransitionConfig,
-        provider: Optional<UnfoldTransitionProgressProvider>
-    ): ShellUnfoldProgressProvider =
-        if (config.isEnabled && provider.isPresent()) {
-            UnfoldProgressProvider(provider.get())
-        } else {
-            ShellUnfoldProgressProvider.NO_PROVIDER
-        }
+        foldProvider: FoldProvider,
+        provider: Provider<Optional<UnfoldTransitionProgressProvider>>,
+        @Named(UNFOLD_ONLY_PROVIDER)
+        unfoldOnlyProvider: Provider<Optional<UnfoldTransitionProgressProvider>>
+    ): ShellUnfoldProgressProvider {
+        val resultingProvider =
+            if (config.isEnabled) {
+                // Return unfold only provider to the shell if we don't want to animate tasks during
+                // folding. Shell provider listeners are responsible for animating task bounds.
+                if (ENABLE_FOLD_TASK_ANIMATIONS) {
+                    provider
+                } else {
+                    unfoldOnlyProvider
+                }
+            } else {
+                null
+            }
+
+        return resultingProvider?.get()?.orElse(null)?.let {
+            unfoldProgressProvider -> UnfoldProgressProvider(unfoldProgressProvider, foldProvider)
+        } ?: ShellUnfoldProgressProvider.NO_PROVIDER
+    }
+
+    @Provides
+    fun screenStatusProvider(impl: LifecycleScreenStatusProvider): ScreenStatusProvider = impl
 }
 
 const val UNFOLD_STATUS_BAR = "unfold_status_bar"
+const val UNFOLD_ONLY_PROVIDER = "unfold_only_provider"
+
+// TODO: b/265764985 - tracking bug to clean-up the flag
+// FeatureFlags are not accessible here because it's a global submodule (see GlobalModule.java)
+private val ENABLE_FOLD_TASK_ANIMATIONS =
+    SystemProperties.getBoolean("persist.unfold.enable_fold_tasks_animation", false)

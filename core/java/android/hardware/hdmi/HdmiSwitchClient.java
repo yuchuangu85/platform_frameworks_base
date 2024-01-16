@@ -85,7 +85,6 @@ public class HdmiSwitchClient extends HdmiClient {
      * @see {@link android.media.tv.TvInputHardwareInfo#getHdmiPortId()}
      *     to get portId of a specific TV Input.
      * @param listener listener to get the result with
-     *
      * @hide
      */
     @SystemApi
@@ -104,8 +103,10 @@ public class HdmiSwitchClient extends HdmiClient {
      *
      * @param logicalAddress logical address of the device to select
      * @param listener       listener to get the result with
+     * @deprecated Please use {@link HdmiClient#selectDevice} instead.
      * @hide
      */
+    @Deprecated
     public void selectDevice(
             int logicalAddress,
             @NonNull @CallbackExecutor Executor executor,
@@ -165,7 +166,9 @@ public class HdmiSwitchClient extends HdmiClient {
      *     there is none.
      *
      * @hide
+     * @deprecated Please use {@link HdmiControlManager#getConnectedDevices()} instead.
      */
+    @Deprecated
     public List<HdmiDeviceInfo> getDeviceList() {
         try {
             return mService.getDeviceList();
@@ -181,7 +184,10 @@ public class HdmiSwitchClient extends HdmiClient {
      * <p>This returns an empty list when the current device does not have HDMI input.
      *
      * @return a list of {@link HdmiPortInfo}
+     *
+     * @deprecated Please use {@link HdmiControlManager#getPortInfo()} instead.
      */
+    @Deprecated
     @NonNull
     public List<HdmiPortInfo> getPortInfo() {
         try {

@@ -22,12 +22,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.Dialog;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.drawable.Drawable;
@@ -37,6 +36,7 @@ import android.widget.ImageView;
 import androidx.fragment.app.FragmentActivity;
 
 import com.android.settingslib.R;
+import com.android.settingslib.RestrictedLockUtils;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -62,7 +62,7 @@ public class EditUserInfoControllerTest {
     @Mock
     private ActivityStarter mActivityStarter;
 
-    private boolean mCanChangePhoto;
+    private boolean mPhotoRestrictedByBase;
     private Activity mActivity;
     private TestEditUserInfoController mController;
 
@@ -85,8 +85,13 @@ public class EditUserInfoControllerTest {
         }
 
         @Override
-        boolean canChangePhoto(Context context) {
-            return mCanChangePhoto;
+        RestrictedLockUtils.EnforcedAdmin getChangePhotoAdminRestriction(Context context) {
+            return null;
+        }
+
+        @Override
+        boolean isChangePhotoRestrictedByBase(Context context) {
+            return mPhotoRestrictedByBase;
         }
     }
 
@@ -96,13 +101,13 @@ public class EditUserInfoControllerTest {
         mActivity = spy(ActivityController.of(new FragmentActivity()).get());
         mActivity.setTheme(R.style.Theme_AppCompat_DayNight);
         mController = new TestEditUserInfoController();
-        mCanChangePhoto = true;
+        mPhotoRestrictedByBase = false;
     }
 
     @Test
     public void photoControllerOnActivityResult_whenWaiting_isCalled() {
         mController.createDialog(mActivity, mActivityStarter, mCurrentIcon, "test user",
-                "title", null, null);
+                null, null);
         mController.startingActivityForResult();
         Intent resultData = new Intent();
         mController.onActivityResult(0, 0, resultData);
@@ -120,9 +125,7 @@ public class EditUserInfoControllerTest {
                 () -> String.valueOf('A')).limit(200).collect(Collectors.joining());
 
         final AlertDialog dialog = (AlertDialog) mController.createDialog(mActivity,
-                mActivityStarter, mCurrentIcon,
-                "test user", "title", null,
-                null);
+                mActivityStarter, mCurrentIcon, "test user", null, null);
         dialog.show();
         final EditText userNameEditText = dialog.findViewById(R.id.user_name);
         userNameEditText.setText(longName);
@@ -137,11 +140,11 @@ public class EditUserInfoControllerTest {
 
         AlertDialog dialog = (AlertDialog) mController.createDialog(
                 mActivity, mActivityStarter, mCurrentIcon, "test",
-                "title", successCallback, cancelCallback);
+                successCallback, cancelCallback);
         dialog.show();
         dialog.cancel();
 
-        verifyZeroInteractions(successCallback);
+        verifyNoInteractions(successCallback);
         verify(cancelCallback, times(1))
                 .run();
     }
@@ -153,11 +156,11 @@ public class EditUserInfoControllerTest {
 
         AlertDialog dialog = (AlertDialog) mController.createDialog(
                 mActivity, mActivityStarter, mCurrentIcon, "test",
-                "title", successCallback, cancelCallback);
+                successCallback, cancelCallback);
         dialog.show();
-        dialog.getButton(Dialog.BUTTON_NEGATIVE).performClick();
+        dialog.findViewById(R.id.button_back).performClick();
 
-        verifyZeroInteractions(successCallback);
+        verifyNoInteractions(successCallback);
         verify(cancelCallback, times(1))
                 .run();
     }
@@ -170,15 +173,15 @@ public class EditUserInfoControllerTest {
         Drawable oldUserIcon = mCurrentIcon;
         AlertDialog dialog = (AlertDialog) mController.createDialog(
                 mActivity, mActivityStarter, oldUserIcon, "test",
-                "title", successCallback, cancelCallback);
+                successCallback, cancelCallback);
         // No change to the photo.
         when(mController.getPhotoController().getNewUserPhotoDrawable()).thenReturn(null);
         dialog.show();
-        dialog.getButton(Dialog.BUTTON_POSITIVE).performClick();
+        dialog.findViewById(R.id.button_ok).performClick();
 
         verify(successCallback, times(1))
                 .accept("test", oldUserIcon);
-        verifyZeroInteractions(cancelCallback);
+        verifyNoInteractions(cancelCallback);
     }
 
     @Test
@@ -188,15 +191,15 @@ public class EditUserInfoControllerTest {
 
         AlertDialog dialog = (AlertDialog) mController.createDialog(
                 mActivity, mActivityStarter, null, "test",
-                "title", successCallback, cancelCallback);
+                successCallback, cancelCallback);
         // No change to the photo.
         when(mController.getPhotoController().getNewUserPhotoDrawable()).thenReturn(null);
         dialog.show();
-        dialog.getButton(Dialog.BUTTON_POSITIVE).performClick();
+        dialog.findViewById(R.id.button_ok).performClick();
 
         verify(successCallback, times(1))
                 .accept("test", null);
-        verifyZeroInteractions(cancelCallback);
+        verifyNoInteractions(cancelCallback);
     }
 
     @Test
@@ -206,18 +209,18 @@ public class EditUserInfoControllerTest {
 
         AlertDialog dialog = (AlertDialog) mController.createDialog(
                 mActivity, mActivityStarter, mCurrentIcon, "test",
-                "title", successCallback, cancelCallback);
+                successCallback, cancelCallback);
         // No change to the photo.
         when(mController.getPhotoController().getNewUserPhotoDrawable()).thenReturn(null);
         dialog.show();
         String expectedNewName = "new test user";
         EditText editText = (EditText) dialog.findViewById(R.id.user_name);
         editText.setText(expectedNewName);
-        dialog.getButton(Dialog.BUTTON_POSITIVE).performClick();
+        dialog.findViewById(R.id.button_ok).performClick();
 
         verify(successCallback, times(1))
                 .accept(expectedNewName, mCurrentIcon);
-        verifyZeroInteractions(cancelCallback);
+        verifyNoInteractions(cancelCallback);
     }
 
     @Test
@@ -227,16 +230,16 @@ public class EditUserInfoControllerTest {
 
         AlertDialog dialog = (AlertDialog) mController.createDialog(
                 mActivity, mActivityStarter, mCurrentIcon, "test",
-                "title", successCallback, cancelCallback);
+                successCallback, cancelCallback);
         // A different drawable.
         Drawable newPhoto = mock(Drawable.class);
         when(mController.getPhotoController().getNewUserPhotoDrawable()).thenReturn(newPhoto);
         dialog.show();
-        dialog.getButton(Dialog.BUTTON_POSITIVE).performClick();
+        dialog.findViewById(R.id.button_ok).performClick();
 
         verify(successCallback, times(1))
                 .accept("test", newPhoto);
-        verifyZeroInteractions(cancelCallback);
+        verifyNoInteractions(cancelCallback);
     }
 
     @Test
@@ -246,24 +249,24 @@ public class EditUserInfoControllerTest {
 
         AlertDialog dialog = (AlertDialog) mController.createDialog(
                 mActivity, mActivityStarter, null, "test",
-                "title", successCallback, cancelCallback);
+                 successCallback, cancelCallback);
         // A different drawable.
         Drawable newPhoto = mock(Drawable.class);
         when(mController.getPhotoController().getNewUserPhotoDrawable()).thenReturn(newPhoto);
         dialog.show();
-        dialog.getButton(Dialog.BUTTON_POSITIVE).performClick();
+        dialog.findViewById(R.id.button_ok).performClick();
 
         verify(successCallback, times(1))
                 .accept("test", newPhoto);
-        verifyZeroInteractions(cancelCallback);
+        verifyNoInteractions(cancelCallback);
     }
 
     @Test
     public void createDialog_canNotChangePhoto_nullPhotoController() {
-        mCanChangePhoto = false;
+        mPhotoRestrictedByBase = true;
 
         mController.createDialog(mActivity, mActivityStarter, mCurrentIcon,
-                "test", "title", null, null);
+                "test", null, null);
 
         assertThat(mController.mPhotoController).isNull();
     }

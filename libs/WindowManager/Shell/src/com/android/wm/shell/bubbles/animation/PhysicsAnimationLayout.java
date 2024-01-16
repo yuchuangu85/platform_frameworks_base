@@ -327,6 +327,12 @@ public class PhysicsAnimationLayout extends FrameLayout {
         addViewInternal(child, index, params, false /* isReorder */);
     }
 
+    /** Removes the child view immediately. */
+    public void removeViewNoAnimation(View view) {
+        super.removeView(view);
+        view.setTag(R.id.physics_animator_tag, null);
+    }
+
     @Override
     public void removeView(View view) {
         if (mController != null) {
@@ -364,6 +370,11 @@ public class PhysicsAnimationLayout extends FrameLayout {
         final int oldIndex = indexOfChild(view);
 
         super.removeView(view);
+        if (view.getParent() != null) {
+            // View still has a parent. This could have been added as a transient view.
+            // Remove it from transient views.
+            super.removeTransientView(view);
+        }
         addViewInternal(view, index, view.getLayoutParams(), true /* isReorder */);
 
         if (mController != null) {
@@ -518,6 +529,7 @@ public class PhysicsAnimationLayout extends FrameLayout {
      */
     @Nullable private SpringAnimation getSpringAnimationFromView(
             DynamicAnimation.ViewProperty property, View view) {
+        if (view == null) return null;
         return (SpringAnimation) view.getTag(getTagIdForProperty(property));
     }
 
@@ -526,11 +538,13 @@ public class PhysicsAnimationLayout extends FrameLayout {
      * system.
      */
     @Nullable private ViewPropertyAnimator getViewPropertyAnimatorFromView(View view) {
+        if (view == null) return null;
         return (ViewPropertyAnimator) view.getTag(R.id.reorder_animator_tag);
     }
 
     /** Retrieves the target animator from the view via the view tag system. */
     @Nullable private ObjectAnimator getTargetAnimatorFromView(View view) {
+        if (view == null) return null;
         return (ObjectAnimator) view.getTag(R.id.target_animator_tag);
     }
 

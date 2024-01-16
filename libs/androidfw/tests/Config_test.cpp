@@ -75,6 +75,9 @@ TEST(ConfigTest, shouldSelectBestDensity) {
   configs.add(buildDensityConfig(int(ResTable_config::DENSITY_HIGH) + 20));
   ASSERT_EQ(expectedBest, selectBest(deviceConfig, configs));
 
+  configs.add(buildDensityConfig(int(ResTable_config::DENSITY_XHIGH) - 1));
+  ASSERT_EQ(expectedBest, selectBest(deviceConfig, configs));
+
   expectedBest = buildDensityConfig(ResTable_config::DENSITY_XHIGH);
   configs.add(expectedBest);
   ASSERT_EQ(expectedBest, selectBest(deviceConfig, configs));
@@ -200,6 +203,20 @@ TEST(ConfigTest, ScreenIsHdr) {
   hdrConfig.colorMode = ResTable_config::HDR_YES;
 
   EXPECT_EQ(defaultConfig.diff(hdrConfig), ResTable_config::CONFIG_COLOR_MODE);
+}
+
+TEST(ConfigTest, GrammaticalGender) {
+  ResTable_config defaultConfig = {};
+  ResTable_config masculine = {};
+  masculine.grammaticalInflection = ResTable_config::GRAMMATICAL_GENDER_MASCULINE;
+
+  EXPECT_EQ(defaultConfig.diff(masculine), ResTable_config::CONFIG_GRAMMATICAL_GENDER);
+
+  ResTable_config feminine = {};
+  feminine.grammaticalInflection = ResTable_config::GRAMMATICAL_GENDER_FEMININE;
+
+  EXPECT_EQ(defaultConfig.diff(feminine), ResTable_config::CONFIG_GRAMMATICAL_GENDER);
+  EXPECT_EQ(masculine.diff(feminine), ResTable_config::CONFIG_GRAMMATICAL_GENDER);
 }
 
 }  // namespace android.

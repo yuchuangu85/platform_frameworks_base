@@ -24,6 +24,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.graphics.drawable.AnimatedVectorDrawable;
 import android.graphics.drawable.Drawable;
 import android.service.quicksettings.Tile;
 import android.testing.AndroidTestingRunner;
@@ -39,6 +40,8 @@ import com.android.systemui.plugins.qs.QSTile.State;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.InOrder;
+import org.mockito.Mockito;
 
 @RunWith(AndroidTestingRunner.class)
 @UiThreadTest
@@ -97,7 +100,7 @@ public class QSIconViewImplTest extends SysuiTestCase {
         ImageView iv = mock(ImageView.class);
         State s = new State();
         s.state = Tile.STATE_ACTIVE;
-        int desiredColor = mIconView.getColor(s.state);
+        int desiredColor = mIconView.getColor(s);
         when(iv.isShown()).thenReturn(true);
 
         mIconView.setIcon(iv, s, true);
@@ -109,7 +112,7 @@ public class QSIconViewImplTest extends SysuiTestCase {
         ImageView iv = mock(ImageView.class);
         State s = new State();
         s.state = Tile.STATE_ACTIVE;
-        int desiredColor = mIconView.getColor(s.state);
+        int desiredColor = mIconView.getColor(s);
         Icon i = mock(Icon.class);
         s.icon = i;
         when(i.toString()).thenReturn("MOCK ICON");
@@ -122,6 +125,56 @@ public class QSIconViewImplTest extends SysuiTestCase {
     @Test
     public void testIconNotSet_toString() {
         assertFalse(mIconView.toString().contains("lastIcon"));
+    }
+
+    @Test
+    public void testIconColorDisabledByPolicy_sameAsUnavailable() {
+        State s1 = new State();
+        s1.state = Tile.STATE_INACTIVE;
+        s1.disabledByPolicy = true;
+
+        State s2 = new State();
+        s2.state = Tile.STATE_UNAVAILABLE;
+
+        assertEquals(mIconView.getColor(s1), mIconView.getColor(s2));
+    }
+
+    @Test
+    public void testIconStartedAndStoppedWhenAllowAnimationsFalse() {
+        ImageView iv = new ImageView(mContext);
+        AnimatedVectorDrawable d = mock(AnimatedVectorDrawable.class);
+        State s = new State();
+        s.icon = mock(Icon.class);
+        when(s.icon.getDrawable(any())).thenReturn(d);
+        when(s.icon.getInvisibleDrawable(any())).thenReturn(d);
+
+        mIconView.updateIcon(iv, s, false);
+
+        InOrder inOrder = Mockito.inOrder(d);
+        inOrder.verify(d).start();
+        inOrder.verify(d).stop();
+    }
+
+    @Test
+    public void testAnimatorCallbackRemovedOnOldDrawable() {
+        ImageView iv = new ImageView(mContext);
+        AnimatedVectorDrawable d1 = mock(AnimatedVectorDrawable.class);
+        when(d1.getConstantState()).thenReturn(fakeConstantState(d1));
+        AnimatedVectorDrawable d2 = mock(AnimatedVectorDrawable.class);
+        when(d2.getConstantState()).thenReturn(fakeConstantState(d2));
+        State s = new State();
+        s.isTransient = true;
+
+        // When set Animatable2 d1
+        s.icon = new QSTileImpl.DrawableIcon(d1);
+        mIconView.updateIcon(iv, s, true);
+
+        // And then set Animatable2 d2
+        s.icon = new QSTileImpl.DrawableIcon(d2);
+        mIconView.updateIcon(iv, s, true);
+
+        // Then d1 has its callback cleared
+        verify(d1).clearAnimationCallbacks();
     }
 
     private static Drawable.ConstantState fakeConstantState(Drawable otherDrawable) {

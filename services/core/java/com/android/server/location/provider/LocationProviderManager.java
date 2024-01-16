@@ -16,7 +16,10 @@
 
 package com.android.server.location.provider;
 
+import static android.app.AppOpsManager.OP_MONITOR_HIGH_POWER_LOCATION;
+import static android.app.AppOpsManager.OP_MONITOR_LOCATION;
 import static android.app.compat.CompatChanges.isChangeEnabled;
+import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.location.LocationManager.DELIVER_HISTORICAL_LOCATIONS;
 import static android.location.LocationManager.GPS_PROVIDER;
 import static android.location.LocationManager.KEY_FLUSH_COMPLETE;
@@ -33,6 +36,7 @@ import static android.os.PowerManager.LOCATION_MODE_GPS_DISABLED_WHEN_SCREEN_OFF
 import static android.os.PowerManager.LOCATION_MODE_THROTTLE_REQUESTS_WHEN_SCREEN_OFF;
 import static android.os.UserHandle.USER_CURRENT;
 
+import static com.android.internal.util.ConcurrentUtils.DIRECT_EXECUTOR;
 import static com.android.server.location.LocationManagerService.D;
 import static com.android.server.location.LocationManagerService.TAG;
 import static com.android.server.location.LocationPermissions.PERMISSION_COARSE;
@@ -45,6 +49,7 @@ import static java.lang.Math.min;
 
 import android.annotation.IntDef;
 import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.app.AlarmManager.OnAlarmListener;
 import android.app.BroadcastOptions;
 import android.app.PendingIntent;
@@ -64,7 +69,6 @@ import android.location.provider.ProviderProperties;
 import android.location.provider.ProviderRequest;
 import android.location.util.identity.CallerIdentity;
 import android.os.Binder;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
 import android.os.IBinder;
@@ -99,12 +103,12 @@ import com.android.server.location.injector.AppForegroundHelper;
 import com.android.server.location.injector.AppForegroundHelper.AppForegroundListener;
 import com.android.server.location.injector.AppOpsHelper;
 import com.android.server.location.injector.Injector;
-import com.android.server.location.injector.LocationAttributionHelper;
 import com.android.server.location.injector.LocationPermissionsHelper;
 import com.android.server.location.injector.LocationPermissionsHelper.LocationPermissionsListener;
 import com.android.server.location.injector.LocationPowerSaveModeHelper;
 import com.android.server.location.injector.LocationPowerSaveModeHelper.LocationPowerSaveModeChangedListener;
 import com.android.server.location.injector.LocationUsageLogger;
+import com.android.server.location.injector.PackageResetHelper;
 import com.android.server.location.injector.ScreenInteractiveHelper;
 import com.android.server.location.injector.ScreenInteractiveHelper.ScreenInteractiveChangedListener;
 import com.android.server.location.injector.SettingsHelper;
@@ -113,7 +117,7 @@ import com.android.server.location.injector.SettingsHelper.UserSettingChangedLis
 import com.android.server.location.injector.UserInfoHelper;
 import com.android.server.location.injector.UserInfoHelper.UserListener;
 import com.android.server.location.listeners.ListenerMultiplexer;
-import com.android.server.location.listeners.RemoteListenerRegistration;
+import com.android.server.location.listeners.RemovableListenerRegistration;
 import com.android.server.location.settings.LocationSettings;
 import com.android.server.location.settings.LocationUserSettings;
 
@@ -122,8 +126,11 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.Executor;
 import java.util.function.Predicate;
 
 /**
@@ -192,25 +199,61 @@ public class LocationProviderManager extends
 
         private final ILocationListener mListener;
 
-        protected LocationListenerTransport(ILocationListener listener) {
+        LocationListenerTransport(ILocationListener listener) {
             mListener = Objects.requireNonNull(listener);
         }
 
         @Override
         public void deliverOnLocationChanged(LocationResult locationResult,
                 @Nullable IRemoteCallback onCompleteCallback) throws RemoteException {
-            mListener.onLocationChanged(locationResult.asList(), onCompleteCallback);
+            try {
+                mListener.onLocationChanged(locationResult.asList(), onCompleteCallback);
+            } catch (RuntimeException e) {
+                // the only way a runtime exception can be thrown here is if the client is in the
+                // system server process (so that the binder call is executed directly, rather than
+                // asynchronously in another process), and the client is using a direct executor (so
+                // any client exceptions bubble directly back to us). we move any exception onto
+                // another thread so that it can't cause further problems
+                RuntimeException wrapper = new RuntimeException(e);
+                FgThread.getExecutor().execute(() -> {
+                    throw wrapper;
+                });
+            }
         }
 
         @Override
         public void deliverOnFlushComplete(int requestCode) throws RemoteException {
-            mListener.onFlushComplete(requestCode);
+            try {
+                mListener.onFlushComplete(requestCode);
+            } catch (RuntimeException e) {
+                // the only way a runtime exception can be thrown here is if the client is in the
+                // system server process (so that the binder call is executed directly, rather than
+                // asynchronously in another process), and the client is using a direct executor (so
+                // any client exceptions bubble directly back to us). we move any exception onto
+                // another thread so that it can't cause further problems
+                RuntimeException wrapper = new RuntimeException(e);
+                FgThread.getExecutor().execute(() -> {
+                    throw wrapper;
+                });
+            }
         }
 
         @Override
         public void deliverOnProviderEnabledChanged(String provider, boolean enabled)
                 throws RemoteException {
-            mListener.onProviderEnabledChanged(provider, enabled);
+            try {
+                mListener.onProviderEnabledChanged(provider, enabled);
+            } catch (RuntimeException e) {
+                // the only way a runtime exception can be thrown here is if the client is in the
+                // system server process (so that the binder call is executed directly, rather than
+                // asynchronously in another process), and the client is using a direct executor (so
+                // any client exceptions bubble directly back to us). we move any exception onto
+                // another thread so that it can't cause further problems
+                RuntimeException wrapper = new RuntimeException(e);
+                FgThread.getExecutor().execute(() -> {
+                    throw wrapper;
+                });
+            }
         }
     }
 
@@ -243,44 +286,26 @@ public class LocationProviderManager extends
                 intent.putExtra(KEY_LOCATIONS, locationResult.asList().toArray(new Location[0]));
             }
 
-            PendingIntent.OnFinished onFinished = null;
-
-            // send() SHOULD only run the completion callback if it completes successfully. however,
-            // b/201299281 (which could not be fixed in the S timeframe) means that it's possible
-            // for send() to throw an exception AND run the completion callback. if this happens, we
-            // would over-release the wakelock... we take matters into our own hands to ensure that
-            // the completion callback can only be run if send() completes successfully. this means
-            // the completion callback may be run inline - but as we've never specified what thread
-            // the callback is run on, this is fine.
-            GatedCallback gatedCallback;
+            Runnable callback = null;
             if (onCompleteCallback != null) {
-                gatedCallback = new GatedCallback(() -> {
+                callback = () -> {
                     try {
                         onCompleteCallback.sendResult(null);
                     } catch (RemoteException e) {
                         throw e.rethrowFromSystemServer();
                     }
-                });
-                onFinished = (pI, i, rC, rD, rE) -> gatedCallback.run();
-            } else {
-                gatedCallback = new GatedCallback(null);
+                };
             }
 
-            mPendingIntent.send(
-                    mContext,
-                    0,
-                    intent,
-                    onFinished,
-                    null,
-                    null,
+            PendingIntentSender.send(mPendingIntent, mContext, intent, callback,
                     options.toBundle());
-            gatedCallback.allow();
         }
 
         @Override
         public void deliverOnFlushComplete(int requestCode) throws PendingIntent.CanceledException {
             BroadcastOptions options = BroadcastOptions.makeBasic();
             options.setDontSendToRestrictedApps(true);
+            options.setPendingIntentBackgroundActivityLaunchAllowed(false);
 
             mPendingIntent.send(mContext, 0, new Intent().putExtra(KEY_FLUSH_COMPLETE, requestCode),
                     null, null, null, options.toBundle());
@@ -301,7 +326,7 @@ public class LocationProviderManager extends
 
         private final ILocationCallback mCallback;
 
-        protected GetCurrentLocationTransport(ILocationCallback callback) {
+        GetCurrentLocationTransport(ILocationCallback callback) {
             mCallback = Objects.requireNonNull(callback);
         }
 
@@ -311,10 +336,23 @@ public class LocationProviderManager extends
                 throws RemoteException {
             // ILocationCallback doesn't currently support completion callbacks
             Preconditions.checkState(onCompleteCallback == null);
-            if (locationResult != null) {
-                mCallback.onLocation(locationResult.getLastLocation());
-            } else {
-                mCallback.onLocation(null);
+
+            try {
+                if (locationResult != null) {
+                    mCallback.onLocation(locationResult.getLastLocation());
+                } else {
+                    mCallback.onLocation(null);
+                }
+            } catch (RuntimeException e) {
+                // the only way a runtime exception can be thrown here is if the client is in the
+                // system server process (so that the binder call is executed directly, rather than
+                // asynchronously in another process), and the client is using a direct executor (so
+                // any client exceptions bubble directly back to us). we move any exception onto
+                // another thread so that it can't cause further problems
+                RuntimeException wrapper = new RuntimeException(e);
+                FgThread.getExecutor().execute(() -> {
+                    throw wrapper;
+                });
             }
         }
 
@@ -322,44 +360,60 @@ public class LocationProviderManager extends
         public void deliverOnFlushComplete(int requestCode) {}
     }
 
-    protected abstract class Registration extends RemoteListenerRegistration<LocationRequest,
-            LocationTransport> {
+    protected abstract class Registration extends RemovableListenerRegistration<Object,
+                LocationTransport> {
 
+        private final LocationRequest mBaseRequest;
+        private final CallerIdentity mIdentity;
         private final @PermissionLevel int mPermissionLevel;
 
         // we cache these values because checking/calculating on the fly is more expensive
+        @GuardedBy("mMultiplexerLock")
         private boolean mPermitted;
+        @GuardedBy("mMultiplexerLock")
         private boolean mForeground;
+        @GuardedBy("mMultiplexerLock")
         private LocationRequest mProviderLocationRequest;
+        @GuardedBy("mMultiplexerLock")
         private boolean mIsUsingHighPower;
 
-        private @Nullable Location mLastLocation = null;
+        @Nullable private Location mLastLocation = null;
 
-        protected Registration(LocationRequest request, CallerIdentity identity,
+        protected Registration(LocationRequest request, CallerIdentity identity, Executor executor,
                 LocationTransport transport, @PermissionLevel int permissionLevel) {
-            super(Objects.requireNonNull(request), identity, transport);
+            super(executor, transport);
 
             Preconditions.checkArgument(identity.getListenerId() != null);
             Preconditions.checkArgument(permissionLevel > PERMISSION_NONE);
             Preconditions.checkArgument(!request.getWorkSource().isEmpty());
 
+            mBaseRequest = Objects.requireNonNull(request);
+            mIdentity = Objects.requireNonNull(identity);
             mPermissionLevel = permissionLevel;
             mProviderLocationRequest = request;
         }
 
-        @GuardedBy("mLock")
-        @Override
-        protected final void onRemovableListenerRegister() {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
+        public final CallerIdentity getIdentity() {
+            return mIdentity;
+        }
+
+        public final LocationRequest getRequest() {
+            synchronized (mMultiplexerLock) {
+                return mProviderLocationRequest;
             }
+        }
+
+        @GuardedBy("mMultiplexerLock")
+        @Override
+        protected void onRegister() {
+            super.onRegister();
 
             if (D) {
                 Log.d(TAG, mName + " provider added registration from " + getIdentity() + " -> "
                         + getRequest());
             }
 
-            EVENT_LOG.logProviderClientRegistered(mName, getIdentity(), super.getRequest());
+            EVENT_LOG.logProviderClientRegistered(mName, getIdentity(), mBaseRequest);
 
             // initialization order is important as there are ordering dependencies
             mPermitted = mLocationPermissionsHelper.hasLocationPermissions(mPermissionLevel,
@@ -368,110 +422,72 @@ public class LocationProviderManager extends
             mProviderLocationRequest = calculateProviderLocationRequest();
             mIsUsingHighPower = isUsingHighPower();
 
-            onProviderListenerRegister();
-
             if (mForeground) {
                 EVENT_LOG.logProviderClientForeground(mName, getIdentity());
             }
         }
 
-        @GuardedBy("mLock")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected final void onRemovableListenerUnregister() {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
-            }
-
-            onProviderListenerUnregister();
-
+        protected void onUnregister() {
             EVENT_LOG.logProviderClientUnregistered(mName, getIdentity());
 
             if (D) {
                 Log.d(TAG, mName + " provider removed registration from " + getIdentity());
             }
+
+            super.onUnregister();
         }
 
-        /**
-         * Subclasses may override this instead of {@link #onRemovableListenerRegister()}.
-         */
-        @GuardedBy("mLock")
-        protected void onProviderListenerRegister() {}
-
-        /**
-         * Subclasses may override this instead of {@link #onRemovableListenerUnregister()}.
-         */
-        @GuardedBy("mLock")
-        protected void onProviderListenerUnregister() {}
-
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected final void onActive() {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
-            }
-
+        protected void onActive() {
             EVENT_LOG.logProviderClientActive(mName, getIdentity());
 
             if (!getRequest().isHiddenFromAppOps()) {
-                mLocationAttributionHelper.reportLocationStart(getIdentity());
+                mAppOpsHelper.startOpNoThrow(OP_MONITOR_LOCATION, getIdentity());
             }
             onHighPowerUsageChanged();
-
-            onProviderListenerActive();
         }
 
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected final void onInactive() {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
-            }
-
+        protected void onInactive() {
             onHighPowerUsageChanged();
             if (!getRequest().isHiddenFromAppOps()) {
-                mLocationAttributionHelper.reportLocationStop(getIdentity());
+                mAppOpsHelper.finishOp(OP_MONITOR_LOCATION, getIdentity());
             }
-
-            onProviderListenerInactive();
 
             EVENT_LOG.logProviderClientInactive(mName, getIdentity());
         }
 
-        /**
-         * Subclasses may override this instead of {@link #onActive()}.
-         */
-        @GuardedBy("mLock")
-        protected void onProviderListenerActive() {}
-
-        /**
-         * Subclasses may override this instead of {@link #onInactive()} ()}.
-         */
-        @GuardedBy("mLock")
-        protected void onProviderListenerInactive() {}
-
-        @Override
-        public final LocationRequest getRequest() {
-            return mProviderLocationRequest;
-        }
-
-        @GuardedBy("mLock")
+        @GuardedBy("mMultiplexerLock")
         final void setLastDeliveredLocation(@Nullable Location location) {
             mLastLocation = location;
         }
 
-        @GuardedBy("mLock")
         public final Location getLastDeliveredLocation() {
-            return mLastLocation;
+            synchronized (mMultiplexerLock) {
+                return mLastLocation;
+            }
         }
 
         public @PermissionLevel int getPermissionLevel() {
-            return mPermissionLevel;
+            synchronized (mMultiplexerLock) {
+                return mPermissionLevel;
+            }
         }
 
         public final boolean isForeground() {
-            return mForeground;
+            synchronized (mMultiplexerLock) {
+                return mForeground;
+            }
         }
 
         public final boolean isPermitted() {
-            return mPermitted;
+            synchronized (mMultiplexerLock) {
+                return mPermitted;
+            }
         }
 
         public final void flush(int requestCode) {
@@ -487,13 +503,14 @@ public class LocationProviderManager extends
             return LocationProviderManager.this;
         }
 
-        @GuardedBy("mLock")
         final boolean onProviderPropertiesChanged() {
-            onHighPowerUsageChanged();
-            return false;
+            synchronized (mMultiplexerLock) {
+                onHighPowerUsageChanged();
+                return false;
+            }
         }
 
-        @GuardedBy("mLock")
+        @GuardedBy("mMultiplexerLock")
         private void onHighPowerUsageChanged() {
             boolean isUsingHighPower = isUsingHighPower();
             if (isUsingHighPower != mIsUsingHighPower) {
@@ -501,22 +518,15 @@ public class LocationProviderManager extends
 
                 if (!getRequest().isHiddenFromAppOps()) {
                     if (mIsUsingHighPower) {
-                        mLocationAttributionHelper.reportHighPowerLocationStart(
-                                getIdentity());
+                        mAppOpsHelper.startOpNoThrow(OP_MONITOR_HIGH_POWER_LOCATION, getIdentity());
                     } else {
-                        mLocationAttributionHelper.reportHighPowerLocationStop(
-                                getIdentity());
+                        mAppOpsHelper.finishOp(OP_MONITOR_HIGH_POWER_LOCATION, getIdentity());
                     }
                 }
             }
         }
 
-        @GuardedBy("mLock")
         private boolean isUsingHighPower() {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
-            }
-
             ProviderProperties properties = getProperties();
             if (properties == null) {
                 return false;
@@ -527,30 +537,28 @@ public class LocationProviderManager extends
                     && properties.getPowerUsage() == ProviderProperties.POWER_USAGE_HIGH;
         }
 
-        @GuardedBy("mLock")
         final boolean onLocationPermissionsChanged(@Nullable String packageName) {
-            if (packageName == null || getIdentity().getPackageName().equals(packageName)) {
-                return onLocationPermissionsChanged();
-            }
+            synchronized (mMultiplexerLock) {
+                if (packageName == null || getIdentity().getPackageName().equals(packageName)) {
+                    return onLocationPermissionsChanged();
+                }
 
-            return false;
+                return false;
+            }
         }
 
-        @GuardedBy("mLock")
         final boolean onLocationPermissionsChanged(int uid) {
-            if (getIdentity().getUid() == uid) {
-                return onLocationPermissionsChanged();
-            }
+            synchronized (mMultiplexerLock) {
+                if (getIdentity().getUid() == uid) {
+                    return onLocationPermissionsChanged();
+                }
 
-            return false;
+                return false;
+            }
         }
 
-        @GuardedBy("mLock")
+        @GuardedBy("mMultiplexerLock")
         private boolean onLocationPermissionsChanged() {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
-            }
-
             boolean permitted = mLocationPermissionsHelper.hasLocationPermissions(mPermissionLevel,
                     getIdentity());
             if (permitted != mPermitted) {
@@ -573,82 +581,73 @@ public class LocationProviderManager extends
             return false;
         }
 
-        @GuardedBy("mLock")
         final boolean onAdasGnssLocationEnabledChanged(int userId) {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
-            }
-
-            if (getIdentity().getUserId() == userId) {
-                return onProviderLocationRequestChanged();
-            }
-
-            return false;
-        }
-
-        @GuardedBy("mLock")
-        final boolean onForegroundChanged(int uid, boolean foreground) {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
-            }
-
-            if (getIdentity().getUid() == uid && foreground != mForeground) {
-                if (D) {
-                    Log.v(TAG, mName + " provider uid " + uid + " foreground = " + foreground);
+            synchronized (mMultiplexerLock) {
+                if (getIdentity().getUserId() == userId) {
+                    return onProviderLocationRequestChanged();
                 }
 
-                mForeground = foreground;
-
-                if (mForeground) {
-                    EVENT_LOG.logProviderClientForeground(mName, getIdentity());
-                } else {
-                    EVENT_LOG.logProviderClientBackground(mName, getIdentity());
-                }
-
-                // note that onProviderLocationRequestChanged() is always called
-                return onProviderLocationRequestChanged()
-                        || mLocationPowerSaveModeHelper.getLocationPowerSaveMode()
-                        == LOCATION_MODE_FOREGROUND_ONLY;
-            }
-
-            return false;
-        }
-
-        @GuardedBy("mLock")
-        final boolean onProviderLocationRequestChanged() {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
-            }
-
-            LocationRequest newRequest = calculateProviderLocationRequest();
-            if (mProviderLocationRequest.equals(newRequest)) {
                 return false;
             }
-
-            LocationRequest oldRequest = mProviderLocationRequest;
-            mProviderLocationRequest = newRequest;
-            onHighPowerUsageChanged();
-            updateService();
-
-            // if bypass state has changed then the active state may have changed
-            return oldRequest.isBypass() != newRequest.isBypass();
         }
 
+        final boolean onForegroundChanged(int uid, boolean foreground) {
+            synchronized (mMultiplexerLock) {
+                if (getIdentity().getUid() == uid && foreground != mForeground) {
+                    if (D) {
+                        Log.v(TAG, mName + " provider uid " + uid + " foreground = " + foreground);
+                    }
+
+                    mForeground = foreground;
+
+                    if (mForeground) {
+                        EVENT_LOG.logProviderClientForeground(mName, getIdentity());
+                    } else {
+                        EVENT_LOG.logProviderClientBackground(mName, getIdentity());
+                    }
+
+                    // note that onProviderLocationRequestChanged() is always called
+                    return onProviderLocationRequestChanged()
+                            || mLocationPowerSaveModeHelper.getLocationPowerSaveMode()
+                            == LOCATION_MODE_FOREGROUND_ONLY;
+                }
+
+                return false;
+            }
+        }
+
+        final boolean onProviderLocationRequestChanged() {
+            synchronized (mMultiplexerLock) {
+                LocationRequest newRequest = calculateProviderLocationRequest();
+                if (mProviderLocationRequest.equals(newRequest)) {
+                    return false;
+                }
+
+                LocationRequest oldRequest = mProviderLocationRequest;
+                mProviderLocationRequest = newRequest;
+                onHighPowerUsageChanged();
+                updateService();
+
+                // if bypass state has changed then the active state may have changed
+                return oldRequest.isBypass() != newRequest.isBypass();
+            }
+        }
+
+        @GuardedBy("mMultiplexerLock")
         private LocationRequest calculateProviderLocationRequest() {
-            LocationRequest baseRequest = super.getRequest();
-            LocationRequest.Builder builder = new LocationRequest.Builder(baseRequest);
+            LocationRequest.Builder builder = new LocationRequest.Builder(mBaseRequest);
 
             if (mPermissionLevel < PERMISSION_FINE) {
                 builder.setQuality(LocationRequest.QUALITY_LOW_POWER);
-                if (baseRequest.getIntervalMillis() < MIN_COARSE_INTERVAL_MS) {
+                if (mBaseRequest.getIntervalMillis() < MIN_COARSE_INTERVAL_MS) {
                     builder.setIntervalMillis(MIN_COARSE_INTERVAL_MS);
                 }
-                if (baseRequest.getMinUpdateIntervalMillis() < MIN_COARSE_INTERVAL_MS) {
+                if (mBaseRequest.getMinUpdateIntervalMillis() < MIN_COARSE_INTERVAL_MS) {
                     builder.setMinUpdateIntervalMillis(MIN_COARSE_INTERVAL_MS);
                 }
             }
 
-            boolean locationSettingsIgnored = baseRequest.isLocationSettingsIgnored();
+            boolean locationSettingsIgnored = mBaseRequest.isLocationSettingsIgnored();
             if (locationSettingsIgnored) {
                 // if we are not currently allowed use location settings ignored, disable it
                 if (!mSettingsHelper.getIgnoreSettingsAllowlist().contains(
@@ -660,14 +659,19 @@ public class LocationProviderManager extends
                 builder.setLocationSettingsIgnored(locationSettingsIgnored);
             }
 
-            boolean adasGnssBypass = baseRequest.isAdasGnssBypass();
+            boolean adasGnssBypass = mBaseRequest.isAdasGnssBypass();
             if (adasGnssBypass) {
                 // if we are not currently allowed use adas gnss bypass, disable it
                 if (!GPS_PROVIDER.equals(mName)) {
                     Log.e(TAG, "adas gnss bypass request received in non-gps provider");
                     adasGnssBypass = false;
+                } else if (!mUserHelper.isCurrentUserId(getIdentity().getUserId())) {
+                    adasGnssBypass = false;
                 } else if (!mLocationSettings.getUserSettings(
                         getIdentity().getUserId()).isAdasGnssLocationEnabled()) {
+                    adasGnssBypass = false;
+                } else if (!mSettingsHelper.getAdasAllowlist().contains(
+                        getIdentity().getPackageName(), getIdentity().getAttributionTag())) {
                     adasGnssBypass = false;
                 }
 
@@ -677,7 +681,7 @@ public class LocationProviderManager extends
             if (!locationSettingsIgnored && !isThrottlingExempt()) {
                 // throttle in the background
                 if (!mForeground) {
-                    builder.setIntervalMillis(max(baseRequest.getIntervalMillis(),
+                    builder.setIntervalMillis(max(mBaseRequest.getIntervalMillis(),
                             mSettingsHelper.getBackgroundThrottleIntervalMs()));
                 }
             }
@@ -694,8 +698,7 @@ public class LocationProviderManager extends
             return mLocationManagerInternal.isProvider(null, getIdentity());
         }
 
-        @GuardedBy("mLock")
-        abstract @Nullable ListenerOperation<LocationTransport> acceptLocationChange(
+        @Nullable abstract ListenerOperation<LocationTransport> acceptLocationChange(
                 LocationResult fineLocationResult);
 
         @Override
@@ -736,13 +739,19 @@ public class LocationProviderManager extends
         final ExternalWakeLockReleaser mWakeLockReleaser;
 
         private volatile ProviderTransport mProviderTransport;
+
+        @GuardedBy("mMultiplexerLock")
         private int mNumLocationsDelivered = 0;
+        @GuardedBy("mMultiplexerLock")
         private long mExpirationRealtimeMs = Long.MAX_VALUE;
 
         protected <TTransport extends LocationTransport & ProviderTransport> LocationRegistration(
-                LocationRequest request, CallerIdentity identity, TTransport transport,
+                LocationRequest request,
+                CallerIdentity identity,
+                Executor executor,
+                TTransport transport,
                 @PermissionLevel int permissionLevel) {
-            super(request, identity, transport, permissionLevel);
+            super(request, identity, executor, transport, permissionLevel);
             mProviderTransport = transport;
             mWakeLock = Objects.requireNonNull(mContext.getSystemService(PowerManager.class))
                     .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK_TAG);
@@ -756,9 +765,13 @@ public class LocationProviderManager extends
             mProviderTransport = null;
         }
 
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected final void onProviderListenerRegister() {
+        protected void onRegister() {
+            super.onRegister();
+
             long registerTimeMs = SystemClock.elapsedRealtime();
             mExpirationRealtimeMs = getRequest().getExpirationRealtimeMs(registerTimeMs);
 
@@ -777,8 +790,6 @@ public class LocationProviderManager extends
             // start listening for provider enabled/disabled events
             addEnabledListener(this);
 
-            onLocationListenerRegister();
-
             // if the provider is currently disabled, let the client know immediately
             int userId = getIdentity().getUserId();
             if (!isEnabled(userId)) {
@@ -786,9 +797,11 @@ public class LocationProviderManager extends
             }
         }
 
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected final void onProviderListenerUnregister() {
+        protected void onUnregister() {
             // stop listening for provider enabled/disabled events
             removeEnabledListener(this);
 
@@ -797,24 +810,16 @@ public class LocationProviderManager extends
                 mAlarmHelper.cancel(this);
             }
 
-            onLocationListenerUnregister();
+            super.onUnregister();
         }
 
-        /**
-         * Subclasses may override this instead of {@link #onRemovableListenerRegister()}.
-         */
-        @GuardedBy("mLock")
-        protected void onLocationListenerRegister() {}
-
-        /**
-         * Subclasses may override this instead of {@link #onRemovableListenerUnregister()}.
-         */
-        @GuardedBy("mLock")
-        protected void onLocationListenerUnregister() {}
-
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected final void onProviderListenerActive() {
+        protected void onActive() {
+            super.onActive();
+
             // a new registration may not get a location immediately, the provider request may be
             // delayed. therefore we deliver a historical location if available. since delivering an
             // older location could be considered a breaking change for some applications, we only
@@ -850,21 +855,17 @@ public class LocationProviderManager extends
                         + " expired at " + TimeUtils.formatRealtime(mExpirationRealtimeMs));
             }
 
-            synchronized (mLock) {
+            synchronized (mMultiplexerLock) {
                 // no need to remove alarm after it's fired
                 mExpirationRealtimeMs = Long.MAX_VALUE;
                 remove();
             }
         }
 
-        @GuardedBy("mLock")
+        @GuardedBy("mMultiplexerLock")
         @Override
         @Nullable ListenerOperation<LocationTransport> acceptLocationChange(
                 LocationResult fineLocationResult) {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
-            }
-
             // check expiration time - alarm is not guaranteed to go off at the right time,
             // especially for short intervals
             if (SystemClock.elapsedRealtime() >= mExpirationRealtimeMs) {
@@ -934,30 +935,19 @@ public class LocationProviderManager extends
                 return null;
             }
 
+            // acquire a wakelock for non-passive requests
+            boolean useWakeLock =
+                    getRequest().getIntervalMillis() != LocationRequest.PASSIVE_INTERVAL;
+
             // deliver location
             return new ListenerOperation<LocationTransport>() {
 
-                private boolean mUseWakeLock;
-
                 @Override
                 public void onPreExecute() {
-                    mUseWakeLock = false;
-
-                    // don't acquire a wakelock for passive requests or for mock locations
-                    if (getRequest().getIntervalMillis() != LocationRequest.PASSIVE_INTERVAL) {
-                        final int size = locationResult.size();
-                        for (int i = 0; i < size; ++i) {
-                            if (!locationResult.get(i).isMock()) {
-                                mUseWakeLock = true;
-                                break;
-                            }
-                        }
-                    }
-
                     // update last delivered location
                     setLastDeliveredLocation(locationResult.getLastLocation());
 
-                    if (mUseWakeLock) {
+                    if (useWakeLock) {
                         mWakeLock.acquire(WAKELOCK_TIMEOUT_MS);
                     }
                 }
@@ -974,14 +964,14 @@ public class LocationProviderManager extends
                     }
 
                     listener.deliverOnLocationChanged(deliverLocationResult,
-                            mUseWakeLock ? mWakeLockReleaser : null);
+                            useWakeLock ? mWakeLockReleaser : null);
                     EVENT_LOG.logProviderDeliveredLocations(mName, locationResult.size(),
                             getIdentity());
                 }
 
                 @Override
                 public void onPostExecute(boolean success) {
-                    if (!success && mUseWakeLock) {
+                    if (!success && useWakeLock) {
                         mWakeLock.release();
                     }
 
@@ -995,9 +985,7 @@ public class LocationProviderManager extends
                                         + " finished after " + mNumLocationsDelivered + " updates");
                             }
 
-                            synchronized (mLock) {
-                                remove();
-                            }
+                            remove();
                         }
                     }
                 }
@@ -1025,14 +1013,20 @@ public class LocationProviderManager extends
     protected final class LocationListenerRegistration extends LocationRegistration implements
             IBinder.DeathRecipient {
 
-        protected LocationListenerRegistration(LocationRequest request, CallerIdentity identity,
+        LocationListenerRegistration(LocationRequest request, CallerIdentity identity,
                 LocationListenerTransport transport, @PermissionLevel int permissionLevel) {
-            super(request, identity, transport, permissionLevel);
+            super(request, identity,
+                    identity.isMyProcess() ? FgThread.getExecutor() : DIRECT_EXECUTOR, transport,
+                    permissionLevel);
         }
 
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected void onLocationListenerRegister() {
+        protected void onRegister() {
+            super.onRegister();
+
             try {
                 ((IBinder) getKey()).linkToDeath(this, 0);
             } catch (RemoteException e) {
@@ -1040,10 +1034,22 @@ public class LocationProviderManager extends
             }
         }
 
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected void onLocationListenerUnregister() {
-            ((IBinder) getKey()).unlinkToDeath(this, 0);
+        protected void onUnregister() {
+            try {
+                ((IBinder) getKey()).unlinkToDeath(this, 0);
+            } catch (NoSuchElementException e) {
+                // the only way this exception can occur should be if another exception has been
+                // thrown prior to registration completing, and that exception is currently
+                // unwinding the call stack and causing this cleanup. since that exception should
+                // crash us anyways, drop this exception so we're not hiding the original exception.
+                Log.w(getTag(), "failed to unregister binder death listener", e);
+            }
+
+            super.onUnregister();
         }
 
         @Override
@@ -1061,9 +1067,7 @@ public class LocationProviderManager extends
         private void onTransportFailure(Exception e) {
             if (e instanceof RemoteException) {
                 Log.w(TAG, mName + " provider registration " + getIdentity() + " removed", e);
-                synchronized (mLock) {
-                    remove();
-                }
+                remove();
             } else {
                 throw new AssertionError(e);
             }
@@ -1076,9 +1080,7 @@ public class LocationProviderManager extends
                     Log.d(TAG, mName + " provider registration " + getIdentity() + " died");
                 }
 
-                synchronized (mLock) {
-                    remove();
-                }
+                remove();
             } catch (RuntimeException e) {
                 // the caller may swallow runtime exceptions, so we rethrow as assertion errors to
                 // ensure the crash is seen
@@ -1090,22 +1092,30 @@ public class LocationProviderManager extends
     protected final class LocationPendingIntentRegistration extends LocationRegistration implements
             PendingIntent.CancelListener {
 
-        protected LocationPendingIntentRegistration(LocationRequest request,
+        LocationPendingIntentRegistration(LocationRequest request,
                 CallerIdentity identity, LocationPendingIntentTransport transport,
                 @PermissionLevel int permissionLevel) {
-            super(request, identity, transport, permissionLevel);
+            super(request, identity, DIRECT_EXECUTOR, transport, permissionLevel);
         }
 
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected void onLocationListenerRegister() {
-            ((PendingIntent) getKey()).registerCancelListener(this);
+        protected void onRegister() {
+            super.onRegister();
+            if (!((PendingIntent) getKey()).addCancelListener(DIRECT_EXECUTOR, this)) {
+                remove();
+            }
         }
 
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected void onLocationListenerUnregister() {
-            ((PendingIntent) getKey()).unregisterCancelListener(this);
+        protected void onUnregister() {
+            ((PendingIntent) getKey()).removeCancelListener(this);
+            super.onUnregister();
         }
 
         @Override
@@ -1123,9 +1133,7 @@ public class LocationProviderManager extends
         private void onTransportFailure(Exception e) {
             if (e instanceof PendingIntent.CanceledException) {
                 Log.w(TAG, mName + " provider registration " + getIdentity() + " removed", e);
-                synchronized (mLock) {
-                    remove();
-                }
+                remove();
             } else {
                 throw new AssertionError(e);
             }
@@ -1137,25 +1145,32 @@ public class LocationProviderManager extends
                 Log.d(TAG, mName + " provider registration " + getIdentity() + " canceled");
             }
 
-            synchronized (mLock) {
-                remove();
-            }
+            remove();
         }
     }
 
     protected final class GetCurrentLocationListenerRegistration extends Registration implements
             IBinder.DeathRecipient, OnAlarmListener {
 
+        @GuardedBy("mMultiplexerLock")
         private long mExpirationRealtimeMs = Long.MAX_VALUE;
 
-        protected GetCurrentLocationListenerRegistration(LocationRequest request,
+        GetCurrentLocationListenerRegistration(LocationRequest request,
                 CallerIdentity identity, LocationTransport transport, int permissionLevel) {
-            super(request, identity, transport, permissionLevel);
+            super(request,
+                    identity,
+                    identity.isMyProcess() ? FgThread.getExecutor() : DIRECT_EXECUTOR,
+                    transport,
+                    permissionLevel);
         }
 
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected void onProviderListenerRegister() {
+        protected void onRegister() {
+            super.onRegister();
+
             try {
                 ((IBinder) getKey()).linkToDeath(this, 0);
             } catch (RemoteException e) {
@@ -1178,20 +1193,36 @@ public class LocationProviderManager extends
             }
         }
 
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected void onProviderListenerUnregister() {
+        protected void onUnregister() {
             // remove alarm for expiration
             if (mExpirationRealtimeMs < Long.MAX_VALUE) {
                 mAlarmHelper.cancel(this);
             }
 
-            ((IBinder) getKey()).unlinkToDeath(this, 0);
+            try {
+                ((IBinder) getKey()).unlinkToDeath(this, 0);
+            } catch (NoSuchElementException e) {
+                // the only way this exception can occur should be if another exception has been
+                // thrown prior to registration completing, and that exception is currently
+                // unwinding the call stack and causing this cleanup. since that exception should
+                // crash us anyways, drop this exception so we're not hiding the original exception.
+                Log.w(getTag(), "failed to unregister binder death listener", e);
+            }
+
+            super.onUnregister();
         }
 
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected void onProviderListenerActive() {
+        protected void onActive() {
+            super.onActive();
+
             Location lastLocation = getLastLocationUnsafe(
                     getIdentity().getUserId(),
                     getPermissionLevel(),
@@ -1202,17 +1233,19 @@ public class LocationProviderManager extends
             }
         }
 
-        @GuardedBy("mLock")
+        // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+        @SuppressWarnings("GuardedBy")
+        @GuardedBy("mMultiplexerLock")
         @Override
-        protected void onProviderListenerInactive() {
+        protected void onInactive() {
             // if we go inactive for any reason, fail immediately
             executeOperation(acceptLocationChange(null));
+            super.onInactive();
         }
 
+        @GuardedBy("mMultiplexerLock")
         void deliverNull() {
-            synchronized (mLock) {
-                executeOperation(acceptLocationChange(null));
-            }
+            executeOperation(acceptLocationChange(null));
         }
 
         @Override
@@ -1222,21 +1255,17 @@ public class LocationProviderManager extends
                         + " expired at " + TimeUtils.formatRealtime(mExpirationRealtimeMs));
             }
 
-            synchronized (mLock) {
+            synchronized (mMultiplexerLock) {
                 // no need to remove alarm after it's fired
                 mExpirationRealtimeMs = Long.MAX_VALUE;
                 executeOperation(acceptLocationChange(null));
             }
         }
 
-        @GuardedBy("mLock")
+        @GuardedBy("mMultiplexerLock")
         @Override
         @Nullable ListenerOperation<LocationTransport> acceptLocationChange(
                 @Nullable LocationResult fineLocationResult) {
-            if (Build.IS_DEBUGGABLE) {
-                Preconditions.checkState(Thread.holdsLock(mLock));
-            }
-
             // check expiration time - alarm is not guaranteed to go off at the right time,
             // especially for short intervals
             if (SystemClock.elapsedRealtime() >= mExpirationRealtimeMs) {
@@ -1287,9 +1316,7 @@ public class LocationProviderManager extends
                     // on failure we're automatically removed anyways, no need to attempt removal
                     // again
                     if (success) {
-                        synchronized (mLock) {
-                            remove();
-                        }
+                        remove();
                     }
                 }
             };
@@ -1300,9 +1327,7 @@ public class LocationProviderManager extends
                 Exception e) {
             if (e instanceof RemoteException) {
                 Log.w(TAG, mName + " provider registration " + getIdentity() + " removed", e);
-                synchronized (mLock) {
-                    remove();
-                }
+                remove();
             } else {
                 throw new AssertionError(e);
             }
@@ -1315,9 +1340,7 @@ public class LocationProviderManager extends
                     Log.d(TAG, mName + " provider registration " + getIdentity() + " died");
                 }
 
-                synchronized (mLock) {
-                    remove();
-                }
+                remove();
             } catch (RuntimeException e) {
                 // the caller may swallow runtime exceptions, so we rethrow as assertion errors to
                 // ensure the crash is seen
@@ -1326,24 +1349,26 @@ public class LocationProviderManager extends
         }
     }
 
-    protected final Object mLock = new Object();
-
     protected final String mName;
-    private final @Nullable PassiveLocationProviderManager mPassiveManager;
+    @Nullable private final PassiveLocationProviderManager mPassiveManager;
 
     protected final Context mContext;
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     private @State int mState;
 
     // maps of user id to value
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     private final SparseBooleanArray mEnabled; // null or not present means unknown
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     private final SparseArray<LastLocation> mLastLocations;
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     private final ArrayList<ProviderEnabledListener> mEnabledListeners;
+
+    // Extra permissions required to use this provider (on top of the usual location permissions).
+    // Not guarded because it's read only.
+    private final Collection<String> mRequiredPermissions;
 
     private final CopyOnWriteArrayList<IProviderRequestListener> mProviderRequestListeners;
 
@@ -1357,9 +1382,9 @@ public class LocationProviderManager extends
     protected final AppForegroundHelper mAppForegroundHelper;
     protected final LocationPowerSaveModeHelper mLocationPowerSaveModeHelper;
     protected final ScreenInteractiveHelper mScreenInteractiveHelper;
-    protected final LocationAttributionHelper mLocationAttributionHelper;
     protected final LocationUsageLogger mLocationUsageLogger;
     protected final LocationFudger mLocationFudger;
+    private final PackageResetHelper mPackageResetHelper;
 
     private final UserListener mUserChangedListener = this::onUserChanged;
     private final LocationSettings.LocationUserSettingsListener mLocationUserSettingsListener =
@@ -1386,30 +1411,66 @@ public class LocationProviderManager extends
             this::onAppForegroundChanged;
     private final GlobalSettingChangedListener mBackgroundThrottleIntervalChangedListener =
             this::onBackgroundThrottleIntervalChanged;
+    private final GlobalSettingChangedListener mAdasPackageAllowlistChangedListener =
+            this::onAdasAllowlistChanged;
     private final GlobalSettingChangedListener mIgnoreSettingsPackageWhitelistChangedListener =
             this::onIgnoreSettingsWhitelistChanged;
     private final LocationPowerSaveModeChangedListener mLocationPowerSaveModeChangedListener =
             this::onLocationPowerSaveModeChanged;
     private final ScreenInteractiveChangedListener mScreenInteractiveChangedListener =
             this::onScreenInteractiveChanged;
+    private final PackageResetHelper.Responder mPackageResetResponder =
+            new PackageResetHelper.Responder() {
+                @Override
+                public void onPackageReset(String packageName) {
+                    LocationProviderManager.this.onPackageReset(packageName);
+                }
 
-    // acquiring mLock makes operations on mProvider atomic, but is otherwise unnecessary
+                @Override
+                public boolean isResetableForPackage(String packageName) {
+                    return LocationProviderManager.this.isResetableForPackage(packageName);
+                }
+            };
+
+    // acquiring mMultiplexerLock makes operations on mProvider atomic, but is otherwise unnecessary
     protected final MockableLocationProvider mProvider;
 
-    @GuardedBy("mLock")
-    private @Nullable OnAlarmListener mDelayedRegister;
+    @GuardedBy("mMultiplexerLock")
+    @Nullable private OnAlarmListener mDelayedRegister;
 
-    @GuardedBy("mLock")
-    private @Nullable StateChangedListener mStateChangedListener;
+    @GuardedBy("mMultiplexerLock")
+    @Nullable private StateChangedListener mStateChangedListener;
 
     public LocationProviderManager(Context context, Injector injector,
             String name, @Nullable PassiveLocationProviderManager passiveManager) {
+        this(context, injector, name, passiveManager, Collections.emptyList());
+    }
+
+    /**
+     * Creates a manager for a location provider (the two have a 1:1 correspondence).
+     *
+     * @param context Context in which the manager is running.
+     * @param injector Injector to retrieve system components (useful to override in testing)
+     * @param name Name of this provider (used in LocationManager APIs by client apps).
+     * @param passiveManager The "passive" manager (special case provider that returns locations
+     *     from all other providers).
+     * @param requiredPermissions Required permissions for accessing this provider. All of the given
+     *     permissions are required to access the provider. If a caller doesn't hold the correct
+     *     permission, the provider will be invisible to it.
+     */
+    public LocationProviderManager(
+            Context context,
+            Injector injector,
+            String name,
+            @Nullable PassiveLocationProviderManager passiveManager,
+            Collection<String> requiredPermissions) {
         mContext = context;
         mName = Objects.requireNonNull(name);
         mPassiveManager = passiveManager;
         mState = STATE_STOPPED;
         mEnabled = new SparseBooleanArray(2);
         mLastLocations = new SparseArray<>(2);
+        mRequiredPermissions = requiredPermissions;
 
         mEnabledListeners = new ArrayList<>();
         mProviderRequestListeners = new CopyOnWriteArrayList<>();
@@ -1425,23 +1486,18 @@ public class LocationProviderManager extends
         mAppForegroundHelper = injector.getAppForegroundHelper();
         mLocationPowerSaveModeHelper = injector.getLocationPowerSaveModeHelper();
         mScreenInteractiveHelper = injector.getScreenInteractiveHelper();
-        mLocationAttributionHelper = injector.getLocationAttributionHelper();
         mLocationUsageLogger = injector.getLocationUsageLogger();
         mLocationFudger = new LocationFudger(mSettingsHelper.getCoarseLocationAccuracyM());
+        mPackageResetHelper = injector.getPackageResetHelper();
 
-        mProvider = new MockableLocationProvider(mLock);
+        mProvider = new MockableLocationProvider(mMultiplexerLock);
 
         // set listener last, since this lets our reference escape
         mProvider.getController().setListener(this);
     }
 
-    @Override
-    public String getTag() {
-        return TAG;
-    }
-
     public void startManager(@Nullable StateChangedListener listener) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState == STATE_STOPPED);
             mState = STATE_STARTED;
             mStateChangedListener = listener;
@@ -1461,7 +1517,7 @@ public class LocationProviderManager extends
     }
 
     public void stopManager() {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState == STATE_STARTED);
             mState = STATE_STOPPING;
 
@@ -1498,11 +1554,11 @@ public class LocationProviderManager extends
         return mProvider.getState();
     }
 
-    public @Nullable CallerIdentity getIdentity() {
+    @Nullable public CallerIdentity getProviderIdentity() {
         return mProvider.getState().identity;
     }
 
-    public @Nullable ProviderProperties getProperties() {
+    @Nullable public ProviderProperties getProperties() {
         return mProvider.getState().properties;
     }
 
@@ -1519,7 +1575,7 @@ public class LocationProviderManager extends
 
         Preconditions.checkArgument(userId >= 0);
 
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             int index = mEnabled.indexOfKey(userId);
             if (index < 0) {
                 // this generally shouldn't occur, but might be possible due to race conditions
@@ -1533,15 +1589,33 @@ public class LocationProviderManager extends
         }
     }
 
+    /**
+     * Returns true if this provider is visible to the current caller (whether called from a binder
+     * thread or not). If a provider isn't visible, then all APIs return the same data they would if
+     * the provider didn't exist (i.e. the caller can't see or use the provider).
+     *
+     * <p>This method doesn't require any permissions, but uses permissions to determine which
+     * subset of providers are visible.
+     */
+    @SuppressLint("AndroidFrameworkRequiresPermission")
+    public boolean isVisibleToCaller() {
+        for (String permission : mRequiredPermissions) {
+            if (mContext.checkCallingOrSelfPermission(permission) != PERMISSION_GRANTED) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     public void addEnabledListener(ProviderEnabledListener listener) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
             mEnabledListeners.add(listener);
         }
     }
 
     public void removeEnabledListener(ProviderEnabledListener listener) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
             mEnabledListeners.remove(listener);
         }
@@ -1558,7 +1632,7 @@ public class LocationProviderManager extends
     }
 
     public void setRealProvider(@Nullable AbstractLocationProvider provider) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
 
             final long identity = Binder.clearCallingIdentity();
@@ -1571,7 +1645,7 @@ public class LocationProviderManager extends
     }
 
     public void setMockProvider(@Nullable MockLocationProvider provider) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
 
             EVENT_LOG.logProviderMocked(mName, provider != null);
@@ -1598,7 +1672,7 @@ public class LocationProviderManager extends
     }
 
     public void setMockProviderAllowed(boolean enabled) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             if (!mProvider.isMock()) {
                 throw new IllegalArgumentException(mName + " provider is not a test provider");
             }
@@ -1613,7 +1687,7 @@ public class LocationProviderManager extends
     }
 
     public void setMockProviderLocation(Location location) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             if (!mProvider.isMock()) {
                 throw new IllegalArgumentException(mName + " provider is not a test provider");
             }
@@ -1635,8 +1709,10 @@ public class LocationProviderManager extends
         }
     }
 
-    public @Nullable Location getLastLocation(LastLocationRequest request,
+    @Nullable public Location getLastLocation(LastLocationRequest request,
             CallerIdentity identity, @PermissionLevel int permissionLevel) {
+        request = calculateLastLocationRequest(request, identity);
+
         if (!isActive(request.isBypass(), identity)) {
             return null;
         }
@@ -1664,13 +1740,51 @@ public class LocationProviderManager extends
         return location;
     }
 
+    private LastLocationRequest calculateLastLocationRequest(LastLocationRequest baseRequest,
+            CallerIdentity identity) {
+        LastLocationRequest.Builder builder = new LastLocationRequest.Builder(baseRequest);
+
+        boolean locationSettingsIgnored = baseRequest.isLocationSettingsIgnored();
+        if (locationSettingsIgnored) {
+            // if we are not currently allowed use location settings ignored, disable it
+            if (!mSettingsHelper.getIgnoreSettingsAllowlist().contains(
+                    identity.getPackageName(), identity.getAttributionTag())
+                    && !mLocationManagerInternal.isProvider(null, identity)) {
+                locationSettingsIgnored = false;
+            }
+
+            builder.setLocationSettingsIgnored(locationSettingsIgnored);
+        }
+
+        boolean adasGnssBypass = baseRequest.isAdasGnssBypass();
+        if (adasGnssBypass) {
+            // if we are not currently allowed use adas gnss bypass, disable it
+            if (!GPS_PROVIDER.equals(mName)) {
+                Log.e(TAG, "adas gnss bypass request received in non-gps provider");
+                adasGnssBypass = false;
+            } else if (!mUserHelper.isCurrentUserId(identity.getUserId())) {
+                adasGnssBypass = false;
+            } else if (!mLocationSettings.getUserSettings(
+                    identity.getUserId()).isAdasGnssLocationEnabled()) {
+                adasGnssBypass = false;
+            } else if (!mSettingsHelper.getAdasAllowlist().contains(
+                    identity.getPackageName(), identity.getAttributionTag())) {
+                adasGnssBypass = false;
+            }
+
+            builder.setAdasGnssBypass(adasGnssBypass);
+        }
+
+        return builder.build();
+    }
+
     /**
      * This function does not perform any permissions or safety checks, by calling it you are
      * committing to performing all applicable checks yourself. This always returns a "fine"
      * location, even if the permissionLevel is coarse. You are responsible for coarsening the
      * location if necessary.
      */
-    public @Nullable Location getLastLocationUnsafe(int userId,
+    @Nullable public Location getLastLocationUnsafe(int userId,
             @PermissionLevel int permissionLevel, boolean isBypass,
             long maximumAgeMs) {
         if (userId == UserHandle.USER_ALL) {
@@ -1694,7 +1808,7 @@ public class LocationProviderManager extends
         Preconditions.checkArgument(userId >= 0);
 
         Location location;
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
             LastLocation lastLocation = mLastLocations.get(userId);
             if (lastLocation == null) {
@@ -1716,7 +1830,7 @@ public class LocationProviderManager extends
     }
 
     public void injectLastLocation(Location location, int userId) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
             if (getLastLocationUnsafe(userId, PERMISSION_FINE, false, Long.MAX_VALUE) == null) {
                 setLastLocation(location, userId);
@@ -1738,7 +1852,7 @@ public class LocationProviderManager extends
 
         Preconditions.checkArgument(userId >= 0);
 
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             LastLocation lastLocation = mLastLocations.get(userId);
             if (lastLocation == null) {
                 lastLocation = new LastLocation();
@@ -1752,7 +1866,7 @@ public class LocationProviderManager extends
         }
     }
 
-    public @Nullable ICancellationSignal getCurrentLocation(LocationRequest request,
+    @Nullable public ICancellationSignal getCurrentLocation(LocationRequest request,
             CallerIdentity identity, int permissionLevel, ILocationCallback callback) {
         if (request.getDurationMillis() > MAX_GET_CURRENT_LOCATION_TIMEOUT_MS) {
             request = new LocationRequest.Builder(request)
@@ -1767,7 +1881,7 @@ public class LocationProviderManager extends
                         new GetCurrentLocationTransport(callback),
                         permissionLevel);
 
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
             final long ident = Binder.clearCallingIdentity();
             try {
@@ -1783,12 +1897,24 @@ public class LocationProviderManager extends
 
         ICancellationSignal cancelTransport = CancellationSignal.createTransport();
         CancellationSignal.fromTransport(cancelTransport)
-                .setOnCancelListener(SingleUseCallback.wrap(
+                .setOnCancelListener(
                         () -> {
-                            synchronized (mLock) {
+                            final long ident = Binder.clearCallingIdentity();
+                            try {
                                 removeRegistration(callback.asBinder(), registration);
+                            } catch (RuntimeException e) {
+                                // since this is within a oneway binder transaction there is nowhere
+                                // for exceptions to go - move onto another thread to crash system
+                                // server so we find out about it
+                                FgThread.getExecutor().execute(() -> {
+                                    throw new AssertionError(e);
+                                });
+                                throw e;
+                            } finally {
+                                Binder.restoreCallingIdentity(ident);
                             }
-                        }));
+
+                        });
         return cancelTransport;
     }
 
@@ -1809,7 +1935,7 @@ public class LocationProviderManager extends
                 new LocationListenerTransport(listener),
                 permissionLevel);
 
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
             final long ident = Binder.clearCallingIdentity();
             try {
@@ -1828,7 +1954,7 @@ public class LocationProviderManager extends
                 new LocationPendingIntentTransport(mContext, pendingIntent),
                 permissionLevel);
 
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
             final long identity = Binder.clearCallingIdentity();
             try {
@@ -1840,42 +1966,38 @@ public class LocationProviderManager extends
     }
 
     public void flush(ILocationListener listener, int requestCode) {
-        synchronized (mLock) {
-            final long identity = Binder.clearCallingIdentity();
-            try {
-                boolean flushed = updateRegistration(listener.asBinder(), registration -> {
-                    registration.flush(requestCode);
-                    return false;
-                });
-                if (!flushed) {
-                    throw new IllegalArgumentException("unregistered listener cannot be flushed");
-                }
-            } finally {
-                Binder.restoreCallingIdentity(identity);
+        final long identity = Binder.clearCallingIdentity();
+        try {
+            boolean flushed = updateRegistration(listener.asBinder(), registration -> {
+                registration.flush(requestCode);
+                return false;
+            });
+            if (!flushed) {
+                throw new IllegalArgumentException("unregistered listener cannot be flushed");
             }
+        } finally {
+            Binder.restoreCallingIdentity(identity);
         }
     }
 
     public void flush(PendingIntent pendingIntent, int requestCode) {
-        synchronized (mLock) {
-            final long identity = Binder.clearCallingIdentity();
-            try {
-                boolean flushed = updateRegistration(pendingIntent, registration -> {
-                    registration.flush(requestCode);
-                    return false;
-                });
-                if (!flushed) {
-                    throw new IllegalArgumentException(
-                            "unregistered pending intent cannot be flushed");
-                }
-            } finally {
-                Binder.restoreCallingIdentity(identity);
+        final long identity = Binder.clearCallingIdentity();
+        try {
+            boolean flushed = updateRegistration(pendingIntent, registration -> {
+                registration.flush(requestCode);
+                return false;
+            });
+            if (!flushed) {
+                throw new IllegalArgumentException(
+                        "unregistered pending intent cannot be flushed");
             }
+        } finally {
+            Binder.restoreCallingIdentity(identity);
         }
     }
 
     public void unregisterLocationRequest(ILocationListener listener) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
             final long identity = Binder.clearCallingIdentity();
             try {
@@ -1887,7 +2009,7 @@ public class LocationProviderManager extends
     }
 
     public void unregisterLocationRequest(PendingIntent pendingIntent) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             Preconditions.checkState(mState != STATE_STOPPED);
             final long identity = Binder.clearCallingIdentity();
             try {
@@ -1898,55 +2020,48 @@ public class LocationProviderManager extends
         }
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     @Override
     protected void onRegister() {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         mSettingsHelper.addOnBackgroundThrottleIntervalChangedListener(
                 mBackgroundThrottleIntervalChangedListener);
         mSettingsHelper.addOnBackgroundThrottlePackageWhitelistChangedListener(
                 mBackgroundThrottlePackageWhitelistChangedListener);
         mSettingsHelper.addOnLocationPackageBlacklistChangedListener(
                 mLocationPackageBlacklistChangedListener);
+        mSettingsHelper.addAdasAllowlistChangedListener(
+                mAdasPackageAllowlistChangedListener);
         mSettingsHelper.addIgnoreSettingsAllowlistChangedListener(
                 mIgnoreSettingsPackageWhitelistChangedListener);
         mLocationPermissionsHelper.addListener(mLocationPermissionsListener);
         mAppForegroundHelper.addListener(mAppForegroundChangedListener);
         mLocationPowerSaveModeHelper.addListener(mLocationPowerSaveModeChangedListener);
         mScreenInteractiveHelper.addListener(mScreenInteractiveChangedListener);
+        mPackageResetHelper.register(mPackageResetResponder);
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     @Override
     protected void onUnregister() {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         mSettingsHelper.removeOnBackgroundThrottleIntervalChangedListener(
                 mBackgroundThrottleIntervalChangedListener);
         mSettingsHelper.removeOnBackgroundThrottlePackageWhitelistChangedListener(
                 mBackgroundThrottlePackageWhitelistChangedListener);
         mSettingsHelper.removeOnLocationPackageBlacklistChangedListener(
                 mLocationPackageBlacklistChangedListener);
+        mSettingsHelper.removeAdasAllowlistChangedListener(mAdasPackageAllowlistChangedListener);
         mSettingsHelper.removeIgnoreSettingsAllowlistChangedListener(
                 mIgnoreSettingsPackageWhitelistChangedListener);
         mLocationPermissionsHelper.removeListener(mLocationPermissionsListener);
         mAppForegroundHelper.removeListener(mAppForegroundChangedListener);
         mLocationPowerSaveModeHelper.removeListener(mLocationPowerSaveModeChangedListener);
         mScreenInteractiveHelper.removeListener(mScreenInteractiveChangedListener);
+        mPackageResetHelper.unregister(mPackageResetResponder);
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     @Override
     protected void onRegistrationAdded(Object key, Registration registration) {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         mLocationUsageLogger.logLocationApiUsage(
                 LocationStatsEnums.USAGE_STARTED,
                 LocationStatsEnums.API_REQUEST_LOCATION_UPDATES,
@@ -1959,23 +2074,21 @@ public class LocationProviderManager extends
                 null, registration.isForeground());
     }
 
-    @GuardedBy("mLock")
+    // TODO: remove suppression when GuardedBy analysis can recognize lock from super class
+    @SuppressWarnings("GuardedBy")
+    @GuardedBy("mMultiplexerLock")
     @Override
-    protected void onRegistrationReplaced(Object key, Registration oldRegistration,
-            Registration newRegistration) {
+    protected void onRegistrationReplaced(Object oldKey, Registration oldRegistration,
+            Object newKey, Registration newRegistration) {
         // by saving the last delivered location state we are able to potentially delay the
         // resulting provider request longer and save additional power
         newRegistration.setLastDeliveredLocation(oldRegistration.getLastDeliveredLocation());
-        super.onRegistrationReplaced(key, oldRegistration, newRegistration);
+        super.onRegistrationReplaced(oldKey, oldRegistration, newKey, newRegistration);
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     @Override
     protected void onRegistrationRemoved(Object key, Registration registration) {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         mLocationUsageLogger.logLocationApiUsage(
                 LocationStatsEnums.USAGE_ENDED,
                 LocationStatsEnums.API_REQUEST_LOCATION_UPDATES,
@@ -1988,21 +2101,22 @@ public class LocationProviderManager extends
                 null, registration.isForeground());
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     @Override
     protected boolean registerWithService(ProviderRequest request,
             Collection<Registration> registrations) {
+        if (!request.isActive()) {
+            // the default request is already an empty request, no need to register this
+            return true;
+        }
+
         return reregisterWithService(ProviderRequest.EMPTY_REQUEST, request, registrations);
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     @Override
     protected boolean reregisterWithService(ProviderRequest oldRequest,
             ProviderRequest newRequest, Collection<Registration> registrations) {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         // calculate how long the new request should be delayed before sending it off to the
         // provider, under the assumption that once we send the request off, the provider will
         // immediately attempt to deliver a new location satisfying that request.
@@ -2038,7 +2152,7 @@ public class LocationProviderManager extends
             mDelayedRegister = new OnAlarmListener() {
                 @Override
                 public void onAlarm() {
-                    synchronized (mLock) {
+                    synchronized (mMultiplexerLock) {
                         if (mDelayedRegister == this) {
                             mDelayedRegister = null;
                             setProviderRequest(newRequest);
@@ -2056,17 +2170,13 @@ public class LocationProviderManager extends
         return true;
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     @Override
     protected void unregisterWithService() {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         setProviderRequest(ProviderRequest.EMPTY_REQUEST);
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     void setProviderRequest(ProviderRequest request) {
         if (mDelayedRegister != null) {
             mAlarmHelper.cancel(mDelayedRegister);
@@ -2074,6 +2184,9 @@ public class LocationProviderManager extends
         }
 
         EVENT_LOG.logProviderUpdateRequest(mName, request);
+        if (D) {
+            Log.d(TAG, mName + " provider request changed to " + request);
+        }
         mProvider.getController().setRequest(request);
 
         FgThread.getHandler().post(() -> {
@@ -2087,13 +2200,9 @@ public class LocationProviderManager extends
         });
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     @Override
     protected boolean isActive(Registration registration) {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         if (!registration.isPermitted()) {
             return false;
         }
@@ -2144,7 +2253,7 @@ public class LocationProviderManager extends
                 if (!isEnabled(identity.getUserId())) {
                     return false;
                 }
-                if (!mUserHelper.isCurrentUserId(identity.getUserId())) {
+                if (!mUserHelper.isVisibleUserId(identity.getUserId())) {
                     return false;
                 }
             }
@@ -2157,13 +2266,9 @@ public class LocationProviderManager extends
         return true;
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     @Override
     protected ProviderRequest mergeRegistrations(Collection<Registration> registrations) {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         long intervalMs = ProviderRequest.INTERVAL_DISABLED;
         int quality = LocationRequest.QUALITY_LOW_POWER;
         long maxUpdateDelayMs = Long.MAX_VALUE;
@@ -2228,7 +2333,7 @@ public class LocationProviderManager extends
                 .build();
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     protected long calculateRequestDelayMillis(long newIntervalMs,
             Collection<Registration> registrations) {
         // calculate the minimum delay across all registrations, ensuring that it is not more than
@@ -2270,13 +2375,17 @@ public class LocationProviderManager extends
     }
 
     private void onUserChanged(int userId, int change) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             if (mState == STATE_STOPPED) {
                 return;
             }
 
             switch (change) {
                 case UserListener.CURRENT_USER_CHANGED:
+                    // current user changes affect whether system server location requests are
+                    // allowed to access location, and visibility changes affect whether any given
+                    // user may access location.
+                case UserListener.USER_VISIBILITY_CHANGED:
                     updateRegistrations(
                             registration -> registration.getIdentity().getUserId() == userId);
                     break;
@@ -2293,15 +2402,13 @@ public class LocationProviderManager extends
     private void onLocationUserSettingsChanged(int userId, LocationUserSettings oldSettings,
             LocationUserSettings newSettings) {
         if (oldSettings.isAdasGnssLocationEnabled() != newSettings.isAdasGnssLocationEnabled()) {
-            synchronized (mLock) {
-                updateRegistrations(
-                        registration -> registration.onAdasGnssLocationEnabledChanged(userId));
-            }
+            updateRegistrations(
+                    registration -> registration.onAdasGnssLocationEnabledChanged(userId));
         }
     }
 
     private void onLocationEnabledChanged(int userId) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             if (mState == STATE_STOPPED) {
                 return;
             }
@@ -2311,82 +2418,82 @@ public class LocationProviderManager extends
     }
 
     private void onScreenInteractiveChanged(boolean screenInteractive) {
-        synchronized (mLock) {
-            switch (mLocationPowerSaveModeHelper.getLocationPowerSaveMode()) {
-                case LOCATION_MODE_GPS_DISABLED_WHEN_SCREEN_OFF:
-                    if (!GPS_PROVIDER.equals(mName)) {
-                        break;
-                    }
-                    // fall through
-                case LOCATION_MODE_THROTTLE_REQUESTS_WHEN_SCREEN_OFF:
-                    // fall through
-                case LOCATION_MODE_ALL_DISABLED_WHEN_SCREEN_OFF:
-                    updateRegistrations(registration -> true);
+        switch (mLocationPowerSaveModeHelper.getLocationPowerSaveMode()) {
+            case LOCATION_MODE_GPS_DISABLED_WHEN_SCREEN_OFF:
+                if (!GPS_PROVIDER.equals(mName)) {
                     break;
-                default:
-                    break;
-            }
+                }
+                // fall through
+            case LOCATION_MODE_THROTTLE_REQUESTS_WHEN_SCREEN_OFF:
+                // fall through
+            case LOCATION_MODE_ALL_DISABLED_WHEN_SCREEN_OFF:
+                updateRegistrations(registration -> true);
+                break;
+            default:
+                break;
         }
     }
 
     private void onBackgroundThrottlePackageWhitelistChanged() {
-        synchronized (mLock) {
-            updateRegistrations(Registration::onProviderLocationRequestChanged);
-        }
+        updateRegistrations(Registration::onProviderLocationRequestChanged);
     }
 
     private void onBackgroundThrottleIntervalChanged() {
-        synchronized (mLock) {
-            updateRegistrations(Registration::onProviderLocationRequestChanged);
-        }
+        updateRegistrations(Registration::onProviderLocationRequestChanged);
     }
 
     private void onLocationPowerSaveModeChanged(@LocationPowerSaveMode int locationPowerSaveMode) {
-        synchronized (mLock) {
-            // this is rare, just assume everything has changed to keep it simple
-            updateRegistrations(registration -> true);
-        }
+        // this is rare, just assume everything has changed to keep it simple
+        updateRegistrations(registration -> true);
     }
 
     private void onAppForegroundChanged(int uid, boolean foreground) {
-        synchronized (mLock) {
-            updateRegistrations(registration -> registration.onForegroundChanged(uid, foreground));
-        }
+        updateRegistrations(registration -> registration.onForegroundChanged(uid, foreground));
+    }
+
+    private void onAdasAllowlistChanged() {
+        updateRegistrations(Registration::onProviderLocationRequestChanged);
     }
 
     private void onIgnoreSettingsWhitelistChanged() {
-        synchronized (mLock) {
-            updateRegistrations(Registration::onProviderLocationRequestChanged);
-        }
+        updateRegistrations(Registration::onProviderLocationRequestChanged);
     }
 
     private void onLocationPackageBlacklistChanged(int userId) {
-        synchronized (mLock) {
-            updateRegistrations(registration -> registration.getIdentity().getUserId() == userId);
-        }
+        updateRegistrations(registration -> registration.getIdentity().getUserId() == userId);
     }
 
     private void onLocationPermissionsChanged(@Nullable String packageName) {
-        synchronized (mLock) {
-            updateRegistrations(
-                    registration -> registration.onLocationPermissionsChanged(packageName));
-        }
+        updateRegistrations(
+                registration -> registration.onLocationPermissionsChanged(packageName));
     }
 
     private void onLocationPermissionsChanged(int uid) {
-        synchronized (mLock) {
-            updateRegistrations(registration -> registration.onLocationPermissionsChanged(uid));
-        }
+        updateRegistrations(registration -> registration.onLocationPermissionsChanged(uid));
     }
 
-    @GuardedBy("mLock")
+    private void onPackageReset(String packageName) {
+        updateRegistrations(
+                registration -> {
+                    if (registration.getIdentity().getPackageName().equals(
+                            packageName)) {
+                        registration.remove();
+                    }
+
+                    return false;
+                });
+    }
+
+    private boolean isResetableForPackage(String packageName) {
+        // invoked to find out if the given package has any state that can be "force quit"
+        return findRegistration(
+                registration -> registration.getIdentity().getPackageName().equals(packageName));
+    }
+
+    @GuardedBy("mMultiplexerLock")
     @Override
     public void onStateChanged(
             AbstractLocationProvider.State oldState, AbstractLocationProvider.State newState) {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         if (oldState.allowed != newState.allowed) {
             onEnabledChanged(UserHandle.USER_ALL);
         }
@@ -2402,13 +2509,9 @@ public class LocationProviderManager extends
         }
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     @Override
     public void onReportLocation(LocationResult locationResult) {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         LocationResult filtered;
         if (mPassiveManager != null) {
             filtered = locationResult.filter(location -> {
@@ -2438,10 +2541,16 @@ public class LocationProviderManager extends
             filtered = locationResult;
         }
 
-        Location last = getLastLocationUnsafe(USER_CURRENT, PERMISSION_FINE, true, Long.MAX_VALUE);
-        if (last != null && locationResult.get(0).getElapsedRealtimeNanos()
-                < last.getElapsedRealtimeNanos()) {
-            Log.e(TAG, "non-monotonic location received from " + mName + " provider");
+        // check for non-monotonic locations if we're not the passive manager. the passive manager
+        // is much more likely to see non-monotonic locations since it gets locations from all
+        // providers, so this error log is not very useful there.
+        if (mPassiveManager != null) {
+            Location last = getLastLocationUnsafe(USER_CURRENT, PERMISSION_FINE, true,
+                    Long.MAX_VALUE);
+            if (last != null && locationResult.get(0).getElapsedRealtimeNanos()
+                    < last.getElapsedRealtimeNanos()) {
+                Log.e(TAG, "non-monotonic location received from " + mName + " provider");
+            }
         }
 
         // update last location
@@ -2458,12 +2567,8 @@ public class LocationProviderManager extends
         }
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     private void onUserStarted(int userId) {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         if (userId == UserHandle.USER_NULL) {
             return;
         }
@@ -2481,12 +2586,8 @@ public class LocationProviderManager extends
         }
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     private void onUserStopped(int userId) {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         if (userId == UserHandle.USER_NULL) {
             return;
         }
@@ -2501,12 +2602,8 @@ public class LocationProviderManager extends
         }
     }
 
-    @GuardedBy("mLock")
+    @GuardedBy("mMultiplexerLock")
     private void onEnabledChanged(int userId) {
-        if (Build.IS_DEBUGGABLE) {
-            Preconditions.checkState(Thread.holdsLock(mLock));
-        }
-
         if (userId == UserHandle.USER_NULL) {
             // used during initialization - ignore since many lower level operations (checking
             // settings for instance) do not support the null user
@@ -2606,7 +2703,7 @@ public class LocationProviderManager extends
     }
 
     public void dump(FileDescriptor fd, IndentingPrintWriter ipw, String[] args) {
-        synchronized (mLock) {
+        synchronized (mMultiplexerLock) {
             ipw.print(mName);
             ipw.print(" provider");
             if (mProvider.isMock()) {
@@ -2647,10 +2744,10 @@ public class LocationProviderManager extends
 
     private static class LastLocation {
 
-        private @Nullable Location mFineLocation;
-        private @Nullable Location mCoarseLocation;
-        private @Nullable Location mFineBypassLocation;
-        private @Nullable Location mCoarseBypassLocation;
+        @Nullable private Location mFineLocation;
+        @Nullable private Location mCoarseLocation;
+        @Nullable private Location mFineBypassLocation;
+        @Nullable private Location mCoarseBypassLocation;
 
         LastLocation() {}
 
@@ -2674,7 +2771,7 @@ public class LocationProviderManager extends
             mCoarseLocation = null;
         }
 
-        public @Nullable Location get(@PermissionLevel int permissionLevel,
+        @Nullable public Location get(@PermissionLevel int permissionLevel,
                 boolean isBypass) {
             switch (permissionLevel) {
                 case PERMISSION_FINE:
@@ -2733,103 +2830,84 @@ public class LocationProviderManager extends
         }
     }
 
-    private static class SingleUseCallback extends IRemoteCallback.Stub implements Runnable,
-            CancellationSignal.OnCancelListener {
+    private static class PendingIntentSender {
 
-        public static @Nullable SingleUseCallback wrap(@Nullable Runnable callback) {
-            return callback == null ? null : new SingleUseCallback(callback);
-        }
-
-        @GuardedBy("this")
-        private @Nullable Runnable mCallback;
-
-        private SingleUseCallback(Runnable callback) {
-            mCallback = Objects.requireNonNull(callback);
-        }
-
-        @Override
-        public void sendResult(Bundle data) {
-            run();
-        }
-
-        @Override
-        public void onCancel() {
-            run();
-        }
-
-        @Override
-        public void run() {
-            Runnable callback;
-            synchronized (this) {
-                callback = mCallback;
-                mCallback = null;
+        // send() SHOULD only run the OnFinished callback if it completes successfully. however,
+        // b/201299281 (which could not be fixed in the S timeframe) means that it's possible
+        // for send() to throw an exception AND run the completion callback which breaks the
+        // guarantee we rely on. we take matters into our own hands to ensure that the OnFinished
+        // callback can only be run if send() completes successfully. this means the OnFinished
+        // callback may be run inline, so there is no longer any guarantee about what thread the
+        // callback will be run on.
+        public static void send(PendingIntent pendingIntent, Context context, Intent intent,
+                @Nullable final Runnable callback, Bundle options)
+                throws PendingIntent.CanceledException {
+            GatedCallback gatedCallback;
+            PendingIntent.OnFinished onFinished;
+            if (callback != null) {
+                gatedCallback = new GatedCallback(callback);
+                onFinished = (pI, i, rC, rD, rE) -> gatedCallback.run();
+            } else {
+                gatedCallback = null;
+                onFinished = null;
             }
 
-            // prevent this callback from being run more than once - otherwise this could provide an
-            // attack vector for a malicious app to break assumptions on how many times a callback
-            // may be invoked, and thus crash system server.
-            if (callback == null) {
-                return;
-            }
-
-            final long identity = Binder.clearCallingIdentity();
-            try {
-                callback.run();
-            } catch (RuntimeException e) {
-                // since this is within a oneway binder transaction there is nowhere
-                // for exceptions to go - move onto another thread to crash system
-                // server so we find out about it
-                FgThread.getExecutor().execute(() -> {
-                    throw new AssertionError(e);
-                });
-                throw e;
-            } finally {
-                Binder.restoreCallingIdentity(identity);
+            pendingIntent.send(
+                    context,
+                    0,
+                    intent,
+                    onFinished,
+                    null,
+                    null,
+                    options);
+            if (gatedCallback != null) {
+                gatedCallback.allow();
             }
         }
-    }
 
-    private static class GatedCallback implements Runnable {
+        private static class GatedCallback implements Runnable {
 
-        private @Nullable Runnable mCallback;
+            @GuardedBy("this")
+            @Nullable private Runnable mCallback;
 
-        @GuardedBy("this")
-        private boolean mGate;
-        @GuardedBy("this")
-        private boolean mRun;
+            @GuardedBy("this")
+            private boolean mGate;
+            @GuardedBy("this")
+            private boolean mRun;
 
-        GatedCallback(@Nullable Runnable callback) {
-            mCallback = callback;
-        }
+            private GatedCallback(@Nullable Runnable callback) {
+                mCallback = callback;
+            }
 
-        public void allow() {
-            Runnable callback = null;
-            synchronized (this) {
-                mGate = true;
-                if (mRun && mCallback != null) {
-                    callback = mCallback;
-                    mCallback = null;
+            public void allow() {
+                Runnable callback = null;
+                synchronized (this) {
+                    mGate = true;
+                    if (mRun && mCallback != null) {
+                        callback = mCallback;
+                        mCallback = null;
+                    }
+                }
+
+                if (callback != null) {
+                    callback.run();
                 }
             }
 
-            if (callback != null) {
-                callback.run();
-            }
-        }
-
-        @Override
-        public void run() {
-            Runnable callback = null;
-            synchronized (this) {
-                mRun = true;
-                if (mGate && mCallback != null) {
-                    callback = mCallback;
-                    mCallback = null;
+            @Override
+            public void run() {
+                Runnable callback = null;
+                synchronized (this) {
+                    mRun = true;
+                    if (mGate && mCallback != null) {
+                        callback = mCallback;
+                        mCallback = null;
+                    }
                 }
-            }
 
-            if (callback != null) {
-                callback.run();
+                if (callback != null) {
+                    callback.run();
+                }
             }
         }
     }
@@ -2850,7 +2928,19 @@ public class LocationProviderManager extends
             try {
                 mWakeLock.release();
             } catch (RuntimeException e) {
-                Log.e(TAG, "wakelock over-released by " + mIdentity, e);
+                // wakelock throws a RuntimeException instead of some more specific exception, so
+                // attempt to capture only actual RuntimeExceptions
+                if (e.getClass() == RuntimeException.class) {
+                    Log.e(TAG, "wakelock over-released by " + mIdentity, e);
+                } else {
+                    // since this is within a oneway binder transaction there is nowhere for
+                    // exceptions to go - move onto another thread to crash system server so we find
+                    // out about it
+                    FgThread.getExecutor().execute(() -> {
+                        throw new AssertionError(e);
+                    });
+                    throw e;
+                }
             } finally {
                 Binder.restoreCallingIdentity(identity);
             }

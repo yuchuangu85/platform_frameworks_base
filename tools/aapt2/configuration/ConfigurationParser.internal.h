@@ -47,15 +47,16 @@ using Entry = std::unordered_map<std::string, T>;
 template <class T>
 using Group = Entry<OrderedEntry<T>>;
 
-template<typename T>
-bool IsGroupValid(const Group<T>& group, const std::string& name, IDiagnostics* diag) {
+template <typename T>
+bool IsGroupValid(const Group<T>& group, const std::string& name, android::IDiagnostics* diag) {
   std::set<int32_t> orders;
   for (const auto& p : group) {
     orders.insert(p.second.order);
   }
   bool valid = orders.size() == group.size();
   if (!valid) {
-    diag->Error(DiagMessage() << name << " have overlapping version-code-order attributes");
+    diag->Error(android::DiagMessage()
+                << name << " have overlapping version-code-order attributes");
   }
   return valid;
 }
@@ -84,8 +85,8 @@ class ComparisonChain {
    * have not been able to determine the sort order with the previous comparisons.
    */
   template <typename T>
-  ComparisonChain& Add(const Group<T>& groups, const Maybe<std::string>& lhs,
-                       const Maybe<std::string>& rhs) {
+  ComparisonChain& Add(const Group<T>& groups, const std::optional<std::string>& lhs,
+                       const std::optional<std::string>& rhs) {
     return Add(GetGroupOrder(groups, lhs), GetGroupOrder(groups, rhs));
   }
 
@@ -108,7 +109,7 @@ class ComparisonChain {
 
  private:
   template <typename T>
-  inline size_t GetGroupOrder(const Entry<T>& groups, const Maybe<std::string>& label) {
+  inline size_t GetGroupOrder(const Entry<T>& groups, const std::optional<std::string>& label) {
     if (!label) {
       return std::numeric_limits<size_t>::max();
     }
@@ -122,32 +123,33 @@ class ComparisonChain {
 /** Output artifact configuration options. */
 struct ConfiguredArtifact {
   /** Name to use for output of processing foo.apk -> foo.<name>.apk. */
-  Maybe<std::string> name;
+  std::optional<std::string> name;
   /** If present, uses the ABI group with this name. */
-  Maybe<std::string> abi_group;
+  std::optional<std::string> abi_group;
   /** If present, uses the screen density group with this name. */
-  Maybe<std::string> screen_density_group;
+  std::optional<std::string> screen_density_group;
   /** If present, uses the locale group with this name. */
-  Maybe<std::string> locale_group;
+  std::optional<std::string> locale_group;
   /** If present, uses the Android SDK with this name. */
-  Maybe<std::string> android_sdk;
+  std::optional<std::string> android_sdk;
   /** If present, uses the device feature group with this name. */
-  Maybe<std::string> device_feature_group;
+  std::optional<std::string> device_feature_group;
   /** If present, uses the OpenGL texture group with this name. */
-  Maybe<std::string> gl_texture_group;
+  std::optional<std::string> gl_texture_group;
 
   /** Convert an artifact name template into a name string based on configuration contents. */
-  Maybe<std::string> ToArtifactName(const android::StringPiece& format,
-                                    const android::StringPiece& apk_name, IDiagnostics* diag) const;
+  std::optional<std::string> ToArtifactName(android::StringPiece format,
+                                            android::StringPiece apk_name,
+                                            android::IDiagnostics* diag) const;
 
   /** Convert an artifact name template into a name string based on configuration contents. */
-  Maybe<std::string> Name(const android::StringPiece& apk_name, IDiagnostics* diag) const;
+  std::optional<std::string> Name(android::StringPiece apk_name, android::IDiagnostics* diag) const;
 };
 
 /** AAPT2 XML configuration file binary representation. */
 struct PostProcessingConfiguration {
   std::vector<ConfiguredArtifact> artifacts;
-  Maybe<std::string> artifact_format;
+  std::optional<std::string> artifact_format;
 
   Group<Abi> abi_groups;
   Group<android::ConfigDescription> screen_density_groups;
@@ -156,7 +158,7 @@ struct PostProcessingConfiguration {
   Group<GlTexture> gl_texture_groups;
   Entry<AndroidSdk> android_sdks;
 
-  bool ValidateVersionCodeOrdering(IDiagnostics* diag) {
+  bool ValidateVersionCodeOrdering(android::IDiagnostics* diag) {
     bool valid = IsGroupValid(abi_groups, "abi-groups", diag);
     valid &= IsGroupValid(screen_density_groups, "screen-density-groups", diag);
     valid &= IsGroupValid(locale_groups, "locale-groups", diag);
@@ -212,43 +214,43 @@ struct PostProcessingConfiguration {
 };
 
 /** Parses the provided XML document returning the post processing configuration. */
-Maybe<PostProcessingConfiguration> ExtractConfiguration(const std::string& contents,
-                                                        const std::string& config_path,
-                                                        IDiagnostics* diag);
+std::optional<PostProcessingConfiguration> ExtractConfiguration(const std::string& contents,
+                                                                const std::string& config_path,
+                                                                android::IDiagnostics* diag);
 
 namespace handler {
 
 /** Handler for <artifact> tags. */
 bool ArtifactTagHandler(configuration::PostProcessingConfiguration* config, xml::Element* element,
-                        IDiagnostics* diag);
+                        android::IDiagnostics* diag);
 
 /** Handler for <artifact-format> tags. */
 bool ArtifactFormatTagHandler(configuration::PostProcessingConfiguration* config,
-                              xml::Element* element, IDiagnostics* diag);
+                              xml::Element* element, android::IDiagnostics* diag);
 
 /** Handler for <abi-group> tags. */
 bool AbiGroupTagHandler(configuration::PostProcessingConfiguration* config, xml::Element* element,
-                        IDiagnostics* diag);
+                        android::IDiagnostics* diag);
 
 /** Handler for <screen-density-group> tags. */
 bool ScreenDensityGroupTagHandler(configuration::PostProcessingConfiguration* config,
-                                  xml::Element* element, IDiagnostics* diag);
+                                  xml::Element* element, android::IDiagnostics* diag);
 
 /** Handler for <locale-group> tags. */
 bool LocaleGroupTagHandler(configuration::PostProcessingConfiguration* config,
-                           xml::Element* element, IDiagnostics* diag);
+                           xml::Element* element, android::IDiagnostics* diag);
 
 /** Handler for <android-sdk> tags. */
 bool AndroidSdkTagHandler(configuration::PostProcessingConfiguration* config, xml::Element* element,
-                          IDiagnostics* diag);
+                          android::IDiagnostics* diag);
 
 /** Handler for <gl-texture-group> tags. */
 bool GlTextureGroupTagHandler(configuration::PostProcessingConfiguration* config,
-                              xml::Element* element, IDiagnostics* diag);
+                              xml::Element* element, android::IDiagnostics* diag);
 
 /** Handler for <device-feature-group> tags. */
 bool DeviceFeatureGroupTagHandler(configuration::PostProcessingConfiguration* config,
-                                  xml::Element* element, IDiagnostics* diag);
+                                  xml::Element* element, android::IDiagnostics* diag);
 
 }  // namespace handler
 }  // namespace configuration

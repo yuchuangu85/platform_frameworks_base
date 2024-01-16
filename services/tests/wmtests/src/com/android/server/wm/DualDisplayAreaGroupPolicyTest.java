@@ -17,6 +17,8 @@
 package com.android.server.wm;
 
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LOCKED;
+import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_NOSENSOR;
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
 import static android.content.res.Configuration.ORIENTATION_LANDSCAPE;
@@ -41,16 +43,22 @@ import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
+import android.annotation.NonNull;
 import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.os.Binder;
 import android.platform.test.annotations.Presubmit;
 import android.view.Display;
+import android.window.IDisplayAreaOrganizer;
 
 import androidx.test.filters.SmallTest;
+
+import com.google.android.collect.Lists;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -87,7 +95,11 @@ public class DualDisplayAreaGroupPolicyTest extends WindowTestsBase {
     @Before
     public void setUp() {
         // Let the Display to be created with the DualDisplay policy.
-        final DisplayAreaPolicy.Provider policyProvider = new DualDisplayTestPolicyProvider();
+        setupDisplay(new DualDisplayTestPolicyProvider(mWm));
+    }
+
+    /** Populates fields for the test display. */
+    private void setupDisplay(@NonNull DisplayAreaPolicy.Provider policyProvider) {
         doReturn(policyProvider).when(mWm).getDisplayAreaPolicyProvider();
 
         // Display: 1920x1200 (landscape). First and second display are both 860x1200 (portrait).
@@ -160,12 +172,37 @@ public class DualDisplayAreaGroupPolicyTest extends WindowTestsBase {
     }
 
     @Test
+    public void testIgnoreOrientationRequest_displayReceiveOrientationChangeForNoSensor() {
+        mFirstRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mSecondRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mDisplay.onLastFocusedTaskDisplayAreaChanged(mFirstTda);
+
+        prepareUnresizable(mFirstActivity, SCREEN_ORIENTATION_NOSENSOR);
+
+        verify(mFirstRoot).onDescendantOrientationChanged(any());
+        verify(mDisplay).onDescendantOrientationChanged(any());
+    }
+
+    @Test
+    public void testIgnoreOrientationRequest_displayReceiveOrientationChangeForLocked() {
+        mFirstRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mSecondRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mDisplay.onLastFocusedTaskDisplayAreaChanged(mFirstTda);
+
+        prepareUnresizable(mFirstActivity, SCREEN_ORIENTATION_LOCKED);
+
+        verify(mFirstRoot).onDescendantOrientationChanged(any());
+        verify(mDisplay).onDescendantOrientationChanged(any());
+    }
+
+    @Test
     public void testLaunchPortraitApp_fillsDisplayAreaGroup() {
         mFirstRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
         mSecondRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
         mDisplay.onLastFocusedTaskDisplayAreaChanged(mFirstTda);
 
-        prepareUnresizable(mFirstActivity, SCREEN_ORIENTATION_PORTRAIT);
+        prepareLimitedBounds(mFirstActivity, SCREEN_ORIENTATION_PORTRAIT,
+                false /* isUnresizable */);
         final Rect dagBounds = new Rect(mFirstRoot.getBounds());
         final Rect taskBounds = new Rect(mFirstTask.getBounds());
         final Rect activityBounds = new Rect(mFirstActivity.getBounds());
@@ -202,12 +239,27 @@ public class DualDisplayAreaGroupPolicyTest extends WindowTestsBase {
         assertThat(newTaskBounds).isEqualTo(newDagBounds);
 
         // Activity config bounds is unchanged, size compat bounds is (860x[860x860/1200=616])
-        assertThat(mFirstActivity.getSizeCompatScale()).isLessThan(1f);
+        assertThat(mFirstActivity.getCompatScale()).isLessThan(1f);
         assertThat(activityConfigBounds.width()).isEqualTo(activityBounds.width());
         assertThat(activityConfigBounds.height()).isEqualTo(activityBounds.height());
         assertThat(activitySizeCompatBounds.height()).isEqualTo(newTaskBounds.height());
         assertThat(activitySizeCompatBounds.width()).isEqualTo(
                 newTaskBounds.height() * newTaskBounds.height() / newTaskBounds.width());
+    }
+
+    @Test
+    public void testLaunchNoSensorApp_noSizeCompatAfterRotation() {
+        mFirstRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mSecondRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mDisplay.onLastFocusedTaskDisplayAreaChanged(mFirstTda);
+
+        prepareUnresizable(mFirstActivity, SCREEN_ORIENTATION_NOSENSOR);
+        assertThat(mFirstActivity.isLetterboxedForFixedOrientationAndAspectRatio()).isFalse();
+        assertThat(mFirstActivity.inSizeCompatMode()).isFalse();
+
+        rotateDisplay(mDisplay, ROTATION_90);
+        assertThat(mFirstActivity.isLetterboxedForFixedOrientationAndAspectRatio()).isFalse();
+        assertThat(mFirstActivity.inSizeCompatMode()).isFalse();
     }
 
     @Test
@@ -229,6 +281,26 @@ public class DualDisplayAreaGroupPolicyTest extends WindowTestsBase {
         assertThat(activityBounds.width()).isEqualTo(dagBounds.width());
         assertThat(activityBounds.height())
                 .isEqualTo(dagBounds.width() * dagBounds.width() / dagBounds.height());
+    }
+
+    @Test
+    public void testLaunchNoSensorApp_activityIsNotLetterboxForFixedOrientationDisplayAreaGroup() {
+        mFirstRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mSecondRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mDisplay.onLastFocusedTaskDisplayAreaChanged(mFirstTda);
+
+        prepareUnresizable(mFirstActivity, SCREEN_ORIENTATION_NOSENSOR);
+        assertThat(mFirstActivity.isLetterboxedForFixedOrientationAndAspectRatio()).isFalse();
+    }
+
+    @Test
+    public void testLaunchLockedApp_activityIsNotLetterboxForFixedOrientationInDisplayAreaGroup() {
+        mFirstRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mSecondRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mDisplay.onLastFocusedTaskDisplayAreaChanged(mFirstTda);
+
+        prepareUnresizable(mFirstActivity, SCREEN_ORIENTATION_LOCKED);
+        assertThat(mFirstActivity.isLetterboxedForFixedOrientationAndAspectRatio()).isFalse();
     }
 
     @Test
@@ -258,6 +330,20 @@ public class DualDisplayAreaGroupPolicyTest extends WindowTestsBase {
         assertThat(mFirstActivity.hasSizeCompatBounds()).isFalse();
         assertThat(newActivityBounds.width()).isEqualTo(activityBounds.width());
         assertThat(newActivityBounds.height()).isEqualTo(activityBounds.height());
+    }
+
+    @Test
+    public void testLaunchNoSensorApp_fixedOrientationLetterboxBecomesSizeCompatAfterRotation() {
+        mFirstRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mSecondRoot.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mDisplay.onLastFocusedTaskDisplayAreaChanged(mFirstTda);
+
+        prepareUnresizable(mFirstActivity, SCREEN_ORIENTATION_NOSENSOR);
+
+        rotateDisplay(mDisplay, ROTATION_90);
+
+        assertThat(mFirstActivity.isLetterboxedForFixedOrientationAndAspectRatio()).isFalse();
+        assertThat(mFirstActivity.inSizeCompatMode()).isFalse();
     }
 
     @Test
@@ -346,6 +432,69 @@ public class DualDisplayAreaGroupPolicyTest extends WindowTestsBase {
     }
 
     @Test
+    public void testPlaceImeContainer_skipReparentForOrganizedImeContainer() {
+        setupImeWindow();
+        final DisplayArea.Tokens imeContainer = mDisplay.getImeContainer();
+        final WindowToken imeToken = tokenOfType(TYPE_INPUT_METHOD);
+
+        // By default, the ime container is attached to DC as defined in DAPolicy.
+        assertThat(imeContainer.getRootDisplayArea()).isEqualTo(mDisplay);
+        assertThat(mDisplay.findAreaForTokenInLayer(imeToken)).isEqualTo(imeContainer);
+
+        final WindowState firstActivityWin =
+                createWindow(null /* parent */, TYPE_APPLICATION_STARTING, mFirstActivity,
+                        "firstActivityWin");
+        spyOn(firstActivityWin);
+        // firstActivityWin should be the target
+        doReturn(true).when(firstActivityWin).canBeImeTarget();
+
+        // Main precondition for this test: organize the ImeContainer.
+        final IDisplayAreaOrganizer mockImeOrganizer = mock(IDisplayAreaOrganizer.class);
+        when(mockImeOrganizer.asBinder()).thenReturn(new Binder());
+        imeContainer.setOrganizer(mockImeOrganizer);
+
+        WindowState imeTarget = mDisplay.computeImeTarget(true /* updateImeTarget */);
+
+        // The IME target must be updated but the don't reparent organized ImeContainers.
+        // See DisplayAreaOrganizer#FEATURE_IME.
+        assertThat(imeTarget).isEqualTo(firstActivityWin);
+        verify(mFirstRoot, never()).placeImeContainer(imeContainer);
+
+        // Clean up organizer.
+        imeContainer.setOrganizer(null);
+    }
+
+    @Test
+    public void testPlaceImeContainer_noReparentIfRootDoesNotHaveImePlaceholder() {
+        // Define the DualDisplayArea hierarchy without IME_PLACEHOLDER in DAGs.
+        setupDisplay(new DualDisplayTestPolicyProvider(new ArrayList<>(), new ArrayList<>()));
+        setupImeWindow();
+        final DisplayArea.Tokens imeContainer = mDisplay.getImeContainer();
+        final WindowToken imeToken = tokenOfType(TYPE_INPUT_METHOD);
+
+        // By default, the ime container is attached to DC as defined in DAPolicy.
+        assertThat(imeContainer.getRootDisplayArea()).isEqualTo(mDisplay);
+
+        // firstActivityWin should be the target
+        final WindowState firstActivityWin =
+                createWindow(null /* parent */, TYPE_APPLICATION_STARTING, mFirstActivity,
+                        "firstActivityWin");
+        spyOn(firstActivityWin);
+        doReturn(true).when(firstActivityWin).canBeImeTarget();
+        WindowState imeTarget = mDisplay.computeImeTarget(true /* updateImeTarget */);
+
+        // There is no IME_PLACEHOLDER in the firstRoot, so the ImeContainer will not be reparented.
+        assertThat(imeTarget).isEqualTo(firstActivityWin);
+        verify(mFirstRoot).placeImeContainer(imeContainer);
+        assertThat(imeContainer.getRootDisplayArea()).isEqualTo(mDisplay);
+        assertThat(imeContainer.getParent().asDisplayArea().mFeatureId)
+                .isEqualTo(FEATURE_IME_PLACEHOLDER);
+        assertThat(mDisplay.findAreaForTokenInLayer(imeToken)).isEqualTo(imeContainer);
+        assertThat(mFirstRoot.findAreaForTokenInLayer(imeToken)).isNull();
+        assertThat(mSecondRoot.findAreaForTokenInLayer(imeToken)).isNull();
+    }
+
+    @Test
     public void testResizableFixedOrientationApp_fixedOrientationLetterboxing() {
         mFirstRoot.setIgnoreOrientationRequest(false /* ignoreOrientationRequest */);
         mSecondRoot.setIgnoreOrientationRequest(false /* ignoreOrientationRequest */);
@@ -403,7 +552,7 @@ public class DualDisplayAreaGroupPolicyTest extends WindowTestsBase {
         /** Please use the {@link Builder} to create. */
         DualDisplayContent(RootWindowContainer rootWindowContainer,
                 Display display) {
-            super(rootWindowContainer, display);
+            super(rootWindowContainer, display, mock(DeviceStateController.class));
 
             mFirstRoot = getGroupRoot(FEATURE_FIRST_ROOT);
             mSecondRoot = getGroupRoot(FEATURE_SECOND_ROOT);
@@ -486,9 +635,37 @@ public class DualDisplayAreaGroupPolicyTest extends WindowTestsBase {
     /** Policy to create a dual {@link DisplayAreaGroup} policy in test. */
     static class DualDisplayTestPolicyProvider implements DisplayAreaPolicy.Provider {
 
+        @NonNull
+        private final List<DisplayAreaPolicyBuilder.Feature> mFirstRootFeatures = new ArrayList<>();
+        @NonNull
+        private final List<DisplayAreaPolicyBuilder.Feature> mSecondRootFeatures =
+                new ArrayList<>();
+
+        DualDisplayTestPolicyProvider(@NonNull WindowManagerService wmService) {
+            // Add IME_PLACEHOLDER by default.
+            this(Lists.newArrayList(new DisplayAreaPolicyBuilder.Feature.Builder(
+                            wmService.mPolicy,
+                            "ImePlaceholder", FEATURE_IME_PLACEHOLDER)
+                            .and(TYPE_INPUT_METHOD, TYPE_INPUT_METHOD_DIALOG)
+                            .build()),
+                    Lists.newArrayList(new DisplayAreaPolicyBuilder.Feature.Builder(
+                            wmService.mPolicy,
+                            "ImePlaceholder", FEATURE_IME_PLACEHOLDER)
+                            .and(TYPE_INPUT_METHOD, TYPE_INPUT_METHOD_DIALOG)
+                            .build()));
+        }
+
+        DualDisplayTestPolicyProvider(
+                @NonNull List<DisplayAreaPolicyBuilder.Feature> firstRootFeatures,
+                @NonNull List<DisplayAreaPolicyBuilder.Feature> secondRootFeatures) {
+            mFirstRootFeatures.addAll(firstRootFeatures);
+            mSecondRootFeatures.addAll(secondRootFeatures);
+        }
+
         @Override
-        public DisplayAreaPolicy instantiate(WindowManagerService wmService, DisplayContent content,
-                RootDisplayArea root, DisplayArea.Tokens imeContainer) {
+        public DisplayAreaPolicy instantiate(@NonNull WindowManagerService wmService,
+                @NonNull DisplayContent content, @NonNull RootDisplayArea root,
+                @NonNull DisplayArea.Tokens imeContainer) {
             // Root
             // Include FEATURE_WINDOWED_MAGNIFICATION because it will be used as the screen rotation
             // layer
@@ -517,12 +694,10 @@ public class DualDisplayAreaGroupPolicyTest extends WindowTestsBase {
             firstTdaList.add(firstTaskDisplayArea);
             DisplayAreaPolicyBuilder.HierarchyBuilder firstHierarchy =
                     new DisplayAreaPolicyBuilder.HierarchyBuilder(firstRoot)
-                            .setTaskDisplayAreas(firstTdaList)
-                            .addFeature(new DisplayAreaPolicyBuilder.Feature.Builder(
-                                    wmService.mPolicy,
-                                    "ImePlaceholder", FEATURE_IME_PLACEHOLDER)
-                                    .and(TYPE_INPUT_METHOD, TYPE_INPUT_METHOD_DIALOG)
-                                    .build());
+                            .setTaskDisplayAreas(firstTdaList);
+            for (DisplayAreaPolicyBuilder.Feature feature : mFirstRootFeatures) {
+                firstHierarchy.addFeature(feature);
+            }
 
             // Second
             final RootDisplayArea secondRoot = new DisplayAreaGroup(wmService, "SecondRoot",
@@ -533,12 +708,10 @@ public class DualDisplayAreaGroupPolicyTest extends WindowTestsBase {
             secondTdaList.add(secondTaskDisplayArea);
             DisplayAreaPolicyBuilder.HierarchyBuilder secondHierarchy =
                     new DisplayAreaPolicyBuilder.HierarchyBuilder(secondRoot)
-                            .setTaskDisplayAreas(secondTdaList)
-                            .addFeature(new DisplayAreaPolicyBuilder.Feature.Builder(
-                                    wmService.mPolicy,
-                                    "ImePlaceholder", FEATURE_IME_PLACEHOLDER)
-                                    .and(TYPE_INPUT_METHOD, TYPE_INPUT_METHOD_DIALOG)
-                                    .build());
+                            .setTaskDisplayAreas(secondTdaList);
+            for (DisplayAreaPolicyBuilder.Feature feature : mSecondRootFeatures) {
+                secondHierarchy.addFeature(feature);
+            }
 
             return new DisplayAreaPolicyBuilder()
                     .setRootHierarchy(rootHierarchy)

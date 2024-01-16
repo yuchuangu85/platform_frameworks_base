@@ -19,11 +19,13 @@ package com.android.server.pm.dex;
 import static com.android.server.pm.dex.PackageDynamicCodeLoading.FILE_TYPE_DEX;
 import static com.android.server.pm.dex.PackageDynamicCodeLoading.FILE_TYPE_NATIVE;
 
+import android.annotation.NonNull;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.IPackageManager;
 import android.content.pm.PackageInfo;
 import android.os.FileUtils;
 import android.os.RemoteException;
+import android.os.ServiceManager;
 import android.os.UserHandle;
 import android.os.storage.StorageManager;
 import android.util.EventLog;
@@ -41,6 +43,9 @@ import libcore.util.HexEncoding;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -58,20 +63,30 @@ public class DynamicCodeLogger {
     private static final String DCL_DEX_SUBTAG = "dcl";
     private static final String DCL_NATIVE_SUBTAG = "dcln";
 
-    private final IPackageManager mPackageManager;
+    private IPackageManager mPackageManager;
     private final PackageDynamicCodeLoading mPackageDynamicCodeLoading;
     private final Installer mInstaller;
 
-    DynamicCodeLogger(IPackageManager pms, Installer installer) {
-        this(pms, installer, new PackageDynamicCodeLoading());
+    public DynamicCodeLogger(Installer installer) {
+        mInstaller = installer;
+        mPackageDynamicCodeLoading = new PackageDynamicCodeLoading();
     }
 
     @VisibleForTesting
-    DynamicCodeLogger(IPackageManager pms, Installer installer,
-            PackageDynamicCodeLoading packageDynamicCodeLoading) {
-        mPackageManager = pms;
-        mPackageDynamicCodeLoading = packageDynamicCodeLoading;
+    DynamicCodeLogger(@NonNull IPackageManager packageManager, @NonNull Installer installer,
+            @NonNull PackageDynamicCodeLoading packageDynamicCodeLoading) {
+        mPackageManager = packageManager;
         mInstaller = installer;
+        mPackageDynamicCodeLoading = packageDynamicCodeLoading;
+    }
+
+    @NonNull
+    private IPackageManager getPackageManager() {
+        if (mPackageManager == null) {
+            mPackageManager = IPackageManager.Stub.asInterface(
+                    ServiceManager.getService("package"));
+        }
+        return mPackageManager;
     }
 
     public Set<String> getAllPackagesWithDynamicCodeLoading() {
@@ -104,7 +119,7 @@ public class DynamicCodeLogger {
 
                 try {
                     PackageInfo ownerInfo =
-                            mPackageManager.getPackageInfo(packageName, /*flags*/ 0, userId);
+                            getPackageManager().getPackageInfo(packageName, /*flags*/ 0, userId);
                     appInfo = ownerInfo == null ? null : ownerInfo.applicationInfo;
                 } catch (RemoteException ignored) {
                     // Can't happen, we're local.
@@ -167,7 +182,7 @@ public class DynamicCodeLogger {
                     loadingUid = appInfo.uid;
                 } else {
                     try {
-                        loadingUid = mPackageManager.getPackageUid(loadingPackageName, /*flags*/ 0,
+                        loadingUid =  getPackageManager().getPackageUid(loadingPackageName, /*flags*/ 0,
                                 userId);
                     } catch (RemoteException ignored) {
                         // Can't happen, we're local.
@@ -208,8 +223,12 @@ public class DynamicCodeLogger {
         EventLog.writeEvent(SNET_TAG, subtag, uid, message);
     }
 
-    void recordDex(int loaderUserId, String dexPath, String owningPackageName,
-            String loadingPackageName) {
+    /**
+     * Records that an app running in the specified uid has executed dex code from the file at
+     * {@code path}.
+     */
+    public void recordDex(
+            int loaderUserId, String dexPath, String owningPackageName, String loadingPackageName) {
         if (mPackageDynamicCodeLoading.record(owningPackageName, dexPath,
                 FILE_TYPE_DEX, loaderUserId, loadingPackageName)) {
             mPackageDynamicCodeLoading.maybeWriteAsync();
@@ -217,13 +236,13 @@ public class DynamicCodeLogger {
     }
 
     /**
-     * Record that an app running in the specified uid has executed native code from the file at
-     * {@param path}.
+     * Records that an app running in the specified uid has executed native code from the file at
+     * {@code path}.
      */
     public void recordNative(int loadingUid, String path) {
         String[] packages;
         try {
-            packages = mPackageManager.getPackagesForUid(loadingUid);
+            packages =  getPackageManager().getPackagesForUid(loadingUid);
             if (packages == null || packages.length == 0) {
                 return;
             }
@@ -262,7 +281,39 @@ public class DynamicCodeLogger {
         mPackageDynamicCodeLoading.syncData(packageToUsersMap);
     }
 
-    void writeNow() {
+    /** Writes the in-memory dynamic code information to disk right away. */
+    public void writeNow() {
         mPackageDynamicCodeLoading.writeNow();
+    }
+
+    /** Reads the dynamic code information from disk. */
+    public void load(Map<Integer, List<PackageInfo>> userToPackagesMap) {
+        // Compute a reverse map.
+        Map<String, Set<Integer>> packageToUsersMap = new HashMap<>();
+        for (Map.Entry<Integer, List<PackageInfo>> entry : userToPackagesMap.entrySet()) {
+            List<PackageInfo> packageInfoList = entry.getValue();
+            int userId = entry.getKey();
+            for (PackageInfo pi : packageInfoList) {
+                Set<Integer> users =
+                        packageToUsersMap.computeIfAbsent(pi.packageName, k -> new HashSet<>());
+                users.add(userId);
+            }
+        }
+
+        readAndSync(packageToUsersMap);
+    }
+
+    /**
+     * Notifies that the user {@code userId} data for package {@code packageName} was destroyed.
+     * This will remove all dynamic code information associated with the package for the given user.
+     * {@code userId} is allowed to be {@code UserHandle.USER_ALL} in which case
+     * all dynamic code information for the package will be removed.
+     */
+    public void notifyPackageDataDestroyed(String packageName, int userId) {
+        if (userId == UserHandle.USER_ALL) {
+            removePackage(packageName);
+        } else {
+            removeUserPackage(packageName, userId);
+        }
     }
 }

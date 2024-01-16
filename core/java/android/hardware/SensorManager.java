@@ -16,6 +16,7 @@
 
 package android.hardware;
 
+import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
 import android.compat.annotation.UnsupportedAppUsage;
@@ -449,6 +450,27 @@ public abstract class SensorManager {
     }
 
     /**
+     * Returns the {@link Sensor} object identified by the given sensor handle.
+     *
+     * The raw sensor handle integer is an implementation detail and as such this method should only
+     * be used by internal system components.
+     *
+     * @param sensorHandle The integer handle uniquely identifying the sensor.
+     * @return A Sensor object identified by the given {@code sensorHandle}, if such a sensor
+     * exists, {@code null} otherwise.
+     *
+     * @hide
+     */
+    public @Nullable Sensor getSensorByHandle(int sensorHandle) {
+        for (final Sensor sensor : getFullSensorList()) {
+            if (sensor.getHandle() == sensorHandle) {
+                return sensor;
+            }
+        }
+        return null;
+    }
+
+    /**
      * Use this method to get a list of available dynamic sensors of a certain type.
      * Make multiple calls to get sensors of different types or use
      * {@link android.hardware.Sensor#TYPE_ALL Sensor.TYPE_ALL} to get all dynamic sensors.
@@ -496,7 +518,7 @@ public abstract class SensorManager {
      * @see #getSensorList(int)
      * @see Sensor
      */
-    public Sensor getDefaultSensor(int type) {
+    public @Nullable Sensor getDefaultSensor(int type) {
         // TODO: need to be smarter, for now, just return the 1st sensor
         List<Sensor> l = getSensorList(type);
         boolean wakeUpSensor = false;
@@ -506,6 +528,7 @@ public abstract class SensorManager {
         if (type == Sensor.TYPE_PROXIMITY || type == Sensor.TYPE_SIGNIFICANT_MOTION
                 || type == Sensor.TYPE_TILT_DETECTOR || type == Sensor.TYPE_WAKE_GESTURE
                 || type == Sensor.TYPE_GLANCE_GESTURE || type == Sensor.TYPE_PICK_UP_GESTURE
+                || type == Sensor.TYPE_LOW_LATENCY_OFFBODY_DETECT
                 || type == Sensor.TYPE_WRIST_TILT_GESTURE
                 || type == Sensor.TYPE_DYNAMIC_SENSOR_META || type == Sensor.TYPE_HINGE_ANGLE) {
             wakeUpSensor = true;
@@ -543,7 +566,7 @@ public abstract class SensorManager {
      *         and the application has the necessary permissions, or null otherwise.
      * @see Sensor#isWakeUpSensor()
      */
-    public Sensor getDefaultSensor(int type, boolean wakeUp) {
+    public @Nullable Sensor getDefaultSensor(int type, boolean wakeUp) {
         List<Sensor> l = getSensorList(type);
         for (Sensor sensor : l) {
             if (sensor.isWakeUpSensor() == wakeUp) {
@@ -870,9 +893,9 @@ public abstract class SensorManager {
 
     /**
      * Flushes the FIFO of all the sensors registered for this listener. If there are events
-     * in the FIFO of the sensor, they are returned as if the maxReportLantecy of the FIFO has
+     * in the FIFO of the sensor, they are returned as if the maxReportLatency of the FIFO has
      * expired. Events are returned in the usual way through the SensorEventListener.
-     * This call doesn't affect the maxReportLantecy for this sensor. This call is asynchronous and
+     * This call doesn't affect the maxReportLatency for this sensor. This call is asynchronous and
      * returns immediately.
      * {@link android.hardware.SensorEventListener2#onFlushCompleted onFlushCompleted} is called
      * after all the events in the batch at the time of calling this method have been delivered
@@ -900,7 +923,7 @@ public abstract class SensorManager {
      * Create a sensor direct channel backed by shared memory wrapped in MemoryFile object.
      *
      * The resulting channel can be used for delivering sensor events to native code, other
-     * processes, GPU/DSP or other co-processors without CPU intervention. This is the recommanded
+     * processes, GPU/DSP or other co-processors without CPU intervention. This is the recommended
      * for high performance sensor applications that use high sensor rates (e.g. greater than 200Hz)
      * and cares about sensor event latency.
      *
@@ -922,7 +945,7 @@ public abstract class SensorManager {
      * Create a sensor direct channel backed by shared memory wrapped in HardwareBuffer object.
      *
      * The resulting channel can be used for delivering sensor events to native code, other
-     * processes, GPU/DSP or other co-processors without CPU intervention. This is the recommanded
+     * processes, GPU/DSP or other co-processors without CPU intervention. This is the recommended
      * for high performance sensor applications that use high sensor rates (e.g. greater than 200Hz)
      * and cares about sensor event latency.
      *
@@ -1332,11 +1355,11 @@ public abstract class SensorManager {
      *        returned by {@link #getRotationMatrix}.
      *
      * @param X
-     *        defines the axis of the new cooridinate system that coincide with the X axis of the
+     *        defines the axis of the new coordinate system that coincide with the X axis of the
      *        original coordinate system.
      *
      * @param Y
-     *        defines the axis of the new cooridinate system that coincide with the Y axis of the
+     *        defines the axis of the new coordinate system that coincide with the Y axis of the
      *        original coordinate system.
      *
      * @param outR
@@ -1824,7 +1847,7 @@ public abstract class SensorManager {
      * This method is used to inject raw sensor data into the HAL.  Call {@link
      * initDataInjection(boolean)} before this method to set the HAL in data injection mode. This
      * method should be called only if a previous call to initDataInjection has been successful and
-     * the HAL and SensorService are already opreating in data injection mode.
+     * the HAL and SensorService are already operating in data injection mode.
      *
      * @param sensor The sensor to inject.
      * @param values Sensor values to inject. The length of this

@@ -26,8 +26,11 @@ import android.text.TextUtils;
 
 import com.android.internal.annotations.GuardedBy;
 
+import dalvik.annotation.optimization.CriticalNative;
+
 import java.io.FileDescriptor;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.Objects;
@@ -438,6 +441,12 @@ public final class ApkAssets {
         }
     }
 
+    void dump(PrintWriter pw, String prefix) {
+        pw.println(prefix + "class=" + getClass());
+        pw.println(prefix + "debugName=" + getDebugName());
+        pw.println(prefix + "assetPath=" + getAssetPath());
+    }
+
     private static native long nativeLoad(@FormatType int format, @NonNull String path,
             @PropertyFlags int flags, @Nullable AssetsProvider asset) throws IOException;
     private static native long nativeLoadEmpty(@PropertyFlags int flags,
@@ -452,7 +461,7 @@ public final class ApkAssets {
     private static native @NonNull String nativeGetAssetPath(long ptr);
     private static native @NonNull String nativeGetDebugName(long ptr);
     private static native long nativeGetStringBlock(long ptr);
-    private static native boolean nativeIsUpToDate(long ptr);
+    @CriticalNative private static native boolean nativeIsUpToDate(long ptr);
     private static native long nativeOpenXml(long ptr, @NonNull String fileName) throws IOException;
     private static native @Nullable OverlayableInfo nativeGetOverlayableInfo(long ptr,
             String overlayableName) throws IOException;

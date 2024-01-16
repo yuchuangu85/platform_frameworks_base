@@ -16,9 +16,9 @@
 
 package com.android.server.vcn;
 
-import static android.telephony.CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED;
-import static android.telephony.CarrierConfigManager.EXTRA_SLOT_INDEX;
-import static android.telephony.CarrierConfigManager.EXTRA_SUBSCRIPTION_INDEX;
+import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
+import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
+import static android.net.vcn.VcnManager.VCN_RESTRICTED_TRANSPORTS_INT_ARRAY_KEY;
 import static android.telephony.SubscriptionManager.INVALID_SIM_SLOT_INDEX;
 import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 import static android.telephony.TelephonyCallback.ActiveDataSubscriptionIdListener;
@@ -26,6 +26,7 @@ import static android.telephony.TelephonyManager.ACTION_MULTI_SIM_CONFIG_CHANGED
 
 import static com.android.server.vcn.TelephonySubscriptionTracker.TelephonySubscriptionSnapshot;
 import static com.android.server.vcn.TelephonySubscriptionTracker.TelephonySubscriptionTrackerCallback;
+import static com.android.server.vcn.util.PersistableBundleUtils.PersistableBundleWrapper;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -38,6 +39,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -50,9 +52,11 @@ import android.annotation.NonNull;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.net.vcn.VcnManager;
 import android.os.Handler;
 import android.os.HandlerExecutor;
 import android.os.ParcelUuid;
+import android.os.PersistableBundle;
 import android.os.test.TestLooper;
 import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionInfo;
@@ -60,7 +64,7 @@ import android.telephony.SubscriptionManager;
 import android.telephony.SubscriptionManager.OnSubscriptionsChangedListener;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
-import android.telephony.TelephonyManager.CarrierPrivilegesListener;
+import android.telephony.TelephonyManager.CarrierPrivilegesCallback;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 
@@ -104,6 +108,26 @@ public class TelephonySubscriptionTrackerTest {
         TEST_SUBID_TO_INFO_MAP = Collections.unmodifiableMap(subIdToGroupMap);
     }
 
+    private static final String TEST_CARRIER_CONFIG_KEY_1 = "TEST_CARRIER_CONFIG_KEY_1";
+    private static final String TEST_CARRIER_CONFIG_KEY_2 = "TEST_CARRIER_CONFIG_KEY_2";
+    private static final PersistableBundle TEST_CARRIER_CONFIG = new PersistableBundle();
+    private static final PersistableBundleWrapper TEST_CARRIER_CONFIG_WRAPPER;
+    private static final Map<Integer, PersistableBundleWrapper> TEST_SUBID_TO_CARRIER_CONFIG_MAP;
+
+    static {
+        TEST_CARRIER_CONFIG.putString(
+                VcnManager.VCN_NETWORK_SELECTION_WIFI_ENTRY_RSSI_THRESHOLD_KEY,
+                VcnManager.VCN_NETWORK_SELECTION_WIFI_ENTRY_RSSI_THRESHOLD_KEY);
+        TEST_CARRIER_CONFIG.putString(
+                VcnManager.VCN_NETWORK_SELECTION_WIFI_EXIT_RSSI_THRESHOLD_KEY,
+                VcnManager.VCN_NETWORK_SELECTION_WIFI_EXIT_RSSI_THRESHOLD_KEY);
+        TEST_CARRIER_CONFIG_WRAPPER = new PersistableBundleWrapper(TEST_CARRIER_CONFIG);
+
+        final Map<Integer, PersistableBundleWrapper> subIdToCarrierConfigMap = new HashMap<>();
+        subIdToCarrierConfigMap.put(TEST_SUBSCRIPTION_ID_1, TEST_CARRIER_CONFIG_WRAPPER);
+        TEST_SUBID_TO_CARRIER_CONFIG_MAP = Collections.unmodifiableMap(subIdToCarrierConfigMap);
+    }
+
     @NonNull private final Context mContext;
     @NonNull private final TestLooper mTestLooper;
     @NonNull private final Handler mHandler;
@@ -115,6 +139,8 @@ public class TelephonySubscriptionTrackerTest {
 
     @NonNull private TelephonySubscriptionTrackerCallback mCallback;
     @NonNull private TelephonySubscriptionTracker mTelephonySubscriptionTracker;
+
+    @NonNull private CarrierConfigManager.CarrierConfigChangeListener mCarrierConfigChangeListener;
 
     public TelephonySubscriptionTrackerTest() {
         mContext = mock(Context.class);
@@ -144,6 +170,9 @@ public class TelephonySubscriptionTrackerTest {
         doReturn(mCarrierConfigManager)
                 .when(mContext)
                 .getSystemService(Context.CARRIER_CONFIG_SERVICE);
+        doReturn(TEST_CARRIER_CONFIG)
+                .when(mCarrierConfigManager)
+                .getConfigForSubId(eq(TEST_SUBSCRIPTION_ID_1), any());
 
         // subId 1, 2 are in same subGrp, only subId 1 is active
         doReturn(TEST_PARCEL_UUID).when(TEST_SUBINFO_1).getGroupUuid();
@@ -159,9 +188,15 @@ public class TelephonySubscriptionTrackerTest {
         doReturn(2).when(mTelephonyManager).getActiveModemCount();
 
         mCallback = mock(TelephonySubscriptionTrackerCallback.class);
+        // Capture CarrierConfigChangeListener to emulate the carrier config change notification
+        ArgumentCaptor<CarrierConfigManager.CarrierConfigChangeListener> listenerArgumentCaptor =
+                ArgumentCaptor.forClass(CarrierConfigManager.CarrierConfigChangeListener.class);
         mTelephonySubscriptionTracker =
                 new TelephonySubscriptionTracker(mContext, mHandler, mCallback, mDeps);
         mTelephonySubscriptionTracker.register();
+        verify(mCarrierConfigManager).registerCarrierConfigChangeListener(any(),
+                listenerArgumentCaptor.capture());
+        mCarrierConfigChangeListener = listenerArgumentCaptor.getAllValues().get(0);
 
         doReturn(true).when(mDeps).isConfigForIdentifiedCarrier(any());
         doReturn(Arrays.asList(TEST_SUBINFO_1, TEST_SUBINFO_2))
@@ -174,7 +209,7 @@ public class TelephonySubscriptionTrackerTest {
 
     private IntentFilter getIntentFilter() {
         final ArgumentCaptor<IntentFilter> captor = ArgumentCaptor.forClass(IntentFilter.class);
-        verify(mContext).registerReceiver(any(), captor.capture(), any(), any(), anyInt());
+        verify(mContext).registerReceiver(any(), captor.capture(), any(), any());
 
         return captor.getValue();
     }
@@ -187,11 +222,11 @@ public class TelephonySubscriptionTrackerTest {
         return captor.getValue();
     }
 
-    private List<CarrierPrivilegesListener> getCarrierPrivilegesListeners() {
-        final ArgumentCaptor<CarrierPrivilegesListener> captor =
-                ArgumentCaptor.forClass(CarrierPrivilegesListener.class);
+    private List<CarrierPrivilegesCallback> getCarrierPrivilegesCallbacks() {
+        final ArgumentCaptor<CarrierPrivilegesCallback> captor =
+                ArgumentCaptor.forClass(CarrierPrivilegesCallback.class);
         verify(mTelephonyManager, atLeastOnce())
-                .addCarrierPrivilegesListener(anyInt(), any(), captor.capture());
+                .registerCarrierPrivilegesCallback(anyInt(), any(), captor.capture());
 
         return captor.getAllValues();
     }
@@ -209,14 +244,11 @@ public class TelephonySubscriptionTrackerTest {
         return intent;
     }
 
-    private Intent buildTestBroadcastIntent(boolean hasValidSubscription) {
-        Intent intent = new Intent(ACTION_CARRIER_CONFIG_CHANGED);
-        intent.putExtra(EXTRA_SLOT_INDEX, TEST_SIM_SLOT_INDEX);
-        intent.putExtra(
-                EXTRA_SUBSCRIPTION_INDEX,
-                hasValidSubscription ? TEST_SUBSCRIPTION_ID_1 : INVALID_SUBSCRIPTION_ID);
-
-        return intent;
+    private void sendCarrierConfigChange(boolean hasValidSubscription) {
+        mCarrierConfigChangeListener.onCarrierConfigChanged(
+                TEST_SIM_SLOT_INDEX,
+                hasValidSubscription ? TEST_SUBSCRIPTION_ID_1 : INVALID_SUBSCRIPTION_ID,
+                TelephonyManager.UNKNOWN_CARRIER_ID, TelephonyManager.UNKNOWN_CARRIER_ID);
     }
 
     private TelephonySubscriptionSnapshot buildExpectedSnapshot(
@@ -227,14 +259,24 @@ public class TelephonySubscriptionTrackerTest {
     private TelephonySubscriptionSnapshot buildExpectedSnapshot(
             Map<Integer, SubscriptionInfo> subIdToInfoMap,
             Map<ParcelUuid, Set<String>> privilegedPackages) {
-        return new TelephonySubscriptionSnapshot(0, subIdToInfoMap, privilegedPackages);
+        return buildExpectedSnapshot(0, subIdToInfoMap, privilegedPackages);
     }
 
     private TelephonySubscriptionSnapshot buildExpectedSnapshot(
             int activeSubId,
             Map<Integer, SubscriptionInfo> subIdToInfoMap,
             Map<ParcelUuid, Set<String>> privilegedPackages) {
-        return new TelephonySubscriptionSnapshot(activeSubId, subIdToInfoMap, privilegedPackages);
+        return buildExpectedSnapshot(
+                activeSubId, subIdToInfoMap, TEST_SUBID_TO_CARRIER_CONFIG_MAP, privilegedPackages);
+    }
+
+    private TelephonySubscriptionSnapshot buildExpectedSnapshot(
+            int activeSubId,
+            Map<Integer, SubscriptionInfo> subIdToInfoMap,
+            Map<Integer, PersistableBundleWrapper> subIdToCarrierConfigMap,
+            Map<ParcelUuid, Set<String>> privilegedPackages) {
+        return new TelephonySubscriptionSnapshot(
+                activeSubId, subIdToInfoMap, subIdToCarrierConfigMap, privilegedPackages);
     }
 
     private void verifyNoActiveSubscriptions() {
@@ -245,6 +287,8 @@ public class TelephonySubscriptionTrackerTest {
     private void setupReadySubIds() {
         mTelephonySubscriptionTracker.setReadySubIdsBySlotId(
                 Collections.singletonMap(TEST_SIM_SLOT_INDEX, TEST_SUBSCRIPTION_ID_1));
+        mTelephonySubscriptionTracker.setSubIdToCarrierConfigMap(
+                Collections.singletonMap(TEST_SUBSCRIPTION_ID_1, TEST_CARRIER_CONFIG_WRAPPER));
     }
 
     private void setPrivilegedPackagesForMock(@NonNull List<String> privilegedPackages) {
@@ -258,24 +302,24 @@ public class TelephonySubscriptionTrackerTest {
                         eq(mTelephonySubscriptionTracker),
                         any(IntentFilter.class),
                         any(),
-                        eq(mHandler),
-                        eq(Context.RECEIVER_NOT_EXPORTED));
+                        eq(mHandler));
         final IntentFilter filter = getIntentFilter();
-        assertEquals(2, filter.countActions());
-        assertTrue(filter.hasAction(ACTION_CARRIER_CONFIG_CHANGED));
+        assertEquals(1, filter.countActions());
         assertTrue(filter.hasAction(ACTION_MULTI_SIM_CONFIG_CHANGED));
 
         verify(mSubscriptionManager)
                 .addOnSubscriptionsChangedListener(any(HandlerExecutor.class), any());
         assertNotNull(getOnSubscriptionsChangedListener());
 
+        verify(mCarrierConfigManager).registerCarrierConfigChangeListener(any(), any());
+
         verify(mTelephonyManager, times(2))
-                .addCarrierPrivilegesListener(anyInt(), any(HandlerExecutor.class), any());
+                .registerCarrierPrivilegesCallback(anyInt(), any(HandlerExecutor.class), any());
         verify(mTelephonyManager)
-                .addCarrierPrivilegesListener(eq(0), any(HandlerExecutor.class), any());
+                .registerCarrierPrivilegesCallback(eq(0), any(HandlerExecutor.class), any());
         verify(mTelephonyManager)
-                .addCarrierPrivilegesListener(eq(1), any(HandlerExecutor.class), any());
-        assertEquals(2, getCarrierPrivilegesListeners().size());
+                .registerCarrierPrivilegesCallback(eq(1), any(HandlerExecutor.class), any());
+        assertEquals(2, getCarrierPrivilegesCallbacks().size());
     }
 
     @Test
@@ -287,10 +331,10 @@ public class TelephonySubscriptionTrackerTest {
         final OnSubscriptionsChangedListener listener = getOnSubscriptionsChangedListener();
         verify(mSubscriptionManager).removeOnSubscriptionsChangedListener(eq(listener));
 
-        for (CarrierPrivilegesListener carrierPrivilegesListener :
-                getCarrierPrivilegesListeners()) {
+        for (CarrierPrivilegesCallback carrierPrivilegesCallback :
+                getCarrierPrivilegesCallbacks()) {
             verify(mTelephonyManager)
-                    .removeCarrierPrivilegesListener(eq(carrierPrivilegesListener));
+                    .unregisterCarrierPrivilegesCallback(eq(carrierPrivilegesCallback));
         }
     }
 
@@ -301,17 +345,18 @@ public class TelephonySubscriptionTrackerTest {
         readySubIdsBySlotId.put(TEST_SIM_SLOT_INDEX + 1, TEST_SUBSCRIPTION_ID_1);
 
         mTelephonySubscriptionTracker.setReadySubIdsBySlotId(readySubIdsBySlotId);
+        mTelephonySubscriptionTracker.setSubIdToCarrierConfigMap(TEST_SUBID_TO_CARRIER_CONFIG_MAP);
         doReturn(1).when(mTelephonyManager).getActiveModemCount();
 
-        List<CarrierPrivilegesListener> carrierPrivilegesListeners =
-                getCarrierPrivilegesListeners();
+        List<CarrierPrivilegesCallback> carrierPrivilegesCallbacks =
+                getCarrierPrivilegesCallbacks();
 
         mTelephonySubscriptionTracker.onReceive(mContext, buildTestMultiSimConfigBroadcastIntent());
         mTestLooper.dispatchAll();
 
-        for (CarrierPrivilegesListener carrierPrivilegesListener : carrierPrivilegesListeners) {
+        for (CarrierPrivilegesCallback carrierPrivilegesCallback : carrierPrivilegesCallbacks) {
             verify(mTelephonyManager)
-                    .removeCarrierPrivilegesListener(eq(carrierPrivilegesListener));
+                    .unregisterCarrierPrivilegesCallback(eq(carrierPrivilegesCallback));
         }
 
         // Expect cache cleared for inactive slots.
@@ -323,9 +368,9 @@ public class TelephonySubscriptionTrackerTest {
         // Expect a new CarrierPrivilegesListener to have been registered for slot 0, and none other
         // (2 previously registered during startup, for slots 0 & 1)
         verify(mTelephonyManager, times(3))
-                .addCarrierPrivilegesListener(anyInt(), any(HandlerExecutor.class), any());
+                .registerCarrierPrivilegesCallback(anyInt(), any(HandlerExecutor.class), any());
         verify(mTelephonyManager, times(2))
-                .addCarrierPrivilegesListener(eq(0), any(HandlerExecutor.class), any());
+                .registerCarrierPrivilegesCallback(eq(0), any(HandlerExecutor.class), any());
 
         // Verify that this triggers a re-evaluation
         verify(mCallback).onNewSnapshot(eq(buildExpectedSnapshot(TEST_PRIVILEGED_PACKAGES)));
@@ -391,8 +436,8 @@ public class TelephonySubscriptionTrackerTest {
     public void testOnCarrierPrivilegesChanged() throws Exception {
         setupReadySubIds();
 
-        final CarrierPrivilegesListener listener = getCarrierPrivilegesListeners().get(0);
-        listener.onCarrierPrivilegesChanged(Collections.emptyList(), new int[] {});
+        final CarrierPrivilegesCallback callback = getCarrierPrivilegesCallbacks().get(0);
+        callback.onCarrierPrivilegesChanged(Collections.emptySet(), Collections.emptySet());
         mTestLooper.dispatchAll();
 
         verify(mCallback).onNewSnapshot(eq(buildExpectedSnapshot(TEST_PRIVILEGED_PACKAGES)));
@@ -400,7 +445,7 @@ public class TelephonySubscriptionTrackerTest {
 
     @Test
     public void testReceiveBroadcast_ConfigReadyWithSubscriptions() throws Exception {
-        mTelephonySubscriptionTracker.onReceive(mContext, buildTestBroadcastIntent(true));
+        sendCarrierConfigChange(true /* hasValidSubscription */);
         mTestLooper.dispatchAll();
 
         verify(mCallback).onNewSnapshot(eq(buildExpectedSnapshot(TEST_PRIVILEGED_PACKAGES)));
@@ -412,7 +457,7 @@ public class TelephonySubscriptionTrackerTest {
                 .when(mSubscriptionManager)
                 .getAllSubscriptionInfoList();
 
-        mTelephonySubscriptionTracker.onReceive(mContext, buildTestBroadcastIntent(true));
+        sendCarrierConfigChange(true /* hasValidSubscription */);
         mTestLooper.dispatchAll();
 
         // Expect an empty snapshot
@@ -423,7 +468,7 @@ public class TelephonySubscriptionTrackerTest {
     public void testReceiveBroadcast_SlotCleared() throws Exception {
         setupReadySubIds();
 
-        mTelephonySubscriptionTracker.onReceive(mContext, buildTestBroadcastIntent(false));
+        sendCarrierConfigChange(false /* hasValidSubscription */);
         mTestLooper.dispatchAll();
 
         verifyNoActiveSubscriptions();
@@ -434,7 +479,7 @@ public class TelephonySubscriptionTrackerTest {
     public void testReceiveBroadcast_ConfigNotReady() throws Exception {
         doReturn(false).when(mDeps).isConfigForIdentifiedCarrier(any());
 
-        mTelephonySubscriptionTracker.onReceive(mContext, buildTestBroadcastIntent(true));
+        sendCarrierConfigChange(true /* hasValidSubscription */);
         mTestLooper.dispatchAll();
 
         // No interactions expected; config was not loaded
@@ -443,30 +488,69 @@ public class TelephonySubscriptionTrackerTest {
 
     @Test
     public void testSubscriptionsClearedAfterValidTriggersCallbacks() throws Exception {
-        mTelephonySubscriptionTracker.onReceive(mContext, buildTestBroadcastIntent(true));
+        sendCarrierConfigChange(true /* hasValidSubscription */);
         mTestLooper.dispatchAll();
         verify(mCallback).onNewSnapshot(eq(buildExpectedSnapshot(TEST_PRIVILEGED_PACKAGES)));
         assertNotNull(
                 mTelephonySubscriptionTracker.getReadySubIdsBySlotId().get(TEST_SIM_SLOT_INDEX));
 
         doReturn(Collections.emptyList()).when(mSubscriptionManager).getAllSubscriptionInfoList();
-        mTelephonySubscriptionTracker.onReceive(mContext, buildTestBroadcastIntent(true));
+        sendCarrierConfigChange(true /* hasValidSubscription */);
         mTestLooper.dispatchAll();
         verify(mCallback).onNewSnapshot(eq(buildExpectedSnapshot(emptyMap(), emptyMap())));
     }
 
     @Test
+    public void testCarrierConfigUpdatedAfterValidTriggersCallbacks() throws Exception {
+        sendCarrierConfigChange(true /* hasValidSubscription */);
+        mTestLooper.dispatchAll();
+        verify(mCallback).onNewSnapshot(eq(buildExpectedSnapshot(TEST_PRIVILEGED_PACKAGES)));
+        reset(mCallback);
+
+        final PersistableBundle updatedConfig = new PersistableBundle();
+        updatedConfig.putIntArray(
+                VCN_RESTRICTED_TRANSPORTS_INT_ARRAY_KEY,
+                new int[] {TRANSPORT_WIFI, TRANSPORT_CELLULAR});
+        doReturn(updatedConfig)
+                .when(mCarrierConfigManager)
+                .getConfigForSubId(eq(TEST_SUBSCRIPTION_ID_1), any());
+
+        Map<Integer, PersistableBundleWrapper> subIdToCarrierConfigMap = new HashMap<>();
+        subIdToCarrierConfigMap.put(
+                TEST_SUBSCRIPTION_ID_1, new PersistableBundleWrapper(updatedConfig));
+        sendCarrierConfigChange(true /* hasValidSubscription */);
+        mTestLooper.dispatchAll();
+
+        verify(mCallback)
+                .onNewSnapshot(
+                        eq(
+                                buildExpectedSnapshot(
+                                        0,
+                                        TEST_SUBID_TO_INFO_MAP,
+                                        subIdToCarrierConfigMap,
+                                        TEST_PRIVILEGED_PACKAGES)));
+    }
+
+    @Test
     public void testSlotClearedAfterValidTriggersCallbacks() throws Exception {
-        mTelephonySubscriptionTracker.onReceive(mContext, buildTestBroadcastIntent(true));
+        sendCarrierConfigChange(true /* hasValidSubscription */);
         mTestLooper.dispatchAll();
         verify(mCallback).onNewSnapshot(eq(buildExpectedSnapshot(TEST_PRIVILEGED_PACKAGES)));
         assertNotNull(
                 mTelephonySubscriptionTracker.getReadySubIdsBySlotId().get(TEST_SIM_SLOT_INDEX));
 
-        mTelephonySubscriptionTracker.onReceive(mContext, buildTestBroadcastIntent(false));
+        sendCarrierConfigChange(false /* hasValidSubscription */);
         mTestLooper.dispatchAll();
-        verify(mCallback).onNewSnapshot(eq(buildExpectedSnapshot(emptyMap())));
+        verify(mCallback)
+                .onNewSnapshot(
+                        eq(
+                                buildExpectedSnapshot(
+                                        0, TEST_SUBID_TO_INFO_MAP, emptyMap(), emptyMap())));
         assertNull(mTelephonySubscriptionTracker.getReadySubIdsBySlotId().get(TEST_SIM_SLOT_INDEX));
+        assertNull(
+                mTelephonySubscriptionTracker
+                        .getSubIdToCarrierConfigMap()
+                        .get(TEST_SUBSCRIPTION_ID_1));
     }
 
     @Test
@@ -494,7 +578,7 @@ public class TelephonySubscriptionTrackerTest {
     public void testTelephonySubscriptionSnapshotGetGroupForSubId() throws Exception {
         final TelephonySubscriptionSnapshot snapshot =
                 new TelephonySubscriptionSnapshot(
-                        TEST_SUBSCRIPTION_ID_1, TEST_SUBID_TO_INFO_MAP, emptyMap());
+                        TEST_SUBSCRIPTION_ID_1, TEST_SUBID_TO_INFO_MAP, emptyMap(), emptyMap());
 
         assertEquals(TEST_PARCEL_UUID, snapshot.getGroupForSubId(TEST_SUBSCRIPTION_ID_1));
         assertEquals(TEST_PARCEL_UUID, snapshot.getGroupForSubId(TEST_SUBSCRIPTION_ID_2));
@@ -504,7 +588,7 @@ public class TelephonySubscriptionTrackerTest {
     public void testTelephonySubscriptionSnapshotGetAllSubIdsInGroup() throws Exception {
         final TelephonySubscriptionSnapshot snapshot =
                 new TelephonySubscriptionSnapshot(
-                        TEST_SUBSCRIPTION_ID_1, TEST_SUBID_TO_INFO_MAP, emptyMap());
+                        TEST_SUBSCRIPTION_ID_1, TEST_SUBID_TO_INFO_MAP, emptyMap(), emptyMap());
 
         assertEquals(
                 new ArraySet<>(Arrays.asList(TEST_SUBSCRIPTION_ID_1, TEST_SUBSCRIPTION_ID_2)),

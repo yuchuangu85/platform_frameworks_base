@@ -24,6 +24,7 @@ import android.os.Parcelable;
 import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
 
 import java.util.ArrayList;
 import java.util.Objects;
@@ -41,16 +42,15 @@ public class AudioPolicyConfig implements Parcelable {
 
     private String mRegistrationId = null;
 
-    /** counter for the mixes that are / have been in the list of AudioMix
-     *  e.g. register 4 mixes (counter is 3), remove 1 (counter is 3), add 1 (counter is 4)
-     */
+    // Corresponds to id of next mix to be registered.
     private int mMixCounter = 0;
 
     protected AudioPolicyConfig(AudioPolicyConfig conf) {
         mMixes = conf.mMixes;
     }
 
-    AudioPolicyConfig(ArrayList<AudioMix> mixes) {
+    @VisibleForTesting
+    public AudioPolicyConfig(ArrayList<AudioMix> mixes) {
         mMixes = mixes;
     }
 
@@ -101,7 +101,7 @@ public class AudioPolicyConfig implements Parcelable {
             // write voice communication capture allowed flag
             dest.writeBoolean(mix.getRule().voiceCommunicationCaptureAllowed());
             // write specified mix type
-            dest.writeInt(mix.getRule().getTargetMixType());
+            dest.writeInt(mix.getRule().getTargetMixRole());
             // write mix rules
             final ArrayList<AudioMixMatchCriterion> criteria = mix.getRule().getCriteria();
             dest.writeInt(criteria.size());
@@ -137,7 +137,7 @@ public class AudioPolicyConfig implements Parcelable {
             // read voice capture allowed flag
             ruleBuilder.voiceCommunicationCaptureAllowed(in.readBoolean());
             // read specified mix type
-            ruleBuilder.setTargetMixType(in.readInt());
+            ruleBuilder.setTargetMixRole(in.readInt());
             // read mix rules
             int nbRules = in.readInt();
             for (int j = 0 ; j < nbRules ; j++) {
@@ -181,7 +181,7 @@ public class AudioPolicyConfig implements Parcelable {
                     + mix.getRule().voiceCommunicationCaptureAllowed() + "\n";
             // write mix rules
             textDump += "  specified mix type="
-                    + mix.getRule().getTargetMixType() + "\n";
+                    + mix.getRule().getTargetMixRole() + "\n";
             final ArrayList<AudioMixMatchCriterion> criteria = mix.getRule().getCriteria();
             for (AudioMixMatchCriterion criterion : criteria) {
                 switch(criterion.mRule) {
@@ -215,6 +215,14 @@ public class AudioPolicyConfig implements Parcelable {
                         break;
                     case AudioMixingRule.RULE_EXCLUDE_USERID:
                         textDump += "  exclude userId ";
+                        textDump += criterion.mIntProp;
+                        break;
+                    case AudioMixingRule.RULE_MATCH_AUDIO_SESSION_ID:
+                        textDump += " match audio session id";
+                        textDump += criterion.mIntProp;
+                        break;
+                    case AudioMixingRule.RULE_EXCLUDE_AUDIO_SESSION_ID:
+                        textDump += " exclude audio session id ";
                         textDump += criterion.mIntProp;
                         break;
                     default:
@@ -276,7 +284,7 @@ public class AudioPolicyConfig implements Parcelable {
             if ((mix.getRouteFlags() & AudioMix.ROUTE_FLAG_LOOP_BACK) ==
                     AudioMix.ROUTE_FLAG_LOOP_BACK) {
                 mix.setRegistration(mRegistrationId + "mix" + mixTypeId(mix.getMixType()) + ":"
-                        + mMixCounter);
+                        + mMixCounter++);
             } else if ((mix.getRouteFlags() & AudioMix.ROUTE_FLAG_RENDER) ==
                     AudioMix.ROUTE_FLAG_RENDER) {
                 mix.setRegistration(mix.mDeviceAddress);
@@ -284,7 +292,6 @@ public class AudioPolicyConfig implements Parcelable {
         } else {
             mix.setRegistration("");
         }
-        mMixCounter++;
     }
 
     @GuardedBy("mMixes")

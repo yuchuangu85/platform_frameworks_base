@@ -17,9 +17,10 @@
 package com.android.server.am;
 
 import static android.app.ActivityManager.PROCESS_STATE_NONEXISTENT;
-import static android.app.ActivityManager.processStateAmToProto;
+import static android.app.ProcessMemoryState.HOSTING_COMPONENT_TYPE_EMPTY;
 
 import android.app.IApplicationThread;
+import android.app.ProcessMemoryState.HostingComponentType;
 import android.content.pm.ApplicationInfo;
 import android.os.Debug;
 import android.os.SystemClock;
@@ -30,11 +31,12 @@ import com.android.internal.annotations.CompositeRWLock;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.app.procstats.ProcessState;
 import com.android.internal.app.procstats.ProcessStats;
-import com.android.internal.os.BatteryStatsImpl;
 import com.android.internal.util.FrameworkStatsLog;
 import com.android.server.am.ProcessList.ProcStateMemTracker;
+import com.android.server.power.stats.BatteryStatsImpl;
 
 import java.io.PrintWriter;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -194,6 +196,12 @@ final class ProcessProfileRecord {
     @GuardedBy("mProfilerLock")
     private long mLastStateTime;
 
+    private AtomicInteger mCurrentHostingComponentTypes =
+            new AtomicInteger(HOSTING_COMPONENT_TYPE_EMPTY);
+
+    private AtomicInteger mHistoricalHostingComponentTypes =
+            new AtomicInteger(HOSTING_COMPONENT_TYPE_EMPTY);
+
     private final ActivityManagerGlobalLock mProcLock;
 
     ProcessProfileRecord(final ProcessRecord app) {
@@ -217,6 +225,32 @@ final class ProcessProfileRecord {
         mBaseProcessTracker = baseProcessTracker;
     }
 
+    void onProcessFrozen() {
+        synchronized (mService.mProcessStats.mLock) {
+            final ProcessState tracker = mBaseProcessTracker;
+            if (tracker != null) {
+                final PackageList pkgList = mApp.getPkgList();
+                final long now = SystemClock.uptimeMillis();
+                synchronized (pkgList) {
+                    tracker.onProcessFrozen(now, pkgList.getPackageListLocked());
+                }
+            }
+        }
+    }
+
+    void onProcessUnfrozen() {
+        synchronized (mService.mProcessStats.mLock) {
+            final ProcessState tracker = mBaseProcessTracker;
+            if (tracker != null) {
+                final PackageList pkgList = mApp.getPkgList();
+                final long now = SystemClock.uptimeMillis();
+                synchronized (pkgList) {
+                    tracker.onProcessUnfrozen(now, pkgList.getPackageListLocked());
+                }
+            }
+        }
+    }
+
     void onProcessActive(IApplicationThread thread, ProcessStatsService tracker) {
         if (mThread == null) {
             synchronized (mProfilerLock) {
@@ -228,12 +262,6 @@ final class ProcessProfileRecord {
                             origBase.setState(ProcessStats.STATE_NOTHING,
                                     tracker.getMemFactorLocked(), SystemClock.uptimeMillis(),
                                     pkgList.getPackageListLocked());
-                            pkgList.forEachPackage((pkgName, holder) ->
-                                    FrameworkStatsLog.write(FrameworkStatsLog.PROCESS_STATE_CHANGED,
-                                        mApp.uid, mApp.processName, pkgName,
-                                        processStateAmToProto(ProcessStats.STATE_NOTHING),
-                                        holder.appVersion)
-                            );
                         }
                         origBase.makeInactive();
                     }
@@ -272,12 +300,6 @@ final class ProcessProfileRecord {
                         origBase.setState(ProcessStats.STATE_NOTHING,
                                 tracker.getMemFactorLocked(), SystemClock.uptimeMillis(),
                                 pkgList.getPackageListLocked());
-                        pkgList.forEachPackage((pkgName, holder) ->
-                                FrameworkStatsLog.write(FrameworkStatsLog.PROCESS_STATE_CHANGED,
-                                    mApp.uid, mApp.processName, pkgName,
-                                    processStateAmToProto(ProcessStats.STATE_NOTHING),
-                                    holder.appVersion)
-                        );
                     }
                     origBase.makeInactive();
                     setBaseProcessTracker(null);
@@ -292,6 +314,8 @@ final class ProcessProfileRecord {
                 mThread = null;
             }
         }
+        mCurrentHostingComponentTypes.set(HOSTING_COMPONENT_TYPE_EMPTY);
+        mHistoricalHostingComponentTypes.set(HOSTING_COMPONENT_TYPE_EMPTY);
     }
 
     @GuardedBy("mProfilerLock")
@@ -518,12 +542,13 @@ final class ProcessProfileRecord {
         }
     }
 
-    void setProcessTrackerState(int procState, int memFactor, long now) {
+    void setProcessTrackerState(int procState, int memFactor) {
         synchronized (mService.mProcessStats.mLock) {
             final ProcessState tracker = mBaseProcessTracker;
             if (tracker != null) {
                 if (procState != PROCESS_STATE_NONEXISTENT) {
                     final PackageList pkgList = mApp.getPkgList();
+                    final long now = SystemClock.uptimeMillis();
                     synchronized (pkgList) {
                         tracker.setState(procState, memFactor, now,
                                 pkgList.getPackageListLocked());
@@ -604,6 +629,23 @@ final class ProcessProfileRecord {
         mLastStateTime = state.getLastStateTime();
     }
 
+    void addHostingComponentType(@HostingComponentType int type) {
+        mCurrentHostingComponentTypes.set(mCurrentHostingComponentTypes.get() | type);
+        mHistoricalHostingComponentTypes.set(mHistoricalHostingComponentTypes.get() | type);
+    }
+
+    void clearHostingComponentType(@HostingComponentType int type) {
+        mCurrentHostingComponentTypes.set(mCurrentHostingComponentTypes.get() & ~type);
+    }
+
+    @HostingComponentType int getCurrentHostingComponentTypes() {
+        return mCurrentHostingComponentTypes.get();
+    }
+
+    @HostingComponentType int getHistoricalHostingComponentTypes() {
+        return mHistoricalHostingComponentTypes.get();
+    }
+
     @GuardedBy("mService")
     void dumpPss(PrintWriter pw, String prefix, long nowUptime) {
         synchronized (mProfilerLock) {
@@ -642,6 +684,11 @@ final class ProcessProfileRecord {
             pw.print(" reportLowMemory=");
             pw.println(mReportLowMemory);
         }
+        pw.print(prefix);
+        pw.print("currentHostingComponentTypes=0x");
+        pw.print(Integer.toHexString(getCurrentHostingComponentTypes()));
+        pw.print(" historicalHostingComponentTypes=0x");
+        pw.println(Integer.toHexString(getHistoricalHostingComponentTypes()));
     }
 
     void dumpCputime(PrintWriter pw, String prefix) {

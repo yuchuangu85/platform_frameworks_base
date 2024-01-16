@@ -58,12 +58,12 @@ public interface Injector {
     /** Returns a DeviceIdleHelper. */
     DeviceIdleHelper getDeviceIdleHelper();
 
-    /** Returns a LocationAttributionHelper. */
-    LocationAttributionHelper getLocationAttributionHelper();
-
     /** Returns an EmergencyHelper. */
     EmergencyHelper getEmergencyHelper();
 
     /** Returns a LocationUsageLogger. */
     LocationUsageLogger getLocationUsageLogger();
+
+    /** Returns a PackageResetHelper. */
+    PackageResetHelper getPackageResetHelper();
 }

@@ -80,8 +80,6 @@ public class VcnManager {
      * <p>The VCN will only migrate to a Carrier WiFi network that has a signal strength greater
      * than, or equal to this threshold.
      *
-     * <p>WARNING: The VCN does not listen for changes to this key made after VCN startup.
-     *
      * @hide
      */
     @NonNull
@@ -94,15 +92,92 @@ public class VcnManager {
      * <p>If the VCN's selected Carrier WiFi network has a signal strength less than this threshold,
      * the VCN will attempt to migrate away from the Carrier WiFi network.
      *
-     * <p>WARNING: The VCN does not listen for changes to this key made after VCN startup.
-     *
      * @hide
      */
     @NonNull
     public static final String VCN_NETWORK_SELECTION_WIFI_EXIT_RSSI_THRESHOLD_KEY =
             "vcn_network_selection_wifi_exit_rssi_threshold";
 
+    /**
+     * Key for the interval to poll IpSecTransformState for packet loss monitoring
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_NETWORK_SELECTION_POLL_IPSEC_STATE_INTERVAL_SECONDS_KEY =
+            "vcn_network_selection_poll_ipsec_state_interval_seconds";
+
+    /**
+     * Key for the threshold of IPSec packet loss rate
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_NETWORK_SELECTION_IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_KEY =
+            "vcn_network_selection_ipsec_packet_loss_percent_threshold";
+
+    /**
+     * Key for the list of timeouts in minute to stop penalizing an underlying network candidate
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_NETWORK_SELECTION_PENALTY_TIMEOUT_MINUTES_LIST_KEY =
+            "vcn_network_selection_penalty_timeout_minutes_list";
+
     // TODO: Add separate signal strength thresholds for 2.4 GHz and 5GHz
+
+    /**
+     * Key for transports that need to be marked as restricted by the VCN
+     *
+     * <p>Defaults to TRANSPORT_WIFI if the config does not exist
+     *
+     * @hide
+     */
+    public static final String VCN_RESTRICTED_TRANSPORTS_INT_ARRAY_KEY =
+            "vcn_restricted_transports";
+
+    /**
+     * Key for number of seconds to wait before entering safe mode
+     *
+     * <p>A VcnGatewayConnection will enter safe mode when it takes over the configured timeout to
+     * enter {@link ConnectedState}.
+     *
+     * <p>Defaults to 30, unless overridden by carrier config
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_SAFE_MODE_TIMEOUT_SECONDS_KEY =
+            "vcn_safe_mode_timeout_seconds_key";
+
+    /**
+     * Key for maximum number of parallel SAs for tunnel aggregation
+     *
+     * <p>If set to a value > 1, multiple tunnels will be set up, and inbound traffic will be
+     * aggregated over the various tunnels.
+     *
+     * <p>Defaults to 1, unless overridden by carrier config
+     *
+     * @hide
+     */
+    @NonNull
+    public static final String VCN_TUNNEL_AGGREGATION_SA_COUNT_MAX_KEY =
+            "vcn_tunnel_aggregation_sa_count_max";
+
+    /** List of Carrier Config options to extract from Carrier Config bundles. @hide */
+    @NonNull
+    public static final String[] VCN_RELATED_CARRIER_CONFIG_KEYS =
+            new String[] {
+                VCN_NETWORK_SELECTION_WIFI_ENTRY_RSSI_THRESHOLD_KEY,
+                VCN_NETWORK_SELECTION_WIFI_EXIT_RSSI_THRESHOLD_KEY,
+                VCN_NETWORK_SELECTION_POLL_IPSEC_STATE_INTERVAL_SECONDS_KEY,
+                VCN_NETWORK_SELECTION_IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_KEY,
+                VCN_NETWORK_SELECTION_PENALTY_TIMEOUT_MINUTES_LIST_KEY,
+                VCN_RESTRICTED_TRANSPORTS_INT_ARRAY_KEY,
+                VCN_SAFE_MODE_TIMEOUT_SECONDS_KEY,
+                VCN_TUNNEL_AGGREGATION_SA_COUNT_MAX_KEY,
+            };
 
     private static final Map<
                     VcnNetworkPolicyChangeListener, VcnUnderlyingNetworkPolicyListenerBinder>
@@ -172,11 +247,11 @@ public class VcnManager {
      *
      * <p>An app that has carrier privileges for any of the subscriptions in the given group may
      * clear a VCN configuration. This API is ONLY permitted for callers running as the primary
-     * user. Any active VCN will be torn down.
+     * user. Any active VCN associated with this configuration will be torn down.
      *
      * @param subscriptionGroup the subscription group that the configuration should be applied to
-     * @throws SecurityException if the caller does not have carrier privileges, or is not running
-     *     as the primary user
+     * @throws SecurityException if the caller does not have carrier privileges, is not the owner of
+     *     the associated configuration, or is not running as the primary user
      * @throws IOException if the configuration failed to be cleared from disk. This may occur due
      *     to temporary disk errors, or more permanent conditions such as a full disk.
      */
@@ -196,8 +271,13 @@ public class VcnManager {
     /**
      * Retrieves the list of Subscription Groups for which a VCN Configuration has been set.
      *
-     * <p>The returned list will include only subscription groups for which the carrier app is
-     * privileged, and which have an associated {@link VcnConfig}.
+     * <p>The returned list will include only subscription groups for which an associated {@link
+     * VcnConfig} exists, and the app is either:
+     *
+     * <ul>
+     *   <li>Carrier privileged for that subscription group, or
+     *   <li>Is the provisioning package of the config
+     * </ul>
      *
      * @throws SecurityException if the caller is not running as the primary user
      */

@@ -19,13 +19,12 @@ package com.android.server.biometrics;
 import static android.hardware.biometrics.BiometricAuthenticator.TYPE_FACE;
 import static android.hardware.biometrics.BiometricAuthenticator.TYPE_FINGERPRINT;
 import static android.hardware.biometrics.BiometricAuthenticator.TYPE_NONE;
-import static android.hardware.biometrics.BiometricManager.BIOMETRIC_MULTI_SENSOR_DEFAULT;
-import static android.hardware.biometrics.BiometricManager.BIOMETRIC_MULTI_SENSOR_FACE_THEN_FINGERPRINT;
+import static android.hardware.biometrics.BiometricFingerprintConstants.FINGERPRINT_ACQUIRED_VENDOR;
+import static android.hardware.biometrics.BiometricFingerprintConstants.FINGERPRINT_ACQUIRED_VENDOR_BASE;
+import static android.hardware.biometrics.BiometricManager.Authenticators.BIOMETRIC_CONVENIENCE;
 
-import static com.android.server.biometrics.BiometricServiceStateProto.MULTI_SENSOR_STATE_FACE_SCANNING;
-import static com.android.server.biometrics.BiometricServiceStateProto.MULTI_SENSOR_STATE_FP_SCANNING;
-import static com.android.server.biometrics.BiometricServiceStateProto.MULTI_SENSOR_STATE_SWITCHING;
-import static com.android.server.biometrics.BiometricServiceStateProto.MULTI_SENSOR_STATE_UNKNOWN;
+import static com.android.server.biometrics.BiometricSensor.STATE_CANCELING;
+import static com.android.server.biometrics.BiometricSensor.STATE_UNKNOWN;
 import static com.android.server.biometrics.BiometricServiceStateProto.STATE_AUTHENTICATED_PENDING_SYSUI;
 import static com.android.server.biometrics.BiometricServiceStateProto.STATE_AUTH_CALLED;
 import static com.android.server.biometrics.BiometricServiceStateProto.STATE_AUTH_IDLE;
@@ -46,7 +45,6 @@ import android.hardware.biometrics.BiometricAuthenticator;
 import android.hardware.biometrics.BiometricAuthenticator.Modality;
 import android.hardware.biometrics.BiometricConstants;
 import android.hardware.biometrics.BiometricManager;
-import android.hardware.biometrics.BiometricManager.BiometricMultiSensorMode;
 import android.hardware.biometrics.BiometricPrompt;
 import android.hardware.biometrics.BiometricsProtoEnums;
 import android.hardware.biometrics.IBiometricSensorReceiver;
@@ -64,10 +62,12 @@ import android.util.Slog;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.internal.util.FrameworkStatsLog;
+import com.android.server.biometrics.log.BiometricContext;
+import com.android.server.biometrics.log.BiometricFrameworkStatsLogger;
+import com.android.server.biometrics.log.OperationContextExt;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
-import java.util.Collection;
 import java.util.List;
 import java.util.Random;
 import java.util.function.Function;
@@ -79,7 +79,7 @@ import java.util.function.Function;
  */
 public final class AuthSession implements IBinder.DeathRecipient {
     private static final String TAG = "BiometricService/AuthSession";
-    private static final boolean DEBUG = false;
+    private static final boolean DEBUG = true;
 
     /*
      * Defined in biometrics.proto
@@ -98,14 +98,6 @@ public final class AuthSession implements IBinder.DeathRecipient {
     @Retention(RetentionPolicy.SOURCE)
     @interface SessionState {}
 
-    /** Defined in biometrics.proto */
-    @IntDef({
-            MULTI_SENSOR_STATE_UNKNOWN,
-            MULTI_SENSOR_STATE_FACE_SCANNING,
-            MULTI_SENSOR_STATE_FP_SCANNING})
-    @Retention(RetentionPolicy.SOURCE)
-    @interface MultiSensorState {}
-
     /**
      * Notify the holder of the AuthSession that the caller/client's binder has died. The
      * holder (BiometricService) should schedule {@link AuthSession#onClientDied()} to be run
@@ -116,8 +108,9 @@ public final class AuthSession implements IBinder.DeathRecipient {
     }
 
     private final Context mContext;
+    @NonNull private final BiometricContext mBiometricContext;
     private final IStatusBarService mStatusBarService;
-    private final IBiometricSysuiReceiver mSysuiReceiver;
+    @VisibleForTesting final IBiometricSysuiReceiver mSysuiReceiver;
     private final KeyStore mKeyStore;
     private final Random mRandom;
     private final ClientDeathReceiver mClientDeathReceiver;
@@ -128,10 +121,11 @@ public final class AuthSession implements IBinder.DeathRecipient {
     @VisibleForTesting final IBinder mToken;
     // Info to be shown on BiometricDialog when all cookies are returned.
     @VisibleForTesting final PromptInfo mPromptInfo;
+    @VisibleForTesting final BiometricFrameworkStatsLogger mBiometricFrameworkStatsLogger;
     private final long mRequestId;
     private final long mOperationId;
     private final int mUserId;
-    private final IBiometricSensorReceiver mSensorReceiver;
+    @VisibleForTesting final IBiometricSensorReceiver mSensorReceiver;
     // Original receiver from BiometricPrompt.
     private final IBiometricServiceReceiver mClientReceiver;
     private final String mOpPackageName;
@@ -140,11 +134,10 @@ public final class AuthSession implements IBinder.DeathRecipient {
 
     // The current state, which can be either idle, called, or started
     private @SessionState int mState = STATE_AUTH_IDLE;
-    private @BiometricMultiSensorMode int mMultiSensorMode;
-    private @MultiSensorState int mMultiSensorState;
     private int[] mSensors;
     // TODO(b/197265902): merge into state
     private boolean mCancelled;
+    private int mAuthenticatedSensorId = -1;
     // For explicit confirmation, do not send to keystore until the user has confirmed
     // the authentication.
     private byte[] mTokenEscrow;
@@ -157,7 +150,12 @@ public final class AuthSession implements IBinder.DeathRecipient {
     // Timestamp when hardware authentication occurred
     private long mAuthenticatedTimeMs;
 
+    @NonNull
+    private final OperationContextExt mOperationContext;
+
+
     AuthSession(@NonNull Context context,
+            @NonNull BiometricContext biometricContext,
             @NonNull IStatusBarService statusBarService,
             @NonNull IBiometricSysuiReceiver sysuiReceiver,
             @NonNull KeyStore keystore,
@@ -174,8 +172,35 @@ public final class AuthSession implements IBinder.DeathRecipient {
             @NonNull PromptInfo promptInfo,
             boolean debugEnabled,
             @NonNull List<FingerprintSensorPropertiesInternal> fingerprintSensorProperties) {
+        this(context, biometricContext, statusBarService, sysuiReceiver, keystore, random,
+                clientDeathReceiver, preAuthInfo, token, requestId, operationId, userId,
+                sensorReceiver, clientReceiver, opPackageName, promptInfo, debugEnabled,
+                fingerprintSensorProperties, BiometricFrameworkStatsLogger.getInstance());
+    }
+
+    @VisibleForTesting
+    AuthSession(@NonNull Context context,
+            @NonNull BiometricContext biometricContext,
+            @NonNull IStatusBarService statusBarService,
+            @NonNull IBiometricSysuiReceiver sysuiReceiver,
+            @NonNull KeyStore keystore,
+            @NonNull Random random,
+            @NonNull ClientDeathReceiver clientDeathReceiver,
+            @NonNull PreAuthInfo preAuthInfo,
+            @NonNull IBinder token,
+            long requestId,
+            long operationId,
+            int userId,
+            @NonNull IBiometricSensorReceiver sensorReceiver,
+            @NonNull IBiometricServiceReceiver clientReceiver,
+            @NonNull String opPackageName,
+            @NonNull PromptInfo promptInfo,
+            boolean debugEnabled,
+            @NonNull List<FingerprintSensorPropertiesInternal> fingerprintSensorProperties,
+            @NonNull BiometricFrameworkStatsLogger logger) {
         Slog.d(TAG, "Creating AuthSession with: " + preAuthInfo);
         mContext = context;
+        mBiometricContext = biometricContext;
         mStatusBarService = statusBarService;
         mSysuiReceiver = sysuiReceiver;
         mKeyStore = keystore;
@@ -193,6 +218,8 @@ public final class AuthSession implements IBinder.DeathRecipient {
         mDebugEnabled = debugEnabled;
         mFingerprintSensorProperties = fingerprintSensorProperties;
         mCancelled = false;
+        mBiometricFrameworkStatsLogger = logger;
+        mOperationContext = new OperationContextExt(true /* isBP */);
 
         try {
             mClientReceiver.asBinder().linkToDeath(this, 0 /* flags */);
@@ -230,8 +257,16 @@ public final class AuthSession implements IBinder.DeathRecipient {
         }
     }
 
-    private void setSensorsToStateWaitingForCookie() throws RemoteException {
+    private void setSensorsToStateWaitingForCookie(boolean isTryAgain) throws RemoteException {
         for (BiometricSensor sensor : mPreAuthInfo.eligibleSensors) {
+            @BiometricSensor.SensorState final int state = sensor.getSensorState();
+            if (isTryAgain
+                    && state != BiometricSensor.STATE_STOPPED
+                    && state != BiometricSensor.STATE_CANCELING) {
+                Slog.d(TAG, "Skip retry because sensor: " + sensor.id + " is: " + state);
+                continue;
+            }
+
             final int cookie = mRandom.nextInt(Integer.MAX_VALUE - 1) + 1;
             final boolean requireConfirmation = isConfirmationRequired(sensor);
 
@@ -240,7 +275,8 @@ public final class AuthSession implements IBinder.DeathRecipient {
             }
             sensor.goToStateWaitingForCookie(requireConfirmation, mToken, mOperationId,
                     mUserId, mSensorReceiver, mOpPackageName, mRequestId, cookie,
-                    mPromptInfo.isAllowBackgroundAuthentication());
+                    mPromptInfo.isAllowBackgroundAuthentication(),
+                    mPromptInfo.isForLegacyFingerprintManager());
         }
     }
 
@@ -251,8 +287,6 @@ public final class AuthSession implements IBinder.DeathRecipient {
             // SystemUI invokes that path.
             mState = STATE_SHOWING_DEVICE_CREDENTIAL;
             mSensors = new int[0];
-            mMultiSensorMode = BIOMETRIC_MULTI_SENSOR_DEFAULT;
-            mMultiSensorState = MULTI_SENSOR_STATE_UNKNOWN;
 
             mStatusBarService.showAuthenticationDialog(
                     mPromptInfo,
@@ -263,11 +297,10 @@ public final class AuthSession implements IBinder.DeathRecipient {
                     mUserId,
                     mOperationId,
                     mOpPackageName,
-                    mRequestId,
-                    mMultiSensorMode);
+                    mRequestId);
         } else if (!mPreAuthInfo.eligibleSensors.isEmpty()) {
             // Some combination of biometric or biometric|credential is requested
-            setSensorsToStateWaitingForCookie();
+            setSensorsToStateWaitingForCookie(false /* isTryAgain */);
             mState = STATE_AUTH_CALLED;
         } else {
             // No authenticators requested. This should never happen - an exception should have
@@ -279,6 +312,10 @@ public final class AuthSession implements IBinder.DeathRecipient {
     void onCookieReceived(int cookie) {
         if (mCancelled) {
             Slog.w(TAG, "Received cookie but already cancelled (ignoring): " + cookie);
+            return;
+        }
+        if (hasAuthenticated()) {
+            Slog.d(TAG, "onCookieReceived after successful auth");
             return;
         }
 
@@ -303,9 +340,6 @@ public final class AuthSession implements IBinder.DeathRecipient {
                     for (int i = 0; i < mPreAuthInfo.eligibleSensors.size(); i++) {
                         mSensors[i] = mPreAuthInfo.eligibleSensors.get(i).id;
                     }
-                    mMultiSensorMode = getMultiSensorModeForNewSession(
-                            mPreAuthInfo.eligibleSensors);
-                    mMultiSensorState = MULTI_SENSOR_STATE_UNKNOWN;
 
                     mStatusBarService.showAuthenticationDialog(mPromptInfo,
                             mSysuiReceiver,
@@ -315,8 +349,7 @@ public final class AuthSession implements IBinder.DeathRecipient {
                             mUserId,
                             mOperationId,
                             mOpPackageName,
-                            mRequestId,
-                            mMultiSensorMode);
+                            mRequestId);
                     mState = STATE_AUTH_STARTED;
                 } catch (RemoteException e) {
                     Slog.e(TAG, "Remote exception", e);
@@ -379,9 +412,8 @@ public final class AuthSession implements IBinder.DeathRecipient {
         // sending the final error callback to the application.
         for (BiometricSensor sensor : mPreAuthInfo.eligibleSensors) {
             try {
-                final boolean shouldCancel = filter.apply(sensor);
-                Slog.d(TAG, "sensorId: " + sensor.id + ", shouldCancel: " + shouldCancel);
-                if (shouldCancel) {
+                if (filter.apply(sensor)) {
+                    Slog.d(TAG, "Cancelling sensorId: " + sensor.id);
                     sensor.goToStateCancelling(mToken, mOpPackageName, mRequestId);
                 }
             } catch (RemoteException e) {
@@ -410,10 +442,23 @@ public final class AuthSession implements IBinder.DeathRecipient {
             }
         }
 
+        // do not propagate the error and let onAuthenticationSucceeded handle the new state
+        if (hasAuthenticated()) {
+            Slog.d(TAG, "onErrorReceived after successful auth (ignoring)");
+            return false;
+        }
+
+        final boolean errorLockout = error == BiometricConstants.BIOMETRIC_ERROR_LOCKOUT
+                || error == BiometricConstants.BIOMETRIC_ERROR_LOCKOUT_PERMANENT;
+        if (errorLockout) {
+            cancelAllSensors(sensor -> Utils.isAtLeastStrength(sensorIdToStrength(sensorId),
+                    sensor.getCurrentStrength()));
+        }
+
         mErrorEscrow = error;
         mVendorCodeEscrow = vendorCode;
 
-        final @BiometricAuthenticator.Modality int modality = sensorIdToModality(sensorId);
+        @Modality final int modality = sensorIdToModality(sensorId);
 
         switch (mState) {
             case STATE_AUTH_CALLED: {
@@ -427,8 +472,6 @@ public final class AuthSession implements IBinder.DeathRecipient {
                     mPromptInfo.setAuthenticators(authenticators);
 
                     mState = STATE_SHOWING_DEVICE_CREDENTIAL;
-                    mMultiSensorMode = BIOMETRIC_MULTI_SENSOR_DEFAULT;
-                    mMultiSensorState = MULTI_SENSOR_STATE_UNKNOWN;
                     mSensors = new int[0];
 
                     mStatusBarService.showAuthenticationDialog(
@@ -440,8 +483,7 @@ public final class AuthSession implements IBinder.DeathRecipient {
                             mUserId,
                             mOperationId,
                             mOpPackageName,
-                            mRequestId,
-                            mMultiSensorMode);
+                            mRequestId);
                 } else {
                     mClientReceiver.onError(modality, error, vendorCode);
                     return true;
@@ -451,14 +493,12 @@ public final class AuthSession implements IBinder.DeathRecipient {
 
             case STATE_AUTH_STARTED:
             case STATE_AUTH_STARTED_UI_SHOWING: {
-                final boolean errorLockout = error == BiometricConstants.BIOMETRIC_ERROR_LOCKOUT
-                        || error == BiometricConstants.BIOMETRIC_ERROR_LOCKOUT_PERMANENT;
                 if (isAllowDeviceCredential() && errorLockout) {
                     // SystemUI handles transition from biometric to device credential.
                     mState = STATE_SHOWING_DEVICE_CREDENTIAL;
                     mStatusBarService.onBiometricError(modality, error, vendorCode);
                 } else if (error == BiometricConstants.BIOMETRIC_ERROR_CANCELED) {
-                    mStatusBarService.hideAuthenticationDialog();
+                    mStatusBarService.hideAuthenticationDialog(mRequestId);
                     // TODO: If multiple authenticators are simultaneously running, this will
                     // need to be modified. Send the error to the client here, instead of doing
                     // a round trip to SystemUI.
@@ -466,12 +506,6 @@ public final class AuthSession implements IBinder.DeathRecipient {
                     return true;
                 } else {
                     mState = STATE_ERROR_PENDING_SYSUI;
-                    if (mMultiSensorMode == BIOMETRIC_MULTI_SENSOR_FACE_THEN_FINGERPRINT
-                            && mMultiSensorState == MULTI_SENSOR_STATE_FACE_SCANNING) {
-                        // wait for the UI to signal when modality should switch
-                        Slog.d(TAG, "onErrorReceived: waiting for modality switch callback");
-                        mMultiSensorState = MULTI_SENSOR_STATE_SWITCHING;
-                    }
                     mStatusBarService.onBiometricError(modality, error, vendorCode);
                 }
                 break;
@@ -482,7 +516,7 @@ public final class AuthSession implements IBinder.DeathRecipient {
                 // the client and clean up. The only error we should get here is
                 // ERROR_CANCELED due to another client kicking us out.
                 mClientReceiver.onError(modality, error, vendorCode);
-                mStatusBarService.hideAuthenticationDialog();
+                mStatusBarService.hideAuthenticationDialog(mRequestId);
                 return true;
             }
 
@@ -491,7 +525,7 @@ public final class AuthSession implements IBinder.DeathRecipient {
                 break;
 
             case STATE_CLIENT_DIED_CANCELLING:
-                mStatusBarService.hideAuthenticationDialog();
+                mStatusBarService.hideAuthenticationDialog(mRequestId);
                 return true;
 
             default:
@@ -503,6 +537,11 @@ public final class AuthSession implements IBinder.DeathRecipient {
     }
 
     void onAcquired(int sensorId, int acquiredInfo, int vendorCode) {
+        if (hasAuthenticated()) {
+            Slog.d(TAG, "onAcquired after successful auth");
+            return;
+        }
+
         final String message = getAcquiredMessageForSensor(sensorId, acquiredInfo, vendorCode);
         Slog.d(TAG, "sensorId: " + sensorId + " acquiredInfo: " + acquiredInfo
                 + " message: " + message);
@@ -512,12 +551,19 @@ public final class AuthSession implements IBinder.DeathRecipient {
 
         try {
             mStatusBarService.onBiometricHelp(sensorIdToModality(sensorId), message);
+            final int aAcquiredInfo = acquiredInfo == FINGERPRINT_ACQUIRED_VENDOR
+                    ? (vendorCode + FINGERPRINT_ACQUIRED_VENDOR_BASE) : acquiredInfo;
+            mClientReceiver.onAcquired(aAcquiredInfo, message);
         } catch (RemoteException e) {
             Slog.e(TAG, "Remote exception", e);
         }
     }
 
     void onSystemEvent(int event) {
+        if (hasAuthenticated()) {
+            Slog.d(TAG, "onSystemEvent after successful auth");
+            return;
+        }
         if (!mPromptInfo.isReceiveSystemEvents()) {
             return;
         }
@@ -529,28 +575,25 @@ public final class AuthSession implements IBinder.DeathRecipient {
         }
     }
 
-    void onDialogAnimatedIn() {
+    void onDialogAnimatedIn(boolean startFingerprintNow) {
         if (mState != STATE_AUTH_STARTED) {
-            Slog.w(TAG, "onDialogAnimatedIn, unexpected state: " + mState);
-        }
-
-        mState = STATE_AUTH_STARTED_UI_SHOWING;
-
-        if (mMultiSensorMode == BIOMETRIC_MULTI_SENSOR_FACE_THEN_FINGERPRINT) {
-            mMultiSensorState = MULTI_SENSOR_STATE_FACE_SCANNING;
-        } else {
-            startFingerprintSensorsNow();
-        }
-    }
-
-    // call anytime after onDialogAnimatedIn() to indicate it's appropriate to start the
-    // fingerprint sensor (i.e. face auth has failed or is not available)
-    void onStartFingerprint() {
-        if (mMultiSensorMode != BIOMETRIC_MULTI_SENSOR_FACE_THEN_FINGERPRINT) {
-            Slog.e(TAG, "onStartFingerprint, unexpected mode: " + mMultiSensorMode);
+            Slog.e(TAG, "onDialogAnimatedIn, unexpected state: " + mState);
             return;
         }
 
+        mState = STATE_AUTH_STARTED_UI_SHOWING;
+        if (startFingerprintNow) {
+            startAllPreparedFingerprintSensors();
+        } else {
+            Slog.d(TAG, "delaying fingerprint sensor start");
+        }
+
+        mBiometricContext.updateContext(mOperationContext, isCrypto());
+    }
+
+    // call once anytime after onDialogAnimatedIn() to indicate it's appropriate to start the
+    // fingerprint sensor (i.e. face auth has failed or is not available)
+    void onStartFingerprint() {
         if (mState != STATE_AUTH_STARTED
                 && mState != STATE_AUTH_STARTED_UI_SHOWING
                 && mState != STATE_AUTH_PAUSED
@@ -558,31 +601,34 @@ public final class AuthSession implements IBinder.DeathRecipient {
             Slog.w(TAG, "onStartFingerprint, started from unexpected state: " + mState);
         }
 
-        mMultiSensorState = MULTI_SENSOR_STATE_FP_SCANNING;
-        startFingerprintSensorsNow();
-    }
-
-    // unguarded helper for the above methods only
-    private void startFingerprintSensorsNow() {
         startAllPreparedFingerprintSensors();
-        mState = STATE_AUTH_STARTED_UI_SHOWING;
     }
 
     void onTryAgainPressed() {
+        if (hasAuthenticated()) {
+            Slog.d(TAG, "onTryAgainPressed after successful auth");
+            return;
+        }
+
         if (mState != STATE_AUTH_PAUSED) {
             Slog.w(TAG, "onTryAgainPressed, state: " + mState);
         }
 
         try {
-            setSensorsToStateWaitingForCookie();
+            setSensorsToStateWaitingForCookie(true /* isTryAgain */);
             mState = STATE_AUTH_PAUSED_RESUMING;
         } catch (RemoteException e) {
             Slog.e(TAG, "RemoteException: " + e);
         }
     }
 
-    void onAuthenticationSucceeded(int sensorId, boolean strong,
-            byte[] token) {
+    void onAuthenticationSucceeded(int sensorId, boolean strong, byte[] token) {
+        if (hasAuthenticated()) {
+            Slog.d(TAG, "onAuthenticationSucceeded after successful auth");
+            return;
+        }
+
+        mAuthenticatedSensorId = sensorId;
         if (strong) {
             mTokenEscrow = token;
         } else {
@@ -594,7 +640,7 @@ public final class AuthSession implements IBinder.DeathRecipient {
         try {
             // Notify SysUI that the biometric has been authenticated. SysUI already knows
             // the implicit/explicit state and will react accordingly.
-            mStatusBarService.onBiometricAuthenticated();
+            mStatusBarService.onBiometricAuthenticated(sensorIdToModality(sensorId));
 
             final boolean requireConfirmation = isConfirmationRequiredByAnyEligibleSensor();
 
@@ -607,20 +653,22 @@ public final class AuthSession implements IBinder.DeathRecipient {
         } catch (RemoteException e) {
             Slog.e(TAG, "RemoteException", e);
         }
+
+        cancelAllSensors(sensor -> sensor.id != sensorId);
     }
 
-    void onAuthenticationRejected() {
-        try {
-            mStatusBarService.onBiometricError(TYPE_NONE,
-                    BiometricConstants.BIOMETRIC_PAUSED_REJECTED, 0 /* vendorCode */);
+    void onAuthenticationRejected(int sensorId) {
+        if (hasAuthenticated()) {
+            Slog.d(TAG, "onAuthenticationRejected after successful auth");
+            return;
+        }
 
-            // TODO: This logic will need to be updated if BP is multi-modal
-            if (hasPausableBiometric()) {
-                // Pause authentication. onBiometricAuthenticated(false) causes the
-                // dialog to show a "try again" button for passive modalities.
+        try {
+            mStatusBarService.onBiometricError(sensorIdToModality(sensorId),
+                    BiometricConstants.BIOMETRIC_PAUSED_REJECTED, 0 /* vendorCode */);
+            if (pauseSensorIfSupported(sensorId)) {
                 mState = STATE_AUTH_PAUSED;
             }
-
             mClientReceiver.onAuthenticationFailed();
         } catch (RemoteException e) {
             Slog.e(TAG, "RemoteException", e);
@@ -628,15 +676,36 @@ public final class AuthSession implements IBinder.DeathRecipient {
     }
 
     void onAuthenticationTimedOut(int sensorId, int cookie, int error, int vendorCode) {
+        if (hasAuthenticated()) {
+            Slog.d(TAG, "onAuthenticationTimedOut after successful auth");
+            return;
+        }
+
         try {
             mStatusBarService.onBiometricError(sensorIdToModality(sensorId), error, vendorCode);
+            pauseSensorIfSupported(sensorId);
             mState = STATE_AUTH_PAUSED;
         } catch (RemoteException e) {
             Slog.e(TAG, "RemoteException", e);
         }
     }
 
+    private boolean pauseSensorIfSupported(int sensorId) {
+        boolean isSensorCancelling = sensorIdToState(sensorId) == STATE_CANCELING;
+        // If the sensor is locked out, canceling sensors operation is handled in onErrorReceived()
+        if (sensorIdToModality(sensorId) == TYPE_FACE && !isSensorCancelling) {
+            cancelAllSensors(sensor -> sensor.id == sensorId);
+            return true;
+        }
+        return false;
+    }
+
     void onDeviceCredentialPressed() {
+        if (hasAuthenticated()) {
+            Slog.d(TAG, "onDeviceCredentialPressed after successful auth");
+            return;
+        }
+
         // Cancel authentication. Skip the token/package check since we are cancelling
         // from system server. The interface is permission protected so this is fine.
         cancelAllSensors();
@@ -655,13 +724,17 @@ public final class AuthSession implements IBinder.DeathRecipient {
                     cancelAllSensors();
                     return false;
                 default:
-                    mStatusBarService.hideAuthenticationDialog();
+                    mStatusBarService.hideAuthenticationDialog(mRequestId);
                     return true;
             }
         } catch (RemoteException e) {
             Slog.e(TAG, "Remote Exception: " + e);
             return true;
         }
+    }
+
+    private boolean hasAuthenticated() {
+        return mAuthenticatedSensorId != -1;
     }
 
     private void logOnDialogDismissed(@BiometricPrompt.DismissedReason int reason) {
@@ -675,53 +748,62 @@ public final class AuthSession implements IBinder.DeathRecipient {
                 Slog.v(TAG, "Confirmed! Modality: " + statsModality()
                         + ", User: " + mUserId
                         + ", IsCrypto: " + isCrypto()
-                        + ", Client: " + BiometricsProtoEnums.CLIENT_BIOMETRIC_PROMPT
+                        + ", Client: " + getStatsClient()
                         + ", RequireConfirmation: " + mPreAuthInfo.confirmationRequested
                         + ", State: " + FrameworkStatsLog.BIOMETRIC_AUTHENTICATED__STATE__CONFIRMED
-                        + ", Latency: " + latency);
+                        + ", Latency: " + latency
+                        + ", SessionId: " + mOperationContext.getId());
             }
 
-            FrameworkStatsLog.write(FrameworkStatsLog.BIOMETRIC_AUTHENTICATED,
+            mBiometricFrameworkStatsLogger.authenticate(
+                    mOperationContext,
                     statsModality(),
-                    mUserId,
-                    isCrypto(),
-                    BiometricsProtoEnums.CLIENT_BIOMETRIC_PROMPT,
-                    mPreAuthInfo.confirmationRequested,
-                    FrameworkStatsLog.BIOMETRIC_AUTHENTICATED__STATE__CONFIRMED,
-                    latency,
+                    BiometricsProtoEnums.ACTION_UNKNOWN,
+                    getStatsClient(),
                     mDebugEnabled,
-                    -1 /* sensorId */,
+                    latency,
+                    FrameworkStatsLog.BIOMETRIC_AUTHENTICATED__STATE__CONFIRMED,
+                    mPreAuthInfo.confirmationRequested,
+                    mUserId,
                     -1f /* ambientLightLux */);
         } else {
             final long latency = System.currentTimeMillis() - mStartTimeMs;
 
-            int error = reason == BiometricPrompt.DISMISSED_REASON_NEGATIVE
-                    ? BiometricConstants.BIOMETRIC_ERROR_NEGATIVE_BUTTON
-                    : reason == BiometricPrompt.DISMISSED_REASON_USER_CANCEL
-                            ? BiometricConstants.BIOMETRIC_ERROR_USER_CANCELED
-                            : 0;
+            int error = 0;
+            switch(reason) {
+                case BiometricPrompt.DISMISSED_REASON_NEGATIVE:
+                    error = BiometricConstants.BIOMETRIC_ERROR_NEGATIVE_BUTTON;
+                    break;
+                case BiometricPrompt.DISMISSED_REASON_USER_CANCEL:
+                    error = BiometricConstants.BIOMETRIC_ERROR_USER_CANCELED;
+                    break;
+                default:
+            }
+
             if (DEBUG) {
                 Slog.v(TAG, "Dismissed! Modality: " + statsModality()
                         + ", User: " + mUserId
                         + ", IsCrypto: " + isCrypto()
                         + ", Action: " + BiometricsProtoEnums.ACTION_AUTHENTICATE
-                        + ", Client: " + BiometricsProtoEnums.CLIENT_BIOMETRIC_PROMPT
+                        + ", Client: " + getStatsClient()
                         + ", Reason: " + reason
                         + ", Error: " + error
-                        + ", Latency: " + latency);
+                        + ", Latency: " + latency
+                        + ", SessionId: " + mOperationContext.getId());
             }
             // Auth canceled
-            FrameworkStatsLog.write(FrameworkStatsLog.BIOMETRIC_ERROR_OCCURRED,
-                    statsModality(),
-                    mUserId,
-                    isCrypto(),
-                    BiometricsProtoEnums.ACTION_AUTHENTICATE,
-                    BiometricsProtoEnums.CLIENT_BIOMETRIC_PROMPT,
-                    error,
-                    0 /* vendorCode */,
-                    mDebugEnabled,
-                    latency,
-                    -1 /* sensorId */);
+            if (error != 0) {
+                mBiometricFrameworkStatsLogger.error(
+                        mOperationContext,
+                        statsModality(),
+                        BiometricsProtoEnums.ACTION_AUTHENTICATE,
+                        getStatsClient(),
+                        mDebugEnabled,
+                        latency,
+                        error,
+                        0 /* vendorCode */,
+                        mUserId);
+            }
         }
     }
 
@@ -789,6 +871,11 @@ public final class AuthSession implements IBinder.DeathRecipient {
      * @return true if this AuthSession is finished, e.g. should be set to null
      */
     boolean onCancelAuthSession(boolean force) {
+        if (hasAuthenticated()) {
+            Slog.d(TAG, "onCancelAuthSession after successful auth");
+            return true;
+        }
+
         mCancelled = true;
 
         final boolean authStarted = mState == STATE_AUTH_CALLED
@@ -810,7 +897,7 @@ public final class AuthSession implements IBinder.DeathRecipient {
                         BiometricConstants.BIOMETRIC_ERROR_CANCELED,
                         0 /* vendorCode */
                 );
-                mStatusBarService.hideAuthenticationDialog();
+                mStatusBarService.hideAuthenticationDialog(mRequestId);
                 return true;
             } catch (RemoteException e) {
                 Slog.e(TAG, "Remote exception", e);
@@ -841,15 +928,6 @@ public final class AuthSession implements IBinder.DeathRecipient {
         final int remainingCookies = mPreAuthInfo.numSensorsWaitingForCookie();
         Slog.d(TAG, "Remaining cookies: " + remainingCookies);
         return remainingCookies == 0;
-    }
-
-    private boolean hasPausableBiometric() {
-        for (BiometricSensor sensor : mPreAuthInfo.eligibleSensors) {
-            if (sensor.modality == TYPE_FACE) {
-                return true;
-            }
-        }
-        return false;
     }
 
     @SessionState int getState() {
@@ -888,6 +966,27 @@ public final class AuthSession implements IBinder.DeathRecipient {
         return TYPE_NONE;
     }
 
+    private @BiometricSensor.SensorState int sensorIdToState(int sensorId) {
+        for (BiometricSensor sensor : mPreAuthInfo.eligibleSensors) {
+            if (sensorId == sensor.id) {
+                return sensor.getSensorState();
+            }
+        }
+        Slog.e(TAG, "Unknown sensor: " + sensorId);
+        return STATE_UNKNOWN;
+    }
+
+    @BiometricManager.Authenticators.Types
+    private int sensorIdToStrength(int sensorId) {
+        for (BiometricSensor sensor : mPreAuthInfo.eligibleSensors) {
+            if (sensorId == sensor.id) {
+                return sensor.getCurrentStrength();
+            }
+        }
+        Slog.e(TAG, "Unknown sensor: " + sensorId);
+        return BIOMETRIC_CONVENIENCE;
+    }
+
     private String getAcquiredMessageForSensor(int sensorId, int acquiredInfo, int vendorCode) {
         final @Modality int modality = sensorIdToModality(sensorId);
         switch (modality) {
@@ -900,23 +999,10 @@ public final class AuthSession implements IBinder.DeathRecipient {
         }
     }
 
-    @BiometricMultiSensorMode
-    private static int getMultiSensorModeForNewSession(Collection<BiometricSensor> sensors) {
-        boolean hasFace = false;
-        boolean hasFingerprint = false;
-
-        for (BiometricSensor sensor: sensors) {
-            if (sensor.modality == TYPE_FACE) {
-                hasFace = true;
-            } else if (sensor.modality == TYPE_FINGERPRINT) {
-                hasFingerprint = true;
-            }
-        }
-
-        if (hasFace && hasFingerprint) {
-            return BIOMETRIC_MULTI_SENSOR_FACE_THEN_FINGERPRINT;
-        }
-        return BIOMETRIC_MULTI_SENSOR_DEFAULT;
+    private int getStatsClient() {
+        return mPromptInfo.isForLegacyFingerprintManager()
+                ? BiometricsProtoEnums.CLIENT_FINGERPRINT_MANAGER
+                : BiometricsProtoEnums.CLIENT_BIOMETRIC_PROMPT;
     }
 
     @Override

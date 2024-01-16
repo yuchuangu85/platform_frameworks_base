@@ -17,16 +17,20 @@
 #include <VectorDrawable.h>
 #include <gtest/gtest.h>
 
+#include <SkBlendMode.h>
 #include <SkClipStack.h>
 #include <SkSurface_Base.h>
+#include <include/effects/SkImageFilters.h>
 #include <string.h>
+
 #include "AnimationContext.h"
 #include "DamageAccumulator.h"
 #include "FatalTestCanvas.h"
 #include "IContextFactory.h"
-#include "hwui/Paint.h"
 #include "RecordingCanvas.h"
 #include "SkiaCanvas.h"
+#include "hwui/Paint.h"
+#include "pipeline/skia/BackdropFilterDrawable.h"
 #include "pipeline/skia/SkiaDisplayList.h"
 #include "pipeline/skia/SkiaOpenGLPipeline.h"
 #include "pipeline/skia/SkiaPipeline.h"
@@ -334,7 +338,7 @@ RENDERTHREAD_TEST(RenderNodeDrawable, projectionReorder) {
             "A");
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, parent.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, parent.get(), &contextFactory, 0, 0));
     TreeInfo info(TreeInfo::MODE_RT_ONLY, *canvasContext.get());
     DamageAccumulator damageAccumulator;
     info.damageAccumulator = &damageAccumulator;
@@ -398,7 +402,7 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, emptyReceiver) {
                                       "A");
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, parent.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, parent.get(), &contextFactory, 0, 0));
     TreeInfo info(TreeInfo::MODE_RT_ONLY, *canvasContext.get());
     DamageAccumulator damageAccumulator;
     info.damageAccumulator = &damageAccumulator;
@@ -469,7 +473,7 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, projectionHwLayer) {
         }
         SkCanvas* onNewCanvas() override { return new ProjectionTestCanvas(mDrawCounter); }
         sk_sp<SkSurface> onNewSurface(const SkImageInfo&) override { return nullptr; }
-        void onCopyOnWrite(ContentChangeMode) override {}
+        bool onCopyOnWrite(ContentChangeMode) override { return true; }
         int* mDrawCounter;
         void onWritePixels(const SkPixmap&, int x, int y) {}
     };
@@ -518,7 +522,7 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(RenderNodeDrawable, projectionHwLayer) {
     // prepareTree is required to find, which receivers have backward projected nodes
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, parent.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, parent.get(), &contextFactory, 0, 0));
     TreeInfo info(TreeInfo::MODE_RT_ONLY, *canvasContext.get());
     DamageAccumulator damageAccumulator;
     info.damageAccumulator = &damageAccumulator;
@@ -618,7 +622,7 @@ RENDERTHREAD_TEST(RenderNodeDrawable, projectionChildScroll) {
     // prepareTree is required to find, which receivers have backward projected nodes
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, parent.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, parent.get(), &contextFactory, 0, 0));
     TreeInfo info(TreeInfo::MODE_RT_ONLY, *canvasContext.get());
     DamageAccumulator damageAccumulator;
     info.damageAccumulator = &damageAccumulator;
@@ -634,7 +638,7 @@ namespace {
 static int drawNode(RenderThread& renderThread, const sp<RenderNode>& renderNode) {
     ContextFactory contextFactory;
     std::unique_ptr<CanvasContext> canvasContext(
-            CanvasContext::create(renderThread, false, renderNode.get(), &contextFactory));
+            CanvasContext::create(renderThread, false, renderNode.get(), &contextFactory, 0, 0));
     TreeInfo info(TreeInfo::MODE_RT_ONLY, *canvasContext.get());
     DamageAccumulator damageAccumulator;
     info.damageAccumulator = &damageAccumulator;
@@ -1208,4 +1212,78 @@ RENDERTHREAD_SKIA_PIPELINE_TEST(SkiaRecordingCanvas, drawVectorDrawable) {
     RenderNodeDrawable drawable(node.get(), &canvas, true);
     canvas.drawDrawable(&drawable);
     EXPECT_EQ(2, canvas.mDrawCounter);
+}
+
+// Verify drawing logics for BackdropFilterDrawable
+RENDERTHREAD_TEST(BackdropFilterDrawable, drawing) {
+    static const int CANVAS_WIDTH = 100;
+    static const int CANVAS_HEIGHT = 200;
+    class SimpleTestCanvas : public TestCanvasBase {
+    public:
+        SkRect mDstBounds;
+        SimpleTestCanvas() : TestCanvasBase(CANVAS_WIDTH, CANVAS_HEIGHT) {}
+        void onDrawRect(const SkRect& rect, const SkPaint& paint) override {
+            // did nothing.
+        }
+
+        // called when BackdropFilterDrawable is drawn.
+        void onDrawImageRect2(const SkImage*, const SkRect& src, const SkRect& dst,
+                              const SkSamplingOptions&, const SkPaint*,
+                              SrcRectConstraint) override {
+            mDrawCounter++;
+            mDstBounds = dst;
+        }
+    };
+    class SimpleLayer : public SkSurface_Base {
+    public:
+        SimpleLayer()
+                : SkSurface_Base(SkImageInfo::MakeN32Premul(CANVAS_WIDTH, CANVAS_HEIGHT), nullptr) {
+        }
+        virtual sk_sp<SkImage> onNewImageSnapshot(const SkIRect* bounds) override {
+            SkBitmap bitmap;
+            bitmap.allocN32Pixels(CANVAS_WIDTH, CANVAS_HEIGHT);
+            bitmap.setImmutable();
+            return SkImage::MakeFromBitmap(bitmap);
+        }
+        SkCanvas* onNewCanvas() override { return new SimpleTestCanvas(); }
+        sk_sp<SkSurface> onNewSurface(const SkImageInfo&) override { return nullptr; }
+        bool onCopyOnWrite(ContentChangeMode) override { return true; }
+        void onWritePixels(const SkPixmap&, int x, int y) {}
+    };
+
+    auto node = TestUtils::createSkiaNode(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT,
+                                          [](RenderProperties& props, SkiaRecordingCanvas& canvas) {
+                                              canvas.drawRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT,
+                                                              Paint());
+                                          });
+
+    sk_sp<SkSurface> surface(new SimpleLayer());
+    auto* canvas = reinterpret_cast<SimpleTestCanvas*>(surface->getCanvas());
+    RenderNodeDrawable drawable(node.get(), canvas, true);
+    BackdropFilterDrawable backdropDrawable(node.get(), canvas);
+    canvas->drawDrawable(&drawable);
+    canvas->drawDrawable(&backdropDrawable);
+    // no backdrop filter, skip drawing.
+    EXPECT_EQ(0, canvas->mDrawCounter);
+
+    sk_sp<SkImageFilter> filter(SkImageFilters::Blur(3, 3, nullptr));
+    node->animatorProperties().mutateLayerProperties().setBackdropImageFilter(filter.get());
+    canvas->drawDrawable(&drawable);
+    canvas->drawDrawable(&backdropDrawable);
+    // backdrop filter is set, ok to draw.
+    EXPECT_EQ(1, canvas->mDrawCounter);
+    EXPECT_EQ(SkRect::MakeLTRB(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT), canvas->mDstBounds);
+
+    canvas->translate(30, 30);
+    canvas->drawDrawable(&drawable);
+    canvas->drawDrawable(&backdropDrawable);
+    // the drawable is still visible, ok to draw.
+    EXPECT_EQ(2, canvas->mDrawCounter);
+    EXPECT_EQ(SkRect::MakeLTRB(0, 0, CANVAS_WIDTH - 30, CANVAS_HEIGHT - 30), canvas->mDstBounds);
+
+    canvas->translate(CANVAS_WIDTH, CANVAS_HEIGHT);
+    canvas->drawDrawable(&drawable);
+    canvas->drawDrawable(&backdropDrawable);
+    // the drawable is invisible, skip drawing.
+    EXPECT_EQ(2, canvas->mDrawCounter);
 }

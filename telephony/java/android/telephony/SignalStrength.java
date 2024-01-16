@@ -275,12 +275,12 @@ public class SignalStrength implements Parcelable {
     public SignalStrength(Parcel in) {
         if (DBG) log("Size of signalstrength parcel:" + in.dataSize());
 
-        mCdma = in.readParcelable(CellSignalStrengthCdma.class.getClassLoader());
-        mGsm = in.readParcelable(CellSignalStrengthGsm.class.getClassLoader());
-        mWcdma = in.readParcelable(CellSignalStrengthWcdma.class.getClassLoader());
-        mTdscdma = in.readParcelable(CellSignalStrengthTdscdma.class.getClassLoader());
-        mLte = in.readParcelable(CellSignalStrengthLte.class.getClassLoader());
-        mNr = in.readParcelable(CellSignalStrengthLte.class.getClassLoader());
+        mCdma = in.readParcelable(CellSignalStrengthCdma.class.getClassLoader(), android.telephony.CellSignalStrengthCdma.class);
+        mGsm = in.readParcelable(CellSignalStrengthGsm.class.getClassLoader(), android.telephony.CellSignalStrengthGsm.class);
+        mWcdma = in.readParcelable(CellSignalStrengthWcdma.class.getClassLoader(), android.telephony.CellSignalStrengthWcdma.class);
+        mTdscdma = in.readParcelable(CellSignalStrengthTdscdma.class.getClassLoader(), android.telephony.CellSignalStrengthTdscdma.class);
+        mLte = in.readParcelable(CellSignalStrengthLte.class.getClassLoader(), android.telephony.CellSignalStrengthLte.class);
+        mNr = in.readParcelable(CellSignalStrengthLte.class.getClassLoader(), android.telephony.CellSignalStrengthNr.class);
         mTimestampMillis = in.readLong();
     }
 
@@ -906,12 +906,12 @@ public class SignalStrength implements Parcelable {
     @Deprecated
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P)
     private void setFromNotifierBundle(Bundle m) {
-        mCdma = m.getParcelable("Cdma");
-        mGsm = m.getParcelable("Gsm");
-        mWcdma = m.getParcelable("Wcdma");
-        mTdscdma = m.getParcelable("Tdscdma");
-        mLte = m.getParcelable("Lte");
-        mNr = m.getParcelable("Nr");
+        mCdma = m.getParcelable("Cdma", android.telephony.CellSignalStrengthCdma.class);
+        mGsm = m.getParcelable("Gsm", android.telephony.CellSignalStrengthGsm.class);
+        mWcdma = m.getParcelable("Wcdma", android.telephony.CellSignalStrengthWcdma.class);
+        mTdscdma = m.getParcelable("Tdscdma", android.telephony.CellSignalStrengthTdscdma.class);
+        mLte = m.getParcelable("Lte", android.telephony.CellSignalStrengthLte.class);
+        mNr = m.getParcelable("Nr", android.telephony.CellSignalStrengthNr.class);
     }
 
     /**

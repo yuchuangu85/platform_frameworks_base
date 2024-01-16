@@ -16,7 +16,6 @@
 package com.android.server.notification;
 
 import static android.app.Notification.FLAG_BUBBLE;
-import static android.app.Notification.FLAG_FOREGROUND_SERVICE;
 import static android.app.NotificationChannel.ALLOW_BUBBLE_OFF;
 import static android.app.NotificationManager.BUBBLE_PREFERENCE_ALL;
 import static android.app.NotificationManager.BUBBLE_PREFERENCE_NONE;
@@ -32,6 +31,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.res.Resources;
 import android.util.Slog;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -49,10 +49,15 @@ public class BubbleExtractor implements NotificationSignalExtractor {
     private ActivityManager mActivityManager;
     private Context mContext;
 
+    boolean mSupportsBubble;
+
     public void initialize(Context context, NotificationUsageStats usageStats) {
         if (DBG) Slog.d(TAG, "Initializing  " + getClass().getSimpleName() + ".");
         mContext = context;
         mActivityManager = (ActivityManager) mContext.getSystemService(Context.ACTIVITY_SERVICE);
+
+        mSupportsBubble = Resources.getSystem().getBoolean(
+                com.android.internal.R.bool.config_supportsBubble);
     }
 
     public RankingReconsideration process(NotificationRecord record) {
@@ -75,7 +80,7 @@ public class BubbleExtractor implements NotificationSignalExtractor {
                 && !mActivityManager.isLowRamDevice()
                 && record.isConversation()
                 && record.getShortcutInfo() != null
-                && (record.getNotification().flags & FLAG_FOREGROUND_SERVICE) == 0;
+                && !record.getNotification().isFgsOrUij();
 
         boolean userEnabledBubbles = mConfig.bubblesEnabled(record.getUser());
         int appPreference =
@@ -138,6 +143,10 @@ public class BubbleExtractor implements NotificationSignalExtractor {
      */
     @VisibleForTesting
     boolean canPresentAsBubble(NotificationRecord r) {
+        if (!mSupportsBubble) {
+            return false;
+        }
+
         Notification notification = r.getNotification();
         Notification.BubbleMetadata metadata = notification.getBubbleMetadata();
         String pkg = r.getSbn().getPackageName();
@@ -172,7 +181,7 @@ public class BubbleExtractor implements NotificationSignalExtractor {
 
     /**
      * Whether an intent is properly configured to display in an {@link
-     * com.android.wm.shell.TaskView} for bubbling.
+     * TaskView} for bubbling.
      *
      * @param context       the context to use.
      * @param pendingIntent the pending intent of the bubble.

@@ -21,6 +21,7 @@ import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.ActivityOptions;
 import android.app.PendingIntent;
 import android.app.RemoteAction;
 import android.content.Context;
@@ -301,7 +302,8 @@ public final class TextClassification implements Parcelable {
         Objects.requireNonNull(intent);
         return v -> {
             try {
-                intent.send();
+                intent.send(ActivityOptions.makeBasic().setPendingIntentBackgroundActivityStartMode(
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED).toBundle());
             } catch (PendingIntent.CanceledException e) {
                 Log.e(LOG_TAG, "Error sending PendingIntent", e);
             }
@@ -713,12 +715,12 @@ public final class TextClassification implements Parcelable {
             final CharSequence text = in.readCharSequence();
             final int startIndex = in.readInt();
             final int endIndex = in.readInt();
-            final LocaleList defaultLocales = in.readParcelable(null);
+            final LocaleList defaultLocales = in.readParcelable(null, android.os.LocaleList.class);
             final String referenceTimeString = in.readString();
             final ZonedDateTime referenceTime = referenceTimeString == null
                     ? null : ZonedDateTime.parse(referenceTimeString);
             final Bundle extras = in.readBundle();
-            final SystemTextClassifierMetadata systemTcMetadata = in.readParcelable(null);
+            final SystemTextClassifierMetadata systemTcMetadata = in.readParcelable(null, android.view.textclassifier.SystemTextClassifierMetadata.class);
 
             final Request request = new Request(text, startIndex, endIndex,
                     defaultLocales, referenceTime, extras);

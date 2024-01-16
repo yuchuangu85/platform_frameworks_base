@@ -21,24 +21,30 @@ import static com.android.systemui.statusbar.notification.TransformState.TRANSFO
 import android.app.Notification;
 import android.content.Context;
 import android.util.ArraySet;
-import android.util.Pair;
 import android.view.NotificationHeaderView;
 import android.view.NotificationTopLineView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.animation.Interpolator;
 import android.view.animation.PathInterpolator;
+import android.widget.DateTimeView;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import androidx.annotation.Nullable;
+
+import com.android.app.animation.Interpolators;
 import com.android.internal.widget.CachingIconView;
 import com.android.internal.widget.NotificationExpandButton;
-import com.android.systemui.animation.Interpolators;
+import com.android.systemui.R;
 import com.android.systemui.statusbar.TransformableView;
 import com.android.systemui.statusbar.ViewTransformationHelper;
 import com.android.systemui.statusbar.notification.CustomInterpolatorTransformation;
+import com.android.systemui.statusbar.notification.FeedbackIcon;
 import com.android.systemui.statusbar.notification.ImageTransformState;
+import com.android.systemui.statusbar.notification.Roundable;
+import com.android.systemui.statusbar.notification.RoundableState;
 import com.android.systemui.statusbar.notification.TransformState;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
 
@@ -47,13 +53,12 @@ import java.util.Stack;
 /**
  * Wraps a notification view which may or may not include a header.
  */
-public class NotificationHeaderViewWrapper extends NotificationViewWrapper {
+public class NotificationHeaderViewWrapper extends NotificationViewWrapper implements Roundable {
 
+    private final RoundableState mRoundableState;
     private static final Interpolator LOW_PRIORITY_HEADER_CLOSE
             = new PathInterpolator(0.4f, 0f, 0.7f, 1f);
-
     protected final ViewTransformationHelper mTransformationHelper;
-
     private CachingIconView mIcon;
     private NotificationExpandButton mExpandButton;
     private View mAltExpandTarget;
@@ -65,12 +70,17 @@ public class NotificationHeaderViewWrapper extends NotificationViewWrapper {
     private ImageView mWorkProfileImage;
     private View mAudiblyAlertedIcon;
     private View mFeedbackIcon;
-
     private boolean mIsLowPriority;
     private boolean mTransformLowPriorityTitle;
+    private RoundnessChangedListener mRoundnessChangedListener;
 
     protected NotificationHeaderViewWrapper(Context ctx, View view, ExpandableNotificationRow row) {
         super(ctx, view, row);
+        mRoundableState = new RoundableState(
+                mView,
+                this,
+                ctx.getResources().getDimension(R.dimen.notification_corner_radius)
+        );
         mTransformationHelper = new ViewTransformationHelper();
 
         // we want to avoid that the header clashes with the other text when transforming
@@ -79,7 +89,8 @@ public class NotificationHeaderViewWrapper extends NotificationViewWrapper {
                 new CustomInterpolatorTransformation(TRANSFORMING_VIEW_TITLE) {
 
                     @Override
-                    public Interpolator getCustomInterpolator(int interpolationType,
+                    public Interpolator getCustomInterpolator(
+                            int interpolationType,
                             boolean isFrom) {
                         boolean isLowPriority = mView instanceof NotificationHeaderView;
                         if (interpolationType == TRANSFORM_Y) {
@@ -97,9 +108,34 @@ public class NotificationHeaderViewWrapper extends NotificationViewWrapper {
                     protected boolean hasCustomTransformation() {
                         return mIsLowPriority && mTransformLowPriorityTitle;
                     }
-                }, TRANSFORMING_VIEW_TITLE);
+                },
+                TRANSFORMING_VIEW_TITLE);
         resolveHeaderViews();
         addFeedbackOnClickListener(row);
+    }
+
+    @Override
+    public RoundableState getRoundableState() {
+        return mRoundableState;
+    }
+
+    @Override
+    public int getClipHeight() {
+        return mView.getHeight();
+    }
+
+    @Override
+    public void applyRoundnessAndInvalidate() {
+        if (mRoundnessChangedListener != null) {
+            // We cannot apply the rounded corner to this View, so our parents (in drawChild()) will
+            // clip our canvas. So we should invalidate our parent.
+            mRoundnessChangedListener.applyRoundnessAndInvalidate();
+        }
+        Roundable.super.applyRoundnessAndInvalidate();
+    }
+
+    public void setOnRoundnessChangedListener(RoundnessChangedListener listener) {
+        mRoundnessChangedListener = listener;
     }
 
     protected void resolveHeaderViews() {
@@ -126,16 +162,19 @@ public class NotificationHeaderViewWrapper extends NotificationViewWrapper {
         }
     }
 
-    /** Shows or hides feedback indicator */
+    /**
+     * Shows the given feedback icon, or hides the icon if null.
+     */
     @Override
-    public void showFeedbackIcon(boolean show, Pair<Integer, Integer> resIds) {
+    public void setFeedbackIcon(@Nullable FeedbackIcon icon) {
         if (mFeedbackIcon != null) {
-            mFeedbackIcon.setVisibility(show ? View.VISIBLE : View.GONE);
-            if (show) {
+            mFeedbackIcon.setVisibility(icon != null ? View.VISIBLE : View.GONE);
+            if (icon != null) {
                 if (mFeedbackIcon instanceof ImageButton) {
-                    ((ImageButton) mFeedbackIcon).setImageResource(resIds.first);
+                    ((ImageButton) mFeedbackIcon).setImageResource(icon.getIconRes());
                 }
-                mFeedbackIcon.setContentDescription(mView.getContext().getString(resIds.second));
+                mFeedbackIcon.setContentDescription(
+                        mView.getContext().getString(icon.getContentDescRes()));
             }
         }
     }
@@ -190,7 +229,7 @@ public class NotificationHeaderViewWrapper extends NotificationViewWrapper {
                     // its animation
                     && child.getId() != com.android.internal.R.id.conversation_icon_badge_ring) {
                 ((ImageView) child).setCropToPadding(true);
-            } else if (child instanceof ViewGroup){
+            } else if (child instanceof ViewGroup) {
                 ViewGroup group = (ViewGroup) child;
                 for (int i = 0; i < group.getChildCount(); i++) {
                     stack.push(group.getChildAt(i));
@@ -212,7 +251,9 @@ public class NotificationHeaderViewWrapper extends NotificationViewWrapper {
     }
 
     @Override
-    public void updateExpandability(boolean expandable, View.OnClickListener onClickListener,
+    public void updateExpandability(
+            boolean expandable,
+            View.OnClickListener onClickListener,
             boolean requestLayout) {
         mExpandButton.setVisibility(expandable ? View.VISIBLE : View.GONE);
         mExpandButton.setOnClickListener(expandable ? onClickListener : null);
@@ -308,6 +349,21 @@ public class NotificationHeaderViewWrapper extends NotificationViewWrapper {
         mTransformationHelper.setVisible(visible);
     }
 
+    /***
+     * Set Notification when value
+     * @param whenMillis
+     */
+    public void setNotificationWhen(long whenMillis) {
+        if (mNotificationHeader == null) {
+            return;
+        }
+
+        final View timeView = mNotificationHeader.findViewById(com.android.internal.R.id.time);
+
+        if (timeView instanceof DateTimeView) {
+            ((DateTimeView) timeView).setTime(whenMillis);
+        }
+    }
     protected void addTransformedViews(View... views) {
         for (View view : views) {
             if (view != null) {
@@ -322,5 +378,15 @@ public class NotificationHeaderViewWrapper extends NotificationViewWrapper {
                 mTransformationHelper.addViewTransformingToSimilar(view);
             }
         }
+    }
+
+    /**
+     * Interface that handle the Roundness changes
+     */
+    public interface RoundnessChangedListener {
+        /**
+         * This method will be called when this class call applyRoundnessAndInvalidate()
+         */
+        void applyRoundnessAndInvalidate();
     }
 }

@@ -69,11 +69,17 @@ public class Log {
     private static final Object sSingletonSync = new Object();
     private static EventManager sEventManager;
     private static SessionManager sSessionManager;
+    private static Object sLock = null;
 
     /**
      * Tracks whether user-activated extended logging is enabled.
      */
     private static boolean sIsUserExtendedLoggingEnabled = false;
+
+    /**
+     *  Enabled in telecom testing to help gate log statements causing log spew.
+     */
+    private static boolean sIsUnitTestingEnabled = false;
 
     /**
      * The time when user-activated extended logging should be ended.  Used to determine when
@@ -330,6 +336,20 @@ public class Log {
         }
     }
 
+    /**
+     * Enabled when tests are running to help gate log statements causing log spew.
+     *
+     *  @param isEnabled {@code true} if running unit tests. false otherwise.
+     *
+     */
+    public static void setUnitTestingEnabled(boolean isEnabled) {
+        sIsUnitTestingEnabled = isEnabled;
+    }
+
+    public static boolean isUnitTestingEnabled() {
+        return sIsUnitTestingEnabled;
+    }
+
     private static EventManager getEventManager() {
         // Checking for null again outside of synchronization because we only need to synchronize
         // during the lazy loading of the events logger. We don't need to synchronize elsewhere.
@@ -366,6 +386,19 @@ public class Log {
         VERBOSE = isLoggable(android.util.Log.VERBOSE);
         WARN = isLoggable(android.util.Log.WARN);
         ERROR = isLoggable(android.util.Log.ERROR);
+    }
+
+    /**
+     * Sets the main telecom sync lock used within Telecom.  This is used when building log messages
+     * so that we can identify places in the code where we are doing something outside of the
+     * Telecom lock.
+     * @param lock The lock.
+     */
+    public static void setLock(Object lock) {
+        // Don't do lock monitoring on user builds.
+        if (!Build.IS_USER) {
+            sLock = lock;
+        }
     }
 
     /**
@@ -493,7 +526,10 @@ public class Log {
                     args.length);
             msg = format + " (An error occurred while formatting the message.)";
         }
-        return String.format(Locale.US, "%s: %s%s", prefix, msg, sessionPostfix);
+        // If a lock was set, check if this thread holds that lock and output an emoji that lets
+        // the developer know whether a log message came from within the Telecom lock or not.
+        String isLocked = sLock != null ? (Thread.holdsLock(sLock) ? "\uD83D\uDD12" : "❗") : "";
+        return String.format(Locale.US, "%s: %s%s%s", prefix, msg, sessionPostfix, isLocked);
     }
 
     /**

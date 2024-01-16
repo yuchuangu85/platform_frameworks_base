@@ -20,7 +20,7 @@ import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentat
 
 import android.app.Activity;
 import android.content.Context;
-import android.graphics.Point;
+import android.os.Bundle;
 import android.os.RemoteException;
 import android.perftests.utils.BenchmarkState;
 import android.perftests.utils.PerfStatusReporter;
@@ -111,7 +111,7 @@ public class RelayoutPerfTest extends WindowManagerPerfTestBase
         stopProfiling();
     }
 
-    /** A dummy view to get IWindow. */
+    /** A placeholder view to get IWindow. */
     private static class ContentView extends LinearLayout {
         ContentView(Context context) {
             super(context);
@@ -127,18 +127,16 @@ public class RelayoutPerfTest extends WindowManagerPerfTestBase
         final ClientWindowFrames mOutFrames = new ClientWindowFrames();
         final MergedConfiguration mOutMergedConfiguration = new MergedConfiguration();
         final InsetsState mOutInsetsState = new InsetsState();
-        final InsetsSourceControl[] mOutControls = new InsetsSourceControl[0];
+        final InsetsSourceControl.Array mOutControls = new InsetsSourceControl.Array();
         final IWindow mWindow;
         final View mView;
         final WindowManager.LayoutParams mParams;
         final int mWidth;
         final int mHeight;
-        final Point mOutSurfaceSize = new Point();
         final SurfaceControl mOutSurfaceControl;
 
         final IntSupplier mViewVisibility;
 
-        int mFrameNumber;
         int mFlags;
 
         RelayoutRunner(Activity activity, IWindow window, IntSupplier visibilitySupplier) {
@@ -155,9 +153,9 @@ public class RelayoutPerfTest extends WindowManagerPerfTestBase
             final IWindowSession session = WindowManagerGlobal.getWindowSession();
             while (state.keepRunning()) {
                 session.relayout(mWindow, mParams, mWidth, mHeight,
-                        mViewVisibility.getAsInt(), mFlags, mFrameNumber, mOutFrames,
-                        mOutMergedConfiguration, mOutSurfaceControl, mOutInsetsState, mOutControls,
-                        mOutSurfaceSize);
+                        mViewVisibility.getAsInt(), mFlags, 0 /* seq */, 0 /* lastSyncSeqId */,
+                        mOutFrames, mOutMergedConfiguration, mOutSurfaceControl, mOutInsetsState,
+                        mOutControls, new Bundle());
             }
         }
     }

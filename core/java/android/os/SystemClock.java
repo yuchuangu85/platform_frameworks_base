@@ -18,6 +18,8 @@ package android.os;
 
 import android.annotation.NonNull;
 import android.app.IAlarmManager;
+import android.app.time.UnixEpochTime;
+import android.app.timedetector.ITimeDetectorService;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.location.ILocationManager;
@@ -104,6 +106,8 @@ import java.time.ZoneOffset;
 public final class SystemClock {
     private static final String TAG = "SystemClock";
 
+    private static volatile IAlarmManager sIAlarmManager;
+
     /**
      * This class is uninstantiable.
      */
@@ -151,8 +155,7 @@ public final class SystemClock {
      * @return if the clock was successfully set to the specified time.
      */
     public static boolean setCurrentTimeMillis(long millis) {
-        final IAlarmManager mgr = IAlarmManager.Stub
-                .asInterface(ServiceManager.getService(Context.ALARM_SERVICE));
+        final IAlarmManager mgr = getIAlarmManager();
         if (mgr == null) {
             Slog.e(TAG, "Unable to set RTC: mgr == null");
             return false;
@@ -167,6 +170,14 @@ public final class SystemClock {
         }
 
         return false;
+    }
+
+    private static IAlarmManager getIAlarmManager() {
+        if (sIAlarmManager == null) {
+            sIAlarmManager = IAlarmManager.Stub
+                    .asInterface(ServiceManager.getService(Context.ALARM_SERVICE));
+        }
+        return sIAlarmManager;
     }
 
     /**
@@ -268,49 +279,71 @@ public final class SystemClock {
      * <p>
      * While the time returned by {@link System#currentTimeMillis()} can be
      * adjusted by the user, the time returned by this method cannot be adjusted
-     * by the user. Note that synchronization may occur using an insecure
-     * network protocol, so the returned time should not be used for security
-     * purposes.
+     * by the user.
      * <p>
      * This performs no blocking network operations and returns values based on
      * a recent successful synchronization event; it will either return a valid
      * time or throw.
+     * <p>
+     * Note that synchronization may occur using an insecure network protocol,
+     * so the returned time should not be used for security purposes.
+     * The device may resynchronize with the same or different network source
+     * at any time. Due to network delays, variations between servers, or local
+     * (client side) clock drift, the accuracy of the returned times cannot be
+     * guaranteed. In extreme cases, consecutive calls to {@link
+     * #currentNetworkTimeMillis()} could return times that are out of order.
      *
-     * @throws DateTimeException when no accurate network time can be provided.
+     * @throws DateTimeException when no network time can be provided.
      * @hide
      */
     public static long currentNetworkTimeMillis() {
-        final IAlarmManager mgr = IAlarmManager.Stub
-                .asInterface(ServiceManager.getService(Context.ALARM_SERVICE));
-        if (mgr != null) {
+        ITimeDetectorService timeDetectorService = ITimeDetectorService.Stub
+                .asInterface(ServiceManager.getService(Context.TIME_DETECTOR_SERVICE));
+        if (timeDetectorService != null) {
+            UnixEpochTime time;
             try {
-                return mgr.currentNetworkTimeMillis();
+                time = timeDetectorService.latestNetworkTime();
             } catch (ParcelableException e) {
                 e.maybeRethrow(DateTimeException.class);
                 throw new RuntimeException(e);
             } catch (RemoteException e) {
                 throw e.rethrowFromSystemServer();
             }
+
+            if (time == null) {
+                // This is not expected.
+                throw new DateTimeException("Network based time is not available.");
+            }
+            long currentMillis = elapsedRealtime();
+            long deltaMs = currentMillis - time.getElapsedRealtimeMillis();
+            return time.getUnixEpochTimeMillis() + deltaMs;
         } else {
             throw new RuntimeException(new DeadSystemException());
         }
     }
 
-    /**
+   /**
      * Returns a {@link Clock} that starts at January 1, 1970 00:00:00.0 UTC,
      * synchronized using a remote network source outside the device.
      * <p>
      * While the time returned by {@link System#currentTimeMillis()} can be
      * adjusted by the user, the time returned by this method cannot be adjusted
-     * by the user. Note that synchronization may occur using an insecure
-     * network protocol, so the returned time should not be used for security
-     * purposes.
+     * by the user.
      * <p>
      * This performs no blocking network operations and returns values based on
      * a recent successful synchronization event; it will either return a valid
      * time or throw.
+     * <p>
+     * Note that synchronization may occur using an insecure network protocol,
+     * so the returned time should not be used for security purposes.
+     * The device may resynchronize with the same or different network source
+     * at any time. Due to network delays, variations between servers, or local
+     * (client side) clock drift, the accuracy of the returned times cannot be
+     * guaranteed. In extreme cases, consecutive calls to {@link
+     * Clock#millis()} on the returned {@link Clock}could return times that are
+     * out of order.
      *
-     * @throws DateTimeException when no accurate network time can be provided.
+     * @throws DateTimeException when no network time can be provided.
      */
     public static @NonNull Clock currentNetworkTimeClock() {
         return new SimpleClock(ZoneOffset.UTC) {
@@ -344,7 +377,7 @@ public final class SystemClock {
                 }
                 long currentNanos = elapsedRealtimeNanos();
                 long deltaMs = (currentNanos - time.getElapsedRealtimeNanos()) / 1000000L;
-                return time.getTime() + deltaMs;
+                return time.getUnixEpochTimeMillis() + deltaMs;
             }
         };
     }

@@ -21,6 +21,7 @@ import android.app.ActivityManager;
 import android.content.pm.PackageManager;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.text.TextUtils;
 import android.util.ArraySet;
 import android.util.TimeUtils;
 import android.util.proto.ProtoOutputStream;
@@ -45,6 +46,15 @@ public final class UidRecord {
 
     @CompositeRWLock({"mService", "mProcLock"})
     private int mSetProcState = ActivityManager.PROCESS_STATE_NONEXISTENT;
+
+    @CompositeRWLock({"mService", "mProcLock"})
+    private boolean mProcAdjChanged;
+
+    @CompositeRWLock({"mService", "mProcLock"})
+    private int mCurAdj;
+
+    @CompositeRWLock({"mService", "mProcLock"})
+    private int mSetAdj;
 
     @CompositeRWLock({"mService", "mProcLock"})
     private int mCurCapability;
@@ -95,16 +105,9 @@ public final class UidRecord {
     long lastNetworkUpdatedProcStateSeq;
 
     /**
-     * Last seq number for which AcitivityManagerService dispatched uid state change to
-     * NetworkPolicyManagerService.
+     * Indicates if any thread is waiting for network rules to get updated for {@link #mUid}.
      */
-    @GuardedBy("networkStateUpdate")
-    long lastDispatchedProcStateSeq;
-
-    /**
-     * Indicates if any thread is waiting for network rules to get updated for {@link #uid}.
-     */
-    volatile boolean waitingForNetwork;
+    volatile long procStateSeqWaitingForNetwork;
 
     /**
      * Indicates whether this uid has internet permission or not.
@@ -116,13 +119,17 @@ public final class UidRecord {
      */
     final Object networkStateLock = new Object();
 
-    static final int CHANGE_PROCSTATE = 0;
-    static final int CHANGE_GONE = 1<<0;
-    static final int CHANGE_IDLE = 1<<1;
-    static final int CHANGE_ACTIVE = 1<<2;
-    static final int CHANGE_CACHED = 1<<3;
-    static final int CHANGE_UNCACHED = 1<<4;
-    static final int CHANGE_CAPABILITY = 1<<5;
+    /*
+     * Change bitmask flags.
+     */
+    static final int CHANGE_GONE = 1 << 0;
+    static final int CHANGE_IDLE = 1 << 1;
+    static final int CHANGE_ACTIVE = 1 << 2;
+    static final int CHANGE_CACHED = 1 << 3;
+    static final int CHANGE_UNCACHED = 1 << 4;
+    static final int CHANGE_CAPABILITY = 1 << 5;
+    static final int CHANGE_PROCADJ = 1 << 6;
+    static final int CHANGE_PROCSTATE = 1 << 31;
 
     // Keep the enum lists in sync
     private static int[] ORIG_ENUMS = new int[] {
@@ -132,6 +139,7 @@ public final class UidRecord {
             CHANGE_CACHED,
             CHANGE_UNCACHED,
             CHANGE_CAPABILITY,
+            CHANGE_PROCSTATE,
     };
     private static int[] PROTO_ENUMS = new int[] {
             UidRecordProto.CHANGE_GONE,
@@ -140,6 +148,7 @@ public final class UidRecord {
             UidRecordProto.CHANGE_CACHED,
             UidRecordProto.CHANGE_UNCACHED,
             UidRecordProto.CHANGE_CAPABILITY,
+            UidRecordProto.CHANGE_PROCSTATE,
     };
 
     // UidObserverController is the only thing that should modify this.
@@ -147,6 +156,14 @@ public final class UidRecord {
 
     @GuardedBy("mService")
     private int mLastReportedChange;
+
+    /**
+     * This indicates whether the entire Uid is frozen or not.
+     * It is used by CachedAppOptimizer to avoid sending multiple
+     * UID_FROZEN_STATE_UNFROZEN messages on process unfreeze.
+     */
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    private boolean mUidIsFrozen;
 
     public UidRecord(int uid, ActivityManagerService service) {
         mUid = uid;
@@ -178,6 +195,33 @@ public final class UidRecord {
     @GuardedBy({"mService", "mProcLock"})
     void setSetProcState(int setProcState) {
         mSetProcState = setProcState;
+    }
+
+    @GuardedBy({"mService", "mProcLock"})
+    void noteProcAdjChanged() {
+        mProcAdjChanged = true;
+    }
+
+    @GuardedBy({"mService", "mProcLock"})
+    void clearProcAdjChanged() {
+        mProcAdjChanged = false;
+    }
+
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    boolean getProcAdjChanged() {
+        return mProcAdjChanged;
+    }
+
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    int getMinProcAdj() {
+        int minAdj = ProcessList.UNKNOWN_ADJ;
+        for (int i = mProcRecords.size() - 1; i >= 0; i--) {
+            int adj = mProcRecords.valueAt(i).getSetAdj();
+            if (adj < minAdj) {
+                minAdj = adj;
+            }
+        }
+        return minAdj;
     }
 
     @GuardedBy(anyOf = {"mService", "mProcLock"})
@@ -220,11 +264,13 @@ public final class UidRecord {
         mEphemeral = ephemeral;
     }
 
+    /** Returns whether the UID has any FGS of any type or not (including "short fgs") */
     @GuardedBy(anyOf = {"mService", "mProcLock"})
     boolean hasForegroundServices() {
         return mForegroundServices;
     }
 
+    /** Sets whether the UID has any FGS of any type or not (including "short fgs") */
     @GuardedBy({"mService", "mProcLock"})
     void setForegroundServices(boolean foregroundServices) {
         mForegroundServices = foregroundServices;
@@ -282,6 +328,59 @@ public final class UidRecord {
         }
     }
 
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    ProcessRecord getProcessRecordByIndex(int idx) {
+        return mProcRecords.valueAt(idx);
+    }
+
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    ProcessRecord getProcessInPackage(String packageName) {
+        for (int i = mProcRecords.size() - 1; i >= 0; i--) {
+            final ProcessRecord app = mProcRecords.valueAt(i);
+            if (app != null && TextUtils.equals(app.info.packageName, packageName)) {
+                return app;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Check whether all processes in the Uid are frozen.
+     *
+     * @param excluding Skip this process record during the check.
+     * @return true if all processes in the Uid are frozen, false otherwise.
+     */
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    public boolean areAllProcessesFrozen(ProcessRecord excluding) {
+        for (int i = mProcRecords.size() - 1; i >= 0; i--) {
+            final ProcessRecord app = mProcRecords.valueAt(i);
+            final ProcessCachedOptimizerRecord opt = app.mOptRecord;
+
+            if (excluding != app && !opt.isFrozen()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * @return true if all processes in the Uid are frozen, false otherwise.
+     */
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    public boolean areAllProcessesFrozen() {
+        return areAllProcessesFrozen(null);
+    }
+
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    public void setFrozen(boolean frozen) {
+        mUidIsFrozen = frozen;
+    }
+
+    @GuardedBy(anyOf = {"mService", "mProcLock"})
+    public boolean isFrozen() {
+        return mUidIsFrozen;
+    }
+
     @GuardedBy({"mService", "mProcLock"})
     void addProcess(ProcessRecord app) {
         mProcRecords.add(app);
@@ -309,18 +408,6 @@ public final class UidRecord {
                 mUid) == PackageManager.PERMISSION_GRANTED;
     }
 
-    /**
-     * If the change being dispatched is not CHANGE_GONE (not interested in
-     * these changes), then update the {@link #lastDispatchedProcStateSeq} with
-     * {@link #curProcStateSeq}.
-     */
-    public void updateLastDispatchedProcStateSeq(int changeToDispatch) {
-        if ((changeToDispatch & CHANGE_GONE) == 0) {
-            lastDispatchedProcStateSeq = curProcStateSeq;
-        }
-    }
-
-
     void dumpDebug(ProtoOutputStream proto, long fieldId) {
         long token = proto.start(fieldId);
         proto.write(UidRecordProto.UID, mUid);
@@ -341,7 +428,6 @@ public final class UidRecord {
         proto.write(UidRecordProto.ProcStateSequence.CURURENT, curProcStateSeq);
         proto.write(UidRecordProto.ProcStateSequence.LAST_NETWORK_UPDATED,
                 lastNetworkUpdatedProcStateSeq);
-        proto.write(UidRecordProto.ProcStateSequence.LAST_DISPATCHED, lastDispatchedProcStateSeq);
         proto.end(seqToken);
 
         proto.end(token);
@@ -405,6 +491,18 @@ public final class UidRecord {
                 }
                 sb.append("uncached");
             }
+            if ((mLastReportedChange & CHANGE_PROCSTATE) != 0) {
+                if (printed) {
+                    sb.append("|");
+                }
+                sb.append("procstate");
+            }
+            if ((mLastReportedChange & CHANGE_PROCADJ) != 0) {
+                if (printed) {
+                    sb.append("|");
+                }
+                sb.append("procadj");
+            }
         }
         sb.append(" procs:");
         sb.append(mNumProcs);
@@ -412,9 +510,9 @@ public final class UidRecord {
         sb.append(curProcStateSeq);
         sb.append(",");
         sb.append(lastNetworkUpdatedProcStateSeq);
-        sb.append(",");
-        sb.append(lastDispatchedProcStateSeq);
         sb.append(")}");
+        sb.append(" caps=");
+        ActivityManager.printCapabilitiesSummary(sb, mCurCapability);
         return sb.toString();
     }
 }

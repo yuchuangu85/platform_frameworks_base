@@ -27,10 +27,12 @@ namespace android {
 
 // --- SpriteController ---
 
-SpriteController::SpriteController(const sp<Looper>& looper, int32_t overlayLayer) :
-        mLooper(looper), mOverlayLayer(overlayLayer) {
+SpriteController::SpriteController(const sp<Looper>& looper, int32_t overlayLayer,
+                                   ParentSurfaceProvider parentSurfaceProvider)
+      : mLooper(looper),
+        mOverlayLayer(overlayLayer),
+        mParentSurfaceProvider(std::move(parentSurfaceProvider)) {
     mHandler = new WeakMessageHandler(this);
-
     mLocked.transactionNestingCount = 0;
     mLocked.deferredSpriteUpdate = false;
 }
@@ -68,8 +70,8 @@ void SpriteController::closeTransaction() {
 }
 
 void SpriteController::invalidateSpriteLocked(const sp<SpriteImpl>& sprite) {
-    bool wasEmpty = mLocked.invalidatedSprites.isEmpty();
-    mLocked.invalidatedSprites.push(sprite);
+    bool wasEmpty = mLocked.invalidatedSprites.empty();
+    mLocked.invalidatedSprites.push_back(sprite);
     if (wasEmpty) {
         if (mLocked.transactionNestingCount != 0) {
             mLocked.deferredSpriteUpdate = true;
@@ -80,8 +82,8 @@ void SpriteController::invalidateSpriteLocked(const sp<SpriteImpl>& sprite) {
 }
 
 void SpriteController::disposeSurfaceLocked(const sp<SurfaceControl>& surfaceControl) {
-    bool wasEmpty = mLocked.disposedSurfaces.isEmpty();
-    mLocked.disposedSurfaces.push(surfaceControl);
+    bool wasEmpty = mLocked.disposedSurfaces.empty();
+    mLocked.disposedSurfaces.push_back(surfaceControl);
     if (wasEmpty) {
         mLooper->sendMessage(mHandler, Message(MSG_DISPOSE_SURFACES));
     }
@@ -111,7 +113,7 @@ void SpriteController::doUpdateSprites() {
 
         numSprites = mLocked.invalidatedSprites.size();
         for (size_t i = 0; i < numSprites; i++) {
-            const sp<SpriteImpl>& sprite = mLocked.invalidatedSprites.itemAt(i);
+            const sp<SpriteImpl>& sprite = mLocked.invalidatedSprites[i];
 
             updates.push(SpriteUpdate(sprite, sprite->getStateLocked()));
             sprite->resetDirtyLocked();
@@ -129,8 +131,9 @@ void SpriteController::doUpdateSprites() {
             update.state.surfaceHeight = update.state.icon.height();
             update.state.surfaceDrawn = false;
             update.state.surfaceVisible = false;
-            update.state.surfaceControl = obtainSurface(
-                    update.state.surfaceWidth, update.state.surfaceHeight);
+            update.state.surfaceControl =
+                    obtainSurface(update.state.surfaceWidth, update.state.surfaceHeight,
+                                  update.state.displayId);
             if (update.state.surfaceControl != NULL) {
                 update.surfaceChanged = surfaceChanged = true;
             }
@@ -166,9 +169,9 @@ void SpriteController::doUpdateSprites() {
             }
         }
 
-        // If surface is a new one, we have to set right layer stack.
-        if (update.surfaceChanged || update.state.dirty & DIRTY_DISPLAY_ID) {
-            t.setLayerStack(update.state.surfaceControl, update.state.displayId);
+        // If surface has changed to a new display, we have to reparent it.
+        if (update.state.dirty & DIRTY_DISPLAY_ID) {
+            t.reparent(update.state.surfaceControl, mParentSurfaceProvider(update.state.displayId));
             needApplyTransaction = true;
         }
     }
@@ -240,15 +243,14 @@ void SpriteController::doUpdateSprites() {
                     && (becomingVisible
                             || (update.state.dirty & (DIRTY_HOTSPOT | DIRTY_ICON_STYLE)))) {
                 Parcel p;
-                p.writeInt32(update.state.icon.style);
+                p.writeInt32(static_cast<int32_t>(update.state.icon.style));
                 p.writeFloat(update.state.icon.hotSpotX);
                 p.writeFloat(update.state.icon.hotSpotY);
 
                 // Pass cursor metadata in the sprite surface so that when Android is running as a
                 // client OS (e.g. ARC++) the host OS can get the requested cursor metadata and
                 // update mouse cursor in the host OS.
-                t.setMetadata(
-                        update.state.surfaceControl, METADATA_MOUSE_CURSOR, p);
+                t.setMetadata(update.state.surfaceControl, gui::METADATA_MOUSE_CURSOR, p);
             }
 
             int32_t surfaceLayer = mOverlayLayer + update.state.layer;
@@ -303,13 +305,20 @@ void SpriteController::doUpdateSprites() {
 
 void SpriteController::doDisposeSurfaces() {
     // Collect disposed surfaces.
-    Vector<sp<SurfaceControl> > disposedSurfaces;
+    std::vector<sp<SurfaceControl>> disposedSurfaces;
     { // acquire lock
         AutoMutex _l(mLock);
 
         disposedSurfaces = mLocked.disposedSurfaces;
         mLocked.disposedSurfaces.clear();
     } // release lock
+
+    // Remove the parent from all surfaces.
+    SurfaceComposerClient::Transaction t;
+    for (const sp<SurfaceControl>& sc : disposedSurfaces) {
+        t.reparent(sc, nullptr);
+    }
+    t.apply();
 
     // Release the last reference to each surface outside of the lock.
     // We don't want the surfaces to be deleted while we are holding our lock.
@@ -322,20 +331,27 @@ void SpriteController::ensureSurfaceComposerClient() {
     }
 }
 
-sp<SurfaceControl> SpriteController::obtainSurface(int32_t width, int32_t height) {
+sp<SurfaceControl> SpriteController::obtainSurface(int32_t width, int32_t height,
+                                                   int32_t displayId) {
     ensureSurfaceComposerClient();
 
-    sp<SurfaceControl> surfaceControl = mSurfaceComposerClient->createSurface(
-            String8("Sprite"), width, height, PIXEL_FORMAT_RGBA_8888,
-            ISurfaceComposerClient::eHidden |
-            ISurfaceComposerClient::eCursorWindow);
-    if (surfaceControl == NULL || !surfaceControl->isValid()) {
+    const sp<SurfaceControl> parent = mParentSurfaceProvider(displayId);
+    if (parent == nullptr) {
+        ALOGE("Failed to get the parent surface for pointers on display %d", displayId);
+    }
+
+    const sp<SurfaceControl> surfaceControl =
+            mSurfaceComposerClient->createSurface(String8("Sprite"), width, height,
+                                                  PIXEL_FORMAT_RGBA_8888,
+                                                  ISurfaceComposerClient::eHidden |
+                                                          ISurfaceComposerClient::eCursorWindow,
+                                                  parent ? parent->getHandle() : nullptr);
+    if (surfaceControl == nullptr || !surfaceControl->isValid()) {
         ALOGE("Error creating sprite surface.");
-        return NULL;
+        return nullptr;
     }
     return surfaceControl;
 }
-
 
 // --- SpriteController::SpriteImpl ---
 

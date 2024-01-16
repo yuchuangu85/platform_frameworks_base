@@ -17,35 +17,39 @@
 #ifndef AAPT2_COMPILE_H
 #define AAPT2_COMPILE_H
 
-#include "androidfw/StringPiece.h"
+#include <androidfw/StringPiece.h>
+
+#include <optional>
+
+#include "Command.h"
+#include "ResourceTable.h"
+#include "androidfw/IDiagnostics.h"
 #include "format/Archive.h"
 #include "process/IResourceTableConsumer.h"
-#include "Command.h"
-#include "Diagnostics.h"
-#include "ResourceTable.h"
 
 namespace aapt {
 
 struct CompileOptions {
   std::string output_path;
-  Maybe<std::string> source_path;
-  Maybe<std::string> res_dir;
-  Maybe<std::string> res_zip;
-  Maybe<std::string> generate_text_symbols_path;
-  Maybe<Visibility::Level> visibility;
+  std::optional<std::string> source_path;
+  std::optional<std::string> res_dir;
+  std::optional<std::string> res_zip;
+  std::optional<std::string> generate_text_symbols_path;
+  std::optional<Visibility::Level> visibility;
   bool pseudolocalize = false;
   bool no_png_crunch = false;
   bool legacy_mode = false;
   // See comments on aapt::ResourceParserOptions.
   bool preserve_visibility_of_styleables = false;
   bool verbose = false;
+  std::optional<std::string> product_;
 };
 
 /** Parses flags and compiles resources to be used in linking.  */
 class CompileCommand : public Command {
  public:
-  explicit CompileCommand(IDiagnostics* diagnostic) : Command("compile", "c"),
-                                                      diagnostic_(diagnostic) {
+  explicit CompileCommand(android::IDiagnostics* diagnostic)
+      : Command("compile", "c"), diagnostic_(diagnostic) {
     SetDescription("Compiles resources to be linked into an apk.");
     AddRequiredFlag("-o", "Output path", &options_.output_path, Command::kPath);
     AddOptionalFlag("--dir", "Directory to scan for resources", &options_.res_dir, Command::kPath);
@@ -73,15 +77,19 @@ class CompileCommand : public Command {
     AddOptionalFlag("--source-path",
                       "Sets the compiled resource file source file path to the given string.",
                       &options_.source_path);
+    AddOptionalFlag("--filter-product",
+                    "Leave only resources specific to the given product. All "
+                    "other resources (including defaults) are removed.",
+                    &options_.product_);
   }
 
   int Action(const std::vector<std::string>& args) override;
 
  private:
-  IDiagnostics* diagnostic_;
+  android::IDiagnostics* diagnostic_;
   CompileOptions options_;
-  Maybe<std::string> visibility_;
-  Maybe<std::string> trace_folder_;
+  std::optional<std::string> visibility_;
+  std::optional<std::string> trace_folder_;
 };
 
 int Compile(IAaptContext* context, io::IFileCollection* inputs, IArchiveWriter* output_writer,

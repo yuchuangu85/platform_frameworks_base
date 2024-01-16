@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <SkBlendMode.h>
 #include <SkColorFilter.h>
 #include <SkImage.h>
 #include <SkMatrix.h>
@@ -90,8 +91,8 @@ public:
 
     void detachSurfaceTexture();
 
-    void updateLayer(bool forceFilter, const SkMatrix& textureTransform,
-                     const sk_sp<SkImage>& layerImage);
+    void updateLayer(bool forceFilter, const sk_sp<SkImage>& layerImage, const uint32_t transform,
+                     SkRect currentCrop, float maxLuminanceNits = -1.f);
 
     void destroyLayer();
 

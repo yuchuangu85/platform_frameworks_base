@@ -17,6 +17,7 @@
 package android.content.pm;
 
 import static android.Manifest.permission;
+import static android.Manifest.permission.READ_FRAME_BUFFER;
 
 import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
@@ -41,7 +42,7 @@ import android.content.LocusId;
 import android.content.pm.PackageInstaller.SessionCallback;
 import android.content.pm.PackageInstaller.SessionCallbackDelegate;
 import android.content.pm.PackageInstaller.SessionInfo;
-import android.content.pm.PackageManager.ApplicationInfoFlags;
+import android.content.pm.PackageManager.ApplicationInfoFlagsBits;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.Resources;
 import android.graphics.Bitmap;
@@ -64,11 +65,14 @@ import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.util.ArrayMap;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.Pair;
+import android.window.IDumpCallback;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.infra.AndroidFuture;
 import com.android.internal.util.function.pooled.PooledLambda;
 
 import java.io.FileNotFoundException;
@@ -84,6 +88,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 
 /**
@@ -440,6 +445,17 @@ public class LauncherApps {
         public static final int FLAG_GET_KEY_FIELDS_ONLY = 1 << 2;
 
         /**
+         * Includes shortcuts from persistence layer in the search result.
+         *
+         * <p>The caller should make the query on a worker thread since accessing persistence layer
+         * is considered asynchronous.
+         *
+         * @hide
+         */
+        @SystemApi
+        public static final int FLAG_GET_PERSISTED_DATA = 1 << 12;
+
+        /**
          * Populate the persons field in the result. See {@link ShortcutInfo#getPersons()}.
          *
          * <p>The caller must have the system {@code ACCESS_SHORTCUTS} permission.
@@ -459,6 +475,7 @@ public class LauncherApps {
                 FLAG_MATCH_PINNED_BY_ANY_LAUNCHER,
                 FLAG_GET_KEY_FIELDS_ONLY,
                 FLAG_GET_PERSONS_DATA,
+                FLAG_GET_PERSISTED_DATA
         })
         @Retention(RetentionPolicy.SOURCE)
         public @interface QueryFlags {}
@@ -735,14 +752,16 @@ public class LauncherApps {
     }
 
     /**
-     * Returns a PendingIntent that would start the same activity started from
-     * {@link #startMainActivity(ComponentName, UserHandle, Rect, Bundle)}.
+     * Returns a mutable PendingIntent that would start the same activity started from
+     * {@link #startMainActivity(ComponentName, UserHandle, Rect, Bundle)}.  The caller needs to
+     * take care in ensuring that the mutable intent returned is not passed to untrusted parties.
      *
      * @param component The ComponentName of the activity to launch
-     * @param startActivityOptions Options to pass to startActivity
+     * @param startActivityOptions This parameter is no longer supported
      * @param user The UserHandle of the profile
      * @hide
      */
+    @RequiresPermission(android.Manifest.permission.START_TASKS_FROM_RECENTS)
     @Nullable
     public PendingIntent getMainActivityLaunchIntent(@NonNull ComponentName component,
             @Nullable Bundle startActivityOptions, @NonNull UserHandle user) {
@@ -751,7 +770,7 @@ public class LauncherApps {
             Log.i(TAG, "GetMainActivityLaunchIntent " + component + " " + user);
         }
         try {
-            return mService.getActivityLaunchIntent(component, startActivityOptions, user);
+            return mService.getActivityLaunchIntent(mContext.getPackageName(), component, user);
         } catch (RemoteException re) {
             throw re.rethrowFromSystemServer();
         }
@@ -773,10 +792,42 @@ public class LauncherApps {
             if (ai == null) {
                 return null;
             }
-            return new LauncherActivityInfo(mContext, user, ai);
+            return new LauncherActivityInfo(mContext, ai);
         } catch (RemoteException re) {
             throw re.rethrowFromSystemServer();
         }
+    }
+
+    /**
+     * Returns overrides for the activities that should be launched for the shortcuts of certain
+     * package names.
+     *
+     * @return {@link Map} whose keys are package names and whose values are the
+     * {@link LauncherActivityInfo}s that should be used for those packages' shortcuts. If there are
+     * no activity overrides, an empty {@link Map} will be returned.
+     *
+     * @hide
+     */
+    @NonNull
+    public Map<String, LauncherActivityInfo> getActivityOverrides() {
+        Map<String, LauncherActivityInfo> activityOverrides = new ArrayMap<>();
+        try {
+            Map<String, LauncherActivityInfoInternal> activityOverridesInternal =
+                    mService.getActivityOverrides(mContext.getPackageName(), mContext.getUserId());
+            for (Map.Entry<String, LauncherActivityInfoInternal> packageToOverride :
+                    activityOverridesInternal.entrySet()) {
+                activityOverrides.put(
+                        packageToOverride.getKey(),
+                        new LauncherActivityInfo(
+                                mContext,
+                                packageToOverride.getValue()
+                        )
+                );
+            }
+        } catch (RemoteException re) {
+            throw re.rethrowFromSystemServer();
+        }
+        return activityOverrides;
     }
 
     /**
@@ -846,7 +897,7 @@ public class LauncherApps {
      *
      * @param packageName The packageName of the shortcut
      * @param shortcutId The id of the shortcut
-     * @param opts Options to pass to the PendingIntent
+     * @param opts This parameter is no longer supported
      * @param user The UserHandle of the profile
      */
     @Nullable
@@ -858,8 +909,9 @@ public class LauncherApps {
             Log.i(TAG, "GetShortcutIntent " + packageName + "/" + shortcutId + " " + user);
         }
         try {
+            // due to b/209607104, opts will be ignored
             return mService.getShortcutIntent(
-                    mContext.getPackageName(), packageName, shortcutId, opts, user);
+                    mContext.getPackageName(), packageName, shortcutId, null /* opts */, user);
         } catch (RemoteException re) {
             throw re.rethrowFromSystemServer();
         }
@@ -895,7 +947,7 @@ public class LauncherApps {
         }
         ArrayList<LauncherActivityInfo> lais = new ArrayList<>();
         for (LauncherActivityInfoInternal internal : internals.getList()) {
-            LauncherActivityInfo lai = new LauncherActivityInfo(mContext, user, internal);
+            LauncherActivityInfo lai = new LauncherActivityInfo(mContext, internal);
             if (DEBUG) {
                 Log.v(TAG, "Returning activity for profile " + user + " : "
                         + lai.getComponentName());
@@ -1012,7 +1064,7 @@ public class LauncherApps {
      *         isn't enabled.
      */
     public ApplicationInfo getApplicationInfo(@NonNull String packageName,
-            @ApplicationInfoFlags int flags, @NonNull UserHandle user)
+            @ApplicationInfoFlagsBits int flags, @NonNull UserHandle user)
             throws PackageManager.NameNotFoundException {
         Objects.requireNonNull(packageName, "packageName");
         Objects.requireNonNull(user, "user");
@@ -1118,6 +1170,32 @@ public class LauncherApps {
     }
 
     /**
+     * Register a callback to be called right before the wmtrace data is moved to the bugreport.
+     * @hide
+     */
+    @RequiresPermission(READ_FRAME_BUFFER)
+    public void registerDumpCallback(IDumpCallback cb) {
+        try {
+            mService.registerDumpCallback(cb);
+        } catch (RemoteException e) {
+            e.rethrowAsRuntimeException();
+        }
+    }
+
+    /**
+     * Unregister a callback, so that it won't be called when LauncherApps dumps.
+     * @hide
+     */
+    @RequiresPermission(READ_FRAME_BUFFER)
+    public void unRegisterDumpCallback(IDumpCallback cb) {
+        try {
+            mService.unRegisterDumpCallback(cb);
+        } catch (RemoteException e) {
+            e.rethrowAsRuntimeException();
+        }
+    }
+
+    /**
      * Returns {@link ShortcutInfo}s that match {@code query}.
      *
      * <p>Callers must be allowed to access the shortcut information, as defined in {@link
@@ -1137,6 +1215,9 @@ public class LauncherApps {
             @NonNull UserHandle user) {
         logErrorForInvalidProfileAccess(user);
         try {
+            if ((query.mQueryFlags & ShortcutQuery.FLAG_GET_PERSISTED_DATA) != 0) {
+                return getShortcutsBlocked(query, user);
+            }
             // Note this is the only case we need to update the disabled message for shortcuts
             // that weren't restored.
             // The restore problem messages are only shown by the user, and publishers will never
@@ -1144,10 +1225,26 @@ public class LauncherApps {
             // changed callback, but that only returns shortcuts with the "key" information, so
             // that won't return disabled message.
             return maybeUpdateDisabledMessage(mService.getShortcuts(mContext.getPackageName(),
-                    new ShortcutQueryWrapper(query), user)
-                    .getList());
+                                new ShortcutQueryWrapper(query), user)
+                        .getList());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
+        }
+    }
+
+    private List<ShortcutInfo> getShortcutsBlocked(@NonNull ShortcutQuery query,
+            @NonNull UserHandle user) {
+        logErrorForInvalidProfileAccess(user);
+        final AndroidFuture<List<ShortcutInfo>> future = new AndroidFuture<>();
+        future.thenApply(this::maybeUpdateDisabledMessage);
+        try {
+            mService.getShortcutsAsync(mContext.getPackageName(),
+                            new ShortcutQueryWrapper(query), user, future);
+            return future.get();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        } catch (InterruptedException | ExecutionException e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -1640,7 +1737,8 @@ public class LauncherApps {
         mCallbacks.add(toAdd);
     }
 
-    private IOnAppsChangedListener.Stub mAppsChangedListener = new IOnAppsChangedListener.Stub() {
+    private final IOnAppsChangedListener.Stub mAppsChangedListener =
+            new IOnAppsChangedListener.Stub() {
 
         @Override
         public void onPackageRemoved(UserHandle user, String packageName)
@@ -1683,7 +1781,8 @@ public class LauncherApps {
         public void onPackagesAvailable(UserHandle user, String[] packageNames, boolean replacing)
                 throws RemoteException {
             if (DEBUG) {
-                Log.d(TAG, "onPackagesAvailable " + user.getIdentifier() + "," + packageNames);
+                Log.d(TAG, "onPackagesAvailable " + user.getIdentifier() + ","
+                        + Arrays.toString(packageNames));
             }
             synchronized (LauncherApps.this) {
                 for (CallbackMessageHandler callback : mCallbacks) {
@@ -1696,7 +1795,8 @@ public class LauncherApps {
         public void onPackagesUnavailable(UserHandle user, String[] packageNames, boolean replacing)
                 throws RemoteException {
             if (DEBUG) {
-                Log.d(TAG, "onPackagesUnavailable " + user.getIdentifier() + "," + packageNames);
+                Log.d(TAG, "onPackagesUnavailable " + user.getIdentifier() + ","
+                        + Arrays.toString(packageNames));
             }
             synchronized (LauncherApps.this) {
                 for (CallbackMessageHandler callback : mCallbacks) {
@@ -1710,7 +1810,8 @@ public class LauncherApps {
                 Bundle launcherExtras)
                 throws RemoteException {
             if (DEBUG) {
-                Log.d(TAG, "onPackagesSuspended " + user.getIdentifier() + "," + packageNames);
+                Log.d(TAG, "onPackagesSuspended " + user.getIdentifier() + ","
+                        + Arrays.toString(packageNames));
             }
             synchronized (LauncherApps.this) {
                 for (CallbackMessageHandler callback : mCallbacks) {
@@ -1723,7 +1824,8 @@ public class LauncherApps {
         public void onPackagesUnsuspended(UserHandle user, String[] packageNames)
                 throws RemoteException {
             if (DEBUG) {
-                Log.d(TAG, "onPackagesUnsuspended " + user.getIdentifier() + "," + packageNames);
+                Log.d(TAG, "onPackagesUnsuspended " + user.getIdentifier() + ","
+                        + Arrays.toString(packageNames));
             }
             synchronized (LauncherApps.this) {
                 for (CallbackMessageHandler callback : mCallbacks) {
@@ -1771,7 +1873,7 @@ public class LauncherApps {
         private static final int MSG_SHORTCUT_CHANGED = 8;
         private static final int MSG_LOADING_PROGRESS_CHANGED = 9;
 
-        private LauncherApps.Callback mCallback;
+        private final LauncherApps.Callback mCallback;
 
         private static class CallbackInfo {
             String[] packageNames;
@@ -1903,6 +2005,10 @@ public class LauncherApps {
 
     /**
      * Register a callback to watch for session lifecycle events in this user and managed profiles.
+     * Callers need to either declare &lt;queries&gt; element with the specific package name in the
+     * app's manifest, have the android.permission.QUERY_ALL_PACKAGES, or be the session owner to
+     * watch for these events.
+     *
      * @param callback The callback to register.
      * @param executor {@link Executor} to handle the callbacks, cannot be null.
      *
@@ -1947,7 +2053,9 @@ public class LauncherApps {
 
     /**
      * Return list of all known install sessions in this user and managed profiles, regardless
-     * of the installer.
+     * of the installer. Callers need to either declare &lt;queries&gt; element with the specific
+     * package name in the app's manifest, have the android.permission.QUERY_ALL_PACKAGES, or be
+     * the session owner to retrieve these details.
      *
      * @see PackageInstaller#getAllSessions()
      */
@@ -2016,7 +2124,7 @@ public class LauncherApps {
      * the {@link #EXTRA_PIN_ITEM_REQUEST} extra.
      */
     public PinItemRequest getPinItemRequest(Intent intent) {
-        return intent.getParcelableExtra(EXTRA_PIN_ITEM_REQUEST);
+        return intent.getParcelableExtra(EXTRA_PIN_ITEM_REQUEST, android.content.pm.LauncherApps.PinItemRequest.class);
     }
 
     /**

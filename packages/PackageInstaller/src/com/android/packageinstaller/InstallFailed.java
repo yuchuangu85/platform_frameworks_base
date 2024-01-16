@@ -16,7 +16,6 @@
 
 package com.android.packageinstaller;
 
-import android.annotation.Nullable;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
@@ -32,9 +31,7 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 
-import com.android.internal.app.AlertActivity;
-
-import java.io.File;
+import androidx.annotation.Nullable;
 
 /**
  * Installation failed: Return status code to the caller or display failure UI to user
@@ -79,6 +76,8 @@ public class InstallFailed extends AlertActivity {
     protected void onCreate(@Nullable Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        setFinishOnTouchOutside(true);
+
         int statusCode = getIntent().getIntExtra(PackageInstaller.EXTRA_STATUS,
                 PackageInstaller.STATUS_FAILURE);
 
@@ -100,14 +99,8 @@ public class InstallFailed extends AlertActivity {
             // Set header icon and title
             PackageUtil.AppSnippet as;
             PackageManager pm = getPackageManager();
-
-            if ("package".equals(packageURI.getScheme())) {
-                as = new PackageUtil.AppSnippet(pm.getApplicationLabel(appInfo),
-                        pm.getApplicationIcon(appInfo));
-            } else {
-                final File sourceFile = new File(packageURI.getPath());
-                as = PackageUtil.getAppSnippet(this, appInfo, sourceFile);
-            }
+            as = intent.getParcelableExtra(PackageInstallerActivity.EXTRA_APP_SNIPPET,
+                    PackageUtil.AppSnippet.class);
 
             // Store label for dialog
             mLabel = as.label;

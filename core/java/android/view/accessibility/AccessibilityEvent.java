@@ -24,7 +24,7 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.text.TextUtils;
 import android.util.Log;
-import android.util.Pools.SynchronizedPool;
+import android.view.View;
 
 import com.android.internal.util.BitUtils;
 
@@ -47,15 +47,17 @@ import java.util.List;
  * </p>
  * <p>
  * The main purpose of an accessibility event is to communicate changes in the UI to an
- * {@link android.accessibilityservice.AccessibilityService}. The service may then inspect,
- * if needed the user interface by examining the View hierarchy, as represented by a tree of
- * {@link AccessibilityNodeInfo}s (snapshot of a View state)
- * which can be used for exploring the window content. Note that the privilege for accessing
- * an event's source, thus the window content, has to be explicitly requested. For more
+ * {@link android.accessibilityservice.AccessibilityService}. If needed, the service may then
+ * inspect the user interface by examining the View hierarchy through the event's
+ * {@link #getSource() source}, as represented by a tree of {@link AccessibilityNodeInfo}s (snapshot
+ * of a View state) which can be used for exploring the window content. Note that the privilege for
+ * accessing an event's source, thus the window content, has to be explicitly requested. For more
  * details refer to {@link android.accessibilityservice.AccessibilityService}. If an
  * accessibility service has not requested to retrieve the window content the event will
- * not contain reference to its source. Also for events of type
- * {@link #TYPE_NOTIFICATION_STATE_CHANGED} the source is never available.
+ * not contain reference to its source. <strong>Note: </strong> for events of type
+ * {@link #TYPE_NOTIFICATION_STATE_CHANGED} the source is never available, and Views that set
+ * {@link android.view.View#isAccessibilityDataSensitive()} may not populate all event properties on
+ * events sent from higher up in the view hierarchy.
  * </p>
  * <p>
  * This class represents various semantically different accessibility event
@@ -302,6 +304,20 @@ import java.util.List;
  * </ul>
  * </p>
  * <p>
+ * <b>View scrolled to</b> - represents the event of a target node brought on screen by
+ * ACTION_SCROLL_IN_DIRECTION.
+ * <em>Type:</em> {@link #TYPE_VIEW_TARGETED_BY_SCROLL}</br>
+ * <em>Properties:</em></br>
+ * <ul>
+ *   <li>{@link #getEventType()} - The type of the event.</li>
+ *   <li>{@link #getSource()} - The source info (for registered clients). This represents the node
+ *   that is brought on screen as a result of the scroll.</li>
+ *   <li>{@link #getClassName()} - The class name of the source.</li>
+ *   <li>{@link #getPackageName()} - The package name of the source.</li>
+ *   <li>{@link #getEventTime()}  - The event time.</li>
+ * </ul>
+ * </p>
+ * <p>
  * <b>Touch interaction start</b> - represents the event of starting a touch
  * interaction, which is the user starts touching the screen.</br>
  * <em>Type:</em> {@link #TYPE_TOUCH_INTERACTION_START}</br>
@@ -386,6 +402,25 @@ import java.util.List;
  *   <li>{@link #getText()} - The text of the announcement.</li>
  * </ul>
  * </p>
+  * <p>
+ * <b>speechStateChanged</b>
+ * <em>Type:</em> {@link #TYPE_SPEECH_STATE_CHANGE}</br>
+ * Represents a change in the speech state defined by the
+ * bit mask of the speech state change types.
+ * A change in the speech state occurs when an application wants to signal that
+ * it is either speaking or listening for human speech.
+ * This event helps avoid conflicts where two applications want to speak or one listens
+ * when another speaks.
+ * When sending this event, the sender should ensure that  the accompanying state change types
+ * make sense. For example, the sender should not send
+ * {@link #SPEECH_STATE_SPEAKING_START} and {@link #SPEECH_STATE_SPEAKING_END} together.
+ * <em>Properties:</em></br>
+ * <ul>
+ *   <li>{@link #getSpeechStateChangeTypes()} - The type of state changes</li>
+ *   <li>{@link #getPackageName()} - The package name of the source.</li>
+ *   <li>{@link #getEventTime()}  - The event time.</li>
+ * </ul>
+ * </p>
  *
  * @see android.view.accessibility.AccessibilityManager
  * @see android.accessibilityservice.AccessibilityService
@@ -422,12 +457,16 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
     /**
      * Represents the event of clicking on a {@link android.view.View} like
      * {@link android.widget.Button}, {@link android.widget.CompoundButton}, etc.
+     * <p>See {@link AccessibilityNodeInfo.AccessibilityAction#ACTION_CLICK} for more
+     * details.
      */
     public static final int TYPE_VIEW_CLICKED = 0x00000001;
 
     /**
      * Represents the event of long clicking on a {@link android.view.View} like
      * {@link android.widget.Button}, {@link android.widget.CompoundButton}, etc.
+     * <p>See {@link AccessibilityNodeInfo.AccessibilityAction#ACTION_LONG_CLICK} for more
+     * details.
      */
     public static final int TYPE_VIEW_LONG_CLICKED = 0x00000002;
 
@@ -499,6 +538,9 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
 
     /**
      * Represents the event of an application making an announcement.
+     * <p>
+     * In general, follow the practices described in
+     * {@link View#announceForAccessibility(CharSequence)}.
      */
     public static final int TYPE_ANNOUNCEMENT = 0x00004000;
 
@@ -545,6 +587,8 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
 
     /**
      * Represents the event of a context click on a {@link android.view.View}.
+     * <p>See {@link AccessibilityNodeInfo.AccessibilityAction#ACTION_CONTEXT_CLICK} for more
+     * details.
      */
     public static final int TYPE_VIEW_CONTEXT_CLICKED = 0x00800000;
 
@@ -554,8 +598,31 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
     public static final int TYPE_ASSIST_READING_CONTEXT = 0x01000000;
 
     /**
-     * Change type for {@link #TYPE_WINDOW_CONTENT_CHANGED} event:
-     * The type of change is not defined.
+     * Represents a change in the speech state defined by the speech state change types.
+     * A change in the speech state occurs when an application wants to signal that it is either
+     * speaking or listening for human speech.
+     * This event helps avoid conflicts where two applications want to speak or one listens
+     * when another speaks.
+     * When sending this event, the sender should ensure that  the accompanying state change types
+     * make sense. For example, the sender should not send
+     * {@link #SPEECH_STATE_SPEAKING_START} and {@link #SPEECH_STATE_SPEAKING_END} together.
+     * @see #SPEECH_STATE_SPEAKING_START
+     * @see #SPEECH_STATE_SPEAKING_END
+     * @see #SPEECH_STATE_LISTENING_START
+     * @see #SPEECH_STATE_LISTENING_END
+     * @see #getSpeechStateChangeTypes
+     * @see #setSpeechStateChangeTypes
+     */
+    public static final int TYPE_SPEECH_STATE_CHANGE = 0x02000000;
+
+    /**
+     * Represents the event of a scroll having completed and brought the target node on screen.
+     */
+    public static final int TYPE_VIEW_TARGETED_BY_SCROLL = 0x04000000;
+
+    /**
+     * Change type for {@link #TYPE_WINDOW_CONTENT_CHANGED} event: The type of change is not
+     * defined.
      */
     public static final int CONTENT_CHANGE_TYPE_UNDEFINED = 0x00000000;
 
@@ -581,6 +648,11 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
     /**
      * Change type for {@link #TYPE_WINDOW_STATE_CHANGED} event:
      * The node's pane title changed.
+     * <p>
+     * If this makes the pane appear, {@link #CONTENT_CHANGE_TYPE_PANE_APPEARED} is sent
+     * instead. If this makes the pane disappear, {@link #CONTENT_CHANGE_TYPE_PANE_DISAPPEARED}
+     * is sent.
+     *
      */
     public static final int CONTENT_CHANGE_TYPE_PANE_TITLE = 0x00000008;
 
@@ -641,6 +713,63 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
      * @see AccessibilityNodeInfo.AccessibilityAction#ACTION_DRAG_CANCEL
      */
     public static final int CONTENT_CHANGE_TYPE_DRAG_CANCELLED = 0x0000200;
+
+    /**
+     * Change type for {@link #TYPE_WINDOW_CONTENT_CHANGED} event:
+     * The source node changed its content validity returned by
+     * {@link AccessibilityNodeInfo#isContentInvalid}.
+     * The view changing content validity should call
+     * {@link AccessibilityNodeInfo#setContentInvalid} and then send this event.
+     *
+     * @see AccessibilityNodeInfo#isContentInvalid
+     * @see AccessibilityNodeInfo#setContentInvalid
+     */
+    public static final int CONTENT_CHANGE_TYPE_CONTENT_INVALID = 0x0000400;
+
+    /**
+     * Change type for {@link #TYPE_WINDOW_CONTENT_CHANGED} event:
+     * The source node changed its erroneous content's error message returned by
+     * {@link AccessibilityNodeInfo#getError}.
+     * The view changing erroneous content's error message should call
+     * {@link AccessibilityNodeInfo#setError} and then send this event.
+     *
+     * @see AccessibilityNodeInfo#getError
+     * @see AccessibilityNodeInfo#setError
+     */
+    public static final int CONTENT_CHANGE_TYPE_ERROR = 0x0000800;
+
+    /**
+     * Change type for {@link #TYPE_WINDOW_CONTENT_CHANGED} event:
+     * The source node changed its ability to interact returned by
+     * {@link AccessibilityNodeInfo#isEnabled}.
+     * The view changing content's ability to interact should call
+     * {@link AccessibilityNodeInfo#setEnabled} and then send this event.
+     *
+     * @see AccessibilityNodeInfo#isEnabled
+     * @see AccessibilityNodeInfo#setEnabled
+     */
+    public static final int CONTENT_CHANGE_TYPE_ENABLED = 1 << 12;
+
+    /** Change type for {@link #TYPE_SPEECH_STATE_CHANGE} event: another service is speaking. */
+    public static final int SPEECH_STATE_SPEAKING_START = 0x00000001;
+
+    /**
+     * Change type for {@link #TYPE_SPEECH_STATE_CHANGE} event: another service is no longer
+     * speaking.
+     */
+    public static final int SPEECH_STATE_SPEAKING_END = 0x00000002;
+
+    /**
+     * Change type for {@link #TYPE_SPEECH_STATE_CHANGE} event: another service is listening to the
+     * microphone.
+     */
+    public static final int SPEECH_STATE_LISTENING_START = 0x00000004;
+
+    /**
+     * Change type for {@link #TYPE_SPEECH_STATE_CHANGE} event: another service is no longer
+     * listening to the microphone.
+     */
+    public static final int SPEECH_STATE_LISTENING_END = 0x00000008;
 
     /**
      * Change type for {@link #TYPE_WINDOWS_CHANGED} event:
@@ -731,50 +860,73 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
 
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
-    @IntDef(flag = true, prefix = { "CONTENT_CHANGE_TYPE_" },
+    @IntDef(
+            flag = true,
+            prefix = {"CONTENT_CHANGE_TYPE_"},
             value = {
-                    CONTENT_CHANGE_TYPE_UNDEFINED,
-                    CONTENT_CHANGE_TYPE_SUBTREE,
-                    CONTENT_CHANGE_TYPE_TEXT,
-                    CONTENT_CHANGE_TYPE_CONTENT_DESCRIPTION,
-                    CONTENT_CHANGE_TYPE_STATE_DESCRIPTION,
-                    CONTENT_CHANGE_TYPE_PANE_TITLE,
-                    CONTENT_CHANGE_TYPE_PANE_APPEARED,
-                    CONTENT_CHANGE_TYPE_PANE_DISAPPEARED,
-                    CONTENT_CHANGE_TYPE_DRAG_STARTED,
-                    CONTENT_CHANGE_TYPE_DRAG_DROPPED,
-                    CONTENT_CHANGE_TYPE_DRAG_CANCELLED
+                CONTENT_CHANGE_TYPE_UNDEFINED,
+                CONTENT_CHANGE_TYPE_SUBTREE,
+                CONTENT_CHANGE_TYPE_TEXT,
+                CONTENT_CHANGE_TYPE_CONTENT_DESCRIPTION,
+                CONTENT_CHANGE_TYPE_STATE_DESCRIPTION,
+                CONTENT_CHANGE_TYPE_PANE_TITLE,
+                CONTENT_CHANGE_TYPE_PANE_APPEARED,
+                CONTENT_CHANGE_TYPE_PANE_DISAPPEARED,
+                CONTENT_CHANGE_TYPE_DRAG_STARTED,
+                CONTENT_CHANGE_TYPE_DRAG_DROPPED,
+                CONTENT_CHANGE_TYPE_DRAG_CANCELLED,
+                CONTENT_CHANGE_TYPE_CONTENT_INVALID,
+                CONTENT_CHANGE_TYPE_ERROR,
+                CONTENT_CHANGE_TYPE_ENABLED,
             })
     public @interface ContentChangeTypes {}
 
     /** @hide */
-    @IntDef(flag = true, prefix = { "TYPE_" }, value = {
-            TYPE_VIEW_CLICKED,
-            TYPE_VIEW_LONG_CLICKED,
-            TYPE_VIEW_SELECTED,
-            TYPE_VIEW_FOCUSED,
-            TYPE_VIEW_TEXT_CHANGED,
-            TYPE_WINDOW_STATE_CHANGED,
-            TYPE_NOTIFICATION_STATE_CHANGED,
-            TYPE_VIEW_HOVER_ENTER,
-            TYPE_VIEW_HOVER_EXIT,
-            TYPE_TOUCH_EXPLORATION_GESTURE_START,
-            TYPE_TOUCH_EXPLORATION_GESTURE_END,
-            TYPE_WINDOW_CONTENT_CHANGED,
-            TYPE_VIEW_SCROLLED,
-            TYPE_VIEW_TEXT_SELECTION_CHANGED,
-            TYPE_ANNOUNCEMENT,
-            TYPE_VIEW_ACCESSIBILITY_FOCUSED,
-            TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
-            TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY,
-            TYPE_GESTURE_DETECTION_START,
-            TYPE_GESTURE_DETECTION_END,
-            TYPE_TOUCH_INTERACTION_START,
-            TYPE_TOUCH_INTERACTION_END,
-            TYPE_WINDOWS_CHANGED,
-            TYPE_VIEW_CONTEXT_CLICKED,
-            TYPE_ASSIST_READING_CONTEXT
-    })
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(
+            flag = true,
+            prefix = {"SPEECH_STATE_"},
+            value = {
+                SPEECH_STATE_SPEAKING_START,
+                SPEECH_STATE_SPEAKING_END,
+                SPEECH_STATE_LISTENING_START,
+                SPEECH_STATE_LISTENING_END
+            })
+    public @interface SpeechStateChangeTypes {}
+
+    /** @hide */
+    @IntDef(
+            flag = true,
+            prefix = {"TYPE_"},
+            value = {
+                TYPE_VIEW_CLICKED,
+                TYPE_VIEW_LONG_CLICKED,
+                TYPE_VIEW_SELECTED,
+                TYPE_VIEW_FOCUSED,
+                TYPE_VIEW_TEXT_CHANGED,
+                TYPE_WINDOW_STATE_CHANGED,
+                TYPE_NOTIFICATION_STATE_CHANGED,
+                TYPE_VIEW_HOVER_ENTER,
+                TYPE_VIEW_HOVER_EXIT,
+                TYPE_TOUCH_EXPLORATION_GESTURE_START,
+                TYPE_TOUCH_EXPLORATION_GESTURE_END,
+                TYPE_WINDOW_CONTENT_CHANGED,
+                TYPE_VIEW_SCROLLED,
+                TYPE_VIEW_TEXT_SELECTION_CHANGED,
+                TYPE_ANNOUNCEMENT,
+                TYPE_VIEW_ACCESSIBILITY_FOCUSED,
+                TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED,
+                TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY,
+                TYPE_GESTURE_DETECTION_START,
+                TYPE_GESTURE_DETECTION_END,
+                TYPE_TOUCH_INTERACTION_START,
+                TYPE_TOUCH_INTERACTION_END,
+                TYPE_WINDOWS_CHANGED,
+                TYPE_VIEW_CONTEXT_CLICKED,
+                TYPE_ASSIST_READING_CONTEXT,
+                TYPE_SPEECH_STATE_CHANGE,
+                TYPE_VIEW_TARGETED_BY_SCROLL
+            })
     @Retention(RetentionPolicy.SOURCE)
     public @interface EventType {}
 
@@ -803,12 +955,9 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
      * @see #TYPE_TOUCH_INTERACTION_END
      * @see #TYPE_WINDOWS_CHANGED
      * @see #TYPE_VIEW_CONTEXT_CLICKED
+     * @see #TYPE_VIEW_TARGETED_BY_SCROLL
      */
     public static final int TYPES_ALL_MASK = 0xFFFFFFFF;
-
-    private static final int MAX_POOL_SIZE = 10;
-    private static final SynchronizedPool<AccessibilityEvent> sPool =
-            new SynchronizedPool<>(MAX_POOL_SIZE);
 
     @UnsupportedAppUsage
     private @EventType int mEventType;
@@ -819,6 +968,7 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
     int mAction;
     int mContentChangeTypes;
     int mWindowChangeTypes;
+    int mSpeechStateChangeTypes;
 
     /**
      * The stack trace describing where this event originated from on the app side.
@@ -872,6 +1022,7 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
         mMovementGranularity = event.mMovementGranularity;
         mAction = event.mAction;
         mContentChangeTypes = event.mContentChangeTypes;
+        mSpeechStateChangeTypes = event.mSpeechStateChangeTypes;
         mWindowChangeTypes = event.mWindowChangeTypes;
         mEventTime = event.mEventTime;
         mPackageName = event.mPackageName;
@@ -995,6 +1146,10 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
             case CONTENT_CHANGE_TYPE_DRAG_STARTED: return "CONTENT_CHANGE_TYPE_DRAG_STARTED";
             case CONTENT_CHANGE_TYPE_DRAG_DROPPED: return "CONTENT_CHANGE_TYPE_DRAG_DROPPED";
             case CONTENT_CHANGE_TYPE_DRAG_CANCELLED: return "CONTENT_CHANGE_TYPE_DRAG_CANCELLED";
+            case CONTENT_CHANGE_TYPE_CONTENT_INVALID:
+                return "CONTENT_CHANGE_TYPE_CONTENT_INVALID";
+            case CONTENT_CHANGE_TYPE_ERROR: return "CONTENT_CHANGE_TYPE_ERROR";
+            case CONTENT_CHANGE_TYPE_ENABLED: return "CONTENT_CHANGE_TYPE_ENABLED";
             default: return Integer.toHexString(type);
         }
     }
@@ -1010,6 +1165,96 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
     public void setContentChangeTypes(@ContentChangeTypes int changeTypes) {
         enforceNotSealed();
         mContentChangeTypes = changeTypes;
+    }
+
+    /**
+     * Whether the event should only be delivered to an
+     * {@link android.accessibilityservice.AccessibilityService} with the
+     * {@link android.accessibilityservice.AccessibilityServiceInfo#isAccessibilityTool} property
+     * set to true.
+     *
+     * <p>
+     * Initial value matches the {@link android.view.View#isAccessibilityDataSensitive} property
+     * from the event's source node, if present, or false by default.
+     * </p>
+     *
+     * @return True if the event should be delivered only to isAccessibilityTool services, false
+     * otherwise.
+     * @see #setAccessibilityDataSensitive
+     */
+    @Override
+    public boolean isAccessibilityDataSensitive() {
+        return super.isAccessibilityDataSensitive();
+    }
+
+    /**
+     * Sets whether the event should only be delivered to an
+     * {@link android.accessibilityservice.AccessibilityService} with the
+     * {@link android.accessibilityservice.AccessibilityServiceInfo#isAccessibilityTool} property
+     * set to true.
+     *
+     * <p>
+     * This will be set automatically based on the event's source (if present). If creating and
+     * sending an event directly through {@link AccessibilityManager} (where an event may have
+     * no source) then this method must be called explicitly if you want non-default behavior.
+     * </p>
+     *
+     * @param accessibilityDataSensitive True if the event should be delivered only to
+     *                                 isAccessibilityTool services, false otherwise.
+     * @throws IllegalStateException If called from an AccessibilityService.
+     */
+    @Override
+    public void setAccessibilityDataSensitive(boolean accessibilityDataSensitive) {
+        super.setAccessibilityDataSensitive(accessibilityDataSensitive);
+    }
+
+    /**
+     * Gets the bit mask of the speech state signaled by a {@link #TYPE_SPEECH_STATE_CHANGE} event
+     *
+     * @see #SPEECH_STATE_SPEAKING_START
+     * @see #SPEECH_STATE_SPEAKING_END
+     * @see #SPEECH_STATE_LISTENING_START
+     * @see #SPEECH_STATE_LISTENING_END
+     */
+    public int getSpeechStateChangeTypes() {
+        return mSpeechStateChangeTypes;
+    }
+
+    private static String speechStateChangeTypesToString(int types) {
+        return BitUtils.flagsToString(
+                types, AccessibilityEvent::singleSpeechStateChangeTypeToString);
+    }
+
+    private static String singleSpeechStateChangeTypeToString(int type) {
+        switch (type) {
+            case SPEECH_STATE_SPEAKING_START:
+                return "SPEECH_STATE_SPEAKING_START";
+            case SPEECH_STATE_LISTENING_START:
+                return "SPEECH_STATE_LISTENING_START";
+            case SPEECH_STATE_SPEAKING_END:
+                return "SPEECH_STATE_SPEAKING_END";
+            case SPEECH_STATE_LISTENING_END:
+                return "SPEECH_STATE_LISTENING_END";
+            default:
+                return Integer.toHexString(type);
+        }
+    }
+
+    /**
+     * Sets the bit mask of the speech state change types
+     * signaled by a {@link #TYPE_SPEECH_STATE_CHANGE} event.
+     * The sender is responsible for ensuring that  the state change types  make sense. For example,
+     * the sender should not send
+     * {@link #SPEECH_STATE_SPEAKING_START} and {@link #SPEECH_STATE_SPEAKING_END} together.
+     *
+     * @see #SPEECH_STATE_SPEAKING_START
+     * @see #SPEECH_STATE_SPEAKING_END
+     * @see #SPEECH_STATE_LISTENING_START
+     * @see #SPEECH_STATE_LISTENING_END
+     */
+    public void setSpeechStateChangeTypes(@SpeechStateChangeTypes int state) {
+        enforceNotSealed();
+        mSpeechStateChangeTypes = state;
     }
 
     /**
@@ -1161,6 +1406,7 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
      * Convenience method to obtain a {@link #TYPE_WINDOWS_CHANGED} event for a specific window and
      * change set.
      *
+     * @param displayId The ID of the display from which the event comes from
      * @param windowId The ID of the window that changed
      * @param windowChangeTypes The changes to populate
      * @return An instance of a TYPE_WINDOWS_CHANGED, populated with the requested fields and with
@@ -1169,8 +1415,9 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
      * @hide
      */
     public static AccessibilityEvent obtainWindowsChangedEvent(
-            int windowId, int windowChangeTypes) {
-        final AccessibilityEvent event = AccessibilityEvent.obtain(TYPE_WINDOWS_CHANGED);
+            int displayId, int windowId, int windowChangeTypes) {
+        final AccessibilityEvent event = new AccessibilityEvent(TYPE_WINDOWS_CHANGED);
+        event.setDisplayId(displayId);
         event.setWindowId(windowId);
         event.setWindowChanges(windowChangeTypes);
         event.setImportantForAccessibility(true);
@@ -1178,69 +1425,58 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
     }
 
     /**
-     * Returns a cached instance if such is available or a new one is
-     * instantiated with its type property set.
+     * Instantiates a new AccessibilityEvent instance with its type property set.
      *
-     * <p>In most situations object pooling is not beneficial. Create a new instance using the
-     * constructor {@link #AccessibilityEvent(int)} instead.
-     *
+     * @deprecated Object pooling has been discontinued. Create a new instance using the
+     * constructor {@link #AccessibilityEvent()} instead.
      * @param eventType The event type.
      * @return An instance.
      */
+    @Deprecated
     public static AccessibilityEvent obtain(int eventType) {
-        AccessibilityEvent event = AccessibilityEvent.obtain();
+        AccessibilityEvent event = new AccessibilityEvent();
         event.setEventType(eventType);
         return event;
     }
 
     /**
-     * Returns a cached instance if such is available or a new one is
-     * created. The returned instance is initialized from the given
+     * Instantiates a new AccessibilityEvent instance.
+     * The returned instance is initialized from the given
      * <code>event</code>.
      *
-     * <p>In most situations object pooling is not beneficial. Create a new instance using the
-     * constructor {@link #AccessibilityEvent(AccessibilityEvent)} instead.
-     *
+     * @deprecated Object pooling has been discontinued. Create a new instance using the
+     * constructor {@link #AccessibilityEvent()} instead.
      * @param event The other event.
      * @return An instance.
      */
+    @Deprecated
     public static AccessibilityEvent obtain(AccessibilityEvent event) {
-        AccessibilityEvent eventClone = AccessibilityEvent.obtain();
+        AccessibilityEvent eventClone = new AccessibilityEvent();
         eventClone.init(event);
         return eventClone;
     }
 
     /**
-     * Returns a cached instance if such is available or a new one is
-     * instantiated.
+     * Instantiates a new AccessibilityEvent instance.
      *
-     * <p>In most situations object pooling is not beneficial. Create a new instance using the
+     * @deprecated Object pooling has been discontinued. Create a new instance using the
      * constructor {@link #AccessibilityEvent()} instead.
-     *
      * @return An instance.
      */
+    @Deprecated
     public static AccessibilityEvent obtain() {
-        AccessibilityEvent event = sPool.acquire();
-        if (event == null) event = new AccessibilityEvent();
-        if (DEBUG_ORIGIN) event.originStackTrace = Thread.currentThread().getStackTrace();
-        return event;
+        return new AccessibilityEvent();
     }
 
     /**
-     * Recycles an instance back to be reused.
-     * <p>
-     *   <b>Note: You must not touch the object after calling this function.</b>
-     * </p>
+     * Previously would recycle an instance back to be reused.
      *
-     * <p>In most situations object pooling is not beneficial, and recycling is not necessary.
-     *
-     * @throws IllegalStateException If the event is already recycled.
+     * @deprecated Object pooling has been discontinued. Calling this function now will have
+     * no effect.
      */
     @Override
-    public void recycle() {
-        clear();
-        sPool.release(this);
-    }
+    @Deprecated
+    public void recycle() {}
 
     /**
      * Clears the state of this instance.
@@ -1255,12 +1491,12 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
         mAction = 0;
         mContentChangeTypes = 0;
         mWindowChangeTypes = 0;
+        mSpeechStateChangeTypes = 0;
         mPackageName = null;
         mEventTime = 0;
         if (mRecords != null) {
             while (!mRecords.isEmpty()) {
                 AccessibilityRecord record = mRecords.remove(0);
-                record.recycle();
             }
         }
         if (DEBUG_ORIGIN) originStackTrace = null;
@@ -1278,6 +1514,7 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
         mAction = parcel.readInt();
         mContentChangeTypes = parcel.readInt();
         mWindowChangeTypes = parcel.readInt();
+        mSpeechStateChangeTypes = parcel.readInt();
         mPackageName = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(parcel);
         mEventTime = parcel.readLong();
         mConnectionId = parcel.readInt();
@@ -1288,7 +1525,7 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
         if (recordCount > 0) {
             mRecords = new ArrayList<>(recordCount);
             for (int i = 0; i < recordCount; i++) {
-                AccessibilityRecord record = AccessibilityRecord.obtain();
+                AccessibilityRecord record = new AccessibilityRecord();
                 readAccessibilityRecordFromParcel(record, parcel);
                 record.mConnectionId = mConnectionId;
                 mRecords.add(record);
@@ -1332,9 +1569,10 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
         record.mContentDescription = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(parcel);
         record.mBeforeText = TextUtils.CHAR_SEQUENCE_CREATOR.createFromParcel(parcel);
         record.mParcelableData = parcel.readParcelable(null);
-        parcel.readList(record.mText, null);
+        parcel.readList(record.mText, null, java.lang.CharSequence.class);
         record.mSourceWindowId = parcel.readInt();
         record.mSourceNodeId = parcel.readLong();
+        record.mSourceDisplayId = parcel.readInt();
         record.mSealed = (parcel.readInt() == 1);
     }
 
@@ -1348,6 +1586,7 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
         parcel.writeInt(mAction);
         parcel.writeInt(mContentChangeTypes);
         parcel.writeInt(mWindowChangeTypes);
+        parcel.writeInt(mSpeechStateChangeTypes);
         TextUtils.writeToParcel(mPackageName, parcel, 0);
         parcel.writeLong(mEventTime);
         parcel.writeInt(mConnectionId);
@@ -1401,6 +1640,7 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
         parcel.writeList(record.mText);
         parcel.writeInt(record.mSourceWindowId);
         parcel.writeLong(record.mSourceNodeId);
+        parcel.writeInt(record.mSourceDisplayId);
         parcel.writeInt(record.mSealed ? 1 : 0);
     }
 
@@ -1439,6 +1679,7 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
             if (DEBUG) {
                 builder.append("; SourceWindowId: 0x").append(Long.toHexString(mSourceWindowId));
                 builder.append("; SourceNodeId: 0x").append(Long.toHexString(mSourceNodeId));
+                builder.append("; SourceDisplayId: ").append(mSourceDisplayId);
             }
             for (int i = 0; i < getRecordCount(); i++) {
                 builder.append("  Record ").append(i).append(":");
@@ -1514,6 +1755,8 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
             case TYPE_WINDOWS_CHANGED: return "TYPE_WINDOWS_CHANGED";
             case TYPE_VIEW_CONTEXT_CLICKED: return "TYPE_VIEW_CONTEXT_CLICKED";
             case TYPE_ASSIST_READING_CONTEXT: return "TYPE_ASSIST_READING_CONTEXT";
+            case TYPE_SPEECH_STATE_CHANGE: return "TYPE_SPEECH_STATE_CHANGE";
+            case TYPE_VIEW_TARGETED_BY_SCROLL: return "TYPE_VIEW_TARGETED_BY_SCROLL";
             default: return Integer.toHexString(eventType);
         }
     }
@@ -1524,7 +1767,7 @@ public final class AccessibilityEvent extends AccessibilityRecord implements Par
     public static final @android.annotation.NonNull Parcelable.Creator<AccessibilityEvent> CREATOR =
             new Parcelable.Creator<AccessibilityEvent>() {
         public AccessibilityEvent createFromParcel(Parcel parcel) {
-            AccessibilityEvent event = AccessibilityEvent.obtain();
+            AccessibilityEvent event = new AccessibilityEvent();
             event.initFromParcel(parcel);
             return event;
         }

@@ -55,11 +55,15 @@ public class InputMethodInfoTest {
 
         assertThat(imi.supportsSwitchingToNextInputMethod(), is(false));
         assertThat(imi.isInlineSuggestionsEnabled(), is(false));
+        assertThat(imi.supportsInlineSuggestionsWithTouchExploration(), is(false));
 
         final InputMethodInfo clone = cloneViaParcel(imi);
 
         assertThat(clone.supportsSwitchingToNextInputMethod(), is(false));
         assertThat(imi.isInlineSuggestionsEnabled(), is(false));
+        assertThat(imi.supportsInlineSuggestionsWithTouchExploration(), is(false));
+        assertThat(imi.supportsStylusHandwriting(), is(false));
+        assertThat(imi.createStylusHandwritingSettingsActivityIntent(), equalTo(null));
     }
 
     @Test
@@ -82,6 +86,18 @@ public class InputMethodInfoTest {
         final InputMethodInfo clone = cloneViaParcel(imi);
 
         assertThat(clone.isInlineSuggestionsEnabled(), is(true));
+    }
+
+    @Test
+    public void testInlineSuggestionsEnabledWithTouchExploration() throws Exception {
+        final InputMethodInfo imi =
+                buildInputMethodForTest(R.xml.ime_meta_inline_suggestions_with_touch_exploration);
+
+        assertThat(imi.supportsInlineSuggestionsWithTouchExploration(), is(true));
+
+        final InputMethodInfo clone = cloneViaParcel(imi);
+
+        assertThat(clone.supportsInlineSuggestionsWithTouchExploration(), is(true));
     }
 
     @Test

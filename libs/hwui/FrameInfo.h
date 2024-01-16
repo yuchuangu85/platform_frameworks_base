@@ -58,6 +58,7 @@ enum class FrameInfoIndex {
     GpuCompleted,
     SwapBuffersCompleted,
     DisplayPresentTime,
+    CommandSubmissionCompleted,
 
     // Must be the last value!
     // Also must be kept in sync with FrameMetrics.java#FRAME_STATS_COUNT
@@ -103,6 +104,7 @@ public:
         set(FrameInfoIndex::AnimationStart) = vsyncTime;
         set(FrameInfoIndex::PerformTraversalsStart) = vsyncTime;
         set(FrameInfoIndex::DrawStart) = vsyncTime;
+        set(FrameInfoIndex::FrameStartTime) = vsyncTime;
         set(FrameInfoIndex::FrameDeadline) = frameDeadline;
         set(FrameInfoIndex::FrameInterval) = frameInterval;
         return *this;

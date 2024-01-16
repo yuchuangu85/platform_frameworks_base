@@ -20,7 +20,6 @@
 #include <string>
 
 #include "ResourceValues.h"
-#include "util/Maybe.h"
 
 namespace aapt {
 namespace xml {
@@ -53,15 +52,14 @@ struct ExtractedPackage {
 //
 // Special case: if namespaceUri is http://schemas.android.com/apk/res-auto, returns an empty
 // package name.
-Maybe<ExtractedPackage> ExtractPackageFromNamespace(const std::string& namespace_uri);
+std::optional<ExtractedPackage> ExtractPackageFromNamespace(const std::string& namespace_uri);
 
 // Returns an XML Android namespace for the given package of the form:
 //   http://schemas.android.com/apk/res/<package>
 //
 // If privateReference == true, the package will be of the form:
 //   http://schemas.android.com/apk/prv/res/<package>
-std::string BuildPackageNamespace(const android::StringPiece& package,
-                                  bool private_reference = false);
+std::string BuildPackageNamespace(android::StringPiece package, bool private_reference = false);
 
 // Interface representing a stack of XML namespace declarations. When looking up the package for a
 // namespace prefix, the stack is checked from top to bottom.
@@ -69,8 +67,8 @@ struct IPackageDeclStack {
   virtual ~IPackageDeclStack() = default;
 
   // Returns an ExtractedPackage struct if the alias given corresponds with a package declaration.
-  virtual Maybe<ExtractedPackage> TransformPackageAlias(
-      const android::StringPiece& alias) const = 0;
+  virtual std::optional<ExtractedPackage> TransformPackageAlias(
+      android::StringPiece alias) const = 0;
 };
 
 // Helper function for transforming the original Reference inRef to a fully qualified reference

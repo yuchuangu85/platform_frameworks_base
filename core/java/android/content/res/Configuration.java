@@ -20,6 +20,7 @@ import static android.content.ConfigurationProto.COLOR_MODE;
 import static android.content.ConfigurationProto.DENSITY_DPI;
 import static android.content.ConfigurationProto.FONT_SCALE;
 import static android.content.ConfigurationProto.FONT_WEIGHT_ADJUSTMENT;
+import static android.content.ConfigurationProto.GRAMMATICAL_GENDER;
 import static android.content.ConfigurationProto.HARD_KEYBOARD_HIDDEN;
 import static android.content.ConfigurationProto.KEYBOARD;
 import static android.content.ConfigurationProto.KEYBOARD_HIDDEN;
@@ -46,6 +47,7 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
+import android.app.GrammaticalInflectionManager;
 import android.app.WindowConfiguration;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.LocaleProto;
@@ -96,6 +98,14 @@ public final class Configuration implements Parcelable, Comparable<Configuration
     /**
      * Current user preference for the scaling factor for fonts, relative
      * to the base density scaling.
+     *
+     * <p>Note: Please do not use this to hardcode font size equations. The equation for font
+     * scaling is now non-linear; this coefficient is no longer used as a direct multiplier to
+     * determine font size. It exists for informational purposes only.
+     *
+     * <p>Please use {@link android.util.TypedValue#applyDimension(int, float, DisplayMetrics)} or
+     * {@link android.util.TypedValue#deriveDimension(int, float, DisplayMetrics)} to convert
+     * between scaled font size dimensions and pixels.
      */
     public float fontScale;
 
@@ -141,6 +151,44 @@ public final class Configuration implements Parcelable, Comparable<Configuration
     @UnsupportedAppUsage
     public boolean userSetLocale;
 
+    /**
+     * Current user preference for the grammatical gender.
+     */
+    @GrammaticalGender
+    private int mGrammaticalGender;
+
+    /** @hide */
+    @IntDef(prefix = { "GRAMMATICAL_GENDER_" }, value = {
+            GRAMMATICAL_GENDER_NOT_SPECIFIED,
+            GRAMMATICAL_GENDER_NEUTRAL,
+            GRAMMATICAL_GENDER_FEMININE,
+            GRAMMATICAL_GENDER_MASCULINE,
+    })
+    public @interface GrammaticalGender {}
+
+    /**
+     * Constant for grammatical gender: to indicate the user has not specified the terms
+     * of address for the application.
+     */
+    public static final int GRAMMATICAL_GENDER_NOT_SPECIFIED = 0;
+
+    /**
+     * Constant for grammatical gender: to indicate the terms of address the user
+     * preferred in an application is neuter.
+     */
+    public static final int GRAMMATICAL_GENDER_NEUTRAL = 1;
+
+    /**
+     * Constant for grammatical gender: to indicate the terms of address the user
+         * preferred in an application is feminine.
+     */
+    public static final int GRAMMATICAL_GENDER_FEMININE = 2;
+
+    /**
+     * Constant for grammatical gender: to indicate the terms of address the user
+     * preferred in an application is masculine.
+     */
+    public static final int GRAMMATICAL_GENDER_MASCULINE = 3;
 
     /** Constant for {@link #colorMode}: bits that encode whether the screen is wide gamut. */
     public static final int COLOR_MODE_WIDE_COLOR_GAMUT_MASK = 0x3;
@@ -490,15 +538,10 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         if ((diff & ActivityInfo.CONFIG_FONT_WEIGHT_ADJUSTMENT) != 0) {
             list.add("CONFIG_AUTO_BOLD_TEXT");
         }
-        StringBuilder builder = new StringBuilder("{");
-        for (int i = 0, n = list.size(); i < n; i++) {
-            builder.append(list.get(i));
-            if (i != n - 1) {
-                builder.append(", ");
-            }
+        if ((diff & ActivityInfo.CONFIG_GRAMMATICAL_GENDER) != 0) {
+            list.add("CONFIG_GRAMMATICAL_GENDER");
         }
-        builder.append("}");
-        return builder.toString();
+        return "{" + TextUtils.join(", ", list) + "}";
     }
 
     /**
@@ -751,11 +794,43 @@ public final class Configuration implements Parcelable, Comparable<Configuration
     public static final int SCREEN_WIDTH_DP_UNDEFINED = 0;
 
     /**
-     * The current width of the available screen space, in dp units,
-     * corresponding to
-     * <a href="{@docRoot}guide/topics/resources/providing-resources.html#ScreenWidthQualifier">screen
-     * width</a> resource qualifier.  Set to
+     * The width of the available screen space in dp units excluding the area
+     * occupied by {@link android.view.WindowInsets window insets}.
+     *
+     * <aside class="note"><b>Note:</b> The width measurement excludes window
+     * insets even when the app is displayed edge to edge using
+     * {@link android.view.Window#setDecorFitsSystemWindows(boolean)
+     * Window#setDecorFitsSystemWindows(boolean)}.</aside>
+     *
+     * <p>Corresponds to the
+     * <a href="{@docRoot}guide/topics/resources/providing-resources.html#AvailableWidthHeightQualifier">
+     * available width</a> resource qualifier. Defaults to
      * {@link #SCREEN_WIDTH_DP_UNDEFINED} if no width is specified.
+     *
+     * <p>In multi-window mode, equals the width of the available display area
+     * of the app window, not the available display area of the device screen
+     * (for example, when apps are displayed side by side in split-screen mode
+     * in landscape orientation).
+     *
+     * <p>For embedded activities, equals the width of the individual
+     * activities, not the width of the app window or the device screen.
+     *
+     * <p>In multiple-screen scenarios, the width measurement can span screens.
+     * For example, if the app is spanning both screens of a dual-screen device
+     * (with the screens side by side), {@code screenWidthDp} represents the
+     * width of both screens excluding the area occupied by window insets. When
+     * the app is restricted to a single screen in a multiple-screen
+     * environment, {@code screenWidthDp} is the width of the screen on which
+     * the app is displayed excluding window insets.
+     *
+     * <p>Differs from {@link android.view.WindowMetrics} by not including
+     * window insets in the width measurement and by expressing the measurement
+     * in dp rather than px. Use {@code screenWidthDp} to obtain the width of
+     * the display area available to an app or embedded activity excluding the
+     * area occupied by window insets. Use
+     * {@link android.view.WindowMetrics#getBounds()} to obtain the horizontal
+     * display area available to an app or embedded activity including the area
+     * occupied by window insets.
      */
     public int screenWidthDp;
 
@@ -766,11 +841,44 @@ public final class Configuration implements Parcelable, Comparable<Configuration
     public static final int SCREEN_HEIGHT_DP_UNDEFINED = 0;
 
     /**
-     * The current height of the available screen space, in dp units,
-     * corresponding to
-     * <a href="{@docRoot}guide/topics/resources/providing-resources.html#ScreenHeightQualifier">screen
-     * height</a> resource qualifier.  Set to
+     * The height of the available screen space in dp units excluding the area
+     * occupied by {@link android.view.WindowInsets window insets}, such as the
+     * status bar, navigation bar, and cutouts.
+     *
+     * <aside class="note"><b>Note:</b> The height measurement excludes window
+     * insets even when the app is displayed edge to edge using
+     * {@link android.view.Window#setDecorFitsSystemWindows(boolean)
+     * Window#setDecorFitsSystemWindows(boolean)}.</aside>
+     *
+     * <p>Corresponds to the
+     * <a href="{@docRoot}guide/topics/resources/providing-resources.html#AvailableWidthHeightQualifier">
+     * available height</a> resource qualifier. Defaults to
      * {@link #SCREEN_HEIGHT_DP_UNDEFINED} if no height is specified.
+     *
+     * <p>In multi-window mode, equals the height of the available display area
+     * of the app window, not the available display area of the device screen
+     * (for example, when apps are displayed one above another in split-screen
+     * mode in portrait orientation).
+     *
+     * <p>For embedded activities, equals the height of the individual
+     * activities, not the height of the app window or the device screen.
+     *
+     * <p>In multiple-screen scenarios, the height measurement can span screens.
+     * For example, if the app is spanning both screens of a dual-screen device
+     * rotated 90 degrees (one screen above the other), {@code screenHeightDp}
+     * represents the height of both screens excluding the area occupied by
+     * window insets. When the app is restricted to a single screen in a
+     * multiple-screen environment, {@code screenHeightDp} is the height of the
+     * screen on which the app is displayed excluding window insets.
+     *
+     * <p>Differs from {@link android.view.WindowMetrics} by not including
+     * window insets in the height measurement and by expressing the measurement
+     * in dp rather than px. Use {@code screenHeightDp} to obtain the height of
+     * the display area available to an app or embedded activity excluding the
+     * area occupied by window insets. Use
+     * {@link android.view.WindowMetrics#getBounds()} to obtain the vertical
+     * display area available to an app or embedded activity including the area
+     * occupied by window insets.
      */
     public int screenHeightDp;
 
@@ -781,12 +889,12 @@ public final class Configuration implements Parcelable, Comparable<Configuration
     public static final int SMALLEST_SCREEN_WIDTH_DP_UNDEFINED = 0;
 
     /**
-     * The smallest screen size an application will see in normal operation,
-     * corresponding to
-     * <a href="{@docRoot}guide/topics/resources/providing-resources.html#SmallestScreenWidthQualifier">smallest
-     * screen width</a> resource qualifier.
-     * This is the smallest value of both screenWidthDp and screenHeightDp
-     * in both portrait and landscape.  Set to
+     * The smallest screen size an application will see in normal operation.
+     * Corresponds to the
+     * <a href="{@docRoot}guide/topics/resources/providing-resources.html#SmallestScreenWidthQualifier">
+     * smallest width</a> resource qualifier. This is the smallest value of
+     * {@link #screenWidthDp} and {@link #screenHeightDp} in both portrait and
+     * landscape orientations. Defaults to
      * {@link #SMALLEST_SCREEN_WIDTH_DP_UNDEFINED} if no width is specified.
      */
     public int smallestScreenWidthDp;
@@ -866,6 +974,7 @@ public final class Configuration implements Parcelable, Comparable<Configuration
             NATIVE_CONFIG_SMALLEST_SCREEN_SIZE,
             NATIVE_CONFIG_LAYOUTDIR,
             NATIVE_CONFIG_COLOR_MODE,
+            NATIVE_CONFIG_GRAMMATICAL_GENDER,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface NativeConfig {}
@@ -904,6 +1013,9 @@ public final class Configuration implements Parcelable, Comparable<Configuration
     public static final int NATIVE_CONFIG_LAYOUTDIR = 0x4000;
     /** @hide Native-specific bit mask for COLOR_MODE config ; DO NOT USE UNLESS YOU ARE SURE.*/
     public static final int NATIVE_CONFIG_COLOR_MODE = 0x10000;
+    /** @hide Native-specific bit mask for GRAMMATICAL_GENDER config; DO NOT USE UNLESS YOU
+     * ARE SURE.*/
+    public static final int NATIVE_CONFIG_GRAMMATICAL_GENDER = 0x20000;
 
     /**
      * <p>Construct an invalid Configuration. This state is only suitable for constructing a
@@ -959,6 +1071,7 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         }
         o.fixUpLocaleList();
         mLocaleList = o.mLocaleList;
+        mGrammaticalGender = o.mGrammaticalGender;
         userSetLocale = o.userSetLocale;
         touchscreen = o.touchscreen;
         keyboard = o.keyboard;
@@ -994,7 +1107,7 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         } else {
             sb.append("?mcc");
         }
-        if (mnc != 0) {
+        if (mnc != MNC_ZERO) {
             sb.append(mnc);
             sb.append("mnc");
         } else {
@@ -1006,6 +1119,14 @@ public final class Configuration implements Parcelable, Comparable<Configuration
             sb.append(mLocaleList);
         } else {
             sb.append(" ?localeList");
+        }
+        if (mGrammaticalGender != 0) {
+            switch (mGrammaticalGender) {
+                case GRAMMATICAL_GENDER_NEUTRAL: sb.append(" neuter"); break;
+                case GRAMMATICAL_GENDER_FEMININE: sb.append(" feminine"); break;
+                case GRAMMATICAL_GENDER_MASCULINE: sb.append(" masculine"); break;
+                case GRAMMATICAL_GENDER_NOT_SPECIFIED: sb.append(" ?grgend"); break;
+            }
         }
         int layoutDir = (screenLayout&SCREENLAYOUT_LAYOUTDIR_MASK);
         switch (layoutDir) {
@@ -1187,6 +1308,7 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         protoOutputStream.write(ORIENTATION, orientation);
         protoOutputStream.write(SCREEN_WIDTH_DP, screenWidthDp);
         protoOutputStream.write(SCREEN_HEIGHT_DP, screenHeightDp);
+        protoOutputStream.write(GRAMMATICAL_GENDER, mGrammaticalGender);
         protoOutputStream.end(token);
     }
 
@@ -1349,6 +1471,9 @@ public final class Configuration implements Parcelable, Comparable<Configuration
                     case (int) FONT_WEIGHT_ADJUSTMENT:
                         fontWeightAdjustment = protoInputStream.readInt(FONT_WEIGHT_ADJUSTMENT);
                         break;
+                    case (int) GRAMMATICAL_GENDER:
+                        mGrammaticalGender = protoInputStream.readInt(GRAMMATICAL_GENDER);
+                        break;
                 }
             }
         } finally {
@@ -1445,6 +1570,7 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         seq = 0;
         windowConfiguration.setToDefaults();
         fontWeightAdjustment = FONT_WEIGHT_ADJUSTMENT_UNDEFINED;
+        mGrammaticalGender = GRAMMATICAL_GENDER_NOT_SPECIFIED;
     }
 
     /**
@@ -1647,6 +1773,10 @@ public final class Configuration implements Parcelable, Comparable<Configuration
             changed |= ActivityInfo.CONFIG_FONT_WEIGHT_ADJUSTMENT;
             fontWeightAdjustment = delta.fontWeightAdjustment;
         }
+        if (delta.mGrammaticalGender != mGrammaticalGender) {
+            changed |= ActivityInfo.CONFIG_GRAMMATICAL_GENDER;
+            mGrammaticalGender = delta.mGrammaticalGender;
+        }
 
         return changed;
     }
@@ -1728,6 +1858,9 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         }
         if ((mask & ActivityInfo.CONFIG_FONT_WEIGHT_ADJUSTMENT) != 0) {
             fontWeightAdjustment = delta.fontWeightAdjustment;
+        }
+        if ((mask & ActivityInfo.CONFIG_GRAMMATICAL_GENDER) != 0) {
+            mGrammaticalGender = delta.mGrammaticalGender;
         }
     }
 
@@ -1864,6 +1997,10 @@ public final class Configuration implements Parcelable, Comparable<Configuration
                 && fontWeightAdjustment != delta.fontWeightAdjustment) {
             changed |= ActivityInfo.CONFIG_FONT_WEIGHT_ADJUSTMENT;
         }
+
+        if (mGrammaticalGender != delta.mGrammaticalGender) {
+            changed |= ActivityInfo.CONFIG_GRAMMATICAL_GENDER;
+        }
         return changed;
     }
 
@@ -1909,10 +2046,10 @@ public final class Configuration implements Parcelable, Comparable<Configuration
             return true;
         }
         int diff = other.seq - seq;
-        if (diff > 0x10000) {
+        if (Math.abs(diff) > 0x10000000) {
             // If there has been a sufficiently large jump, assume the
             // sequence has wrapped around.
-            return false;
+            return diff < 0;
         }
         return diff > 0;
     }
@@ -1958,6 +2095,7 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         dest.writeInt(assetsSeq);
         dest.writeInt(seq);
         dest.writeInt(fontWeightAdjustment);
+        dest.writeInt(mGrammaticalGender);
     }
 
     public void readFromParcel(Parcel source) {
@@ -1990,6 +2128,7 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         assetsSeq = source.readInt();
         seq = source.readInt();
         fontWeightAdjustment = source.readInt();
+        mGrammaticalGender = source.readInt();
     }
 
     public static final @android.annotation.NonNull Parcelable.Creator<Configuration> CREATOR
@@ -2056,6 +2195,8 @@ public final class Configuration implements Parcelable, Comparable<Configuration
             if (n != 0) return n;
         }
 
+        n = this.mGrammaticalGender - that.mGrammaticalGender;
+        if (n != 0) return n;
         n = this.touchscreen - that.touchscreen;
         if (n != 0) return n;
         n = this.keyboard - that.keyboard;
@@ -2089,9 +2230,6 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         n = windowConfiguration.compareTo(that.windowConfiguration);
         if (n != 0) return n;
         n = this.fontWeightAdjustment - that.fontWeightAdjustment;
-        if (n != 0) return n;
-
-        // if (n != 0) return n;
         return n;
     }
 
@@ -2131,7 +2269,34 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         result = 31 * result + densityDpi;
         result = 31 * result + assetsSeq;
         result = 31 * result + fontWeightAdjustment;
+        result = 31 * result + mGrammaticalGender;
         return result;
+    }
+
+    /**
+     * Returns the user preference for the grammatical gender. Will be
+     * {@link #GRAMMATICAL_GENDER_NOT_SPECIFIED} or
+     * {@link #GRAMMATICAL_GENDER_NEUTRAL} or
+     * {@link #GRAMMATICAL_GENDER_FEMININE} or
+     * {@link #GRAMMATICAL_GENDER_MASCULINE}.
+     *
+     * @return The preferred grammatical gender.
+     */
+    @GrammaticalGender
+    public int getGrammaticalGender() {
+        return mGrammaticalGender;
+    }
+
+    /**
+     * Sets the user preference for the grammatical gender. This is only for frameworks to easily
+     * override the gender in the configuration. To update the grammatical gender for an application
+     * use {@link GrammaticalInflectionManager#setRequestedApplicationGrammaticalGender(int)}.
+     *
+     * @param grammaticalGender The preferred grammatical gender.
+     * @hide
+     */
+    public void setGrammaticalGender(@GrammaticalGender int grammaticalGender) {
+        mGrammaticalGender = grammaticalGender;
     }
 
     /**
@@ -2337,6 +2502,20 @@ public final class Configuration implements Parcelable, Comparable<Configuration
             }
         }
 
+        switch (config.mGrammaticalGender) {
+            case Configuration.GRAMMATICAL_GENDER_NEUTRAL:
+                parts.add("neuter");
+                break;
+            case Configuration.GRAMMATICAL_GENDER_FEMININE:
+                parts.add("feminine");
+                break;
+            case Configuration.GRAMMATICAL_GENDER_MASCULINE:
+                parts.add("masculine");
+                break;
+            default:
+                break;
+        }
+
         switch (config.screenLayout & Configuration.SCREENLAYOUT_LAYOUTDIR_MASK) {
             case Configuration.SCREENLAYOUT_LAYOUTDIR_LTR:
                 parts.add("ldltr");
@@ -2432,27 +2611,10 @@ public final class Configuration implements Parcelable, Comparable<Configuration
                 break;
         }
 
-        switch (config.uiMode & Configuration.UI_MODE_TYPE_MASK) {
-            case Configuration.UI_MODE_TYPE_APPLIANCE:
-                parts.add("appliance");
-                break;
-            case Configuration.UI_MODE_TYPE_DESK:
-                parts.add("desk");
-                break;
-            case Configuration.UI_MODE_TYPE_TELEVISION:
-                parts.add("television");
-                break;
-            case Configuration.UI_MODE_TYPE_CAR:
-                parts.add("car");
-                break;
-            case Configuration.UI_MODE_TYPE_WATCH:
-                parts.add("watch");
-                break;
-            case Configuration.UI_MODE_TYPE_VR_HEADSET:
-                parts.add("vrheadset");
-                break;
-            default:
-                break;
+        final String uiModeTypeString =
+                getUiModeTypeString(config.uiMode & Configuration.UI_MODE_TYPE_MASK);
+        if (uiModeTypeString != null) {
+            parts.add(uiModeTypeString);
         }
 
         switch (config.uiMode & Configuration.UI_MODE_NIGHT_MASK) {
@@ -2587,6 +2749,28 @@ public final class Configuration implements Parcelable, Comparable<Configuration
     }
 
     /**
+     * @hide
+     */
+    public static String getUiModeTypeString(int uiModeType) {
+        switch (uiModeType) {
+            case Configuration.UI_MODE_TYPE_APPLIANCE:
+                return "appliance";
+            case Configuration.UI_MODE_TYPE_DESK:
+                return "desk";
+            case Configuration.UI_MODE_TYPE_TELEVISION:
+                return "television";
+            case Configuration.UI_MODE_TYPE_CAR:
+                return "car";
+            case Configuration.UI_MODE_TYPE_WATCH:
+                return "watch";
+            case Configuration.UI_MODE_TYPE_VR_HEADSET:
+                return "vrheadset";
+            default:
+                return null;
+        }
+    }
+
+    /**
      * Generate a delta Configuration between <code>base</code> and <code>change</code>. The
      * resulting delta can be used with {@link #updateFrom(Configuration)}.
      * <p />
@@ -2594,10 +2778,10 @@ public final class Configuration implements Parcelable, Comparable<Configuration
      * {@link #updateFrom(Configuration)} will treat it as a no-op and not update that member.
      *
      * This is fine for device configurations as no member is ever undefined.
-     * {@hide}
      */
-    @UnsupportedAppUsage
-    public static Configuration generateDelta(Configuration base, Configuration change) {
+    @NonNull
+    public static Configuration generateDelta(
+            @NonNull Configuration base, @NonNull Configuration change) {
         final Configuration delta = new Configuration();
         if (base.fontScale != change.fontScale) {
             delta.fontScale = change.fontScale;
@@ -2616,6 +2800,10 @@ public final class Configuration implements Parcelable, Comparable<Configuration
         if (!base.mLocaleList.equals(change.mLocaleList))  {
             delta.mLocaleList = change.mLocaleList;
             delta.locale = change.locale;
+        }
+
+        if (base.mGrammaticalGender != change.mGrammaticalGender) {
+            delta.mGrammaticalGender = change.mGrammaticalGender;
         }
 
         if (base.touchscreen != change.touchscreen) {
@@ -2731,6 +2919,7 @@ public final class Configuration implements Parcelable, Comparable<Configuration
     private static final String XML_ATTR_DENSITY = "density";
     private static final String XML_ATTR_APP_BOUNDS = "app_bounds";
     private static final String XML_ATTR_FONT_WEIGHT_ADJUSTMENT = "fontWeightAdjustment";
+    private static final String XML_ATTR_GRAMMATICAL_GENDER = "grammaticalGender";
 
     /**
      * Reads the attributes corresponding to Configuration member fields from the Xml parser.
@@ -2782,6 +2971,8 @@ public final class Configuration implements Parcelable, Comparable<Configuration
                 DENSITY_DPI_UNDEFINED);
         configOut.fontWeightAdjustment = XmlUtils.readIntAttribute(parser,
                 XML_ATTR_FONT_WEIGHT_ADJUSTMENT, FONT_WEIGHT_ADJUSTMENT_UNDEFINED);
+        configOut.mGrammaticalGender = XmlUtils.readIntAttribute(parser,
+                XML_ATTR_GRAMMATICAL_GENDER, GRAMMATICAL_GENDER_NOT_SPECIFIED);
 
         // For persistence, we don't care about assetsSeq and WindowConfiguration, so do not read it
         // out.

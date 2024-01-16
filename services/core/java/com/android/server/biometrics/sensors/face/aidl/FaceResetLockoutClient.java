@@ -18,44 +18,52 @@ package com.android.server.biometrics.sensors.face.aidl;
 
 import android.annotation.NonNull;
 import android.content.Context;
-import android.hardware.biometrics.BiometricsProtoEnums;
+import android.hardware.biometrics.BiometricManager.Authenticators;
 import android.hardware.biometrics.face.IFace;
-import android.hardware.biometrics.face.ISession;
 import android.hardware.keymaster.HardwareAuthToken;
 import android.os.RemoteException;
 import android.util.Slog;
 
 import com.android.server.biometrics.BiometricsProto;
 import com.android.server.biometrics.HardwareAuthTokenUtils;
+import com.android.server.biometrics.log.BiometricContext;
+import com.android.server.biometrics.log.BiometricLogger;
+import com.android.server.biometrics.sensors.AuthSessionCoordinator;
+import com.android.server.biometrics.sensors.ClientMonitorCallback;
 import com.android.server.biometrics.sensors.ErrorConsumer;
 import com.android.server.biometrics.sensors.HalClientMonitor;
 import com.android.server.biometrics.sensors.LockoutCache;
 import com.android.server.biometrics.sensors.LockoutResetDispatcher;
 import com.android.server.biometrics.sensors.LockoutTracker;
 
+import java.util.function.Supplier;
+
 /**
  * Face-specific resetLockout client for the {@link IFace} AIDL HAL interface.
  * Updates the framework's lockout cache and notifies clients such as Keyguard when lockout is
  * cleared.
  */
-public class FaceResetLockoutClient extends HalClientMonitor<ISession> implements ErrorConsumer {
+public class FaceResetLockoutClient extends HalClientMonitor<AidlSession> implements ErrorConsumer {
 
     private static final String TAG = "FaceResetLockoutClient";
 
     private final HardwareAuthToken mHardwareAuthToken;
     private final LockoutCache mLockoutCache;
     private final LockoutResetDispatcher mLockoutResetDispatcher;
+    private final int mBiometricStrength;
 
     FaceResetLockoutClient(@NonNull Context context,
-            @NonNull LazyDaemon<ISession> lazyDaemon, int userId, String owner, int sensorId,
+            @NonNull Supplier<AidlSession> lazyDaemon, int userId, String owner, int sensorId,
+            @NonNull BiometricLogger logger, @NonNull BiometricContext biometricContext,
             @NonNull byte[] hardwareAuthToken, @NonNull LockoutCache lockoutTracker,
-            @NonNull LockoutResetDispatcher lockoutResetDispatcher) {
+            @NonNull LockoutResetDispatcher lockoutResetDispatcher,
+            @Authenticators.Types int biometricStrength) {
         super(context, lazyDaemon, null /* token */, null /* listener */, userId, owner,
-                0 /* cookie */, sensorId, BiometricsProtoEnums.MODALITY_UNKNOWN,
-                BiometricsProtoEnums.ACTION_UNKNOWN, BiometricsProtoEnums.CLIENT_UNKNOWN);
+                0 /* cookie */, sensorId, logger, biometricContext);
         mHardwareAuthToken = HardwareAuthTokenUtils.toHardwareAuthToken(hardwareAuthToken);
         mLockoutCache = lockoutTracker;
         mLockoutResetDispatcher = lockoutResetDispatcher;
+        mBiometricStrength = biometricStrength;
     }
 
     @Override
@@ -64,7 +72,7 @@ public class FaceResetLockoutClient extends HalClientMonitor<ISession> implement
     }
 
     @Override
-    public void start(@NonNull Callback callback) {
+    public void start(@NonNull ClientMonitorCallback callback) {
         super.start(callback);
         startHalOperation();
     }
@@ -72,7 +80,7 @@ public class FaceResetLockoutClient extends HalClientMonitor<ISession> implement
     @Override
     protected void startHalOperation() {
         try {
-            getFreshDaemon().resetLockout(mHardwareAuthToken);
+            getFreshDaemon().getSession().resetLockout(mHardwareAuthToken);
         } catch (RemoteException e) {
             Slog.e(TAG, "Unable to reset lockout", e);
             mCallback.onClientFinished(this, false /* success */);
@@ -81,8 +89,13 @@ public class FaceResetLockoutClient extends HalClientMonitor<ISession> implement
 
     void onLockoutCleared() {
         resetLocalLockoutStateToNone(getSensorId(), getTargetUserId(), mLockoutCache,
-                mLockoutResetDispatcher);
+                mLockoutResetDispatcher, getBiometricContext().getAuthSessionCoordinator(),
+                mBiometricStrength, getRequestId());
         mCallback.onClientFinished(this, true /* success */);
+    }
+
+    public boolean interruptsPrecedingClients() {
+        return true;
     }
 
     /**
@@ -95,7 +108,10 @@ public class FaceResetLockoutClient extends HalClientMonitor<ISession> implement
      */
     static void resetLocalLockoutStateToNone(int sensorId, int userId,
             @NonNull LockoutCache lockoutTracker,
-            @NonNull LockoutResetDispatcher lockoutResetDispatcher) {
+            @NonNull LockoutResetDispatcher lockoutResetDispatcher,
+            @NonNull AuthSessionCoordinator authSessionCoordinator,
+            @Authenticators.Types int biometricStrength, long requestId) {
+        authSessionCoordinator.resetLockoutFor(userId, biometricStrength, requestId);
         lockoutTracker.setLockoutModeForUser(userId, LockoutTracker.LOCKOUT_NONE);
         lockoutResetDispatcher.notifyLockoutResetCallbacks(sensorId);
     }

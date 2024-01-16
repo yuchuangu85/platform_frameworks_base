@@ -18,6 +18,7 @@ package android.os;
 
 import android.Manifest;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
@@ -29,7 +30,6 @@ import android.compat.annotation.ChangeId;
 import android.compat.annotation.Disabled;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
-import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.storage.StorageManager;
@@ -40,11 +40,12 @@ import android.util.Log;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Provides access to environment variables.
@@ -479,8 +480,32 @@ public class Environment {
     }
 
     /** {@hide} */
+    private static File getDataMiscCeDirectory(String volumeUuid, int userId) {
+        return buildPath(getDataDirectory(volumeUuid), "misc_ce", String.valueOf(userId));
+    }
+
+    /** {@hide} */
+    public static File getDataMiscCeSharedSdkSandboxDirectory(String volumeUuid, int userId,
+            String packageName) {
+        return buildPath(getDataMiscCeDirectory(volumeUuid, userId), "sdksandbox",
+                packageName, "shared");
+    }
+
+    /** {@hide} */
     public static File getDataMiscDeDirectory(int userId) {
         return buildPath(getDataDirectory(), "misc_de", String.valueOf(userId));
+    }
+
+    /** {@hide} */
+    private static File getDataMiscDeDirectory(String volumeUuid, int userId) {
+        return buildPath(getDataDirectory(volumeUuid), "misc_de", String.valueOf(userId));
+    }
+
+    /** {@hide} */
+    public static File getDataMiscDeSharedSdkSandboxDirectory(String volumeUuid, int userId,
+            String packageName) {
+        return buildPath(getDataMiscDeDirectory(volumeUuid, userId), "sdksandbox",
+                packageName, "shared");
     }
 
     private static File getDataProfilesDeDirectory(int userId) {
@@ -528,10 +553,35 @@ public class Environment {
     }
 
     /** {@hide} */
-    public static File getDataUserCePackageDirectory(String volumeUuid, int userId,
-            String packageName) {
+    @NonNull
+    public static File getDataUserCePackageDirectory(@Nullable String volumeUuid, int userId,
+            @NonNull String packageName) {
         // TODO: keep consistent with installd
         return new File(getDataUserCeDirectory(volumeUuid, userId), packageName);
+    }
+
+    /**
+     * Retrieve the credential encrypted data directory for a specific package of a specific user.
+     * This is equivalent to {@link ApplicationInfo#credentialProtectedDataDir}, exposed because
+     * fetching a full {@link ApplicationInfo} instance may be expensive if all the caller needs
+     * is this directory.
+     *
+     * @param storageUuid The storage volume for this directory, usually retrieved from a
+     * {@link StorageManager} API or {@link ApplicationInfo#storageUuid}.
+     * @param user The user this directory is for.
+     * @param packageName The app this directory is for.
+     *
+     * @see ApplicationInfo#credentialProtectedDataDir
+     * @return A file to the directory.
+     *
+     * @hide
+     */
+    @SystemApi
+    @NonNull
+    public static File getDataCePackageDirectoryForUser(@NonNull UUID storageUuid,
+            @NonNull UserHandle user, @NonNull String packageName) {
+        var volumeUuid = StorageManager.convert(storageUuid);
+        return getDataUserCePackageDirectory(volumeUuid, user.getIdentifier(), packageName);
     }
 
     /** {@hide} */
@@ -545,10 +595,35 @@ public class Environment {
     }
 
     /** {@hide} */
-    public static File getDataUserDePackageDirectory(String volumeUuid, int userId,
-            String packageName) {
+    @NonNull
+    public static File getDataUserDePackageDirectory(@Nullable String volumeUuid, int userId,
+            @NonNull String packageName) {
         // TODO: keep consistent with installd
         return new File(getDataUserDeDirectory(volumeUuid, userId), packageName);
+    }
+
+    /**
+     * Retrieve the device encrypted data directory for a specific package of a specific user. This
+     * is equivalent to {@link ApplicationInfo#deviceProtectedDataDir}, exposed because fetching a
+     * full {@link ApplicationInfo} instance may be expensive if all the caller needs is this
+     * directory.
+     *
+     * @param storageUuid The storage volume for this directory, usually retrieved from a
+     * {@link StorageManager} API or {@link ApplicationInfo#storageUuid}.
+     * @param user The user this directory is for.
+     * @param packageName The app this directory is for.
+     *
+     * @see ApplicationInfo#deviceProtectedDataDir
+     * @return A file to the directory.
+     *
+     * @hide
+     */
+    @SystemApi
+    @NonNull
+    public static File getDataDePackageDirectoryForUser(@NonNull UUID storageUuid,
+            @NonNull UserHandle user, @NonNull String packageName) {
+        var volumeUuid = StorageManager.convert(storageUuid);
+        return getDataUserDePackageDirectory(volumeUuid, user.getIdentifier(), packageName);
     }
 
     /**
@@ -954,7 +1029,7 @@ public class Environment {
     }
 
     private static boolean hasInterestingFiles(File dir) {
-        final LinkedList<File> explore = new LinkedList<>();
+        final ArrayDeque<File> explore = new ArrayDeque<>();
         explore.add(dir);
         while (!explore.isEmpty()) {
             dir = explore.pop();
@@ -1343,13 +1418,25 @@ public class Environment {
         final Context context = AppGlobals.getInitialApplication();
         final int uid = context.getApplicationInfo().uid;
         // Isolated processes and Instant apps are never allowed to be in scoped storage
-        if (Process.isIsolated(uid)) {
+        if (Process.isIsolated(uid) || Process.isSdkSandboxUid(uid)) {
             return false;
         }
 
         final PackageManager packageManager = context.getPackageManager();
         if (packageManager.isInstantApp()) {
             return false;
+        }
+
+        // Apps with PROPERTY_NO_APP_DATA_STORAGE should not be allowed in scoped storage
+        final String packageName = AppGlobals.getInitialPackage();
+        try {
+            final PackageManager.Property noAppStorageProp = packageManager.getProperty(
+                    PackageManager.PROPERTY_NO_APP_DATA_STORAGE, packageName);
+            if (noAppStorageProp != null && noAppStorageProp.getBoolean()) {
+                return false;
+            }
+        } catch (PackageManager.NameNotFoundException ignore) {
+            // Property not defined for the package
         }
 
         boolean defaultScopedStorage = Compatibility.isChangeEnabled(DEFAULT_SCOPED_STORAGE);

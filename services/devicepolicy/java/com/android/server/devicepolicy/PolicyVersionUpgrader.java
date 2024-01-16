@@ -16,16 +16,22 @@
 
 package com.android.server.devicepolicy;
 
+import android.annotation.Nullable;
+import android.content.ComponentName;
 import android.os.UserHandle;
 import android.util.Slog;
 import android.util.SparseArray;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.JournaledFile;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Class for dealing with Device Policy Manager Service version upgrades.
@@ -50,16 +56,16 @@ public class PolicyVersionUpgrader {
     private static final String LOG_TAG = "DevicePolicyManager";
     private static final boolean VERBOSE_LOG = DevicePolicyManagerService.VERBOSE_LOG;
     private final PolicyUpgraderDataProvider mProvider;
+    private final PolicyPathProvider mPathProvider;
 
-    public PolicyVersionUpgrader(PolicyUpgraderDataProvider provider) {
+    @VisibleForTesting
+    PolicyVersionUpgrader(PolicyUpgraderDataProvider provider, PolicyPathProvider pathProvider) {
         mProvider = provider;
+        mPathProvider = pathProvider;
     }
-
     /**
      * Performs the upgrade steps for all users on the system.
      *
-     * @param allUsers List of all user IDs on the system, including disabled users, as well as
-     *                 managed profile user IDs.
      * @param dpmsVersion The version to upgrade to.
      */
     public void upgradePolicy(int dpmsVersion) {
@@ -71,11 +77,13 @@ public class PolicyVersionUpgrader {
         }
 
         final int[] allUsers = mProvider.getUsersForUpgrade();
+        final OwnersData ownersData = loadOwners(allUsers);
 
-        //NOTE: The current version is provided in case the XML file format changes in a
+        // NOTE: The current version is provided in case the XML file format changes in a
         // non-backwards-compatible way, so that DeviceAdminData could load it with
         // old tags, for example.
-        final SparseArray<DevicePolicyData> allUsersData = loadAllUsersData(allUsers, oldVersion);
+        final SparseArray<DevicePolicyData> allUsersData =
+                loadAllUsersData(allUsers, oldVersion, ownersData);
 
         int currentVersion = oldVersion;
         if (currentVersion == 0) {
@@ -87,34 +95,172 @@ public class PolicyVersionUpgrader {
 
         if (currentVersion == 1) {
             Slog.i(LOG_TAG, String.format("Upgrading from version %d", currentVersion));
-            // This upgrade step is for Device Owner scenario only: For devices upgrading to S,
-            // if there is a device owner, it retains the ability to control sensors-related
-            // permission grants.
-            for (int userId : allUsers) {
-                DevicePolicyData userData = allUsersData.get(userId);
-                if (userData == null) {
-                    continue;
-                }
-                for (ActiveAdmin admin : userData.mAdminList) {
-                    if (mProvider.isDeviceOwner(userId, admin.info.getComponent())) {
-                        Slog.i(LOG_TAG, String.format(
-                                "Marking Device Owner in user %d for permission grant ", userId));
-                        admin.mAdminCanGrantSensorsPermissions = true;
-                    }
-                }
-            }
+            upgradeSensorPermissionsAccess(allUsers, ownersData, allUsersData);
             currentVersion = 2;
         }
 
-        writePoliciesAndVersion(allUsers, allUsersData, currentVersion);
+        if (currentVersion == 2) {
+            Slog.i(LOG_TAG, String.format("Upgrading from version %d", currentVersion));
+            upgradeProtectedPackages(ownersData, allUsersData);
+            currentVersion = 3;
+        }
+
+        if (currentVersion == 3) {
+            Slog.i(LOG_TAG, String.format("Upgrading from version %d", currentVersion));
+            upgradePackageSuspension(allUsers, ownersData, allUsersData);
+            currentVersion = 4;
+        }
+
+        if (currentVersion == 4) {
+            Slog.i(LOG_TAG, String.format("Upgrading from version %d", currentVersion));
+            initializeEffectiveKeepProfilesRunning(allUsersData);
+            currentVersion = 5;
+        }
+
+        if (currentVersion == 5) {
+            Slog.i(LOG_TAG, String.format("Upgrading from version %d", currentVersion));
+            // No-op upgrade here:
+            // DevicePolicyData.mEffectiveKeepProfilesRunning is only stored in XML file when it is
+            // different from its default value, otherwise the tag is not written. When loading, if
+            // the tag is missing, the field retains the value previously assigned in the
+            // constructor, which is the default value.
+            // In version 5 the default value was 'true', in version 6 it is 'false', so when
+            // loading XML version 5 we need to initialize the field to 'true' for it to be restored
+            // correctly in case the tag is missing. This is done in loadDataForUser().
+            currentVersion = 6;
+        }
+
+        writePoliciesAndVersion(allUsers, allUsersData, ownersData, currentVersion);
+    }
+
+    /**
+     * This upgrade step is for Device Owner scenario only: For devices upgrading to S, if there is
+     * a device owner, it retains the ability to control sensors-related permission grants.
+     */
+    private void upgradeSensorPermissionsAccess(
+            int[] allUsers, OwnersData ownersData, SparseArray<DevicePolicyData> allUsersData) {
+        for (int userId : allUsers) {
+            DevicePolicyData userData = allUsersData.get(userId);
+            if (userData == null) {
+                continue;
+            }
+            for (ActiveAdmin admin : userData.mAdminList) {
+                if (ownersData.mDeviceOwnerUserId == userId
+                        && ownersData.mDeviceOwner != null
+                        && ownersData.mDeviceOwner.admin.equals(admin.info.getComponent())) {
+                    Slog.i(LOG_TAG, String.format(
+                            "Marking Device Owner in user %d for permission grant ", userId));
+                    admin.mAdminCanGrantSensorsPermissions = true;
+                }
+            }
+        }
+    }
+
+    /**
+     * This upgrade step moves device owner protected packages to ActiveAdmin.
+     * Initially these packages were stored in DevicePolicyData, then moved to Owners without
+     * employing PolicyVersionUpgrader. Here we check both places.
+     */
+    private void upgradeProtectedPackages(
+            OwnersData ownersData, SparseArray<DevicePolicyData> allUsersData) {
+        if (ownersData.mDeviceOwner == null) {
+            return;
+        }
+        List<String> protectedPackages = null;
+        DevicePolicyData doUserData = allUsersData.get(ownersData.mDeviceOwnerUserId);
+        if (doUserData == null) {
+            Slog.e(LOG_TAG, "No policy data for do user");
+            return;
+        }
+        if (ownersData.mDeviceOwnerProtectedPackages != null) {
+            protectedPackages = ownersData.mDeviceOwnerProtectedPackages
+                    .get(ownersData.mDeviceOwner.packageName);
+            if (protectedPackages != null) {
+                Slog.i(LOG_TAG, "Found protected packages in Owners");
+            }
+            ownersData.mDeviceOwnerProtectedPackages = null;
+        } else if (doUserData.mUserControlDisabledPackages != null) {
+            Slog.i(LOG_TAG, "Found protected packages in DevicePolicyData");
+            protectedPackages = doUserData.mUserControlDisabledPackages;
+            doUserData.mUserControlDisabledPackages = null;
+        }
+
+        ActiveAdmin doAdmin = doUserData.mAdminMap.get(ownersData.mDeviceOwner.admin);
+        if (doAdmin == null) {
+            Slog.e(LOG_TAG, "DO admin not found in DO user");
+            return;
+        }
+
+        if (protectedPackages != null) {
+            doAdmin.protectedPackages = new ArrayList<>(protectedPackages);
+        }
+    }
+
+    /**
+     * This upgrade step stores packages suspended via DPM.setPackagesSuspended() into ActiveAdmin
+     * data structure. Prior to this it was only persisted in PackageManager which doesn't have any
+     * way of knowing which admin suspended it.
+     */
+    private void upgradePackageSuspension(
+            int[] allUsers, OwnersData ownersData, SparseArray<DevicePolicyData> allUsersData) {
+        if (ownersData.mDeviceOwner != null) {
+            saveSuspendedPackages(allUsersData, ownersData.mDeviceOwnerUserId,
+                    ownersData.mDeviceOwner.admin);
+        }
+
+        for (int i = 0; i < ownersData.mProfileOwners.size(); i++) {
+            int ownerUserId = ownersData.mProfileOwners.keyAt(i);
+            OwnersData.OwnerInfo ownerInfo = ownersData.mProfileOwners.valueAt(i);
+            saveSuspendedPackages(allUsersData, ownerUserId, ownerInfo.admin);
+        }
+    }
+
+    private void saveSuspendedPackages(SparseArray<DevicePolicyData> allUsersData, int ownerUserId,
+            ComponentName ownerPackage) {
+        DevicePolicyData ownerUserData = allUsersData.get(ownerUserId);
+        if (ownerUserData == null) {
+            Slog.e(LOG_TAG, "No policy data for owner user, cannot migrate suspended packages");
+            return;
+        }
+
+        ActiveAdmin ownerAdmin = ownerUserData.mAdminMap.get(ownerPackage);
+        if (ownerAdmin == null) {
+            Slog.e(LOG_TAG, "No admin for owner, cannot migrate suspended packages");
+            return;
+        }
+
+        ownerAdmin.suspendedPackages = mProvider.getPlatformSuspendedPackages(ownerUserId);
+        Slog.i(LOG_TAG, String.format("Saved %d packages suspended by %s in user %d",
+                ownerAdmin.suspendedPackages.size(), ownerPackage, ownerUserId));
+    }
+
+    private void initializeEffectiveKeepProfilesRunning(
+            SparseArray<DevicePolicyData> allUsersData) {
+        DevicePolicyData systemUserData = allUsersData.get(UserHandle.USER_SYSTEM);
+        if (systemUserData == null) {
+            return;
+        }
+        systemUserData.mEffectiveKeepProfilesRunning = false;
+        Slog.i(LOG_TAG, "Keep profile running effective state set to false");
+    }
+
+    private OwnersData loadOwners(int[] allUsers) {
+        OwnersData ownersData = new OwnersData(mPathProvider);
+        ownersData.load(allUsers);
+        return ownersData;
     }
 
     private void writePoliciesAndVersion(int[] allUsers, SparseArray<DevicePolicyData> allUsersData,
-            int currentVersion) {
+            OwnersData ownersData, int currentVersion) {
         boolean allWritesSuccessful = true;
         for (int user : allUsers) {
-            allWritesSuccessful = allWritesSuccessful && writeDataForUser(user,
-                    allUsersData.get(user));
+            allWritesSuccessful =
+                    allWritesSuccessful && writeDataForUser(user, allUsersData.get(user));
+        }
+
+        allWritesSuccessful = allWritesSuccessful && ownersData.writeDeviceOwner();
+        for (int user : allUsers) {
+            allWritesSuccessful = allWritesSuccessful && ownersData.writeProfileOwner(user);
         }
 
         if (allWritesSuccessful) {
@@ -125,29 +271,43 @@ public class PolicyVersionUpgrader {
         }
     }
 
-    private SparseArray<DevicePolicyData> loadAllUsersData(int[] allUsers, int loadVersion) {
+    private SparseArray<DevicePolicyData> loadAllUsersData(int[] allUsers, int loadVersion,
+            OwnersData ownersData) {
         final SparseArray<DevicePolicyData> allUsersData = new SparseArray<>();
         for (int user: allUsers) {
-            allUsersData.append(user, loadDataForUser(user, loadVersion));
+            ComponentName owner = getOwnerForUser(ownersData, user);
+            allUsersData.append(user, loadDataForUser(user, loadVersion, owner));
         }
         return allUsersData;
     }
 
-    private DevicePolicyData loadDataForUser(int userId, int loadVersion) {
+    @Nullable
+    private ComponentName getOwnerForUser(OwnersData ownersData, int user) {
+        ComponentName owner = null;
+        if (ownersData.mDeviceOwnerUserId == user && ownersData.mDeviceOwner != null) {
+            owner = ownersData.mDeviceOwner.admin;
+        } else if (ownersData.mProfileOwners.containsKey(user)) {
+            owner = ownersData.mProfileOwners.get(user).admin;
+        }
+        return owner;
+    }
+
+    private DevicePolicyData loadDataForUser(
+            int userId, int loadVersion, ComponentName ownerComponent) {
         DevicePolicyData policy = new DevicePolicyData(userId);
+        // See version 5 -> 6 step in upgradePolicy()
+        if (loadVersion == 5 && userId == UserHandle.USER_SYSTEM) {
+            policy.mEffectiveKeepProfilesRunning = true;
+        }
         DevicePolicyData.load(policy,
-                !mProvider.storageManagerIsFileBasedEncryptionEnabled(),
                 mProvider.makeDevicePoliciesJournaledFile(userId),
                 mProvider.getAdminInfoSupplier(userId),
-                mProvider.getOwnerComponent(userId));
+                ownerComponent);
         return policy;
     }
 
     private boolean writeDataForUser(int userId, DevicePolicyData policy) {
-        return DevicePolicyData.store(
-                policy,
-                mProvider.makeDevicePoliciesJournaledFile(userId),
-                !mProvider.storageManagerIsFileBasedEncryptionEnabled());
+        return DevicePolicyData.store(policy, mProvider.makeDevicePoliciesJournaledFile(userId));
     }
 
     private JournaledFile getVersionFile() {
@@ -165,6 +325,8 @@ public class PolicyVersionUpgrader {
             String versionString = Files.readAllLines(
                     file.toPath(), Charset.defaultCharset()).get(0);
             return Integer.parseInt(versionString);
+        } catch (NoSuchFileException e) {
+            return 0; // expected on first boot
         } catch (IOException | NumberFormatException | IndexOutOfBoundsException e) {
             Slog.e(LOG_TAG, "Error reading version", e);
             return 0;
@@ -184,7 +346,7 @@ public class PolicyVersionUpgrader {
             Files.write(file.toPath(), versionBytes);
             versionFile.commit();
         } catch (IOException e) {
-            Slog.e(LOG_TAG, String.format("Writing version %d failed: %s", version), e);
+            Slog.e(LOG_TAG, String.format("Writing version %d failed", version), e);
             versionFile.rollback();
         }
     }

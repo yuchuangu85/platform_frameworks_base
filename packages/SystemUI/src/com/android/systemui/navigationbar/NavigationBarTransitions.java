@@ -21,18 +21,13 @@ import static android.view.WindowManagerPolicyConstants.NAV_BAR_MODE_3BUTTON;
 import static com.android.systemui.util.Utils.isGesturalModeOnDefaultDisplay;
 
 import android.graphics.Rect;
-import android.os.Handler;
-import android.os.RemoteException;
 import android.util.SparseArray;
-import android.view.Display;
-import android.view.IWallpaperVisibilityListener;
-import android.view.IWindowManager;
 import android.view.View;
 
-import com.android.systemui.Dependency;
 import com.android.systemui.R;
+import com.android.systemui.navigationbar.NavigationBarComponent.NavigationBarScope;
 import com.android.systemui.navigationbar.buttons.ButtonDispatcher;
-import com.android.systemui.statusbar.CommandQueue;
+import com.android.systemui.settings.DisplayTracker;
 import com.android.systemui.statusbar.phone.BarTransitions;
 import com.android.systemui.statusbar.phone.LightBarTransitionsController;
 
@@ -40,11 +35,16 @@ import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
 
+import javax.inject.Inject;
+
+/** */
+@NavigationBarScope
 public final class NavigationBarTransitions extends BarTransitions implements
         LightBarTransitionsController.DarkIntensityApplier {
 
     public static final int MIN_COLOR_ADAPT_TRANSITION_TIME = 400;
     public static final int DEFAULT_COLOR_ADAPT_TRANSITION_TIME = 1700;
+    private List<Listener> mListeners = new ArrayList<>();
 
     /**
      * Notified when the color of nav bar elements changes.
@@ -59,6 +59,7 @@ public final class NavigationBarTransitions extends BarTransitions implements
 
     private final NavigationBarView mView;
     private final LightBarTransitionsController mLightTransitionsController;
+    private final DisplayTracker mDisplayTracker;
     private final boolean mAllowAutoDimWallpaperNotVisible;
     private boolean mWallpaperVisible;
 
@@ -68,32 +69,20 @@ public final class NavigationBarTransitions extends BarTransitions implements
     private int mNavBarMode = NAV_BAR_MODE_3BUTTON;
     private List<DarkIntensityListener> mDarkIntensityListeners;
 
-    private final Handler mHandler = Handler.getMain();
-    private final IWallpaperVisibilityListener mWallpaperVisibilityListener =
-            new IWallpaperVisibilityListener.Stub() {
-        @Override
-        public void onWallpaperVisibilityChanged(boolean newVisibility,
-        int displayId) throws RemoteException {
-            mWallpaperVisible = newVisibility;
-            mHandler.post(() -> applyLightsOut(true, false));
-        }
-    };
-
-    public NavigationBarTransitions(NavigationBarView view, CommandQueue commandQueue) {
+    @Inject
+    public NavigationBarTransitions(
+            NavigationBarView view,
+            LightBarTransitionsController.Factory lightBarTransitionsControllerFactory,
+            DisplayTracker displayTracker) {
         super(view, R.drawable.nav_background);
+
         mView = view;
-        mLightTransitionsController = new LightBarTransitionsController(
-                view.getContext(), this, commandQueue);
+        mLightTransitionsController = lightBarTransitionsControllerFactory.create(this);
+        mDisplayTracker = displayTracker;
         mAllowAutoDimWallpaperNotVisible = view.getContext().getResources()
                 .getBoolean(R.bool.config_navigation_bar_enable_auto_dim_no_visible_wallpaper);
         mDarkIntensityListeners = new ArrayList();
 
-        IWindowManager windowManagerService = Dependency.get(IWindowManager.class);
-        try {
-            mWallpaperVisible = windowManagerService.registerWallpaperVisibilityListener(
-                    mWallpaperVisibilityListener, Display.DEFAULT_DISPLAY);
-        } catch (RemoteException e) {
-        }
         mView.addOnLayoutChangeListener(
                 (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
                     View currentView = mView.getCurrentView();
@@ -115,18 +104,21 @@ public final class NavigationBarTransitions extends BarTransitions implements
 
     @Override
     public void destroy() {
-        IWindowManager windowManagerService = Dependency.get(IWindowManager.class);
-        try {
-            windowManagerService.unregisterWallpaperVisibilityListener(mWallpaperVisibilityListener,
-                    Display.DEFAULT_DISPLAY);
-        } catch (RemoteException e) {
-        }
+        mLightTransitionsController.destroy();
+    }
+
+    void setWallpaperVisibility(boolean visible) {
+        mWallpaperVisible = visible;
+        applyLightsOut(true, false);
     }
 
     @Override
     public void setAutoDim(boolean autoDim) {
         // Ensure we aren't in gestural nav if we are triggering auto dim
-        if (autoDim && isGesturalModeOnDefaultDisplay(mView.getContext(), mNavBarMode)) return;
+        if (autoDim && isGesturalModeOnDefaultDisplay(mView.getContext(), mDisplayTracker,
+                mNavBarMode)) {
+            return;
+        }
         if (mAutoDim == autoDim) return;
         mAutoDim = autoDim;
         applyLightsOut(true, false);
@@ -154,7 +146,9 @@ public final class NavigationBarTransitions extends BarTransitions implements
     protected void onTransition(int oldMode, int newMode, boolean animate) {
         super.onTransition(oldMode, newMode, animate);
         applyLightsOut(animate, false /*force*/);
-        mView.onBarTransition(newMode);
+        for (Listener listener : mListeners) {
+            listener.onTransition(newMode);
+        }
     }
 
     private void applyLightsOut(boolean animate, boolean force) {
@@ -208,7 +202,7 @@ public final class NavigationBarTransitions extends BarTransitions implements
 
     @Override
     public int getTintAnimationDuration() {
-        if (isGesturalModeOnDefaultDisplay(mView.getContext(), mNavBarMode)) {
+        if (isGesturalModeOnDefaultDisplay(mView.getContext(), mDisplayTracker, mNavBarMode)) {
             return Math.max(DEFAULT_COLOR_ADAPT_TRANSITION_TIME, MIN_COLOR_ADAPT_TRANSITION_TIME);
         }
         return LightBarTransitionsController.DEFAULT_TINT_ANIMATION_DURATION;
@@ -246,5 +240,17 @@ public final class NavigationBarTransitions extends BarTransitions implements
         pw.println("  bg overrideAlpha: " + mBarBackground.getOverrideAlpha());
         pw.println("  bg color: " + mBarBackground.getColor());
         pw.println("  bg frame: " + mBarBackground.getFrame());
+    }
+
+    void addListener(Listener listener) {
+        mListeners.add(listener);
+    }
+
+    void removeListener(Listener listener) {
+        mListeners.remove(listener);
+    }
+
+    interface Listener {
+        void onTransition(int newMode);
     }
 }

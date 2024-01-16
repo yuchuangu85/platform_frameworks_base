@@ -15,20 +15,34 @@
  */
 package com.android.systemui.qs.external;
 
+import static android.service.quicksettings.TileService.START_ACTIVITY_NEEDS_PENDING_INTENT;
+
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.mockitoSession;
+
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.anyString;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import android.app.compat.CompatChanges;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.content.pm.PackageInfo;
 import android.content.pm.ServiceInfo;
 import android.net.Uri;
@@ -38,20 +52,23 @@ import android.os.HandlerThread;
 import android.os.UserHandle;
 import android.service.quicksettings.IQSService;
 import android.service.quicksettings.IQSTileService;
-import android.service.quicksettings.Tile;
 import android.service.quicksettings.TileService;
 import android.test.suitebuilder.annotation.SmallTest;
 
+import androidx.annotation.Nullable;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.broadcast.BroadcastDispatcher;
+import com.android.systemui.util.concurrency.FakeExecutor;
+import com.android.systemui.util.time.FakeSystemClock;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.Mockito;
+import org.mockito.ArgumentCaptor;
+import org.mockito.MockitoSession;
 
 @SmallTest
 @RunWith(AndroidJUnit4.class)
@@ -59,21 +76,28 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
     private static final int TEST_FAIL_TIMEOUT = 5000;
 
     private final PackageManagerAdapter mMockPackageManagerAdapter =
-            Mockito.mock(PackageManagerAdapter.class);
+            mock(PackageManagerAdapter.class);
     private final BroadcastDispatcher mMockBroadcastDispatcher =
-            Mockito.mock(BroadcastDispatcher.class);
-    private final IQSTileService.Stub mMockTileService = Mockito.mock(IQSTileService.Stub.class);
+            mock(BroadcastDispatcher.class);
+    private final IQSTileService.Stub mMockTileService = mock(IQSTileService.Stub.class);
     private ComponentName mTileServiceComponentName;
     private Intent mTileServiceIntent;
     private UserHandle mUser;
+    private FakeExecutor mExecutor;
     private HandlerThread mThread;
     private Handler mHandler;
     private TileLifecycleManager mStateManager;
+    private TestContextWrapper mWrappedContext;
+    private MockitoSession mMockitoSession;
 
     @Before
     public void setUp() throws Exception {
         setPackageEnabled(true);
         mTileServiceComponentName = new ComponentName(mContext, "FakeTileService.class");
+        mMockitoSession = mockitoSession()
+                .initMocks(this)
+                .mockStatic(CompatChanges.class)
+                .startMocking();
 
         // Stub.asInterface will just return itself.
         when(mMockTileService.queryLocalInterface(anyString())).thenReturn(mMockTileService);
@@ -81,22 +105,33 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
 
         mContext.addMockService(mTileServiceComponentName, mMockTileService);
 
+        mWrappedContext = new TestContextWrapper(mContext);
+
         mTileServiceIntent = new Intent().setComponent(mTileServiceComponentName);
         mUser = new UserHandle(UserHandle.myUserId());
         mThread = new HandlerThread("TestThread");
         mThread.start();
         mHandler = Handler.createAsync(mThread.getLooper());
-        mStateManager = new TileLifecycleManager(mHandler, mContext,
-                Mockito.mock(IQSService.class), new Tile(),
+        mExecutor = new FakeExecutor(new FakeSystemClock());
+        mStateManager = new TileLifecycleManager(mHandler, mWrappedContext,
+                mock(IQSService.class),
+                mMockPackageManagerAdapter,
+                mMockBroadcastDispatcher,
                 mTileServiceIntent,
                 mUser,
-                mMockPackageManagerAdapter,
-                mMockBroadcastDispatcher);
+                mExecutor);
     }
 
     @After
     public void tearDown() throws Exception {
-        mThread.quit();
+        if (mMockitoSession != null) {
+            mMockitoSession.finishMocking();
+        }
+        if (mThread != null) {
+            mThread.quit();
+        }
+
+        mStateManager.handleDestroy();
     }
 
     private void setPackageEnabled(boolean enabled) throws Exception {
@@ -122,20 +157,37 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
 
     @Test
     public void testBind() {
-        mStateManager.setBindService(true);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
         verifyBind(1);
     }
 
     @Test
+    public void testPackageReceiverExported() throws Exception {
+        // Make sure that we register a receiver
+        setPackageEnabled(false);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
+        IntentFilter filter = mWrappedContext.mLastIntentFilter;
+        assertTrue(filter.hasAction(Intent.ACTION_PACKAGE_ADDED));
+        assertTrue(filter.hasAction(Intent.ACTION_PACKAGE_CHANGED));
+        assertTrue(filter.hasDataScheme("package"));
+        assertNotEquals(0, mWrappedContext.mLastFlag & Context.RECEIVER_EXPORTED);
+    }
+
+    @Test
     public void testUnbind() {
-        mStateManager.setBindService(true);
-        mStateManager.setBindService(false);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
+        mStateManager.executeSetBindService(false);
+        mExecutor.runAllReady();
         assertFalse(mContext.isBound(mTileServiceComponentName));
     }
 
     @Test
     public void testTileServiceCallbacks() throws Exception {
-        mStateManager.setBindService(true);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
         mStateManager.onTileAdded();
         verify(mMockTileService).onTileAdded();
         mStateManager.onStartListening();
@@ -151,7 +203,8 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
     @Test
     public void testAddedBeforeBind() throws Exception {
         mStateManager.onTileAdded();
-        mStateManager.setBindService(true);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
 
         verifyBind(1);
         verify(mMockTileService).onTileAdded();
@@ -161,7 +214,8 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
     public void testListeningBeforeBind() throws Exception {
         mStateManager.onTileAdded();
         mStateManager.onStartListening();
-        mStateManager.setBindService(true);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
 
         verifyBind(1);
         verify(mMockTileService).onTileAdded();
@@ -173,7 +227,8 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
         mStateManager.onTileAdded();
         mStateManager.onStartListening();
         mStateManager.onClick(null);
-        mStateManager.setBindService(true);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
 
         verifyBind(1);
         verify(mMockTileService).onTileAdded();
@@ -186,10 +241,12 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
         mStateManager.onTileAdded();
         mStateManager.onStartListening();
         mStateManager.onStopListening();
-        mStateManager.setBindService(true);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
 
         verifyBind(1);
-        mStateManager.setBindService(false);
+        mStateManager.executeSetBindService(false);
+        mExecutor.runAllReady();
         assertFalse(mContext.isBound(mTileServiceComponentName));
         verify(mMockTileService, never()).onStartListening();
     }
@@ -200,10 +257,12 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
         mStateManager.onStartListening();
         mStateManager.onClick(null);
         mStateManager.onStopListening();
-        mStateManager.setBindService(true);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
 
         verifyBind(1);
-        mStateManager.setBindService(false);
+        mStateManager.executeSetBindService(false);
+        mExecutor.runAllReady();
         assertFalse(mContext.isBound(mTileServiceComponentName));
         verify(mMockTileService, never()).onClick(null);
     }
@@ -213,7 +272,8 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
         mStateManager.onTileAdded();
         mStateManager.onStartListening();
         setPackageEnabled(false);
-        mStateManager.setBindService(true);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
         // Package not available, not yet created.
         verifyBind(0);
 
@@ -225,18 +285,19 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
                         Intent.ACTION_PACKAGE_CHANGED,
                         Uri.fromParts(
                                 "package", mTileServiceComponentName.getPackageName(), null)));
+        mExecutor.runAllReady();
         verifyBind(1);
     }
 
     @Test
     public void testKillProcess() throws Exception {
         mStateManager.onStartListening();
-        mStateManager.setBindService(true);
+        mStateManager.executeSetBindService(true);
+        mExecutor.runAllReady();
         mStateManager.setBindRetryDelay(0);
+        mExecutor.runAllReady();
         mStateManager.onServiceDisconnected(mTileServiceComponentName);
-
-        // Guarantees mHandler has processed all messages.
-        assertTrue(mHandler.runWithScissors(()->{}, TEST_FAIL_TIMEOUT));
+        mExecutor.runAllReady();
 
         // Two calls: one for the first bind, one for the restart.
         verifyBind(2);
@@ -246,5 +307,93 @@ public class TileLifecycleManagerTest extends SysuiTestCase {
     @Test
     public void testToggleableTile() throws Exception {
         assertTrue(mStateManager.isToggleableTile());
+    }
+
+    @Test
+    public void testFalseBindCallsUnbind() {
+        Context falseContext = mock(Context.class);
+        when(falseContext.bindServiceAsUser(any(), any(), anyInt(), any())).thenReturn(false);
+        TileLifecycleManager manager = new TileLifecycleManager(mHandler, falseContext,
+                mock(IQSService.class),
+                mMockPackageManagerAdapter,
+                mMockBroadcastDispatcher,
+                mTileServiceIntent,
+                mUser,
+                mExecutor);
+
+        manager.executeSetBindService(true);
+        mExecutor.runAllReady();
+
+        ArgumentCaptor<ServiceConnection> captor = ArgumentCaptor.forClass(ServiceConnection.class);
+        verify(falseContext).bindServiceAsUser(any(), captor.capture(), anyInt(), any());
+
+        verify(falseContext).unbindService(captor.getValue());
+    }
+
+    @Test
+    public void testVersionUDoesNotBindsAllowBackgroundActivity() {
+        mockChangeEnabled(START_ACTIVITY_NEEDS_PENDING_INTENT, true);
+        Context falseContext = mock(Context.class);
+        TileLifecycleManager manager = new TileLifecycleManager(mHandler, falseContext,
+                mock(IQSService.class),
+                mMockPackageManagerAdapter,
+                mMockBroadcastDispatcher,
+                mTileServiceIntent,
+                mUser,
+                mExecutor);
+
+        manager.executeSetBindService(true);
+        mExecutor.runAllReady();
+        int flags = Context.BIND_AUTO_CREATE
+                | Context.BIND_FOREGROUND_SERVICE_WHILE_AWAKE
+                | Context.BIND_WAIVE_PRIORITY;
+
+        verify(falseContext).bindServiceAsUser(any(), any(), eq(flags), any());
+    }
+
+    @Test
+    public void testVersionLessThanUBindsAllowBackgroundActivity() {
+        mockChangeEnabled(START_ACTIVITY_NEEDS_PENDING_INTENT, false);
+        Context falseContext = mock(Context.class);
+        TileLifecycleManager manager = new TileLifecycleManager(mHandler, falseContext,
+                mock(IQSService.class),
+                mMockPackageManagerAdapter,
+                mMockBroadcastDispatcher,
+                mTileServiceIntent,
+                mUser,
+                mExecutor);
+
+        manager.executeSetBindService(true);
+        mExecutor.runAllReady();
+        int flags = Context.BIND_AUTO_CREATE
+                | Context.BIND_FOREGROUND_SERVICE_WHILE_AWAKE
+                | Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS
+                | Context.BIND_WAIVE_PRIORITY;
+
+        verify(falseContext).bindServiceAsUser(any(), any(), eq(flags), any());
+    }
+
+    private void mockChangeEnabled(long changeId, boolean enabled) {
+        doReturn(enabled).when(() -> CompatChanges.isChangeEnabled(eq(changeId), anyString(),
+                any(UserHandle.class)));
+    }
+
+    private static class TestContextWrapper extends ContextWrapper {
+        private IntentFilter mLastIntentFilter;
+        private int mLastFlag;
+
+        TestContextWrapper(Context base) {
+            super(base);
+        }
+
+        @Override
+        public Intent registerReceiverAsUser(@Nullable BroadcastReceiver receiver, UserHandle user,
+                IntentFilter filter, @Nullable String broadcastPermission,
+                @Nullable Handler scheduler, int flags) {
+            mLastIntentFilter = filter;
+            mLastFlag = flags;
+            return super.registerReceiverAsUser(receiver, user, filter, broadcastPermission,
+                    scheduler, flags);
+        }
     }
 }

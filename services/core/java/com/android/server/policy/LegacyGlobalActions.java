@@ -138,7 +138,8 @@ class LegacyGlobalActions implements DialogInterface.OnDismissListener, DialogIn
         // By default CLOSE_SYSTEM_DIALOGS broadcast is sent only for current user, which is user
         // 10 on devices with headless system user enabled.
         // In order to receive the broadcast, register the broadcast receiver with UserHandle.ALL.
-        context.registerReceiverAsUser(mBroadcastReceiver, UserHandle.ALL, filter, null, null);
+        context.registerReceiverAsUser(mBroadcastReceiver, UserHandle.ALL, filter, null, null,
+                Context.RECEIVER_EXPORTED);
 
         mHasTelephony =
                 context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_TELEPHONY);
@@ -281,8 +282,9 @@ class LegacyGlobalActions implements DialogInterface.OnDismissListener, DialogIn
             } else if (GLOBAL_ACTION_KEY_AIRPLANE.equals(actionKey)) {
                 mItems.add(mAirplaneModeOn);
             } else if (GLOBAL_ACTION_KEY_BUGREPORT.equals(actionKey)) {
-                if (Settings.Global.getInt(mContext.getContentResolver(),
-                        Settings.Global.BUGREPORT_IN_POWER_MENU, 0) != 0 && isCurrentUserOwner()) {
+                if (Settings.Secure.getIntForUser(mContext.getContentResolver(),
+                        Settings.Secure.BUGREPORT_IN_POWER_MENU, 0, mContext.getUserId()) != 0
+                        && isCurrentUserAdmin()) {
                     mItems.add(new BugReportAction());
                 }
             } else if (GLOBAL_ACTION_KEY_SILENT.equals(actionKey)) {
@@ -534,9 +536,9 @@ class LegacyGlobalActions implements DialogInterface.OnDismissListener, DialogIn
         }
     }
 
-    private boolean isCurrentUserOwner() {
+    private boolean isCurrentUserAdmin() {
         UserInfo currentUser = getCurrentUser();
-        return currentUser == null || currentUser.isPrimary();
+        return currentUser != null && currentUser.isAdmin();
     }
 
     private void addUsersToMenu(ArrayList<Action> items) {

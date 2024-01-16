@@ -24,8 +24,6 @@ import static android.view.WindowInsetsAnimation.Callback.DISPATCH_MODE_STOP;
 
 import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentation;
 
-import static org.junit.Assert.assertTrue;
-
 import android.annotation.UiThread;
 import android.app.Activity;
 import android.content.ComponentName;
@@ -39,6 +37,7 @@ import android.perftests.utils.PerfManualStatusReporter;
 import android.perftests.utils.TraceMarkParser;
 import android.perftests.utils.TraceMarkParser.TraceMarkSlice;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
@@ -53,6 +52,7 @@ import androidx.annotation.Nullable;
 import androidx.test.filters.LargeTest;
 
 import com.android.compatibility.common.util.PollingCheck;
+import com.android.compatibility.common.util.SystemUtil;
 
 import junit.framework.Assert;
 
@@ -76,6 +76,7 @@ public class ImePerfTest extends ImePerfTestBase
         implements ManualBenchmarkState.CustomizedIterationListener {
     private static final String TAG = ImePerfTest.class.getSimpleName();
     private static final long ANIMATION_NOT_STARTED = -1;
+    private static final int WAIT_PROCESS_KILL_TIMEOUT_MS = 2000;
 
     @Rule
     public final PerfManualStatusReporter mPerfStatusReporter = new PerfManualStatusReporter();
@@ -185,7 +186,6 @@ public class ImePerfTest extends ImePerfTestBase
     public static class BaselineIme extends InputMethodService {
 
         public static final int HEIGHT_DP = 100;
-        private static int sPid;
 
         @Override
         public View onCreateInputView() {
@@ -196,12 +196,8 @@ public class ImePerfTest extends ImePerfTestBase
             view.setPadding(0, 0, 0, 0);
             view.addView(inner, new FrameLayout.LayoutParams(MATCH_PARENT, height));
             inner.setBackgroundColor(0xff01fe10); // green
-            sPid = Process.myPid();
+            Log.v(TAG, "onCreateInputView");
             return view;
-        }
-
-        static int getPid() {
-            return sPid;
         }
 
         static ComponentName getName(Context context) {
@@ -250,19 +246,20 @@ public class ImePerfTest extends ImePerfTestBase
         }
 
         long measuredTimeNs = 0;
-        while (state.keepRunning(measuredTimeNs)) {
-            killBaselineIme();
+        boolean shouldRetry = false;
+        while (shouldRetry || state.keepRunning(measuredTimeNs)) {
+            shouldRetry = false;
+            killBaselineImeSync();
             try (ImeSession imeSession = new ImeSession(BaselineIme.getName(
                     getInstrumentation().getContext()))) {
+                if (!mIsTraceStarted) {
+                    startAsyncAtrace();
+                }
                 final AtomicReference<CountDownLatch> latchStart = new AtomicReference<>();
                 final Activity activity = getActivityWithFocus();
 
                 setImeListener(activity, latchStart, null /* latchEnd */);
                 latchStart.set(new CountDownLatch(1));
-
-                if (!mIsTraceStarted) {
-                    startAsyncAtrace();
-                }
 
                 final WindowInsetsController controller =
                         activity.getWindow().getDecorView().getWindowInsetsController();
@@ -273,6 +270,15 @@ public class ImePerfTest extends ImePerfTestBase
                 });
 
                 measuredTimeNs = waitForAnimationStart(latchStart, startTime);
+                stopAsyncAtraceAndDumpTraces();
+
+                if (measuredTimeNs == ANIMATION_NOT_STARTED) {
+                    // Animation didn't start within timeout,
+                    // retry for more samples.
+                    // TODO(b/264722663): Investigate the animation start failure reason.
+                    shouldRetry = true;
+                    Log.w(TAG, "Insets animation didn't start within timeout.");
+                }
                 mActivityRule.finishActivity();
             }
         }
@@ -280,10 +286,23 @@ public class ImePerfTest extends ImePerfTestBase
         addResultToState(state);
     }
 
-    private void killBaselineIme() {
-        assertTrue("PID of test and IME can't be same",
-                Process.myPid() != BaselineIme.getPid());
-        Process.killProcess(BaselineIme.getPid());
+    private void killBaselineImeSync() {
+        // pidof returns a space separated list of numeric PIDs.
+        String result = SystemUtil.runShellCommand(
+                "pidof com.android.perftests.inputmethod:BaselineIME");
+        for (String pid : result.trim().split(" ")) {
+            // The output may be empty if there is no process with the name.
+            if (TextUtils.isEmpty(pid)) {
+                continue;
+            }
+            final int pidToKill = Integer.parseInt(pid);
+            Process.killProcess(pidToKill);
+            try {
+                // Wait kill IME process being settled down.
+                Process.waitForProcessDeath(pidToKill, WAIT_PROCESS_KILL_TIMEOUT_MS);
+            } catch (Exception e) {
+            }
+        }
     }
 
     private void testShowOrHideImeWarm(final boolean show) throws Throwable {
@@ -369,7 +388,7 @@ public class ImePerfTest extends ImePerfTestBase
             }
         } finally {
             if (mIsTraceStarted) {
-                stopAsyncAtrace();
+                stopAsyncAtraceAndDumpTraces();
             }
         }
         mActivityRule.finishActivity();
@@ -409,6 +428,10 @@ public class ImePerfTest extends ImePerfTestBase
 
     private void addResultToState(ManualBenchmarkState state) {
         mTraceMethods.forAllSlices((key, slices) -> {
+            if (slices.size() < 2) {
+                Log.w(TAG, "No enough samples for: " + key);
+                return;
+            }
             for (TraceMarkSlice slice : slices) {
                 state.addExtraResult(key, (long) (slice.getDurationInSeconds() * NANOS_PER_S));
             }
@@ -472,7 +495,7 @@ public class ImePerfTest extends ImePerfTestBase
         startAsyncAtrace("wm view");
     }
 
-    private void stopAsyncAtrace() {
+    private void stopAsyncAtraceAndDumpTraces() {
         if (!mIsTraceStarted) {
             return;
         }
@@ -486,6 +509,14 @@ public class ImePerfTest extends ImePerfTestBase
         } catch (IOException e) {
             Log.w(TAG, "Failed to read the result of stopped atrace", e);
         }
+    }
+
+    private void stopAsyncAtrace() {
+        if (!mIsTraceStarted) {
+            return;
+        }
+        mIsTraceStarted = false;
+        getUiAutomation().executeShellCommand("atrace --async_stop");
     }
 
     @Override

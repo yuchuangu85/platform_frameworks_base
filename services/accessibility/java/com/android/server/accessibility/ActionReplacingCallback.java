@@ -83,7 +83,7 @@ public class ActionReplacingCallback extends IAccessibilityInteractionConnection
             mConnectionWithReplacementActions.findAccessibilityNodeInfoByAccessibilityId(
                     AccessibilityNodeInfo.ROOT_NODE_ID, null,
                     mNodeWithReplacementActionsInteractionId, this, 0,
-                    interrogatingPid, interrogatingTid, null, null);
+                    interrogatingPid, interrogatingTid, null, null, null);
         } catch (RemoteException re) {
             if (DEBUG) {
                 Slog.e(LOG_TAG, "Error calling findAccessibilityNodeInfoByAccessibilityId()");
@@ -165,6 +165,12 @@ public class ActionReplacingCallback extends IAccessibilityInteractionConnection
             throws RemoteException {
         // There's no reason to use this class when performing actions. Do something reasonable.
         mServiceCallback.setPerformAccessibilityActionResult(succeeded, interactionId);
+    }
+
+    @Override
+    public void sendTakeScreenshotOfWindowError(int errorCode, int interactionId)
+            throws RemoteException {
+        mServiceCallback.sendTakeScreenshotOfWindowError(errorCode, interactionId);
     }
 
     private void replaceInfoActionsAndCallService() {

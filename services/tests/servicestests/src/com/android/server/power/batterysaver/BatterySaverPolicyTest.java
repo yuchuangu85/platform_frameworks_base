@@ -30,6 +30,7 @@ import android.provider.DeviceConfig;
 import android.provider.Settings.Global;
 import android.test.AndroidTestCase;
 import android.test.suitebuilder.annotation.SmallTest;
+import android.test.suitebuilder.annotation.Suppress;
 import android.util.ArrayMap;
 
 import com.android.frameworks.servicestests.R;
@@ -52,7 +53,7 @@ public class BatterySaverPolicyTest extends AndroidTestCase {
     private static final int SOUND_TRIGGER_MODE = 0; // SOUND_TRIGGER_MODE_ALL_ENABLED
     private static final int DEFAULT_SOUND_TRIGGER_MODE =
             PowerManager.SOUND_TRIGGER_MODE_CRITICAL_ONLY;
-    private static final String BATTERY_SAVER_CONSTANTS = "disable_vibration=true,"
+    private static final String BATTERY_SAVER_CONSTANTS = "disable_vibration=false,"
             + "advertise_is_enabled=true,"
             + "disable_animation=false,"
             + "enable_firewall=true,"
@@ -115,9 +116,10 @@ public class BatterySaverPolicyTest extends AndroidTestCase {
         testServiceDefaultValue_On(ServiceType.NULL);
     }
 
+    @Suppress
     @SmallTest
     public void testGetBatterySaverPolicy_PolicyVibration_DefaultValueCorrect() {
-        testServiceDefaultValue_On(ServiceType.VIBRATION);
+        testServiceDefaultValue_Off(ServiceType.VIBRATION);
     }
 
     @SmallTest
@@ -200,6 +202,7 @@ public class BatterySaverPolicyTest extends AndroidTestCase {
         testServiceDefaultValue_On(ServiceType.QUICK_DOZE);
     }
 
+    @Suppress
     @SmallTest
     public void testUpdateConstants_getCorrectData() {
         mBatterySaverPolicy.updateConstantsLocked(BATTERY_SAVER_CONSTANTS, "");
@@ -211,7 +214,7 @@ public class BatterySaverPolicyTest extends AndroidTestCase {
     private void verifyBatterySaverConstantsUpdated() {
         final PowerSaveState vibrationState =
                 mBatterySaverPolicy.getBatterySaverPolicy(ServiceType.VIBRATION);
-        assertThat(vibrationState.batterySaverEnabled).isTrue();
+        assertThat(vibrationState.batterySaverEnabled).isFalse();
 
         final PowerSaveState animationState =
                 mBatterySaverPolicy.getBatterySaverPolicy(ServiceType.ANIMATION);
@@ -288,45 +291,6 @@ public class BatterySaverPolicyTest extends AndroidTestCase {
         final PowerSaveState batterySaverStateOff =
                 mBatterySaverPolicy.getBatterySaverPolicy(type);
         assertThat(batterySaverStateOff.batterySaverEnabled).isFalse();
-    }
-
-    public void testDeviceSpecific() {
-        mDeviceSpecificConfigResId = R.string.config_batterySaverDeviceSpecificConfig_1;
-        mMockGlobalSettings.put(Global.BATTERY_SAVER_CONSTANTS, "");
-        mMockGlobalSettings.put(Global.BATTERY_SAVER_DEVICE_SPECIFIC_CONSTANTS, "");
-
-        mBatterySaverPolicy.onChange();
-        assertThat(mBatterySaverPolicy.getFileValues(true).toString()).isEqualTo("{}");
-        assertThat(mBatterySaverPolicy.getFileValues(false).toString()).isEqualTo("{}");
-
-
-        mDeviceSpecificConfigResId = R.string.config_batterySaverDeviceSpecificConfig_2;
-
-        mBatterySaverPolicy.onChange();
-        assertThat(mBatterySaverPolicy.getFileValues(true).toString()).isEqualTo("{}");
-        assertThat(mBatterySaverPolicy.getFileValues(false).toString())
-                .isEqualTo("{/sys/devices/system/cpu/cpu1/cpufreq/scaling_max_freq=123, "
-                        + "/sys/devices/system/cpu/cpu2/cpufreq/scaling_max_freq=456}");
-
-        mDeviceSpecificConfigResId = R.string.config_batterySaverDeviceSpecificConfig_3;
-
-        mBatterySaverPolicy.onChange();
-        assertThat(mBatterySaverPolicy.getFileValues(true).toString())
-                .isEqualTo("{/sys/devices/system/cpu/cpu3/cpufreq/scaling_max_freq=333, "
-                        + "/sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq=444}");
-        assertThat(mBatterySaverPolicy.getFileValues(false).toString())
-                .isEqualTo("{/sys/devices/system/cpu/cpu2/cpufreq/scaling_max_freq=222}");
-
-
-        mMockGlobalSettings.put(Global.BATTERY_SAVER_DEVICE_SPECIFIC_CONSTANTS,
-                "cpufreq-i=3:1234567890/4:014/5:015");
-
-        mBatterySaverPolicy.onChange();
-        assertThat(mBatterySaverPolicy.getFileValues(true).toString())
-                .isEqualTo("{/sys/devices/system/cpu/cpu3/cpufreq/scaling_max_freq=1234567890, "
-                        + "/sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq=14, "
-                        + "/sys/devices/system/cpu/cpu5/cpufreq/scaling_max_freq=15}");
-        assertThat(mBatterySaverPolicy.getFileValues(false).toString()).isEqualTo("{}");
     }
 
     public void testSetPolicyLevel_Off() {

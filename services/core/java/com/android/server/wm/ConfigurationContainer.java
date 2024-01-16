@@ -24,8 +24,6 @@ import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_UNDEFINED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
 import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
-import static android.app.WindowConfiguration.WINDOWING_MODE_SPLIT_SCREEN_PRIMARY;
-import static android.app.WindowConfiguration.WINDOWING_MODE_SPLIT_SCREEN_SECONDARY;
 import static android.app.WindowConfiguration.activityTypeToString;
 import static android.app.WindowConfiguration.windowingModeToString;
 import static android.app.WindowConfigurationProto.WINDOWING_MODE;
@@ -128,6 +126,10 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
         mResolvedTmpConfig.setTo(mResolvedOverrideConfiguration);
         resolveOverrideConfiguration(newParentConfig);
         mFullConfiguration.setTo(newParentConfig);
+        // Do not inherit always-on-top property from parent, otherwise the always-on-top
+        // property is propagated to all children. In that case, newly added child is
+        // always being positioned at bottom (behind the always-on-top siblings).
+        mFullConfiguration.windowConfiguration.unsetAlwaysOnTop();
         mFullConfiguration.updateFrom(mResolvedOverrideConfiguration);
         onMergedOverrideConfigurationChanged();
         if (!mResolvedTmpConfig.equals(mResolvedOverrideConfiguration)) {
@@ -192,6 +194,14 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
      * @see #mFullConfiguration
      */
     public void onRequestedOverrideConfigurationChanged(Configuration overrideConfiguration) {
+        updateRequestedOverrideConfiguration(overrideConfiguration);
+        // Update full configuration of this container and all its children.
+        final ConfigurationContainer parent = getParent();
+        onConfigurationChanged(parent != null ? parent.getConfiguration() : Configuration.EMPTY);
+    }
+
+    /** Updates override configuration without recalculate full config. */
+    void updateRequestedOverrideConfiguration(Configuration overrideConfiguration) {
         // Pre-compute this here, so we don't need to go through the entire Configuration when
         // writing to proto (which has significant cost if we write a lot of empty configurations).
         mHasOverrideConfiguration = !Configuration.EMPTY.equals(overrideConfiguration);
@@ -201,9 +211,6 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
                 && diffRequestedOverrideMaxBounds(newBounds) != BOUNDS_CHANGE_NONE) {
             mRequestedOverrideConfiguration.windowConfiguration.setMaxBounds(newBounds);
         }
-        // Update full configuration of this container and all its children.
-        final ConfigurationContainer parent = getParent();
-        onConfigurationChanged(parent != null ? parent.getConfiguration() : Configuration.EMPTY);
     }
 
     /**
@@ -225,6 +232,10 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
         final ConfigurationContainer parent = getParent();
         if (parent != null) {
             mMergedOverrideConfiguration.setTo(parent.getMergedOverrideConfiguration());
+            // Do not inherit always-on-top property from parent, otherwise the always-on-top
+            // property is propagated to all children. In that case, newly added child is
+            // always being positioned at bottom (behind the always-on-top siblings).
+            mMergedOverrideConfiguration.windowConfiguration.unsetAlwaysOnTop();
             mMergedOverrideConfiguration.updateFrom(mResolvedOverrideConfiguration);
         } else {
             mMergedOverrideConfiguration.setTo(mResolvedOverrideConfiguration);
@@ -475,38 +486,6 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
         return WindowConfiguration.inMultiWindowMode(windowingMode);
     }
 
-    /** Returns true if this container is currently in split-screen windowing mode. */
-    public boolean inSplitScreenWindowingMode() {
-        /*@WindowConfiguration.WindowingMode*/ int windowingMode =
-                mFullConfiguration.windowConfiguration.getWindowingMode();
-
-        return windowingMode == WINDOWING_MODE_SPLIT_SCREEN_PRIMARY
-                || windowingMode == WINDOWING_MODE_SPLIT_SCREEN_SECONDARY;
-    }
-
-    /** Returns true if this container is currently in split-screen secondary windowing mode. */
-    public boolean inSplitScreenSecondaryWindowingMode() {
-        /*@WindowConfiguration.WindowingMode*/ int windowingMode =
-                mFullConfiguration.windowConfiguration.getWindowingMode();
-
-        return windowingMode == WINDOWING_MODE_SPLIT_SCREEN_SECONDARY;
-    }
-
-    public boolean inSplitScreenPrimaryWindowingMode() {
-        return mFullConfiguration.windowConfiguration.getWindowingMode()
-                == WINDOWING_MODE_SPLIT_SCREEN_PRIMARY;
-    }
-
-    /**
-     * Returns true if this container can be put in either
-     * {@link WindowConfiguration#WINDOWING_MODE_SPLIT_SCREEN_PRIMARY} or
-     * {@link WindowConfiguration##WINDOWING_MODE_SPLIT_SCREEN_SECONDARY} windowing modes based on
-     * its current state.
-     */
-    public boolean supportsSplitScreenWindowingMode() {
-        return mFullConfiguration.windowConfiguration.supportSplitScreenWindowingMode();
-    }
-
     public boolean inPinnedWindowingMode() {
         return mFullConfiguration.windowConfiguration.getWindowingMode() == WINDOWING_MODE_PINNED;
     }
@@ -544,6 +523,11 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
         return getActivityType() == ACTIVITY_TYPE_RECENTS;
     }
 
+    final boolean isActivityTypeHomeOrRecents() {
+        final int activityType = getActivityType();
+        return activityType == ACTIVITY_TYPE_HOME || activityType == ACTIVITY_TYPE_RECENTS;
+    }
+
     public boolean isActivityTypeAssistant() {
         return getActivityType() == ACTIVITY_TYPE_ASSISTANT;
     }
@@ -552,16 +536,19 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
      * Applies app-specific nightMode and {@link LocaleList} on requested configuration.
      * @return true if any of the requested configuration has been updated.
      */
-    public boolean applyAppSpecificConfig(Integer nightMode, LocaleList locales) {
+    public boolean applyAppSpecificConfig(Integer nightMode, LocaleList locales,
+            @Configuration.GrammaticalGender Integer gender) {
         mRequestsTmpConfig.setTo(getRequestedOverrideConfiguration());
         boolean newNightModeSet = (nightMode != null) && setOverrideNightMode(mRequestsTmpConfig,
                 nightMode);
         boolean newLocalesSet = (locales != null) && setOverrideLocales(mRequestsTmpConfig,
                 locales);
-        if (newNightModeSet || newLocalesSet) {
+        boolean newGenderSet = (gender != null) && setOverrideGender(mRequestsTmpConfig,
+                gender);
+        if (newNightModeSet || newLocalesSet || newGenderSet) {
             onRequestedOverrideConfigurationChanged(mRequestsTmpConfig);
         }
-        return newNightModeSet || newLocalesSet;
+        return newNightModeSet || newLocalesSet || newGenderSet;
     }
 
     /**
@@ -592,6 +579,21 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
         requestsTmpConfig.setLocales(overrideLocales);
         requestsTmpConfig.userSetLocale = true;
         return true;
+    }
+
+    /**
+     * Overrides the gender to this ConfigurationContainer.
+     *
+     * @return true if the grammatical gender has been changed.
+     */
+    private boolean setOverrideGender(Configuration requestsTmpConfig,
+            @Configuration.GrammaticalGender int gender) {
+        if (mRequestedOverrideConfiguration.getGrammaticalGender() == gender) {
+            return false;
+        } else {
+            requestsTmpConfig.setGrammaticalGender(gender);
+            return true;
+        }
     }
 
     public boolean isActivityTypeDream() {
@@ -653,12 +655,19 @@ public abstract class ConfigurationContainer<E extends ConfigurationContainer> {
     }
 
     void registerConfigurationChangeListener(ConfigurationContainerListener listener) {
+        registerConfigurationChangeListener(listener, true /* shouldDispatchConfig */);
+    }
+
+    void registerConfigurationChangeListener(ConfigurationContainerListener listener,
+            boolean shouldDispatchConfig) {
         if (mChangeListeners.contains(listener)) {
             return;
         }
         mChangeListeners.add(listener);
-        listener.onRequestedOverrideConfigurationChanged(mResolvedOverrideConfiguration);
-        listener.onMergedOverrideConfigurationChanged(mMergedOverrideConfiguration);
+        if (shouldDispatchConfig) {
+            listener.onRequestedOverrideConfigurationChanged(mResolvedOverrideConfiguration);
+            listener.onMergedOverrideConfigurationChanged(mMergedOverrideConfiguration);
+        }
     }
 
     void unregisterConfigurationChangeListener(ConfigurationContainerListener listener) {

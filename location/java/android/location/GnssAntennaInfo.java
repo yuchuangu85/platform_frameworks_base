@@ -30,6 +30,9 @@ import java.util.Objects;
  * A class that contains information about a GNSS antenna. GNSS antenna characteristics can change
  * with device configuration, such as when a device is folded open or closed. Antenna information is
  * delivered to registered instances of {@link Listener}.
+ *
+ * <p> Antenna info parameters are measured for each specific device model by the device
+ * manufacturers and provided to the Android framework.
  */
 public final class GnssAntennaInfo implements Parcelable {
     private final double mCarrierFrequencyMHz;
@@ -344,8 +347,8 @@ public final class GnssAntennaInfo implements Parcelable {
         @Override
         public String toString() {
             return "SphericalCorrections{"
-                    + "Corrections=" + Arrays.toString(mCorrections)
-                    + ", CorrectionUncertainties=" + Arrays.toString(mCorrectionUncertainties)
+                    + "Corrections=" + Arrays.deepToString(mCorrections)
+                    + ", CorrectionUncertainties=" + Arrays.deepToString(mCorrectionUncertainties)
                     + ", DeltaTheta=" + getDeltaTheta()
                     + ", DeltaPhi=" + getDeltaPhi()
                     + '}';

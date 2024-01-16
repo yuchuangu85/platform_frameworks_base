@@ -35,14 +35,30 @@ public final class InstallSourceInfo implements Parcelable {
 
     @Nullable private final String mInstallingPackageName;
 
+    @Nullable private final String mUpdateOwnerPackageName;
+
+    @Nullable private final int mPackageSource;
+
     /** @hide */
     public InstallSourceInfo(@Nullable String initiatingPackageName,
             @Nullable SigningInfo initiatingPackageSigningInfo,
             @Nullable String originatingPackageName, @Nullable String installingPackageName) {
+        this(initiatingPackageName, initiatingPackageSigningInfo, originatingPackageName,
+                installingPackageName, null /* updateOwnerPackageName */,
+                PackageInstaller.PACKAGE_SOURCE_UNSPECIFIED);
+    }
+
+    /** @hide */
+    public InstallSourceInfo(@Nullable String initiatingPackageName,
+            @Nullable SigningInfo initiatingPackageSigningInfo,
+            @Nullable String originatingPackageName, @Nullable String installingPackageName,
+            @Nullable String updateOwnerPackageName, int packageSource) {
         mInitiatingPackageName = initiatingPackageName;
         mInitiatingPackageSigningInfo = initiatingPackageSigningInfo;
         mOriginatingPackageName = originatingPackageName;
         mInstallingPackageName = installingPackageName;
+        mUpdateOwnerPackageName = updateOwnerPackageName;
+        mPackageSource = packageSource;
     }
 
     @Override
@@ -57,13 +73,17 @@ public final class InstallSourceInfo implements Parcelable {
         dest.writeParcelable(mInitiatingPackageSigningInfo, flags);
         dest.writeString(mOriginatingPackageName);
         dest.writeString(mInstallingPackageName);
+        dest.writeString8(mUpdateOwnerPackageName);
+        dest.writeInt(mPackageSource);
     }
 
     private InstallSourceInfo(Parcel source) {
         mInitiatingPackageName = source.readString();
-        mInitiatingPackageSigningInfo = source.readParcelable(SigningInfo.class.getClassLoader());
+        mInitiatingPackageSigningInfo = source.readParcelable(SigningInfo.class.getClassLoader(), android.content.pm.SigningInfo.class);
         mOriginatingPackageName = source.readString();
         mInstallingPackageName = source.readString();
+        mUpdateOwnerPackageName = source.readString8();
+        mPackageSource = source.readInt();
     }
 
     /**
@@ -75,8 +95,8 @@ public final class InstallSourceInfo implements Parcelable {
      * remains unchanged. It continues to identify the actual package that performed the install
      * or update.
      * <p>
-     * Null may be returned if the app was not installed by a package (e.g. a system app or an app
-     * installed via adb) or if the initiating package has itself been uninstalled.
+     * Null may be returned if the app was not installed by a package (e.g. a system app) or if the
+     * initiating package has itself been uninstalled.
      */
     @Nullable
     public String getInitiatingPackageName() {
@@ -120,6 +140,28 @@ public final class InstallSourceInfo implements Parcelable {
     @Nullable
     public String getInstallingPackageName() {
         return mInstallingPackageName;
+    }
+
+    /**
+     * The name of the package that is the update owner, or null if not available.
+     *
+     * This indicates the update ownership enforcement is enabled for this app,
+     * and which package is the update owner.
+     *
+     * Returns null if the update ownership enforcement is disabled for the app.
+     *
+     * @see PackageInstaller.SessionParams#setRequestUpdateOwnership
+     */
+    @Nullable
+    public String getUpdateOwnerPackageName() {
+        return mUpdateOwnerPackageName;
+    }
+
+    /**
+     * Information about the package source when installer installed this app.
+     */
+    public @PackageInstaller.PackageSourceType int getPackageSource() {
+        return mPackageSource;
     }
 
     @NonNull

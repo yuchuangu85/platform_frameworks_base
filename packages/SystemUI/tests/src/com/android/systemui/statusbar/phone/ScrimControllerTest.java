@@ -16,14 +16,16 @@
 
 package com.android.systemui.statusbar.phone;
 
-import static com.android.systemui.statusbar.phone.ScrimController.KEYGUARD_SCRIM_ALPHA;
 import static com.android.systemui.statusbar.phone.ScrimController.OPAQUE;
 import static com.android.systemui.statusbar.phone.ScrimController.SEMI_TRANSPARENT;
 import static com.android.systemui.statusbar.phone.ScrimController.TRANSPARENT;
+import static com.android.systemui.statusbar.phone.ScrimState.BOUNCER;
+import static com.android.systemui.statusbar.phone.ScrimState.SHADE_LOCKED;
 
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -38,8 +40,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyZeroInteractions;
 import static org.mockito.Mockito.when;
 
+import static kotlinx.coroutines.flow.FlowKt.emptyFlow;
+
 import android.animation.Animator;
 import android.app.AlarmManager;
+import android.content.Context;
+import android.content.res.ColorStateList;
+import android.content.res.TypedArray;
 import android.graphics.Color;
 import android.os.Handler;
 import android.testing.AndroidTestingRunner;
@@ -50,22 +57,38 @@ import android.view.View;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.colorextraction.ColorExtractor.GradientColors;
+import com.android.keyguard.BouncerPanelExpansionCalculator;
 import com.android.keyguard.KeyguardUpdateMonitor;
+import com.android.keyguard.TestScopeProvider;
 import com.android.systemui.DejankUtils;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.animation.ShadeInterpolation;
+import com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants;
 import com.android.systemui.dock.DockManager;
+import com.android.systemui.keyguard.KeyguardUnlockAnimationController;
+import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor;
+import com.android.systemui.keyguard.shared.model.KeyguardState;
+import com.android.systemui.keyguard.shared.model.TransitionState;
+import com.android.systemui.keyguard.shared.model.TransitionStep;
+import com.android.systemui.keyguard.ui.viewmodel.PrimaryBouncerToGoneTransitionViewModel;
 import com.android.systemui.scrim.ScrimView;
-import com.android.systemui.statusbar.phone.panelstate.PanelExpansionStateManager;
-import com.android.systemui.statusbar.policy.ConfigurationController;
+import com.android.systemui.shade.transition.LargeScreenShadeInterpolator;
+import com.android.systemui.shade.transition.LinearLargeScreenShadeInterpolator;
+import com.android.systemui.statusbar.policy.FakeConfigurationController;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 import com.android.systemui.util.concurrency.FakeExecutor;
+import com.android.systemui.util.kotlin.JavaAdapter;
 import com.android.systemui.util.time.FakeSystemClock;
 import com.android.systemui.util.wakelock.DelayedWakeLock;
 import com.android.systemui.utils.os.FakeHandler;
+import com.android.systemui.wallpapers.data.repository.FakeWallpaperRepository;
+
+import com.google.common.truth.Expect;
 
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
@@ -78,10 +101,23 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 
+import kotlinx.coroutines.CoroutineDispatcher;
+import kotlinx.coroutines.test.TestScope;
+
 @RunWith(AndroidTestingRunner.class)
-@TestableLooper.RunWithLooper
+@TestableLooper.RunWithLooper(setAsMainLooper = true)
 @SmallTest
 public class ScrimControllerTest extends SysuiTestCase {
+
+    @Rule public Expect mExpect = Expect.create();
+
+    private final FakeConfigurationController mConfigurationController =
+            new FakeConfigurationController();
+    private final LargeScreenShadeInterpolator
+            mLinearLargeScreenShadeInterpolator = new LinearLargeScreenShadeInterpolator();
+
+    private final TestScope mTestScope = TestScopeProvider.getTestScope();
+    private final JavaAdapter mJavaAdapter = new JavaAdapter(mTestScope.getBackgroundScope());
 
     private ScrimController mScrimController;
     private ScrimView mScrimBehind;
@@ -93,31 +129,26 @@ public class ScrimControllerTest extends SysuiTestCase {
     private int mScrimVisibility;
     private boolean mAlwaysOnEnabled;
     private TestableLooper mLooper;
-    @Mock
-    private AlarmManager mAlarmManager;
-    @Mock
-    private DozeParameters mDozeParameters;
-    @Mock
-    LightBarController mLightBarController;
-    @Mock
-    DelayedWakeLock.Builder mDelayedWakeLockBuilder;
-    @Mock
-    private DelayedWakeLock mWakeLock;
-    @Mock
-    KeyguardStateController mKeyguardStateController;
-    @Mock
-    KeyguardUpdateMonitor mKeyguardUpdateMonitor;
-    @Mock
-    private DockManager mDockManager;
-    @Mock
-    private ConfigurationController mConfigurationController;
-    @Mock
-    private UnlockedScreenOffAnimationController mUnlockedScreenOffAnimationController;
+    private Context mContext;
+    @Mock private AlarmManager mAlarmManager;
+    @Mock private DozeParameters mDozeParameters;
+    @Mock private LightBarController mLightBarController;
+    @Mock private DelayedWakeLock.Builder mDelayedWakeLockBuilder;
+    @Mock private DelayedWakeLock mWakeLock;
+    @Mock private KeyguardStateController mKeyguardStateController;
+    @Mock private KeyguardUpdateMonitor mKeyguardUpdateMonitor;
+    @Mock private DockManager mDockManager;
+    @Mock private ScreenOffAnimationController mScreenOffAnimationController;
+    @Mock private KeyguardUnlockAnimationController mKeyguardUnlockAnimationController;
+    @Mock private PrimaryBouncerToGoneTransitionViewModel mPrimaryBouncerToGoneTransitionViewModel;
+    @Mock private KeyguardTransitionInteractor mKeyguardTransitionInteractor;
+    private final FakeWallpaperRepository mWallpaperRepository = new FakeWallpaperRepository();
+    @Mock private CoroutineDispatcher mMainDispatcher;
+    @Mock private TypedArray mMockTypedArray;
+
     // TODO(b/204991468): Use a real PanelExpansionStateManager object once this bug is fixed. (The
     //   event-dispatch-on-registration pattern caused some of these unit tests to fail.)
-    @Mock
-    private PanelExpansionStateManager mPanelExpansionStateManager;
-
+    @Mock private StatusBarKeyguardViewManager mStatusBarKeyguardViewManager;
 
     private static class AnimatorListener implements Animator.AnimatorListener {
         private int mNumStarts;
@@ -161,10 +192,11 @@ public class ScrimControllerTest extends SysuiTestCase {
             mNumEnds = 0;
             mNumCancels = 0;
         }
-    };
+    }
 
     private AnimatorListener mAnimatorListener = new AnimatorListener();
 
+    private int mSurfaceColor = 0x112233;
 
     private void finishAnimationsImmediately() {
         // Execute code that will trigger animations.
@@ -193,10 +225,17 @@ public class ScrimControllerTest extends SysuiTestCase {
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
+        mContext = spy(getContext());
+        when(mContext.obtainStyledAttributes(
+                new int[]{com.android.internal.R.attr.materialColorSurface}))
+                .thenReturn(mMockTypedArray);
 
-        mScrimBehind = spy(new ScrimView(getContext()));
-        mScrimInFront = new ScrimView(getContext());
-        mNotificationsScrim = new ScrimView(getContext());
+        when(mMockTypedArray.getColorStateList(anyInt()))
+                .thenAnswer((invocation) -> ColorStateList.valueOf(mSurfaceColor));
+
+        mScrimBehind = spy(new ScrimView(mContext));
+        mScrimInFront = new ScrimView(mContext);
+        mNotificationsScrim = new ScrimView(mContext);
         mAlwaysOnEnabled = true;
         mLooper = TestableLooper.get(this);
         DejankUtils.setImmediate(true);
@@ -225,18 +264,41 @@ public class ScrimControllerTest extends SysuiTestCase {
         when(mDelayedWakeLockBuilder.build()).thenReturn(mWakeLock);
         when(mDockManager.isDocked()).thenReturn(false);
 
-        mScrimController = new ScrimController(mLightBarController,
-                mDozeParameters, mAlarmManager, mKeyguardStateController, mDelayedWakeLockBuilder,
-                new FakeHandler(mLooper.getLooper()), mKeyguardUpdateMonitor,
-                mDockManager, mConfigurationController, new FakeExecutor(new FakeSystemClock()),
-                mUnlockedScreenOffAnimationController,
-                mPanelExpansionStateManager);
+        when(mKeyguardTransitionInteractor.getPrimaryBouncerToGoneTransition())
+                .thenReturn(emptyFlow());
+        when(mPrimaryBouncerToGoneTransitionViewModel.getScrimAlpha())
+                .thenReturn(emptyFlow());
+
+        mScrimController = new ScrimController(
+                mLightBarController,
+                mDozeParameters,
+                mAlarmManager,
+                mKeyguardStateController,
+                mDelayedWakeLockBuilder,
+                new FakeHandler(mLooper.getLooper()),
+                mKeyguardUpdateMonitor,
+                mDockManager,
+                mConfigurationController,
+                new FakeExecutor(new FakeSystemClock()),
+                mJavaAdapter,
+                mScreenOffAnimationController,
+                mKeyguardUnlockAnimationController,
+                mStatusBarKeyguardViewManager,
+                mPrimaryBouncerToGoneTransitionViewModel,
+                mKeyguardTransitionInteractor,
+                mWallpaperRepository,
+                mMainDispatcher,
+                mLinearLargeScreenShadeInterpolator);
+        mScrimController.start();
         mScrimController.setScrimVisibleListener(visible -> mScrimVisibility = visible);
         mScrimController.attachViews(mScrimBehind, mNotificationsScrim, mScrimInFront);
         mScrimController.setAnimatorListener(mAnimatorListener);
 
         mScrimController.setHasBackdrop(false);
-        mScrimController.setWallpaperSupportsAmbientMode(false);
+
+        mWallpaperRepository.getWallpaperSupportsAmbientMode().setValue(false);
+        mTestScope.getTestScheduler().runCurrent();
+
         mScrimController.transitionTo(ScrimState.KEYGUARD);
         finishAnimationsImmediately();
     }
@@ -268,7 +330,7 @@ public class ScrimControllerTest extends SysuiTestCase {
 
     @Test
     public void transitionToShadeLocked() {
-        mScrimController.transitionTo(ScrimState.SHADE_LOCKED);
+        mScrimController.transitionTo(SHADE_LOCKED);
         mScrimController.setQsPosition(1f, 0);
         finishAnimationsImmediately();
 
@@ -286,7 +348,7 @@ public class ScrimControllerTest extends SysuiTestCase {
     @Test
     public void transitionToShadeLocked_clippingQs() {
         mScrimController.setClipsQsScrim(true);
-        mScrimController.transitionTo(ScrimState.SHADE_LOCKED);
+        mScrimController.transitionTo(SHADE_LOCKED);
         mScrimController.setQsPosition(1f, 0);
         finishAnimationsImmediately();
 
@@ -337,7 +399,9 @@ public class ScrimControllerTest extends SysuiTestCase {
 
     @Test
     public void transitionToAod_withAodWallpaper() {
-        mScrimController.setWallpaperSupportsAmbientMode(true);
+        mWallpaperRepository.getWallpaperSupportsAmbientMode().setValue(true);
+        mTestScope.getTestScheduler().runCurrent();
+
         mScrimController.transitionTo(ScrimState.AOD);
         finishAnimationsImmediately();
 
@@ -359,7 +423,9 @@ public class ScrimControllerTest extends SysuiTestCase {
     @Test
     public void transitionToAod_withAodWallpaperAndLockScreenWallpaper() {
         mScrimController.setHasBackdrop(true);
-        mScrimController.setWallpaperSupportsAmbientMode(true);
+        mWallpaperRepository.getWallpaperSupportsAmbientMode().setValue(true);
+        mTestScope.getTestScheduler().runCurrent();
+
         mScrimController.transitionTo(ScrimState.AOD);
         finishAnimationsImmediately();
 
@@ -376,7 +442,9 @@ public class ScrimControllerTest extends SysuiTestCase {
 
     @Test
     public void setHasBackdrop_withAodWallpaperAndAlbumArt() {
-        mScrimController.setWallpaperSupportsAmbientMode(true);
+        mWallpaperRepository.getWallpaperSupportsAmbientMode().setValue(true);
+        mTestScope.getTestScheduler().runCurrent();
+
         mScrimController.transitionTo(ScrimState.AOD);
         finishAnimationsImmediately();
         mScrimController.setHasBackdrop(true);
@@ -489,7 +557,9 @@ public class ScrimControllerTest extends SysuiTestCase {
         // Pre-condition
         // Need to go to AoD first because PULSING doesn't change
         // the back scrim opacity - otherwise it would hide AoD wallpapers.
-        mScrimController.setWallpaperSupportsAmbientMode(false);
+        mWallpaperRepository.getWallpaperSupportsAmbientMode().setValue(false);
+        mTestScope.getTestScheduler().runCurrent();
+
         mScrimController.transitionTo(ScrimState.AOD);
         finishAnimationsImmediately();
         assertScrimAlpha(Map.of(
@@ -535,10 +605,10 @@ public class ScrimControllerTest extends SysuiTestCase {
 
     @Test
     public void transitionToKeyguardBouncer() {
-        mScrimController.transitionTo(ScrimState.BOUNCER);
+        mScrimController.transitionTo(BOUNCER);
         finishAnimationsImmediately();
         // Front scrim should be transparent
-        // Back scrim should be visible without tint
+        // Back scrim should be visible and tinted to the surface color
         assertScrimAlpha(Map.of(
                 mScrimInFront, TRANSPARENT,
                 mNotificationsScrim, TRANSPARENT,
@@ -546,15 +616,37 @@ public class ScrimControllerTest extends SysuiTestCase {
 
         assertScrimTinted(Map.of(
                 mScrimInFront, false,
-                mScrimBehind, false,
+                mScrimBehind, true,
                 mNotificationsScrim, false
         ));
+
+        assertScrimTint(mScrimBehind, mSurfaceColor);
+    }
+
+    @Test
+    public void onThemeChange_bouncerBehindTint_isUpdatedToSurfaceColor() {
+        assertEquals(BOUNCER.getBehindTint(), 0x112233);
+        mSurfaceColor = 0x223344;
+        mConfigurationController.notifyThemeChanged();
+        assertEquals(BOUNCER.getBehindTint(), 0x223344);
+    }
+
+    @Test
+    public void onThemeChangeWhileClipQsScrim_bouncerBehindTint_remainsBlack() {
+        mScrimController.setClipsQsScrim(true);
+        mScrimController.transitionTo(BOUNCER);
+        finishAnimationsImmediately();
+
+        assertEquals(BOUNCER.getBehindTint(), Color.BLACK);
+        mSurfaceColor = 0x223344;
+        mConfigurationController.notifyThemeChanged();
+        assertEquals(BOUNCER.getBehindTint(), Color.BLACK);
     }
 
     @Test
     public void transitionToKeyguardBouncer_clippingQs() {
         mScrimController.setClipsQsScrim(true);
-        mScrimController.transitionTo(ScrimState.BOUNCER);
+        mScrimController.transitionTo(BOUNCER);
         finishAnimationsImmediately();
         // Front scrim should be transparent
         // Back scrim should be clipping QS
@@ -574,28 +666,29 @@ public class ScrimControllerTest extends SysuiTestCase {
     @Test
     public void disableClipQsScrimWithoutStateTransition_updatesTintAndAlpha() {
         mScrimController.setClipsQsScrim(true);
-        mScrimController.transitionTo(ScrimState.BOUNCER);
+        mScrimController.transitionTo(BOUNCER);
 
         mScrimController.setClipsQsScrim(false);
 
         finishAnimationsImmediately();
         // Front scrim should be transparent
-        // Back scrim should be visible without tint
+        // Back scrim should be visible and has a tint of surfaceColor
         assertScrimAlpha(Map.of(
                 mScrimInFront, TRANSPARENT,
                 mNotificationsScrim, TRANSPARENT,
                 mScrimBehind, OPAQUE));
         assertScrimTinted(Map.of(
                 mScrimInFront, false,
-                mScrimBehind, false,
+                mScrimBehind, true,
                 mNotificationsScrim, false
         ));
+        assertScrimTint(mScrimBehind, mSurfaceColor);
     }
 
     @Test
     public void enableClipQsScrimWithoutStateTransition_updatesTintAndAlpha() {
         mScrimController.setClipsQsScrim(false);
-        mScrimController.transitionTo(ScrimState.BOUNCER);
+        mScrimController.transitionTo(BOUNCER);
 
         mScrimController.setClipsQsScrim(true);
 
@@ -628,29 +721,73 @@ public class ScrimControllerTest extends SysuiTestCase {
     }
 
     @Test
-    public void transitionToUnlocked() {
+    public void transitionToUnlocked_clippedQs() {
+        mScrimController.setClipsQsScrim(true);
         mScrimController.setRawPanelExpansionFraction(0f);
         mScrimController.transitionTo(ScrimState.UNLOCKED);
         finishAnimationsImmediately();
-        assertScrimAlpha(Map.of(
-                mScrimInFront, TRANSPARENT,
-                mNotificationsScrim, TRANSPARENT,
-                mScrimBehind, TRANSPARENT));
 
         assertScrimTinted(Map.of(
                 mNotificationsScrim, false,
                 mScrimInFront, false,
                 mScrimBehind, true
         ));
+        assertScrimAlpha(Map.of(
+                mScrimInFront, TRANSPARENT,
+                mNotificationsScrim, TRANSPARENT,
+                mScrimBehind, OPAQUE));
 
-        // Back scrim should be visible after start dragging
-        mScrimController.setRawPanelExpansionFraction(0.3f);
+        mScrimController.setRawPanelExpansionFraction(0.25f);
+        assertScrimAlpha(Map.of(
+                mScrimInFront, TRANSPARENT,
+                mNotificationsScrim, SEMI_TRANSPARENT,
+                mScrimBehind, OPAQUE));
+
+        mScrimController.setRawPanelExpansionFraction(0.5f);
+        assertScrimAlpha(Map.of(
+                mScrimInFront, TRANSPARENT,
+                mNotificationsScrim, OPAQUE,
+                mScrimBehind, OPAQUE));
+    }
+
+    @Test
+    public void transitionToUnlocked_nonClippedQs_followsLargeScreensInterpolator() {
+        mScrimController.setClipsQsScrim(false);
+        mScrimController.setRawPanelExpansionFraction(0f);
+        mScrimController.transitionTo(ScrimState.UNLOCKED);
+        finishAnimationsImmediately();
+
+        assertScrimTinted(Map.of(
+                mNotificationsScrim, false,
+                mScrimInFront, false,
+                mScrimBehind, true
+        ));
+        // The large screens interpolator used in this test is a linear one, just for tests.
+        // Assertions below are based on this assumption, and that the code uses that interpolator
+        // when on a large screen (QS not clipped).
+        assertScrimAlpha(Map.of(
+                mScrimInFront, TRANSPARENT,
+                mNotificationsScrim, TRANSPARENT,
+                mScrimBehind, TRANSPARENT));
+
+        mScrimController.setRawPanelExpansionFraction(0.5f);
         assertScrimAlpha(Map.of(
                 mScrimInFront, TRANSPARENT,
                 mNotificationsScrim, SEMI_TRANSPARENT,
                 mScrimBehind, SEMI_TRANSPARENT));
-    }
 
+        mScrimController.setRawPanelExpansionFraction(0.99f);
+        assertScrimAlpha(Map.of(
+                mScrimInFront, TRANSPARENT,
+                mNotificationsScrim, SEMI_TRANSPARENT,
+                mScrimBehind, SEMI_TRANSPARENT));
+
+        mScrimController.setRawPanelExpansionFraction(1f);
+        assertScrimAlpha(Map.of(
+                mScrimInFront, TRANSPARENT,
+                mNotificationsScrim, OPAQUE,
+                mScrimBehind, OPAQUE));
+    }
 
     @Test
     public void scrimStateCallback() {
@@ -658,9 +795,9 @@ public class ScrimControllerTest extends SysuiTestCase {
         finishAnimationsImmediately();
         assertEquals(mScrimState, ScrimState.UNLOCKED);
 
-        mScrimController.transitionTo(ScrimState.BOUNCER);
+        mScrimController.transitionTo(BOUNCER);
         finishAnimationsImmediately();
-        assertEquals(mScrimState, ScrimState.BOUNCER);
+        assertEquals(mScrimState, BOUNCER);
 
         mScrimController.transitionTo(ScrimState.BOUNCER_SCRIMMED);
         finishAnimationsImmediately();
@@ -817,7 +954,7 @@ public class ScrimControllerTest extends SysuiTestCase {
     }
 
     @Test
-    public void scrimBlanksWhenUnlockingFromPulse() {
+    public void scrimBlankCallbackWhenUnlockingFromPulse() {
         boolean[] blanked = {false};
         // Simulate unlock with fingerprint
         mScrimController.transitionTo(ScrimState.PULSING);
@@ -830,7 +967,64 @@ public class ScrimControllerTest extends SysuiTestCase {
                     }
                 });
         finishAnimationsImmediately();
-        Assert.assertTrue("Scrim should blank when unlocking from pulse.", blanked[0]);
+        Assert.assertTrue("Scrim should send display blanked callback when unlocking "
+                + "from pulse.", blanked[0]);
+    }
+
+    @Test
+    public void blankingNotRequired_leavingAoD() {
+        // GIVEN display does NOT need blanking
+        when(mDozeParameters.getDisplayNeedsBlanking()).thenReturn(false);
+
+        mScrimController = new ScrimController(
+                mLightBarController,
+                mDozeParameters,
+                mAlarmManager,
+                mKeyguardStateController,
+                mDelayedWakeLockBuilder,
+                new FakeHandler(mLooper.getLooper()),
+                mKeyguardUpdateMonitor,
+                mDockManager,
+                mConfigurationController,
+                new FakeExecutor(new FakeSystemClock()),
+                mJavaAdapter,
+                mScreenOffAnimationController,
+                mKeyguardUnlockAnimationController,
+                mStatusBarKeyguardViewManager,
+                mPrimaryBouncerToGoneTransitionViewModel,
+                mKeyguardTransitionInteractor,
+                mWallpaperRepository,
+                mMainDispatcher,
+                mLinearLargeScreenShadeInterpolator);
+        mScrimController.start();
+        mScrimController.setScrimVisibleListener(visible -> mScrimVisibility = visible);
+        mScrimController.attachViews(mScrimBehind, mNotificationsScrim, mScrimInFront);
+        mScrimController.setAnimatorListener(mAnimatorListener);
+        mScrimController.setHasBackdrop(false);
+        mWallpaperRepository.getWallpaperSupportsAmbientMode().setValue(false);
+        mTestScope.getTestScheduler().runCurrent();
+        mScrimController.transitionTo(ScrimState.KEYGUARD);
+        finishAnimationsImmediately();
+
+        // WHEN Simulate unlock with fingerprint
+        mScrimController.transitionTo(ScrimState.AOD);
+        finishAnimationsImmediately();
+
+        // WHEN transitioning to UNLOCKED, onDisplayCallbackBlanked callback called to continue
+        // the transition but the scrim was not actually blanked
+        mScrimController.transitionTo(ScrimState.UNLOCKED,
+                new ScrimController.Callback() {
+                    @Override
+                    public void onDisplayBlanked() {
+                        // Front scrim should not be black nor opaque
+                        Assert.assertTrue("Scrim should NOT be visible during transition."
+                                + " Alpha: " + mScrimInFront.getViewAlpha(),
+                                mScrimInFront.getViewAlpha() == 0f);
+                        Assert.assertSame("Scrim should not be visible during transition.",
+                                mScrimVisibility, TRANSPARENT);
+                    }
+                });
+        finishAnimationsImmediately();
     }
 
     @Test
@@ -933,7 +1127,9 @@ public class ScrimControllerTest extends SysuiTestCase {
 
     @Test
     public void testWillHideAodWallpaper() {
-        mScrimController.setWallpaperSupportsAmbientMode(true);
+        mWallpaperRepository.getWallpaperSupportsAmbientMode().setValue(true);
+        mTestScope.getTestScheduler().runCurrent();
+
         mScrimController.transitionTo(ScrimState.AOD);
         verify(mAlarmManager).setExact(anyInt(), anyLong(), any(), any(), any());
         mScrimController.transitionTo(ScrimState.KEYGUARD);
@@ -944,7 +1140,8 @@ public class ScrimControllerTest extends SysuiTestCase {
     public void testWillHideDockedWallpaper() {
         mAlwaysOnEnabled = false;
         when(mDockManager.isDocked()).thenReturn(true);
-        mScrimController.setWallpaperSupportsAmbientMode(true);
+        mWallpaperRepository.getWallpaperSupportsAmbientMode().setValue(true);
+        mTestScope.getTestScheduler().runCurrent();
 
         mScrimController.transitionTo(ScrimState.AOD);
 
@@ -983,8 +1180,8 @@ public class ScrimControllerTest extends SysuiTestCase {
     @Test
     public void testScrimFocus() {
         mScrimController.transitionTo(ScrimState.AOD);
-        Assert.assertFalse("Should not be focusable on AOD", mScrimBehind.isFocusable());
-        Assert.assertFalse("Should not be focusable on AOD", mScrimInFront.isFocusable());
+        assertFalse("Should not be focusable on AOD", mScrimBehind.isFocusable());
+        assertFalse("Should not be focusable on AOD", mScrimInFront.isFocusable());
 
         mScrimController.transitionTo(ScrimState.KEYGUARD);
         Assert.assertTrue("Should be focusable on keyguard", mScrimBehind.isFocusable());
@@ -993,7 +1190,9 @@ public class ScrimControllerTest extends SysuiTestCase {
 
     @Test
     public void testHidesShowWhenLockedActivity() {
-        mScrimController.setWallpaperSupportsAmbientMode(true);
+        mWallpaperRepository.getWallpaperSupportsAmbientMode().setValue(true);
+        mTestScope.getTestScheduler().runCurrent();
+
         mScrimController.setKeyguardOccluded(true);
         mScrimController.transitionTo(ScrimState.AOD);
         finishAnimationsImmediately();
@@ -1010,7 +1209,9 @@ public class ScrimControllerTest extends SysuiTestCase {
 
     @Test
     public void testHidesShowWhenLockedActivity_whenAlreadyInAod() {
-        mScrimController.setWallpaperSupportsAmbientMode(true);
+        mWallpaperRepository.getWallpaperSupportsAmbientMode().setValue(true);
+        mTestScope.getTestScheduler().runCurrent();
+
         mScrimController.transitionTo(ScrimState.AOD);
         finishAnimationsImmediately();
         assertScrimAlpha(Map.of(
@@ -1044,7 +1245,7 @@ public class ScrimControllerTest extends SysuiTestCase {
     public void testAnimatesTransitionToAod() {
         when(mDozeParameters.shouldControlScreenOff()).thenReturn(false);
         ScrimState.AOD.prepare(ScrimState.KEYGUARD);
-        Assert.assertFalse("No animation when ColorFade kicks in",
+        assertFalse("No animation when ColorFade kicks in",
                 ScrimState.AOD.getAnimateChange());
 
         reset(mDozeParameters);
@@ -1056,9 +1257,9 @@ public class ScrimControllerTest extends SysuiTestCase {
 
     @Test
     public void testViewsDontHaveFocusHighlight() {
-        Assert.assertFalse("Scrim shouldn't have focus highlight",
+        assertFalse("Scrim shouldn't have focus highlight",
                 mScrimInFront.getDefaultFocusHighlightEnabled());
-        Assert.assertFalse("Scrim shouldn't have focus highlight",
+        assertFalse("Scrim shouldn't have focus highlight",
                 mScrimBehind.getDefaultFocusHighlightEnabled());
     }
 
@@ -1067,9 +1268,10 @@ public class ScrimControllerTest extends SysuiTestCase {
         HashSet<ScrimState> lowPowerModeStates = new HashSet<>(Arrays.asList(
                 ScrimState.OFF, ScrimState.AOD, ScrimState.PULSING));
         HashSet<ScrimState> regularStates = new HashSet<>(Arrays.asList(
-                ScrimState.UNINITIALIZED, ScrimState.KEYGUARD, ScrimState.BOUNCER,
-                ScrimState.BOUNCER_SCRIMMED, ScrimState.BRIGHTNESS_MIRROR, ScrimState.UNLOCKED,
-                ScrimState.SHADE_LOCKED, ScrimState.AUTH_SCRIMMED, ScrimState.AUTH_SCRIMMED_SHADE));
+                ScrimState.UNINITIALIZED, ScrimState.KEYGUARD, BOUNCER,
+                ScrimState.DREAMING, ScrimState.BOUNCER_SCRIMMED, ScrimState.BRIGHTNESS_MIRROR,
+                ScrimState.UNLOCKED, SHADE_LOCKED, ScrimState.AUTH_SCRIMMED,
+                ScrimState.AUTH_SCRIMMED_SHADE));
 
         for (ScrimState state : ScrimState.values()) {
             if (!lowPowerModeStates.contains(state) && !regularStates.contains(state)) {
@@ -1093,10 +1295,11 @@ public class ScrimControllerTest extends SysuiTestCase {
     }
 
     @Test
-    public void testAuthScrim_notifScrimOpaque_whenShadeFullyExpanded() {
+    public void testAuthScrim_setClipQSScrimTrue_notifScrimOpaque_whenShadeFullyExpanded() {
         // GIVEN device has an activity showing ('UNLOCKED' state can occur on the lock screen
         // with the camera app occluding the keyguard)
         mScrimController.transitionTo(ScrimState.UNLOCKED);
+        mScrimController.setClipsQsScrim(true);
         mScrimController.setRawPanelExpansionFraction(1);
         // notifications scrim alpha change require calling setQsPosition
         mScrimController.setQsPosition(0, 300);
@@ -1110,6 +1313,40 @@ public class ScrimControllerTest extends SysuiTestCase {
                 mScrimBehind.getViewAlpha(), 1, 0.0);
         assertEquals("Notifications scrim should be opaque",
                 mNotificationsScrim.getViewAlpha(), 1, 0.0);
+
+        assertScrimTinted(Map.of(
+                mScrimInFront, true,
+                mScrimBehind, true,
+                mNotificationsScrim, false
+        ));
+    }
+
+
+    @Test
+    public void testAuthScrim_setClipQSScrimFalse_notifScrimOpaque_whenShadeFullyExpanded() {
+        // GIVEN device has an activity showing ('UNLOCKED' state can occur on the lock screen
+        // with the camera app occluding the keyguard)
+        mScrimController.transitionTo(ScrimState.UNLOCKED);
+        mScrimController.setClipsQsScrim(false);
+        mScrimController.setRawPanelExpansionFraction(1);
+        // notifications scrim alpha change require calling setQsPosition
+        mScrimController.setQsPosition(0, 300);
+        finishAnimationsImmediately();
+
+        // WHEN the user triggers the auth bouncer
+        mScrimController.transitionTo(ScrimState.AUTH_SCRIMMED_SHADE);
+        finishAnimationsImmediately();
+
+        assertEquals("Behind scrim should be opaque",
+                mScrimBehind.getViewAlpha(), 1, 0.0);
+        assertEquals("Notifications scrim should be opaque",
+                mNotificationsScrim.getViewAlpha(), 1, 0.0);
+
+        assertScrimTinted(Map.of(
+                mScrimInFront, true,
+                mScrimBehind, true,
+                mNotificationsScrim, false
+        ));
     }
 
     @Test
@@ -1132,6 +1369,7 @@ public class ScrimControllerTest extends SysuiTestCase {
 
     @Test
     public void testScrimsVisible_whenShadeVisible() {
+        mScrimController.setClipsQsScrim(true);
         mScrimController.transitionTo(ScrimState.UNLOCKED);
         mScrimController.setRawPanelExpansionFraction(0.3f);
         // notifications scrim alpha change require calling setQsPosition
@@ -1205,7 +1443,7 @@ public class ScrimControllerTest extends SysuiTestCase {
     @Test
     public void testNotificationScrimVisible_afterOpeningShadeFromLockscreen() {
         mScrimController.setRawPanelExpansionFraction(1);
-        mScrimController.transitionTo(ScrimState.SHADE_LOCKED);
+        mScrimController.transitionTo(SHADE_LOCKED);
         finishAnimationsImmediately();
 
         assertScrimAlpha(Map.of(
@@ -1214,67 +1452,379 @@ public class ScrimControllerTest extends SysuiTestCase {
     }
 
     @Test
-    public void testNotificationTransparency_followsPanelExpansionInShadeLockedState() {
-        mScrimController.transitionTo(ScrimState.SHADE_LOCKED);
+    public void qsExpansion_BehindTint_shadeLocked_bouncerActive_usesBouncerProgress() {
+        when(mStatusBarKeyguardViewManager.isPrimaryBouncerInTransit()).thenReturn(true);
+        // clipping doesn't change tested logic but allows to assert scrims more in line with
+        // their expected large screen behaviour
+        mScrimController.setClipsQsScrim(false);
+        mScrimController.transitionTo(SHADE_LOCKED);
 
-        assertAlphaAfterExpansion(mNotificationsScrim, /* alpha */ 0.8f, /* expansion */ 0.8f);
-        assertAlphaAfterExpansion(mNotificationsScrim, /* alpha */ 0.47f, /* expansion */ 0.2f);
+        mScrimController.setQsPosition(1f, 100 /* value doesn't matter */);
+        assertTintAfterExpansion(mScrimBehind, SHADE_LOCKED.getBehindTint(), /* expansion= */ 1f);
+
+        mScrimController.setQsPosition(0.8f, 100 /* value doesn't matter */);
+        // panel expansion of 0.6 means its fully transitioned with bouncer progress interpolation
+        assertTintAfterExpansion(mScrimBehind, BOUNCER.getBehindTint(), /* expansion= */ 0.6f);
     }
 
     @Test
-    public void testNotificationTransparency_unnocclusion() {
-        mScrimController.transitionTo(ScrimState.KEYGUARD);
-        mScrimController.setUnocclusionAnimationRunning(true);
+    public void expansionNotificationAlpha_shadeLocked_bouncerActive_usesBouncerInterpolator() {
+        when(mStatusBarKeyguardViewManager.isPrimaryBouncerInTransit()).thenReturn(true);
 
-        assertAlphaAfterExpansion(mNotificationsScrim, /* alpha */ KEYGUARD_SCRIM_ALPHA,
-                /* expansion */ 0.0f);
-        assertAlphaAfterExpansion(mNotificationsScrim, /* alpha */ KEYGUARD_SCRIM_ALPHA,
-                /* expansion */ 1.0f);
+        mScrimController.transitionTo(SHADE_LOCKED);
+
+        float expansion = 0.8f;
+        float expectedAlpha =
+                BouncerPanelExpansionCalculator.aboutToShowBouncerProgress(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, expectedAlpha, expansion);
+
+        expansion = 0.2f;
+        expectedAlpha = BouncerPanelExpansionCalculator.aboutToShowBouncerProgress(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, expectedAlpha, expansion);
+    }
+
+    @Test
+    public void expansionNotificationAlpha_shadeLocked_bouncerNotActive_usesShadeInterpolator() {
+        when(mStatusBarKeyguardViewManager.isPrimaryBouncerInTransit()).thenReturn(false);
+
+        mScrimController.transitionTo(SHADE_LOCKED);
+
+        float expansion = 0.8f;
+        float expectedAlpha = ShadeInterpolation.getNotificationScrimAlpha(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, expectedAlpha, expansion);
+
+        expansion = 0.2f;
+        expectedAlpha = ShadeInterpolation.getNotificationScrimAlpha(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, expectedAlpha, expansion);
+    }
+
+    @Test
+    public void notificationAlpha_unnocclusionAnimating_bouncerNotActive_usesKeyguardNotifAlpha() {
+        when(mStatusBarKeyguardViewManager.isPrimaryBouncerInTransit()).thenReturn(false);
+
+        mScrimController.transitionTo(ScrimState.KEYGUARD);
+
+        assertAlphaAfterExpansion(
+                mNotificationsScrim, ScrimState.KEYGUARD.getNotifAlpha(), /* expansion */ 0f);
+        assertAlphaAfterExpansion(
+                mNotificationsScrim, ScrimState.KEYGUARD.getNotifAlpha(), /* expansion */ 0.4f);
+        assertAlphaAfterExpansion(
+                mNotificationsScrim, ScrimState.KEYGUARD.getNotifAlpha(), /* expansion */ 1.0f);
 
         // Verify normal behavior after
-        mScrimController.setUnocclusionAnimationRunning(false);
-        assertAlphaAfterExpansion(mNotificationsScrim, /* alpha */ 0.2f, /* expansion */ 0.4f);
+        float expansion = 0.4f;
+        float alpha = 1 - ShadeInterpolation.getNotificationScrimAlpha(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, alpha, expansion);
     }
 
     @Test
-    public void testNotificationTransparency_inKeyguardState() {
+    public void notificationAlpha_inKeyguardState_bouncerActive_usesInvertedBouncerInterpolator() {
+        when(mStatusBarKeyguardViewManager.isPrimaryBouncerInTransit()).thenReturn(true);
+        mScrimController.setClipsQsScrim(true);
+
         mScrimController.transitionTo(ScrimState.KEYGUARD);
 
-        assertAlphaAfterExpansion(mNotificationsScrim, /* alpha */ 0.2f, /* expansion */ 0.4f);
-        assertAlphaAfterExpansion(mNotificationsScrim, /* alpha */ 0.52f, /* expansion */ 0.2f);
+        float expansion = 0.8f;
+        float alpha = 1 - BouncerPanelExpansionCalculator.aboutToShowBouncerProgress(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, alpha, expansion);
+
+        expansion = 0.4f;
+        alpha = 1 - BouncerPanelExpansionCalculator.aboutToShowBouncerProgress(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, alpha, expansion);
+
+        expansion = 0.2f;
+        alpha = 1 - BouncerPanelExpansionCalculator.aboutToShowBouncerProgress(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, alpha, expansion);
+    }
+
+    @Test
+    public void notificationAlpha_inKeyguardState_bouncerNotActive_usesInvertedShadeInterpolator() {
+        when(mStatusBarKeyguardViewManager.isPrimaryBouncerInTransit()).thenReturn(false);
+        mScrimController.setClipsQsScrim(true);
+
+        mScrimController.transitionTo(ScrimState.KEYGUARD);
+
+        float expansion = 0.8f;
+        float alpha = 1 - ShadeInterpolation.getNotificationScrimAlpha(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, alpha, expansion);
+
+        expansion = 0.4f;
+        alpha = 1 - ShadeInterpolation.getNotificationScrimAlpha(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, alpha, expansion);
+
+        expansion = 0.2f;
+        alpha = 1 - ShadeInterpolation.getNotificationScrimAlpha(expansion);
+        assertAlphaAfterExpansion(mNotificationsScrim, alpha, expansion);
+    }
+
+    @Test
+    public void behindTint_inKeyguardState_bouncerNotActive_usesKeyguardBehindTint() {
+        when(mStatusBarKeyguardViewManager.isPrimaryBouncerInTransit()).thenReturn(false);
+        mScrimController.setClipsQsScrim(false);
+
+        mScrimController.transitionTo(ScrimState.KEYGUARD);
+        finishAnimationsImmediately();
+        assertThat(mScrimBehind.getTint())
+                .isEqualTo(ScrimState.KEYGUARD.getBehindTint());
     }
 
     @Test
     public void testNotificationTransparency_followsTransitionToFullShade() {
-        mScrimController.transitionTo(ScrimState.SHADE_LOCKED);
+        mScrimController.setClipsQsScrim(true);
+
+        mScrimController.transitionTo(SHADE_LOCKED);
         mScrimController.setRawPanelExpansionFraction(1.0f);
         finishAnimationsImmediately();
+
+        assertScrimTinted(Map.of(
+                mScrimInFront, false,
+                mScrimBehind, true,
+                mNotificationsScrim, false
+        ));
+
         float shadeLockedAlpha = mNotificationsScrim.getViewAlpha();
         mScrimController.transitionTo(ScrimState.KEYGUARD);
         mScrimController.setRawPanelExpansionFraction(1.0f);
         finishAnimationsImmediately();
         float keyguardAlpha = mNotificationsScrim.getViewAlpha();
 
-        mScrimController.setClipsQsScrim(true);
+        assertScrimTinted(Map.of(
+                mScrimInFront, true,
+                mScrimBehind, true,
+                mNotificationsScrim, true
+        ));
+
         float progress = 0.5f;
-        mScrimController.setTransitionToFullShadeProgress(progress);
+        float lsNotifProgress = 0.3f;
+        mScrimController.setTransitionToFullShadeProgress(progress, lsNotifProgress);
         assertEquals(MathUtils.lerp(keyguardAlpha, shadeLockedAlpha, progress),
                 mNotificationsScrim.getViewAlpha(), 0.2);
         progress = 0.0f;
-        mScrimController.setTransitionToFullShadeProgress(progress);
+        mScrimController.setTransitionToFullShadeProgress(progress, lsNotifProgress);
         assertEquals(MathUtils.lerp(keyguardAlpha, shadeLockedAlpha, progress),
                 mNotificationsScrim.getViewAlpha(), 0.2);
         progress = 1.0f;
-        mScrimController.setTransitionToFullShadeProgress(progress);
+        mScrimController.setTransitionToFullShadeProgress(progress, lsNotifProgress);
         assertEquals(MathUtils.lerp(keyguardAlpha, shadeLockedAlpha, progress),
                 mNotificationsScrim.getViewAlpha(), 0.2);
+    }
+
+    @Test
+    public void notificationTransparency_followsNotificationScrimProgress() {
+        mScrimController.transitionTo(SHADE_LOCKED);
+        mScrimController.setRawPanelExpansionFraction(1.0f);
+        finishAnimationsImmediately();
+        mScrimController.transitionTo(ScrimState.KEYGUARD);
+        mScrimController.setRawPanelExpansionFraction(1.0f);
+        finishAnimationsImmediately();
+
+        float progress = 0.5f;
+        float notifProgress = 0.3f;
+        mScrimController.setTransitionToFullShadeProgress(progress, notifProgress);
+
+        assertThat(mNotificationsScrim.getViewAlpha()).isEqualTo(notifProgress);
+    }
+
+    @Test
+    public void notificationAlpha_qsNotClipped_alphaMatchesNotificationExpansionProgress() {
+        mScrimController.setClipsQsScrim(false);
+        mScrimController.transitionTo(ScrimState.KEYGUARD);
+        // RawPanelExpansion and QsExpansion are usually used for the notification alpha
+        // calculation.
+        // Here we set them to non-zero values explicitly to make sure that in not clipped mode,
+        // they are not being used even when set.
+        mScrimController.setRawPanelExpansionFraction(0.5f);
+        mScrimController.setQsPosition(/* expansionFraction= */ 0.5f, /* qsPanelBottomY= */ 500);
+        finishAnimationsImmediately();
+
+        float progress = 0.5f;
+
+        float notificationExpansionProgress = 0f;
+        mScrimController.setTransitionToFullShadeProgress(progress, notificationExpansionProgress);
+        mExpect.that(mNotificationsScrim.getViewAlpha()).isEqualTo(notificationExpansionProgress);
+
+        notificationExpansionProgress = 0.25f;
+        mScrimController.setTransitionToFullShadeProgress(progress, notificationExpansionProgress);
+        mExpect.that(mNotificationsScrim.getViewAlpha()).isEqualTo(notificationExpansionProgress);
+
+        notificationExpansionProgress = 0.5f;
+        mScrimController.setTransitionToFullShadeProgress(progress, notificationExpansionProgress);
+        mExpect.that(mNotificationsScrim.getViewAlpha()).isEqualTo(notificationExpansionProgress);
+
+        notificationExpansionProgress = 0.75f;
+        mScrimController.setTransitionToFullShadeProgress(progress, notificationExpansionProgress);
+        mExpect.that(mNotificationsScrim.getViewAlpha()).isEqualTo(notificationExpansionProgress);
+
+        notificationExpansionProgress = 1f;
+        mScrimController.setTransitionToFullShadeProgress(progress, notificationExpansionProgress);
+        mExpect.that(mNotificationsScrim.getViewAlpha()).isEqualTo(notificationExpansionProgress);
+    }
+
+    @Test
+    public void setNotificationsOverScrollAmount_setsTranslationYOnNotificationsScrim() {
+        int overScrollAmount = 10;
+
+        mScrimController.setNotificationsOverScrollAmount(overScrollAmount);
+
+        assertThat(mNotificationsScrim.getTranslationY()).isEqualTo(overScrollAmount);
+    }
+
+    @Test
+    public void setNotificationsOverScrollAmount_doesNotSetTranslationYOnBehindScrim() {
+        int overScrollAmount = 10;
+
+        mScrimController.setNotificationsOverScrollAmount(overScrollAmount);
+
+        assertThat(mScrimBehind.getTranslationY()).isEqualTo(0);
+    }
+
+    @Test
+    public void setNotificationsOverScrollAmount_doesNotSetTranslationYOnFrontScrim() {
+        int overScrollAmount = 10;
+
+        mScrimController.setNotificationsOverScrollAmount(overScrollAmount);
+
+        assertThat(mScrimInFront.getTranslationY()).isEqualTo(0);
+    }
+
+    @Test
+    public void transitionToDreaming() {
+        mScrimController.setRawPanelExpansionFraction(0f);
+        mScrimController.setBouncerHiddenFraction(KeyguardBouncerConstants.EXPANSION_HIDDEN);
+        mScrimController.transitionTo(ScrimState.DREAMING);
+        finishAnimationsImmediately();
+
+        assertScrimAlpha(Map.of(
+                mScrimInFront, TRANSPARENT,
+                mNotificationsScrim, TRANSPARENT,
+                mScrimBehind, TRANSPARENT));
+
+        assertScrimTinted(Map.of(
+                mScrimInFront, false,
+                mScrimBehind, true,
+                mNotificationsScrim, false
+        ));
+    }
+
+    @Test
+    public void keyguardGoingAwayUpdateScrims() {
+        when(mKeyguardStateController.isKeyguardGoingAway()).thenReturn(true);
+        mScrimController.updateScrims();
+        finishAnimationsImmediately();
+        assertThat(mNotificationsScrim.getViewAlpha()).isEqualTo(TRANSPARENT);
+    }
+
+
+    @Test
+    public void setUnOccludingAnimationKeyguard() {
+        mScrimController.transitionTo(ScrimState.KEYGUARD);
+        finishAnimationsImmediately();
+        assertThat(mNotificationsScrim.getViewAlpha())
+                .isWithin(0.01f).of(ScrimState.KEYGUARD.getNotifAlpha());
+        assertThat(mNotificationsScrim.getTint())
+                .isEqualTo(ScrimState.KEYGUARD.getNotifTint());
+        assertThat(mScrimBehind.getViewAlpha())
+                .isWithin(0.01f).of(ScrimState.KEYGUARD.getBehindAlpha());
+        assertThat(mScrimBehind.getTint())
+                .isEqualTo(ScrimState.KEYGUARD.getBehindTint());
+    }
+
+    @Test
+    public void testHidesScrimFlickerInActivity() {
+        mScrimController.setKeyguardOccluded(true);
+        mScrimController.transitionTo(ScrimState.KEYGUARD);
+        finishAnimationsImmediately();
+        assertScrimAlpha(Map.of(
+                mScrimInFront, TRANSPARENT,
+                mScrimBehind, TRANSPARENT,
+                mNotificationsScrim, TRANSPARENT));
+
+        mScrimController.transitionTo(SHADE_LOCKED);
+        finishAnimationsImmediately();
+        assertScrimAlpha(Map.of(
+                mScrimInFront, TRANSPARENT,
+                mScrimBehind, TRANSPARENT,
+                mNotificationsScrim, TRANSPARENT));
+    }
+
+    @Test
+    public void notificationAlpha_inKeyguardState_bouncerNotActive_clipsQsScrimFalse() {
+        mScrimController.setClipsQsScrim(false);
+        mScrimController.transitionTo(ScrimState.KEYGUARD);
+
+        float expansion = 0.8f;
+        assertAlphaAfterExpansion(mNotificationsScrim, 0f, expansion);
+    }
+
+    @Test
+    public void aodStateSetsFrontScrimToNotBlend() {
+        mScrimController.transitionTo(ScrimState.AOD);
+        assertFalse("Front scrim should not blend with main color",
+                mScrimInFront.shouldBlendWithMainColor());
+    }
+
+    @Test
+    public void applyState_unlocked_bouncerShowing() {
+        mScrimController.transitionTo(ScrimState.UNLOCKED);
+        mScrimController.setBouncerHiddenFraction(0.99f);
+        mScrimController.setRawPanelExpansionFraction(0f);
+        finishAnimationsImmediately();
+        assertScrimAlpha(mScrimBehind, 0);
+    }
+
+    @Test
+    public void ignoreTransitionRequestWhileKeyguardTransitionRunning() {
+        mScrimController.transitionTo(ScrimState.UNLOCKED);
+        mScrimController.mPrimaryBouncerToGoneTransition.accept(
+                new TransitionStep(KeyguardState.PRIMARY_BOUNCER, KeyguardState.GONE, 0f,
+                        TransitionState.RUNNING, "ScrimControllerTest"));
+
+        // This request should not happen
+        mScrimController.transitionTo(ScrimState.BOUNCER);
+        assertThat(mScrimController.getState()).isEqualTo(ScrimState.UNLOCKED);
+    }
+
+    @Test
+    public void primaryBouncerToGoneOnFinishCallsKeyguardFadedAway() {
+        when(mKeyguardStateController.isKeyguardFadingAway()).thenReturn(true);
+        mScrimController.mPrimaryBouncerToGoneTransition.accept(
+                new TransitionStep(KeyguardState.PRIMARY_BOUNCER, KeyguardState.GONE, 0f,
+                        TransitionState.FINISHED, "ScrimControllerTest"));
+
+        verify(mStatusBarKeyguardViewManager).onKeyguardFadedAway();
+    }
+
+    @Test
+    public void testDoNotAnimateChangeIfOccludeAnimationPlaying() {
+        mScrimController.setOccludeAnimationPlaying(true);
+        mScrimController.transitionTo(ScrimState.UNLOCKED);
+
+        assertFalse(ScrimState.UNLOCKED.mAnimateChange);
+    }
+
+    @Test
+    public void testNotifScrimAlpha_1f_afterUnlockFinishedAndExpanded() {
+        mScrimController.transitionTo(ScrimState.KEYGUARD);
+        when(mKeyguardUnlockAnimationController.isPlayingCannedUnlockAnimation()).thenReturn(true);
+        mScrimController.transitionTo(ScrimState.UNLOCKED);
+        mScrimController.onUnlockAnimationFinished();
+        assertAlphaAfterExpansion(mNotificationsScrim, 1f, 1f);
     }
 
     private void assertAlphaAfterExpansion(ScrimView scrim, float expectedAlpha, float expansion) {
         mScrimController.setRawPanelExpansionFraction(expansion);
         finishAnimationsImmediately();
         // alpha is not changing linearly thus 0.2 of leeway when asserting
-        assertEquals(expectedAlpha, mNotificationsScrim.getViewAlpha(), 0.2);
+        assertEquals(expectedAlpha, scrim.getViewAlpha(), 0.2);
+    }
+
+    private void assertTintAfterExpansion(ScrimView scrim, int expectedTint, float expansion) {
+        String message = "Tint test failed with expected scrim tint: "
+                + Integer.toHexString(expectedTint) + " and actual tint: "
+                + Integer.toHexString(scrim.getTint()) + " for scrim: " + getScrimName(scrim);
+        mScrimController.setRawPanelExpansionFraction(expansion);
+        finishAnimationsImmediately();
+        assertEquals(message, expectedTint, scrim.getTint(), 0.1);
     }
 
     private void assertScrimTinted(Map<ScrimView, Boolean> scrimToTint) {
@@ -1286,6 +1836,13 @@ public class ScrimControllerTest extends SysuiTestCase {
                 + " with scrim: " + getScrimName(scrim) + " and tint: "
                 + Integer.toHexString(scrim.getTint());
         assertEquals(message, hasTint, scrim.getTint() != Color.TRANSPARENT);
+    }
+
+    private void assertScrimTint(ScrimView scrim, int expectedTint) {
+        String message = "Tint test failed with expected scrim tint: "
+                + Integer.toHexString(expectedTint) + " and actual tint: "
+                + Integer.toHexString(scrim.getTint()) + " for scrim: " + getScrimName(scrim);
+        assertEquals(message, expectedTint, scrim.getTint(), 0.1);
     }
 
     private String getScrimName(ScrimView scrim) {

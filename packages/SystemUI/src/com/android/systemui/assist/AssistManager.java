@@ -1,7 +1,5 @@
 package com.android.systemui.assist;
 
-import static android.view.Display.DEFAULT_DISPLAY;
-
 import static com.android.systemui.DejankUtils.whitelistIpcs;
 import static com.android.systemui.shared.system.QuickStepContract.SYSUI_STATE_ASSIST_GESTURE_CONSTRAINED;
 
@@ -25,6 +23,8 @@ import android.service.voice.VoiceInteractionSession;
 import android.util.Log;
 
 import com.android.internal.app.AssistUtils;
+import com.android.internal.app.IVisualQueryDetectionAttentionListener;
+import com.android.internal.app.IVisualQueryRecognitionStatusListener;
 import com.android.internal.app.IVoiceInteractionSessionListener;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
@@ -35,12 +35,19 @@ import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.model.SysUiState;
 import com.android.systemui.recents.OverviewProxyService;
+import com.android.systemui.settings.DisplayTracker;
+import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController;
-
-import javax.inject.Inject;
+import com.android.systemui.util.settings.SecureSettings;
 
 import dagger.Lazy;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
+import javax.inject.Inject;
 
 /**
  * Class to manage everything related to assist in SystemUI.
@@ -77,6 +84,18 @@ public class AssistManager {
         void hide();
     }
 
+    /**
+     * An interface for a listener that receives notification that visual query attention has
+     * either been gained or lost.
+     */
+    public interface VisualQueryAttentionListener {
+        /** Called when visual query attention has been gained. */
+        void onAttentionGained();
+
+        /** Called when visual query attention has been lost. */
+        void onAttentionLost();
+    }
+
     private static final String TAG = "AssistManager";
 
     // Note that VERBOSE logging may leak PII (e.g. transcription contents).
@@ -104,6 +123,8 @@ public class AssistManager {
             AssistUtils.INVOCATION_TYPE_HOME_BUTTON_LONG_PRESS;
     public static final int INVOCATION_TYPE_POWER_BUTTON_LONG_PRESS =
             AssistUtils.INVOCATION_TYPE_POWER_BUTTON_LONG_PRESS;
+    public static final int INVOCATION_TYPE_NAV_HANDLE_LONG_PRESS =
+            AssistUtils.INVOCATION_TYPE_NAV_HANDLE_LONG_PRESS;
 
     public static final int DISMISS_REASON_INVOCATION_CANCELLED = 1;
     public static final int DISMISS_REASON_TAP = 2;
@@ -116,13 +137,37 @@ public class AssistManager {
     protected final Context mContext;
     private final AssistDisclosure mAssistDisclosure;
     private final PhoneStateMonitor mPhoneStateMonitor;
+    private final OverviewProxyService mOverviewProxyService;
     private final UiController mUiController;
     protected final Lazy<SysUiState> mSysUiState;
     protected final AssistLogger mAssistLogger;
+    private final UserTracker mUserTracker;
+    private final DisplayTracker mDisplayTracker;
+    private final SecureSettings mSecureSettings;
 
     private final DeviceProvisionedController mDeviceProvisionedController;
+
+    private final List<VisualQueryAttentionListener> mVisualQueryAttentionListeners =
+            new ArrayList<>();
+
+    private final IVisualQueryDetectionAttentionListener mVisualQueryDetectionAttentionListener =
+            new IVisualQueryDetectionAttentionListener.Stub() {
+        @Override
+        public void onAttentionGained() {
+            handleVisualAttentionChanged(true);
+        }
+
+        @Override
+        public void onAttentionLost() {
+            handleVisualAttentionChanged(false);
+        }
+    };
+
     private final CommandQueue mCommandQueue;
     protected final AssistUtils mAssistUtils;
+
+    // Invocation types that should be sent over OverviewProxy instead of handled here.
+    private int[] mAssistOverrideInvocationTypes;
 
     @Inject
     public AssistManager(
@@ -135,22 +180,30 @@ public class AssistManager {
             Lazy<SysUiState> sysUiState,
             DefaultUiController defaultUiController,
             AssistLogger assistLogger,
-            @Main Handler uiHandler) {
+            @Main Handler uiHandler,
+            UserTracker userTracker,
+            DisplayTracker displayTracker,
+            SecureSettings secureSettings) {
         mContext = context;
         mDeviceProvisionedController = controller;
         mCommandQueue = commandQueue;
         mAssistUtils = assistUtils;
         mAssistDisclosure = new AssistDisclosure(context, uiHandler);
+        mOverviewProxyService = overviewProxyService;
         mPhoneStateMonitor = phoneStateMonitor;
         mAssistLogger = assistLogger;
+        mUserTracker = userTracker;
+        mDisplayTracker = displayTracker;
+        mSecureSettings = secureSettings;
 
         registerVoiceInteractionSessionListener();
+        registerVisualQueryRecognitionStatusListener();
 
         mUiController = defaultUiController;
 
         mSysUiState = sysUiState;
 
-        overviewProxyService.addCallback(new OverviewProxyService.OverviewProxyListener() {
+        mOverviewProxyService.addCallback(new OverviewProxyService.OverviewProxyListener() {
             @Override
             public void onAssistantProgress(float progress) {
                 // Progress goes from 0 to 1 to indicate how close the assist gesture is to
@@ -187,6 +240,14 @@ public class AssistManager {
                     }
 
                     @Override
+                    public void onVoiceSessionWindowVisibilityChanged(boolean visible)
+                            throws RemoteException {
+                        if (VERBOSE) {
+                            Log.v(TAG, "Window visibility changed: " + visible);
+                        }
+                    }
+
+                    @Override
                     public void onSetUiHints(Bundle hints) {
                         if (VERBOSE) {
                             Log.v(TAG, "UI hints received");
@@ -198,13 +259,27 @@ public class AssistManager {
                                     .setFlag(
                                             SYSUI_STATE_ASSIST_GESTURE_CONSTRAINED,
                                             hints.getBoolean(CONSTRAINED_KEY, false))
-                                    .commitUpdate(DEFAULT_DISPLAY);
+                                    .commitUpdate(mDisplayTracker.getDefaultDisplayId());
                         }
                     }
                 });
     }
 
     public void startAssist(Bundle args) {
+        if (shouldOverrideAssist(args)) {
+            try {
+                if (mOverviewProxyService.getProxy() == null) {
+                    Log.w(TAG, "No OverviewProxyService to invoke assistant override");
+                    return;
+                }
+                mOverviewProxyService.getProxy().onAssistantOverrideInvoked(
+                        args.getInt(INVOCATION_TYPE_KEY));
+            } catch (RemoteException e) {
+                Log.w(TAG, "Unable to invoke assistant via OverviewProxyService override", e);
+            }
+            return;
+        }
+
         final ComponentName assistComponent = getAssistInfo();
         if (assistComponent == null) {
             return;
@@ -228,6 +303,30 @@ public class AssistManager {
         startAssistInternal(args, assistComponent, isService);
     }
 
+    private boolean shouldOverrideAssist(Bundle args) {
+        if (args == null || !args.containsKey(INVOCATION_TYPE_KEY)) {
+            return false;
+        }
+
+        int invocationType = args.getInt(INVOCATION_TYPE_KEY);
+        return shouldOverrideAssist(invocationType);
+    }
+
+    /** @return true if the invocation type should be handled by OverviewProxy instead of SysUI. */
+    public boolean shouldOverrideAssist(int invocationType) {
+        return mAssistOverrideInvocationTypes != null
+                && Arrays.stream(mAssistOverrideInvocationTypes).anyMatch(
+                        override -> override == invocationType);
+    }
+
+    /**
+     * @param invocationTypes The invocation types that will henceforth be handled via
+     *         OverviewProxy (Launcher); other invocation types should be handled by this class.
+     */
+    public void setAssistantOverridesRequested(int[] invocationTypes) {
+        mAssistOverrideInvocationTypes = invocationTypes;
+    }
+
     /** Called when the user is performing an assistant invocation action (e.g. Active Edge) */
     public void onInvocationProgress(int type, float progress) {
         mUiController.onInvocationProgress(type, progress);
@@ -244,6 +343,24 @@ public class AssistManager {
 
     public void hideAssist() {
         mAssistUtils.hideCurrentSession();
+    }
+
+    /**
+     * Add the given {@link VisualQueryAttentionListener} to the list of listeners awaiting
+     * notification of gaining/losing visual query attention.
+     */
+    public void addVisualQueryAttentionListener(VisualQueryAttentionListener listener) {
+        if (!mVisualQueryAttentionListeners.contains(listener)) {
+            mVisualQueryAttentionListeners.add(listener);
+        }
+    }
+
+    /**
+     * Remove the given {@link VisualQueryAttentionListener} from the list of listeners awaiting
+     * notification of gaining/losing visual query attention.
+     */
+    public void removeVisualQueryAttentionListener(VisualQueryAttentionListener listener) {
+        mVisualQueryAttentionListeners.remove(listener);
     }
 
     private void startAssistInternal(Bundle args, @NonNull ComponentName assistComponent,
@@ -265,7 +382,7 @@ public class AssistManager {
                 CommandQueue.FLAG_EXCLUDE_SEARCH_PANEL | CommandQueue.FLAG_EXCLUDE_RECENTS_PANEL,
                 false /* force */);
 
-        boolean structureEnabled = Settings.Secure.getIntForUser(mContext.getContentResolver(),
+        boolean structureEnabled = mSecureSettings.getIntForUser(
                 Settings.Secure.ASSIST_STRUCTURE_ENABLED, 1, UserHandle.USER_CURRENT) != 0;
 
         final SearchManager searchManager =
@@ -292,7 +409,7 @@ public class AssistManager {
                 @Override
                 public void run() {
                     mContext.startActivityAsUser(intent, opts.toBundle(),
-                            new UserHandle(UserHandle.USER_CURRENT));
+                            mUserTracker.getUserHandle());
                 }
             });
         } catch (ActivityNotFoundException e) {
@@ -302,7 +419,39 @@ public class AssistManager {
 
     private void startVoiceInteractor(Bundle args) {
         mAssistUtils.showSessionForActiveService(args,
-                VoiceInteractionSession.SHOW_SOURCE_ASSIST_GESTURE, null, null);
+                VoiceInteractionSession.SHOW_SOURCE_ASSIST_GESTURE, mContext.getAttributionTag(),
+                null, null);
+    }
+
+    private void registerVisualQueryRecognitionStatusListener() {
+        if (!mContext.getResources()
+                .getBoolean(R.bool.config_enableVisualQueryAttentionDetection)) {
+            return;
+        }
+
+        mAssistUtils.subscribeVisualQueryRecognitionStatus(
+                new IVisualQueryRecognitionStatusListener.Stub() {
+                    @Override
+                    public void onStartPerceiving() {
+                        mAssistUtils.enableVisualQueryDetection(
+                                mVisualQueryDetectionAttentionListener);
+                    }
+
+                    @Override
+                    public void onStopPerceiving() {
+                        // Treat this as a signal that attention has been lost (and inform listeners
+                        // accordingly).
+                        handleVisualAttentionChanged(false);
+                        mAssistUtils.disableVisualQueryDetection();
+                    }
+                });
+    }
+
+    private void handleVisualAttentionChanged(boolean attentionGained) {
+        mVisualQueryAttentionListeners.forEach(
+                attentionGained
+                        ? VisualQueryAttentionListener::onAttentionGained
+                        : VisualQueryAttentionListener::onAttentionLost);
     }
 
     public void launchVoiceAssistFromKeyguard() {

@@ -79,6 +79,11 @@ oneway interface IAutoFillManagerClient {
     void requestHideFillUi(int sessionId, in AutofillId id);
 
     /**
+     * Requests hiding the fill UI when it's destroyed
+     */
+    void requestHideFillUiWhenDestroyed(int sessionId, in AutofillId id);
+
+    /**
      * Notifies no fill UI will be shown, and also mark the state as finished if necessary (if
      * sessionFinishedState != 0).
      */
@@ -140,4 +145,9 @@ oneway interface IAutoFillManagerClient {
     * Requests to show the soft input method if the focus is on the given id.
     */
    void requestShowSoftInput(in AutofillId id);
+
+    /**
+     * Notifies autofill ids that require to show the fill dialog.
+     */
+    void notifyFillDialogTriggerIds(in List<AutofillId> ids);
 }

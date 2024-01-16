@@ -128,15 +128,11 @@ public class DiskStatsService extends Binder {
         reportFreeSpace(Environment.getMetadataDirectory(), "Metadata", pw, proto,
                 DiskStatsFreeSpaceProto.FOLDER_METADATA);
 
-        boolean fileBased = StorageManager.isFileEncryptedNativeOnly();
-        boolean blockBased = fileBased ? false : StorageManager.isBlockEncrypted();
+        boolean fileBased = StorageManager.isFileEncrypted();
         if (protoFormat) {
             if (fileBased) {
                 proto.write(DiskStatsServiceDumpProto.ENCRYPTION,
                         DiskStatsServiceDumpProto.ENCRYPTION_FILE_BASED);
-            } else if (blockBased) {
-                proto.write(DiskStatsServiceDumpProto.ENCRYPTION,
-                        DiskStatsServiceDumpProto.ENCRYPTION_FULL_DISK);
             } else {
                 proto.write(DiskStatsServiceDumpProto.ENCRYPTION,
                         DiskStatsServiceDumpProto.ENCRYPTION_NONE);

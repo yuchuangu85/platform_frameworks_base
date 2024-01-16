@@ -16,6 +16,7 @@
 
 #include "ShaderCache.h"
 #include <GrDirectContext.h>
+#include <SkData.h>
 #include <gui/TraceUtils.h>
 #include <log/log.h>
 #include <openssl/sha.h>
@@ -32,7 +33,8 @@ namespace skiapipeline {
 // Cache size limits.
 static const size_t maxKeySize = 1024;
 static const size_t maxValueSize = 2 * 1024 * 1024;
-static const size_t maxTotalSize = 1024 * 1024;
+static const size_t maxTotalSize = 4 * 1024 * 1024;
+static_assert(maxKeySize + maxValueSize < maxTotalSize);
 
 ShaderCache::ShaderCache() {
     // There is an "incomplete FileBlobCache type" compilation error, if ctor is moved to header.
@@ -77,7 +79,7 @@ bool ShaderCache::validateCache(const void* identity, ssize_t size) {
 
 void ShaderCache::initShaderDiskCache(const void* identity, ssize_t size) {
     ATRACE_NAME("initShaderDiskCache");
-    std::lock_guard<std::mutex> lock(mMutex);
+    std::lock_guard lock(mMutex);
 
     // Emulators can switch between different renders either as part of config
     // or snapshot migration. Also, program binaries may not work well on some
@@ -86,23 +88,21 @@ void ShaderCache::initShaderDiskCache(const void* identity, ssize_t size) {
         mBlobCache.reset(new FileBlobCache(maxKeySize, maxValueSize, maxTotalSize, mFilename));
         validateCache(identity, size);
         mInitialized = true;
+        if (identity != nullptr && size > 0 && mIDHash.size()) {
+            set(&sIDKey, sizeof(sIDKey), mIDHash.data(), mIDHash.size());
+        }
     }
 }
 
 void ShaderCache::setFilename(const char* filename) {
-    std::lock_guard<std::mutex> lock(mMutex);
+    std::lock_guard lock(mMutex);
     mFilename = filename;
-}
-
-BlobCache* ShaderCache::getBlobCacheLocked() {
-    LOG_ALWAYS_FATAL_IF(!mInitialized, "ShaderCache has not been initialized");
-    return mBlobCache.get();
 }
 
 sk_sp<SkData> ShaderCache::load(const SkData& key) {
     ATRACE_NAME("ShaderCache::load");
     size_t keySize = key.size();
-    std::lock_guard<std::mutex> lock(mMutex);
+    std::lock_guard lock(mMutex);
     if (!mInitialized) {
         return nullptr;
     }
@@ -113,8 +113,7 @@ sk_sp<SkData> ShaderCache::load(const SkData& key) {
     if (!valueBuffer) {
         return nullptr;
     }
-    BlobCache* bc = getBlobCacheLocked();
-    size_t valueSize = bc->get(key.data(), keySize, valueBuffer, mObservedBlobValueSize);
+    size_t valueSize = mBlobCache->get(key.data(), keySize, valueBuffer, mObservedBlobValueSize);
     int maxTries = 3;
     while (valueSize > mObservedBlobValueSize && maxTries > 0) {
         mObservedBlobValueSize = std::min(valueSize, maxValueSize);
@@ -124,7 +123,7 @@ sk_sp<SkData> ShaderCache::load(const SkData& key) {
             return nullptr;
         }
         valueBuffer = newValueBuffer;
-        valueSize = bc->get(key.data(), keySize, valueBuffer, mObservedBlobValueSize);
+        valueSize = mBlobCache->get(key.data(), keySize, valueBuffer, mObservedBlobValueSize);
         maxTries--;
     }
     if (!valueSize) {
@@ -136,24 +135,59 @@ sk_sp<SkData> ShaderCache::load(const SkData& key) {
         free(valueBuffer);
         return nullptr;
     }
+    mNumShadersCachedInRam++;
+    ATRACE_FORMAT("HWUI RAM cache: %d shaders", mNumShadersCachedInRam);
     return SkData::MakeFromMalloc(valueBuffer, valueSize);
+}
+
+void ShaderCache::set(const void* key, size_t keySize, const void* value, size_t valueSize) {
+    switch (mBlobCache->set(key, keySize, value, valueSize)) {
+        case BlobCache::InsertResult::kInserted:
+            // This is what we expect/hope. It means the cache is large enough.
+            return;
+        case BlobCache::InsertResult::kDidClean: {
+            ATRACE_FORMAT("ShaderCache: evicted an entry to fit {key: %lu value %lu}!", keySize,
+                          valueSize);
+            if (mIDHash.size()) {
+                set(&sIDKey, sizeof(sIDKey), mIDHash.data(), mIDHash.size());
+            }
+            return;
+        }
+        case BlobCache::InsertResult::kNotEnoughSpace: {
+            ATRACE_FORMAT("ShaderCache: could not fit {key: %lu value %lu}!", keySize, valueSize);
+            return;
+        }
+        case BlobCache::InsertResult::kInvalidValueSize:
+        case BlobCache::InsertResult::kInvalidKeySize: {
+            ATRACE_FORMAT("ShaderCache: invalid size {key: %lu value %lu}!", keySize, valueSize);
+            return;
+        }
+        case BlobCache::InsertResult::kKeyTooBig:
+        case BlobCache::InsertResult::kValueTooBig:
+        case BlobCache::InsertResult::kCombinedTooBig: {
+            ATRACE_FORMAT("ShaderCache: entry too big: {key: %lu value %lu}!", keySize, valueSize);
+            return;
+        }
+    }
 }
 
 void ShaderCache::saveToDiskLocked() {
     ATRACE_NAME("ShaderCache::saveToDiskLocked");
-    if (mInitialized && mBlobCache && mSavePending) {
-        if (mIDHash.size()) {
-            auto key = sIDKey;
-            mBlobCache->set(&key, sizeof(key), mIDHash.data(), mIDHash.size());
-        }
+    if (mInitialized && mBlobCache) {
+        // The most straightforward way to make ownership shared
+        mMutex.unlock();
+        mMutex.lock_shared();
         mBlobCache->writeToFile();
+        mMutex.unlock_shared();
+        mMutex.lock();
     }
-    mSavePending = false;
 }
 
-void ShaderCache::store(const SkData& key, const SkData& data) {
+void ShaderCache::store(const SkData& key, const SkData& data, const SkString& /*description*/) {
     ATRACE_NAME("ShaderCache::store");
-    std::lock_guard<std::mutex> lock(mMutex);
+    std::lock_guard lock(mMutex);
+    mNumShadersCachedInRam++;
+    ATRACE_FORMAT("HWUI RAM cache: %d shaders", mNumShadersCachedInRam);
 
     if (!mInitialized) {
         return;
@@ -168,11 +202,10 @@ void ShaderCache::store(const SkData& key, const SkData& data) {
 
     const void* value = data.data();
 
-    BlobCache* bc = getBlobCacheLocked();
     if (mInStoreVkPipelineInProgress) {
         if (mOldPipelineCacheSize == -1) {
             // Record the initial pipeline cache size stored in the file.
-            mOldPipelineCacheSize = bc->get(key.data(), keySize, nullptr, 0);
+            mOldPipelineCacheSize = mBlobCache->get(key.data(), keySize, nullptr, 0);
         }
         if (mNewPipelineCacheSize != -1 && mNewPipelineCacheSize == valueSize) {
             // There has not been change in pipeline cache size. Stop trying to save.
@@ -187,13 +220,13 @@ void ShaderCache::store(const SkData& key, const SkData& data) {
         mNewPipelineCacheSize = -1;
         mTryToStorePipelineCache = true;
     }
-    bc->set(key.data(), keySize, value, valueSize);
+    set(key.data(), keySize, value, valueSize);
 
-    if (!mSavePending && mDeferredSaveDelay > 0) {
+    if (!mSavePending && mDeferredSaveDelayMs > 0) {
         mSavePending = true;
         std::thread deferredSaveThread([this]() {
-            sleep(mDeferredSaveDelay);
-            std::lock_guard<std::mutex> lock(mMutex);
+            usleep(mDeferredSaveDelayMs * 1000);  // milliseconds to microseconds
+            std::lock_guard lock(mMutex);
             // Store file on disk if there a new shader or Vulkan pipeline cache size changed.
             if (mCacheDirty || mNewPipelineCacheSize != mOldPipelineCacheSize) {
                 saveToDiskLocked();
@@ -201,6 +234,7 @@ void ShaderCache::store(const SkData& key, const SkData& data) {
                 mTryToStorePipelineCache = false;
                 mCacheDirty = false;
             }
+            mSavePending = false;
         });
         deferredSaveThread.detach();
     }
@@ -208,11 +242,12 @@ void ShaderCache::store(const SkData& key, const SkData& data) {
 
 void ShaderCache::onVkFrameFlushed(GrDirectContext* context) {
     {
-        std::lock_guard<std::mutex> lock(mMutex);
-
+        mMutex.lock_shared();
         if (!mInitialized || !mTryToStorePipelineCache) {
+            mMutex.unlock_shared();
             return;
         }
+        mMutex.unlock_shared();
     }
     mInStoreVkPipelineInProgress = true;
     context->storeVkPipelineCacheData();

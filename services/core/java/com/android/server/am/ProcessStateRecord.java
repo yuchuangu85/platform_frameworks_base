@@ -17,24 +17,26 @@
 package com.android.server.am;
 
 import static android.app.ActivityManager.PROCESS_CAPABILITY_NONE;
-import static android.app.ActivityManager.PROCESS_STATE_BOUND_FOREGROUND_SERVICE;
 import static android.app.ActivityManager.PROCESS_STATE_NONEXISTENT;
+import static android.app.ActivityManagerInternal.OOM_ADJ_REASON_UI_VISIBILITY;
+import static android.app.ProcessMemoryState.HOSTING_COMPONENT_TYPE_ACTIVITY;
+import static android.app.ProcessMemoryState.HOSTING_COMPONENT_TYPE_BROADCAST_RECEIVER;
+import static android.app.ProcessMemoryState.HOSTING_COMPONENT_TYPE_STARTED_SERVICE;
 
 import static com.android.server.am.ActivityManagerDebugConfig.DEBUG_OOM_ADJ;
-import static com.android.server.am.OomAdjuster.CachedCompatChangeId;
 import static com.android.server.am.ProcessRecord.TAG;
 
 import android.annotation.ElapsedRealtimeLong;
 import android.app.ActivityManager;
 import android.content.ComponentName;
 import android.os.SystemClock;
-import android.util.ArraySet;
+import android.os.Trace;
 import android.util.Slog;
 import android.util.TimeUtils;
 
 import com.android.internal.annotations.CompositeRWLock;
 import com.android.internal.annotations.GuardedBy;
-import com.android.internal.util.FrameworkStatsLog;
+import com.android.server.am.PlatformCompatCache.CachedCompatChangeId;
 
 import java.io.PrintWriter;
 
@@ -42,6 +44,9 @@ import java.io.PrintWriter;
  * The state info of the process, including proc state, oom adj score, et al.
  */
 final class ProcessStateRecord {
+    // Enable this to trace all OomAdjuster state transitions
+    private static final boolean TRACE_OOM_ADJ = false;
+
     private final ProcessRecord mApp;
     private final ActivityManagerService mService;
     private final ActivityManagerGlobalLock mProcLock;
@@ -275,7 +280,7 @@ final class ProcessStateRecord {
      * The last time the process was in the TOP state or greater.
      */
     @GuardedBy("mService")
-    private long mLastTopTime;
+    private long mLastTopTime = Long.MIN_VALUE;
 
     /**
      * Is this an empty background process?
@@ -296,11 +301,21 @@ final class ProcessStateRecord {
     private boolean mSystemNoUi;
 
     /**
-     * If the proc state is PROCESS_STATE_BOUND_FOREGROUND_SERVICE or above, it can start FGS.
-     * It must obtain the proc state from a persistent/top process or FGS, not transitive.
+     * Whether or not the app is background restricted (OP_RUN_ANY_IN_BACKGROUND is NOT allowed).
      */
     @GuardedBy("mService")
-    private int mAllowStartFgsState = PROCESS_STATE_NONEXISTENT;
+    private boolean mBackgroundRestricted = false;
+
+    /**
+     * Whether or not this process is being bound by a non-background restricted app.
+     */
+    @GuardedBy("mService")
+    private boolean mCurBoundByNonBgRestrictedApp = false;
+
+    /**
+     * Last set state of {@link #mCurBoundByNonBgRestrictedApp}.
+     */
+    private boolean mSetBoundByNonBgRestrictedApp = false;
 
     /**
      * Debugging: primary thing impacting oom_adj.
@@ -371,6 +386,34 @@ final class ProcessStateRecord {
     @GuardedBy("mService")
     @ElapsedRealtimeLong
     private long mLastInvisibleTime;
+
+    /**
+     * Whether or not this process could be killed when it's in background restricted mode
+     * and cached &amp; idle state.
+     */
+    @GuardedBy("mService")
+    private boolean mNoKillOnBgRestrictedAndIdle;
+
+    /**
+     * Last set value of {@link #mCached}.
+     */
+    @GuardedBy("mService")
+    private boolean mSetCached;
+
+    /**
+     * Last set value of {@link #mNoKillOnBgRestrictedAndIdle}.
+     */
+    @GuardedBy("mService")
+    private boolean mSetNoKillOnBgRestrictedAndIdle;
+
+    /**
+     * The last time when the {@link #mNoKillOnBgRestrictedAndIdle} is false and the
+     * {@link #mCached} is true, and either the former state is flipping from true to false
+     * when latter state is true, or the latter state is flipping from false to true when the
+     * former state is false.
+     */
+    @GuardedBy("mService")
+    private @ElapsedRealtimeLong long mLastCanKillOnBgRestrictedAndIdleTime;
 
     // Below are the cached task info for OomAdjuster only
     private static final int VALUE_INVALID = -1;
@@ -456,6 +499,7 @@ final class ProcessStateRecord {
     @GuardedBy({"mService", "mProcLock"})
     void setCurAdj(int curAdj) {
         mCurAdj = curAdj;
+        mApp.getWindowProcessController().setCurrentAdj(curAdj);
     }
 
     @GuardedBy(anyOf = {"mService", "mProcLock"})
@@ -558,12 +602,6 @@ final class ProcessStateRecord {
     @GuardedBy({"mService", "mProcLock"})
     void setReportedProcState(int repProcState) {
         mRepProcState = repProcState;
-        mApp.getPkgList().forEachPackage((pkgName, holder) ->
-                FrameworkStatsLog.write(FrameworkStatsLog.PROCESS_STATE_CHANGED,
-                    mApp.uid, mApp.processName, pkgName,
-                    ActivityManager.processStateAmToProto(mRepProcState),
-                    holder.appVersion)
-        );
         mApp.getWindowProcessController().setReportedProcState(repProcState);
     }
 
@@ -576,15 +614,9 @@ final class ProcessStateRecord {
     void forceProcessStateUpTo(int newState) {
         if (mRepProcState > newState) {
             synchronized (mProcLock) {
-                mRepProcState = newState;
+                setReportedProcState(newState);
                 setCurProcState(newState);
                 setCurRawProcState(newState);
-                mApp.getPkgList().forEachPackage((pkgName, holder) ->
-                        FrameworkStatsLog.write(FrameworkStatsLog.PROCESS_STATE_CHANGED,
-                            mApp.uid, mApp.processName, pkgName,
-                            ActivityManager.processStateAmToProto(mRepProcState),
-                            holder.appVersion)
-                );
             }
         }
     }
@@ -656,6 +688,11 @@ final class ProcessStateRecord {
     @GuardedBy("mProcLock")
     void setHasStartedServices(boolean hasStartedServices) {
         mHasStartedServices = hasStartedServices;
+        if (hasStartedServices) {
+            mApp.mProfile.addHostingComponentType(HOSTING_COMPONENT_TYPE_STARTED_SERVICE);
+        } else {
+            mApp.mProfile.clearHostingComponentType(HOSTING_COMPONENT_TYPE_STARTED_SERVICE);
+        }
     }
 
     @GuardedBy("mProcLock")
@@ -730,7 +767,7 @@ final class ProcessStateRecord {
             Slog.i(TAG, "Setting runningRemoteAnimation=" + runningRemoteAnimation
                     + " for pid=" + mApp.getPid());
         }
-        mService.updateOomAdjLocked(mApp, OomAdjuster.OOM_ADJ_REASON_UI_VISIBILITY);
+        mService.updateOomAdjLocked(mApp, OOM_ADJ_REASON_UI_VISIBILITY);
     }
 
     @GuardedBy({"mService", "mProcLock"})
@@ -883,6 +920,12 @@ final class ProcessStateRecord {
 
     @GuardedBy("mService")
     void setAdjType(String adjType) {
+        if (TRACE_OOM_ADJ) {
+            Trace.asyncTraceForTrackEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER,
+                    "oom:" + mApp.processName + "/u" + mApp.uid, 0);
+            Trace.asyncTraceForTrackBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER,
+                    "oom:" + mApp.processName + "/u" + mApp.uid, adjType, 0);
+        }
         mAdjType = adjType;
     }
 
@@ -961,6 +1004,11 @@ final class ProcessStateRecord {
         if (mCachedHasActivities == VALUE_INVALID) {
             mCachedHasActivities = mApp.getWindowProcessController().hasActivities() ? VALUE_TRUE
                     : VALUE_FALSE;
+            if (mCachedHasActivities == VALUE_TRUE) {
+                mApp.mProfile.addHostingComponentType(HOSTING_COMPONENT_TYPE_ACTIVITY);
+            } else {
+                mApp.mProfile.clearHostingComponentType(HOSTING_COMPONENT_TYPE_ACTIVITY);
+            }
         }
         return mCachedHasActivities == VALUE_TRUE;
     }
@@ -1019,14 +1067,15 @@ final class ProcessStateRecord {
     }
 
     @GuardedBy("mService")
-    boolean getCachedIsReceivingBroadcast(ArraySet<BroadcastQueue> tmpQueue) {
+    boolean getCachedIsReceivingBroadcast(int[] outSchedGroup) {
         if (mCachedIsReceivingBroadcast == VALUE_INVALID) {
-            tmpQueue.clear();
-            mCachedIsReceivingBroadcast = mService.isReceivingBroadcastLocked(mApp, tmpQueue)
+            mCachedIsReceivingBroadcast = mService.isReceivingBroadcastLocked(mApp, outSchedGroup)
                     ? VALUE_TRUE : VALUE_FALSE;
             if (mCachedIsReceivingBroadcast == VALUE_TRUE) {
-                mCachedSchedGroup = tmpQueue.contains(mService.mFgBroadcastQueue)
-                        ? ProcessList.SCHED_GROUP_DEFAULT : ProcessList.SCHED_GROUP_BACKGROUND;
+                mCachedSchedGroup = outSchedGroup[0];
+                mApp.mProfile.addHostingComponentType(HOSTING_COMPONENT_TYPE_BROADCAST_RECEIVER);
+            } else {
+                mApp.mProfile.clearHostingComponentType(HOSTING_COMPONENT_TYPE_BROADCAST_RECEIVER);
             }
         }
         return mCachedIsReceivingBroadcast == VALUE_TRUE;
@@ -1114,39 +1163,50 @@ final class ProcessStateRecord {
 
     @GuardedBy({"mService", "mProcLock"})
     void onCleanupApplicationRecordLSP() {
+        if (TRACE_OOM_ADJ) {
+            Trace.asyncTraceForTrackEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER,
+                    "oom:" + mApp.processName + "/u" + mApp.uid, 0);
+        }
         setHasForegroundActivities(false);
         mHasShownUi = false;
         mForcingToImportant = null;
         mCurRawAdj = mSetRawAdj = mCurAdj = mSetAdj = mVerifiedAdj = ProcessList.INVALID_ADJ;
         mCurCapability = mSetCapability = PROCESS_CAPABILITY_NONE;
         mCurSchedGroup = mSetSchedGroup = ProcessList.SCHED_GROUP_BACKGROUND;
-        mCurProcState = mCurRawProcState = mSetProcState = mAllowStartFgsState =
-                PROCESS_STATE_NONEXISTENT;
+        mCurProcState = mCurRawProcState = mSetProcState = PROCESS_STATE_NONEXISTENT;
         for (int i = 0; i < mCachedCompatChanges.length; i++) {
             mCachedCompatChanges[i] = VALUE_INVALID;
         }
     }
 
     @GuardedBy("mService")
-    void resetAllowStartFgsState() {
-        mAllowStartFgsState = PROCESS_STATE_NONEXISTENT;
+    boolean isBackgroundRestricted() {
+        return mBackgroundRestricted;
     }
 
     @GuardedBy("mService")
-    void bumpAllowStartFgsState(int newProcState) {
-        if (newProcState < mAllowStartFgsState) {
-            mAllowStartFgsState = newProcState;
-        }
+    void setBackgroundRestricted(boolean restricted) {
+        mBackgroundRestricted = restricted;
     }
 
     @GuardedBy("mService")
-    int getAllowStartFgsState() {
-        return mAllowStartFgsState;
+    boolean isCurBoundByNonBgRestrictedApp() {
+        return mCurBoundByNonBgRestrictedApp;
     }
 
     @GuardedBy("mService")
-    boolean isAllowedStartFgsState() {
-        return mAllowStartFgsState <= PROCESS_STATE_BOUND_FOREGROUND_SERVICE;
+    void setCurBoundByNonBgRestrictedApp(boolean bound) {
+        mCurBoundByNonBgRestrictedApp = bound;
+    }
+
+    @GuardedBy("mService")
+    boolean isSetBoundByNonBgRestrictedApp() {
+        return mSetBoundByNonBgRestrictedApp;
+    }
+
+    @GuardedBy("mService")
+    void setSetBoundByNonBgRestrictedApp(boolean bound) {
+        mSetBoundByNonBgRestrictedApp = bound;
     }
 
     @GuardedBy("mService")
@@ -1162,6 +1222,47 @@ final class ProcessStateRecord {
     @ElapsedRealtimeLong
     long getLastInvisibleTime() {
         return mLastInvisibleTime;
+    }
+
+    @GuardedBy("mService")
+    void setNoKillOnBgRestrictedAndIdle(boolean shouldNotKill) {
+        mNoKillOnBgRestrictedAndIdle = shouldNotKill;
+    }
+
+    @GuardedBy("mService")
+    boolean shouldNotKillOnBgRestrictedAndIdle() {
+        return mNoKillOnBgRestrictedAndIdle;
+    }
+
+    @GuardedBy("mService")
+    void setSetCached(boolean cached) {
+        mSetCached = cached;
+    }
+
+    @GuardedBy("mService")
+    boolean isSetCached() {
+        return mSetCached;
+    }
+
+    @GuardedBy("mService")
+    void setSetNoKillOnBgRestrictedAndIdle(boolean shouldNotKill) {
+        mSetNoKillOnBgRestrictedAndIdle = shouldNotKill;
+    }
+
+    @GuardedBy("mService")
+    boolean isSetNoKillOnBgRestrictedAndIdle() {
+        return mSetNoKillOnBgRestrictedAndIdle;
+    }
+
+    @GuardedBy("mService")
+    void setLastCanKillOnBgRestrictedAndIdleTime(@ElapsedRealtimeLong long now) {
+        mLastCanKillOnBgRestrictedAndIdleTime = now;
+    }
+
+    @ElapsedRealtimeLong
+    @GuardedBy("mService")
+    long getLastCanKillOnBgRestrictedAndIdleTime() {
+        return mLastCanKillOnBgRestrictedAndIdleTime;
     }
 
     public void setCacheOomRankerRss(long rss, long rssTimeMs) {
@@ -1215,8 +1316,13 @@ final class ProcessStateRecord {
         pw.print(" setCapability=");
         ActivityManager.printCapabilitiesFull(pw, mSetCapability);
         pw.println();
-        pw.print(prefix); pw.print("allowStartFgsState=");
-        pw.println(mAllowStartFgsState);
+        if (mBackgroundRestricted) {
+            pw.print(" backgroundRestricted=");
+            pw.print(mBackgroundRestricted);
+            pw.print(" boundByNonBgRestrictedApp=");
+            pw.print(mSetBoundByNonBgRestrictedApp);
+        }
+        pw.println();
         if (mHasShownUi || mApp.mProfile.hasPendingUiClean()) {
             pw.print(prefix); pw.print("hasShownUi="); pw.print(mHasShownUi);
             pw.print(" pendingUiClean="); pw.println(mApp.mProfile.hasPendingUiClean());

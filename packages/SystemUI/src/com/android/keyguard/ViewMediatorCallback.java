@@ -29,11 +29,11 @@ public interface ViewMediatorCallback {
     /**
      * Report that the keyguard is done.
      *
-     * @param strongAuth whether the user has authenticated with strong authentication like
+     * @param primaryAuth whether the user has authenticated with primary authentication like
      *                   pattern, password or PIN but not by trust agents or fingerprint
      * @param targetUserId a user that needs to be the foreground user at the completion.
      */
-    void keyguardDone(boolean strongAuth, int targetUserId);
+    void keyguardDone(boolean primaryAuth, int targetUserId);
 
     /**
      * Report that the keyguard is done drawing.
@@ -49,11 +49,11 @@ public interface ViewMediatorCallback {
     /**
      * Report that the keyguard is dismissable, pending the next keyguardDone call.
      *
-     * @param strongAuth whether the user has authenticated with strong authentication like
+     * @param primaryAuth whether the user has authenticated with primary authentication like
      *                   pattern, password or PIN but not by trust agents or fingerprint
      * @param targetUserId a user that needs to be the foreground user at the completion.
      */
-    void keyguardDonePending(boolean strongAuth, int targetUserId);
+    void keyguardDonePending(boolean primaryAuth, int targetUserId);
 
     /**
      * Report when keyguard is actually gone
@@ -76,12 +76,6 @@ public interface ViewMediatorCallback {
     void playTrustedSound();
 
     /**
-     * When the bouncer is shown or hides
-     * @param shown
-     */
-    void onBouncerVisiblityChanged(boolean shown);
-
-    /**
      * @return true if the screen is on
      */
     boolean isScreenOn();
@@ -102,7 +96,17 @@ public interface ViewMediatorCallback {
     CharSequence consumeCustomMessage();
 
     /**
+     * Sets a message to be consumed the next time the bouncer shows up.
+     */
+    void setCustomMessage(CharSequence customMessage);
+
+    /**
      * Call when cancel button is pressed in bouncer.
      */
     void onCancelClicked();
+
+    /**
+     * Determines if bouncer has swiped down.
+     */
+    void onBouncerSwipeDown();
 }

@@ -23,6 +23,8 @@ import static com.android.internal.util.FrameworkStatsLog.TOUCH_GESTURE_CLASSIFI
 import static com.android.internal.util.FrameworkStatsLog.TOUCH_GESTURE_CLASSIFIED__CLASSIFICATION__SINGLE_TAP;
 import static com.android.internal.util.FrameworkStatsLog.TOUCH_GESTURE_CLASSIFIED__CLASSIFICATION__UNKNOWN_CLASSIFICATION;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.UiContext;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
@@ -68,7 +70,7 @@ public class GestureDetector {
          *
          * @param e The down motion event.
          */
-        boolean onDown(MotionEvent e);
+        boolean onDown(@NonNull MotionEvent e);
 
         /**
          * The user has performed a down {@link MotionEvent} and not performed
@@ -78,7 +80,7 @@ public class GestureDetector {
          *
          * @param e The down motion event
          */
-        void onShowPress(MotionEvent e);
+        void onShowPress(@NonNull MotionEvent e);
 
         /**
          * Notified when a tap occurs with the up {@link MotionEvent}
@@ -87,14 +89,15 @@ public class GestureDetector {
          * @param e The up motion event that completed the first tap
          * @return true if the event is consumed, else false
          */
-        boolean onSingleTapUp(MotionEvent e);
+        boolean onSingleTapUp(@NonNull MotionEvent e);
 
         /**
          * Notified when a scroll occurs with the initial on down {@link MotionEvent} and the
          * current move {@link MotionEvent}. The distance in x and y is also supplied for
          * convenience.
          *
-         * @param e1 The first down motion event that started the scrolling.
+         * @param e1 The first down motion event that started the scrolling. A {@code null} event
+         *           indicates an incomplete event stream or error state.
          * @param e2 The move motion event that triggered the current onScroll.
          * @param distanceX The distance along the X axis that has been scrolled since the last
          *              call to onScroll. This is NOT the distance between {@code e1}
@@ -104,7 +107,8 @@ public class GestureDetector {
          *              and {@code e2}.
          * @return true if the event is consumed, else false
          */
-        boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY);
+        boolean onScroll(@Nullable MotionEvent e1, @NonNull MotionEvent e2, float distanceX,
+                float distanceY);
 
         /**
          * Notified when a long press occurs with the initial on down {@link MotionEvent}
@@ -112,14 +116,15 @@ public class GestureDetector {
          *
          * @param e The initial on down motion event that started the longpress.
          */
-        void onLongPress(MotionEvent e);
+        void onLongPress(@NonNull MotionEvent e);
 
         /**
          * Notified of a fling event when it occurs with the initial on down {@link MotionEvent}
          * and the matching up {@link MotionEvent}. The calculated velocity is supplied along
          * the x and y axis in pixels per second.
          *
-         * @param e1 The first down motion event that started the fling.
+         * @param e1 The first down motion event that started the fling. A {@code null} event
+         *           indicates an incomplete event stream or error state.
          * @param e2 The move motion event that triggered the current onFling.
          * @param velocityX The velocity of this fling measured in pixels per second
          *              along the x axis.
@@ -127,7 +132,8 @@ public class GestureDetector {
          *              along the y axis.
          * @return true if the event is consumed, else false
          */
-        boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX, float velocityY);
+        boolean onFling(@Nullable MotionEvent e1, @NonNull MotionEvent e2, float velocityX,
+                float velocityY);
     }
 
     /**
@@ -146,7 +152,7 @@ public class GestureDetector {
          * @param e The down motion event of the single-tap.
          * @return true if the event is consumed, else false
          */
-        boolean onSingleTapConfirmed(MotionEvent e);
+        boolean onSingleTapConfirmed(@NonNull MotionEvent e);
  
         /**
          * Notified when a double-tap occurs. Triggered on the down event of second tap.
@@ -154,7 +160,7 @@ public class GestureDetector {
          * @param e The down motion event of the first tap of the double-tap.
          * @return true if the event is consumed, else false
          */
-        boolean onDoubleTap(MotionEvent e);
+        boolean onDoubleTap(@NonNull MotionEvent e);
 
         /**
          * Notified when an event within a double-tap gesture occurs, including
@@ -163,7 +169,7 @@ public class GestureDetector {
          * @param e The motion event that occurred during the double-tap gesture.
          * @return true if the event is consumed, else false
          */
-        boolean onDoubleTapEvent(MotionEvent e);
+        boolean onDoubleTapEvent(@NonNull MotionEvent e);
     }
 
     /**
@@ -178,7 +184,7 @@ public class GestureDetector {
          * @param e The motion event that occurred during the context click.
          * @return true if the event is consumed, else false
          */
-        boolean onContextClick(MotionEvent e);
+        boolean onContextClick(@NonNull MotionEvent e);
     }
 
     /**
@@ -190,43 +196,43 @@ public class GestureDetector {
     public static class SimpleOnGestureListener implements OnGestureListener, OnDoubleTapListener,
             OnContextClickListener {
 
-        public boolean onSingleTapUp(MotionEvent e) {
+        public boolean onSingleTapUp(@NonNull MotionEvent e) {
             return false;
         }
 
-        public void onLongPress(MotionEvent e) {
+        public void onLongPress(@NonNull MotionEvent e) {
         }
 
-        public boolean onScroll(MotionEvent e1, MotionEvent e2,
+        public boolean onScroll(@Nullable MotionEvent e1, @NonNull MotionEvent e2,
                 float distanceX, float distanceY) {
             return false;
         }
 
-        public boolean onFling(MotionEvent e1, MotionEvent e2, float velocityX,
+        public boolean onFling(@Nullable MotionEvent e1, @NonNull MotionEvent e2, float velocityX,
                 float velocityY) {
             return false;
         }
 
-        public void onShowPress(MotionEvent e) {
+        public void onShowPress(@NonNull MotionEvent e) {
         }
 
-        public boolean onDown(MotionEvent e) {
+        public boolean onDown(@NonNull MotionEvent e) {
             return false;
         }
 
-        public boolean onDoubleTap(MotionEvent e) {
+        public boolean onDoubleTap(@NonNull MotionEvent e) {
             return false;
         }
 
-        public boolean onDoubleTapEvent(MotionEvent e) {
+        public boolean onDoubleTapEvent(@NonNull MotionEvent e) {
             return false;
         }
 
-        public boolean onSingleTapConfirmed(MotionEvent e) {
+        public boolean onSingleTapConfirmed(@NonNull MotionEvent e) {
             return false;
         }
 
-        public boolean onContextClick(MotionEvent e) {
+        public boolean onContextClick(@NonNull MotionEvent e) {
             return false;
         }
     }
@@ -348,14 +354,13 @@ public class GestureDetector {
      * not be null.
      * @param handler the handler to use
      *
-     * @throws NullPointerException if either {@code listener} or
-     * {@code handler} is null.
+     * @throws NullPointerException if {@code listener} is null.
      *
      * @deprecated Use {@link #GestureDetector(android.content.Context,
      *      android.view.GestureDetector.OnGestureListener, android.os.Handler)} instead.
      */
     @Deprecated
-    public GestureDetector(OnGestureListener listener, Handler handler) {
+    public GestureDetector(@NonNull OnGestureListener listener, @Nullable Handler handler) {
         this(null, listener, handler);
     }
 
@@ -373,7 +378,7 @@ public class GestureDetector {
      *      android.view.GestureDetector.OnGestureListener)} instead.
      */
     @Deprecated
-    public GestureDetector(OnGestureListener listener) {
+    public GestureDetector(@NonNull OnGestureListener listener) {
         this(null, listener, null);
     }
 
@@ -392,7 +397,8 @@ public class GestureDetector {
      * @throws NullPointerException if {@code listener} is null.
      */
     // TODO(b/182007470): Use @ConfigurationContext instead
-    public GestureDetector(@UiContext Context context, OnGestureListener listener) {
+    public GestureDetector(@Nullable @UiContext Context context,
+            @NonNull OnGestureListener listener) {
         this(context, listener, null);
     }
 
@@ -411,8 +417,8 @@ public class GestureDetector {
      *
      * @throws NullPointerException if {@code listener} is null.
      */
-    public GestureDetector(@UiContext Context context, OnGestureListener listener,
-            Handler handler) {
+    public GestureDetector(@Nullable @UiContext Context context,
+            @NonNull OnGestureListener listener, @Nullable Handler handler) {
         if (handler != null) {
             mHandler = new GestureHandler(handler);
         } else {
@@ -442,8 +448,8 @@ public class GestureDetector {
      *
      * @throws NullPointerException if {@code listener} is null.
      */
-    public GestureDetector(@UiContext Context context, OnGestureListener listener, Handler handler,
-            boolean unused) {
+    public GestureDetector(@Nullable @UiContext Context context,
+            @NonNull OnGestureListener listener, @Nullable Handler handler, boolean unused) {
         this(context, listener, handler);
     }
 
@@ -486,7 +492,7 @@ public class GestureDetector {
      * @param onDoubleTapListener the listener invoked for all the callbacks, or
      *        null to stop listening for double-tap gestures.
      */
-    public void setOnDoubleTapListener(OnDoubleTapListener onDoubleTapListener) {
+    public void setOnDoubleTapListener(@Nullable OnDoubleTapListener onDoubleTapListener) {
         mDoubleTapListener = onDoubleTapListener;
     }
 
@@ -496,7 +502,7 @@ public class GestureDetector {
      * @param onContextClickListener the listener invoked for all the callbacks, or null to stop
      *            listening for context clicks.
      */
-    public void setContextClickListener(OnContextClickListener onContextClickListener) {
+    public void setContextClickListener(@Nullable OnContextClickListener onContextClickListener) {
         mContextClickListener = onContextClickListener;
     }
 
@@ -528,7 +534,7 @@ public class GestureDetector {
      * @return true if the {@link OnGestureListener} consumed the event,
      *              else false.
      */
-    public boolean onTouchEvent(MotionEvent ev) {
+    public boolean onTouchEvent(@NonNull MotionEvent ev) {
         if (mInputEventConsistencyVerifier != null) {
             mInputEventConsistencyVerifier.onTouchEvent(ev, 0);
         }
@@ -800,7 +806,7 @@ public class GestureDetector {
      * @return true if the {@link OnGestureListener} consumed the event,
      *              else false.
      */
-    public boolean onGenericMotionEvent(MotionEvent ev) {
+    public boolean onGenericMotionEvent(@NonNull MotionEvent ev) {
         if (mInputEventConsistencyVerifier != null) {
             mInputEventConsistencyVerifier.onGenericMotionEvent(ev, 0);
         }
@@ -835,8 +841,10 @@ public class GestureDetector {
         mHandler.removeMessages(SHOW_PRESS);
         mHandler.removeMessages(LONG_PRESS);
         mHandler.removeMessages(TAP);
-        mVelocityTracker.recycle();
-        mVelocityTracker = null;
+        if (mVelocityTracker != null) {
+            mVelocityTracker.recycle();
+            mVelocityTracker = null;
+        }
         mIsDoubleTapping = false;
         mStillDown = false;
         mAlwaysInTapRegion = false;
@@ -860,8 +868,8 @@ public class GestureDetector {
         mIgnoreNextUpEvent = false;
     }
 
-    private boolean isConsideredDoubleTap(MotionEvent firstDown, MotionEvent firstUp,
-            MotionEvent secondDown) {
+    private boolean isConsideredDoubleTap(@NonNull MotionEvent firstDown,
+            @NonNull MotionEvent firstUp, @NonNull MotionEvent secondDown) {
         if (!mAlwaysInBiggerTapRegion) {
             return false;
         }

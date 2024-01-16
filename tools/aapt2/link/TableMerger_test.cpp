@@ -94,7 +94,7 @@ TEST_F(TableMergerTest, MergeFile) {
   ResourceFile file_desc;
   file_desc.config = test::ParseConfigOrDie("hdpi-v4");
   file_desc.name = test::ParseNameOrDie("layout/main");
-  file_desc.source = Source("res/layout-hdpi/main.xml");
+  file_desc.source = android::Source("res/layout-hdpi/main.xml");
   test::TestFile test_file("path/to/res/layout-hdpi/main.xml.flat");
 
   ASSERT_TRUE(merger.MergeFile(file_desc, false /*overlay*/, &test_file));
@@ -409,8 +409,7 @@ TEST_F(TableMergerTest, OverlaidStyleablesAndStylesShouldBeMerged) {
 
   const auto expected = ResourceUtils::MakeBool(true);
   EXPECT_THAT(style->entries, Contains(Field(&Style::Entry::value, Pointee(ValueEq(*expected)))));
-  EXPECT_THAT(style->parent,
-              Eq(make_value(Reference(test::ParseNameOrDie("com.app.a:style/OverlayParent")))));
+  EXPECT_THAT(style->parent, Reference(test::ParseNameOrDie("com.app.a:style/OverlayParent")));
 }
 
 TEST_F(TableMergerTest, OverrideStyleInsteadOfOverlaying) {
@@ -483,7 +482,7 @@ TEST_F(TableMergerTest, SetOverlayable) {
   ASSERT_TRUE(merger.Merge({}, table_b.get(), false /*overlay*/));
 
   const ResourceName name = test::ParseNameOrDie("com.app.a:bool/foo");
-  Maybe<ResourceTable::SearchResult> search_result = final_table.FindResource(name);
+  std::optional<ResourceTable::SearchResult> search_result = final_table.FindResource(name);
   ASSERT_TRUE(search_result);
   ASSERT_TRUE(search_result.value().entry->overlayable_item);
   OverlayableItem& result_overlayable_item = search_result.value().entry->overlayable_item.value();
@@ -517,7 +516,7 @@ TEST_F(TableMergerTest, SetOverlayableLater) {
   ASSERT_TRUE(merger.Merge({}, table_b.get(), false /*overlay*/));
 
   const ResourceName name = test::ParseNameOrDie("com.app.a:bool/foo");
-  Maybe<ResourceTable::SearchResult> search_result = final_table.FindResource(name);
+  std::optional<ResourceTable::SearchResult> search_result = final_table.FindResource(name);
   ASSERT_TRUE(search_result);
   ASSERT_TRUE(search_result.value().entry->overlayable_item);
   OverlayableItem& result_overlayable_item = search_result.value().entry->overlayable_item.value();

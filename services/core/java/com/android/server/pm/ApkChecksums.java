@@ -35,15 +35,16 @@ import android.content.pm.ApkChecksum;
 import android.content.pm.Checksum;
 import android.content.pm.IOnChecksumsReadyListener;
 import android.content.pm.PackageManagerInternal;
-import android.content.pm.PackageParser;
 import android.content.pm.Signature;
+import android.content.pm.SigningDetails.SignatureSchemeVersion;
 import android.content.pm.parsing.ApkLiteParseUtils;
+import android.content.pm.parsing.result.ParseResult;
+import android.content.pm.parsing.result.ParseTypeImpl;
 import android.os.Handler;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.incremental.IncrementalManager;
 import android.os.incremental.IncrementalStorage;
-import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Pair;
@@ -60,9 +61,8 @@ import android.util.apk.VerityBuilder;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.security.VerityUtils;
-import com.android.server.pm.parsing.pkg.AndroidPackage;
+import com.android.server.pm.pkg.AndroidPackage;
 
-import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -74,6 +74,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.security.DigestException;
 import java.security.InvalidParameterException;
@@ -420,7 +421,7 @@ public class ApkChecksums {
             @Nullable Certificate[] trustedInstallers,
             Map<Integer, ApkChecksum> checksums,
             @NonNull Injector injector) {
-        if (TextUtils.isEmpty(installerPackageName)) {
+        if (PackageManagerServiceUtils.isInstalledByAdb(installerPackageName)) {
             return;
         }
         if (trustedInstallers != null && trustedInstallers.length == 0) {
@@ -461,8 +462,8 @@ public class ApkChecksums {
                 }
 
                 // Obtaining array of certificates used for signing the installer package.
-                certs = installer.getSigningDetails().signatures;
-                pastCerts = installer.getSigningDetails().pastSigningCertificates;
+                certs = installer.getSigningDetails().getSignatures();
+                pastCerts = installer.getSigningDetails().getPastSigningCertificates();
             }
             if (certs == null || certs.length == 0 || certs[0] == null) {
                 Slog.e(TAG, "Can't obtain certificates.");
@@ -581,7 +582,7 @@ public class ApkChecksums {
                         });
                 checksums.put(TYPE_WHOLE_MERKLE_ROOT_4K_SHA256,
                         new ApkChecksum(split, TYPE_WHOLE_MERKLE_ROOT_4K_SHA256,
-                                generatedRootHash));
+                                verityHashForFile(file, generatedRootHash)));
             } catch (IOException | NoSuchAlgorithmException | DigestException e) {
                 Slog.e(TAG, "Error calculating WHOLE_MERKLE_ROOT_4K_SHA256", e);
             }
@@ -636,20 +637,21 @@ public class ApkChecksums {
 
     private static ApkChecksum extractHashFromFS(String split, String filePath) {
         // verity first
-        {
-            byte[] hash = VerityUtils.getFsverityRootHash(filePath);
-            if (hash != null) {
-                return new ApkChecksum(split, TYPE_WHOLE_MERKLE_ROOT_4K_SHA256, hash);
+        if (VerityUtils.hasFsverity(filePath)) {
+            byte[] verityHash = VerityUtils.getFsverityDigest(filePath);
+            if (verityHash != null) {
+                return new ApkChecksum(split, TYPE_WHOLE_MERKLE_ROOT_4K_SHA256, verityHash);
             }
         }
         // v4 next
         try {
             ApkSignatureSchemeV4Verifier.VerifiedSigner signer =
                     ApkSignatureSchemeV4Verifier.extractCertificates(filePath);
-            byte[] hash = signer.contentDigests.getOrDefault(CONTENT_DIGEST_VERITY_CHUNKED_SHA256,
-                    null);
-            if (hash != null) {
-                return new ApkChecksum(split, TYPE_WHOLE_MERKLE_ROOT_4K_SHA256, hash);
+            byte[] rootHash = signer.contentDigests.getOrDefault(
+                    CONTENT_DIGEST_VERITY_CHUNKED_SHA256, null);
+            if (rootHash != null) {
+                return new ApkChecksum(split, TYPE_WHOLE_MERKLE_ROOT_4K_SHA256,
+                        verityHashForFile(new File(filePath), rootHash));
             }
         } catch (SignatureNotFoundException e) {
             // Nothing
@@ -659,17 +661,54 @@ public class ApkChecksums {
         return null;
     }
 
+    /**
+     * Returns fs-verity digest as described in
+     * https://www.kernel.org/doc/html/latest/filesystems/fsverity.html#fs-verity-descriptor
+     * @param file the Merkle tree is built over
+     * @param rootHash Merkle tree root hash
+     */
+    static byte[] verityHashForFile(File file, byte[] rootHash) {
+        try {
+            ByteBuffer buffer = ByteBuffer.allocate(256); // sizeof(fsverity_descriptor)
+            buffer.order(ByteOrder.LITTLE_ENDIAN);
+            buffer.put((byte) 1);               // __u8 version, must be 1
+            buffer.put((byte) 1);               // __u8 hash_algorithm, FS_VERITY_HASH_ALG_SHA256
+            buffer.put((byte) 12);              // __u8, FS_VERITY_LOG_BLOCKSIZE
+            buffer.put((byte) 0);               // __u8, size of salt in bytes; 0 if none
+            buffer.putInt(0);                   // __le32 __reserved_0x04, must be 0
+            buffer.putLong(file.length());      // __le64 data_size
+            buffer.put(rootHash);               // root_hash, first 32 bytes
+            final int padding = 32 + 32 + 144;  // root_hash, last 32 bytes, we are using sha256.
+            // salt, 32 bytes
+            // reserved, 144 bytes
+            for (int i = 0; i < padding; ++i) {
+                buffer.put((byte) 0);
+            }
+
+            buffer.flip();
+
+            final MessageDigest md = MessageDigest.getInstance(ALGO_SHA256);
+            md.update(buffer);
+            return md.digest();
+        } catch (NoSuchAlgorithmException e) {
+            Slog.e(TAG, "Device does not support MessageDigest algorithm", e);
+            return null;
+        }
+    }
+
     private static Map<Integer, ApkChecksum> extractHashFromV2V3Signature(
             String split, String filePath, int types) {
         Map<Integer, byte[]> contentDigests = null;
-        try {
-            contentDigests = ApkSignatureVerifier.verifySignaturesInternal(filePath,
-                    PackageParser.SigningDetails.SignatureSchemeVersion.SIGNING_BLOCK_V2,
-                    false).contentDigests;
-        } catch (PackageParser.PackageParserException e) {
-            if (!(e.getCause() instanceof SignatureNotFoundException)) {
-                Slog.e(TAG, "Signature verification error", e);
+        final ParseTypeImpl input = ParseTypeImpl.forDefaultParsing();
+        final ParseResult<ApkSignatureVerifier.SigningDetailsWithDigests> result =
+                ApkSignatureVerifier.verifySignaturesInternal(input, filePath,
+                        SignatureSchemeVersion.SIGNING_BLOCK_V2, false /*verifyFull*/);
+        if (result.isError()) {
+            if (!(result.getException() instanceof SignatureNotFoundException)) {
+                Slog.e(TAG, "Signature verification error", result.getException());
             }
+        } else {
+            contentDigests = result.getResult().contentDigests;
         }
 
         if (contentDigests == null) {
@@ -720,16 +759,20 @@ public class ApkChecksums {
         }
     }
 
+    static final int MIN_BUFFER_SIZE = 4 * 1024;
+    static final int MAX_BUFFER_SIZE = 128 * 1024;
+
     private static byte[] getApkChecksum(File file, int type) {
-        try (FileInputStream fis = new FileInputStream(file);
-             BufferedInputStream bis = new BufferedInputStream(fis)) {
-            byte[] dataBytes = new byte[512 * 1024];
+        final int bufferSize = (int) Math.max(MIN_BUFFER_SIZE,
+                Math.min(MAX_BUFFER_SIZE, file.length()));
+        try (FileInputStream fis = new FileInputStream(file)) {
+            final byte[] buffer = new byte[bufferSize];
             int nread = 0;
 
             final String algo = getMessageDigestAlgoForChecksumKind(type);
             MessageDigest md = MessageDigest.getInstance(algo);
-            while ((nread = bis.read(dataBytes)) != -1) {
-                md.update(dataBytes, 0, nread);
+            while ((nread = fis.read(buffer)) != -1) {
+                md.update(buffer, 0, nread);
             }
 
             return md.digest();

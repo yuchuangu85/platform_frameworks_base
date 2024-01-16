@@ -23,6 +23,7 @@ import android.annotation.Nullable;
 import android.annotation.StringRes;
 import android.content.pm.UserInfo;
 import android.content.pm.UserInfo.UserInfoFlag;
+import android.content.pm.UserProperties;
 import android.content.res.Resources;
 import android.os.Bundle;
 import android.os.UserManager;
@@ -50,7 +51,7 @@ public final class UserTypeDetails {
     /** Name of the user type, such as {@link UserManager#USER_TYPE_PROFILE_MANAGED}. */
     private final @NonNull String mName;
 
-    // TODO(b/142482943): Currently unused. Hook this up.
+    /** Whether users of this type can be created. */
     private final boolean mEnabled;
 
     // TODO(b/142482943): Currently unused and not set. Hook this up.
@@ -75,7 +76,7 @@ public final class UserTypeDetails {
     private final @UserInfoFlag int mBaseType;
 
     // TODO(b/143784345): Update doc/name when we clean up UserInfo.
-    /** The {@link UserInfo.UserInfoFlag}s that all users of this type will automatically have. */
+    /** The {@link UserInfoFlag}s to apply by default to newly created users of this type. */
     private final @UserInfoFlag int mDefaultUserInfoPropertyFlags;
 
     /**
@@ -150,11 +151,10 @@ public final class UserTypeDetails {
     private final @Nullable int[] mDarkThemeBadgeColors;
 
     /**
-     * Denotes if the user shares media with its parent user.
-     *
-     * <p> Default value is false
+     * The default {@link UserProperties} for the user type.
+     * <p> The uninitialized value of each property is implied by {@link UserProperties.Builder}.
      */
-    private final boolean mIsMediaSharedWithParent;
+    private final @NonNull UserProperties mDefaultUserProperties;
 
     private UserTypeDetails(@NonNull String name, boolean enabled, int maxAllowed,
             @UserInfoFlag int baseType, @UserInfoFlag int defaultUserInfoPropertyFlags, int label,
@@ -166,7 +166,7 @@ public final class UserTypeDetails {
             @Nullable Bundle defaultSystemSettings,
             @Nullable Bundle defaultSecureSettings,
             @Nullable List<DefaultCrossProfileIntentFilter> defaultCrossProfileIntentFilters,
-            boolean isMediaSharedWithParent) {
+            @NonNull UserProperties defaultUserProperties) {
         this.mName = name;
         this.mEnabled = enabled;
         this.mMaxAllowed = maxAllowed;
@@ -185,7 +185,7 @@ public final class UserTypeDetails {
         this.mBadgeLabels = badgeLabels;
         this.mBadgeColors = badgeColors;
         this.mDarkThemeBadgeColors = darkThemeBadgeColors;
-        this.mIsMediaSharedWithParent = isMediaSharedWithParent;
+        this.mDefaultUserProperties = defaultUserProperties;
     }
 
     /**
@@ -195,7 +195,10 @@ public final class UserTypeDetails {
         return mName;
     }
 
-    // TODO(b/142482943) Hook this up or delete it.
+    /**
+     * Returns whether this user type is enabled.
+     * If it is not enabled, all future attempts to create users of this type will be rejected.
+     */
     public boolean isEnabled() {
         return mEnabled;
     }
@@ -221,7 +224,7 @@ public final class UserTypeDetails {
     }
 
     // TODO(b/143784345): Update comment when UserInfo is reorganized.
-    /** The {@link UserInfo.UserInfoFlag}s that all users of this type will automatically have. */
+    /** The {@link UserInfoFlag}s to apply by default to newly created users of this type. */
     public int getDefaultUserInfoFlags() {
         return mDefaultUserInfoPropertyFlags | mBaseType;
     }
@@ -288,6 +291,15 @@ public final class UserTypeDetails {
         return mDarkThemeBadgeColors[Math.min(badgeIndex, mDarkThemeBadgeColors.length - 1)];
     }
 
+
+    /**
+     * Returns the reference to the default {@link UserProperties} for this type of user.
+     * This is not a copy. Do NOT modify this object.
+     */
+    public @NonNull UserProperties getDefaultUserPropertiesReference() {
+        return mDefaultUserProperties;
+    }
+
     public boolean isProfile() {
         return (mBaseType & UserInfo.FLAG_PROFILE) != 0;
     }
@@ -298,13 +310,6 @@ public final class UserTypeDetails {
 
     public boolean isSystem() {
         return (mBaseType & UserInfo.FLAG_SYSTEM) != 0;
-    }
-
-    /**
-     * Returns true if the user has shared media with parent user or false otherwise.
-     */
-    public boolean isMediaSharedWithParent() {
-        return mIsMediaSharedWithParent;
     }
 
     /** Returns a {@link Bundle} representing the default user restrictions. */
@@ -344,6 +349,7 @@ public final class UserTypeDetails {
         pw.print(prefix); pw.print("mDefaultUserInfoFlags: ");
         pw.println(UserInfo.flagsToString(mDefaultUserInfoPropertyFlags));
         pw.print(prefix); pw.print("mLabel: "); pw.println(mLabel);
+        mDefaultUserProperties.println(pw, prefix);
 
         final String restrictionsPrefix = prefix + "    ";
         if (isSystem()) {
@@ -390,7 +396,7 @@ public final class UserTypeDetails {
         private @Nullable Bundle mDefaultSecureSettings = null;
         private @Nullable List<DefaultCrossProfileIntentFilter> mDefaultCrossProfileIntentFilters =
                 null;
-        private boolean mEnabled = true;
+        private int mEnabled = 1;
         private int mLabel = Resources.ID_NULL;
         private @Nullable int[] mBadgeLabels = null;
         private @Nullable int[] mBadgeColors = null;
@@ -398,14 +404,16 @@ public final class UserTypeDetails {
         private @DrawableRes int mIconBadge = Resources.ID_NULL;
         private @DrawableRes int mBadgePlain = Resources.ID_NULL;
         private @DrawableRes int mBadgeNoBackground = Resources.ID_NULL;
-        private boolean mIsMediaSharedWithParent = false;
+        // Default UserProperties cannot be null but for efficiency we don't initialize it now.
+        // If it isn't set explicitly, {@link UserProperties.Builder#build()} will be used.
+        private @Nullable UserProperties mDefaultUserProperties = null;
 
         public Builder setName(String name) {
             mName = name;
             return this;
         }
 
-        public Builder setEnabled(boolean enabled) {
+        public Builder setEnabled(int enabled) {
             mEnabled = enabled;
             return this;
         }
@@ -490,12 +498,20 @@ public final class UserTypeDetails {
         }
 
         /**
-         * Sets shared media property for the user.
-         * @param isMediaSharedWithParent the value to be set, true or false
+         * Sets (replacing if necessary) the default UserProperties object for this user type.
+         * Takes a builder, rather than a built object, to efficiently ensure that a fresh copy of
+         * properties is stored (since it later might be modified by UserProperties#updateFromXml).
          */
-        public Builder setIsMediaSharedWithParent(boolean isMediaSharedWithParent) {
-            mIsMediaSharedWithParent = isMediaSharedWithParent;
+        public Builder setDefaultUserProperties(UserProperties.Builder userPropertiesBuilder) {
+            mDefaultUserProperties = userPropertiesBuilder.build();
             return this;
+        }
+
+        public @NonNull UserProperties getDefaultUserProperties() {
+            if (mDefaultUserProperties == null) {
+                mDefaultUserProperties = new UserProperties.Builder().build();
+            }
+            return mDefaultUserProperties;
         }
 
         @UserInfoFlag int getBaseType() {
@@ -510,6 +526,7 @@ public final class UserTypeDetails {
             Preconditions.checkArgument(hasValidPropertyFlags(),
                     "UserTypeDetails " + mName + " has invalid flags: "
                             + Integer.toHexString(mDefaultUserInfoPropertyFlags));
+            checkSystemAndMainUserPreconditions();
             if (hasBadge()) {
                 Preconditions.checkArgument(mBadgeLabels != null && mBadgeLabels.length != 0,
                         "UserTypeDetails " + mName + " has badge but no badgeLabels.");
@@ -522,12 +539,25 @@ public final class UserTypeDetails {
                         "UserTypeDetails %s has a non empty "
                                 + "defaultCrossProfileIntentFilters", mName);
             }
-            return new UserTypeDetails(mName, mEnabled, mMaxAllowed, mBaseType,
-                    mDefaultUserInfoPropertyFlags, mLabel, mMaxAllowedPerParent,
-                    mIconBadge, mBadgePlain, mBadgeNoBackground, mBadgeLabels, mBadgeColors,
+            return new UserTypeDetails(
+                    mName,
+                    mEnabled != 0,
+                    mMaxAllowed,
+                    mBaseType,
+                    mDefaultUserInfoPropertyFlags,
+                    mLabel,
+                    mMaxAllowedPerParent,
+                    mIconBadge,
+                    mBadgePlain,
+                    mBadgeNoBackground,
+                    mBadgeLabels,
+                    mBadgeColors,
                     mDarkThemeBadgeColors == null ? mBadgeColors : mDarkThemeBadgeColors,
-                    mDefaultRestrictions, mDefaultSystemSettings, mDefaultSecureSettings,
-                    mDefaultCrossProfileIntentFilters, mIsMediaSharedWithParent);
+                    mDefaultRestrictions,
+                    mDefaultSystemSettings,
+                    mDefaultSecureSettings,
+                    mDefaultCrossProfileIntentFilters,
+                    getDefaultUserProperties());
         }
 
         private boolean hasBadge() {
@@ -549,14 +579,24 @@ public final class UserTypeDetails {
         // TODO(b/143784345): Refactor this when we clean up UserInfo.
         private boolean hasValidPropertyFlags() {
             final int forbiddenMask =
-                    UserInfo.FLAG_PRIMARY |
-                    UserInfo.FLAG_ADMIN |
                     UserInfo.FLAG_INITIALIZED |
                     UserInfo.FLAG_QUIET_MODE |
                     UserInfo.FLAG_FULL |
                     UserInfo.FLAG_SYSTEM |
                     UserInfo.FLAG_PROFILE;
             return (mDefaultUserInfoPropertyFlags & forbiddenMask) == 0;
+        }
+
+        private void checkSystemAndMainUserPreconditions() {
+            // Primary must be synonymous with System.
+            Preconditions.checkArgument(
+                    ((mBaseType & UserInfo.FLAG_SYSTEM) != 0) ==
+                            ((mDefaultUserInfoPropertyFlags & UserInfo.FLAG_PRIMARY) != 0),
+                    "UserTypeDetails " + mName + " cannot be SYSTEM xor PRIMARY.");
+            // At most one MainUser is ever allowed at a time.
+            Preconditions.checkArgument(
+                    ((mDefaultUserInfoPropertyFlags & UserInfo.FLAG_MAIN) == 0) || mMaxAllowed == 1,
+                    "UserTypeDetails " + mName + " must not sanction more than one MainUser.");
         }
     }
 

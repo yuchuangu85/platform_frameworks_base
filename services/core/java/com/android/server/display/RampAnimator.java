@@ -23,15 +23,23 @@ import android.view.Choreographer;
 /**
  * A custom animator that progressively updates a property value at
  * a given variable rate until it reaches a particular target value.
+ * The ramping at the given rate is done in the perceptual space using
+ * the HLG transfer functions.
  */
 class RampAnimator<T> {
     private final T mObject;
     private final FloatProperty<T> mProperty;
-    private final Choreographer mChoreographer;
 
     private float mCurrentValue;
-    private float mTargetValue;
+
+    // target in HLG space
+    private float mTargetHlgValue;
+
+    // target in linear space
+    private float mTargetLinearValue;
     private float mRate;
+    private float mAnimationIncreaseMaxTimeSecs;
+    private float mAnimationDecreaseMaxTimeSecs;
 
     private boolean mAnimating;
     private float mAnimatedValue; // higher precision copy of mCurrentValue
@@ -39,44 +47,59 @@ class RampAnimator<T> {
 
     private boolean mFirstTime = true;
 
-    private Listener mListener;
 
-    public RampAnimator(T object, FloatProperty<T> property) {
+    RampAnimator(T object, FloatProperty<T> property) {
         mObject = object;
         mProperty = property;
-        mChoreographer = Choreographer.getInstance();
     }
 
     /**
-     * Starts animating towards the specified value.
+     * Sets the maximum time that a brightness animation can take.
+     */
+    void setAnimationTimeLimits(long animationRampIncreaseMaxTimeMillis,
+            long animationRampDecreaseMaxTimeMillis) {
+        mAnimationIncreaseMaxTimeSecs = (animationRampIncreaseMaxTimeMillis > 0)
+                ? (animationRampIncreaseMaxTimeMillis / 1000.0f) : 0.0f;
+        mAnimationDecreaseMaxTimeSecs = (animationRampDecreaseMaxTimeMillis > 0)
+                ? (animationRampDecreaseMaxTimeMillis / 1000.0f) : 0.0f;
+    }
+
+    /**
+     * Sets the animation target and the rate of this ramp animator.
      *
      * If this is the first time the property is being set or if the rate is 0,
      * the value jumps directly to the target.
      *
-     * @param target The target value.
+     * @param targetLinear The target value.
      * @param rate The convergence rate in units per second, or 0 to set the value immediately.
      * @return True if the target differs from the previous target.
      */
-    public boolean animateTo(float target, float rate) {
+    boolean setAnimationTarget(float targetLinear, float rate) {
+        // Convert the target from the linear into the HLG space.
+        final float target = BrightnessUtils.convertLinearToGamma(targetLinear);
 
         // Immediately jump to the target the first time.
         if (mFirstTime || rate <= 0) {
             if (mFirstTime || target != mCurrentValue) {
                 mFirstTime = false;
                 mRate = 0;
-                mTargetValue = target;
+                mTargetHlgValue = target;
+                mTargetLinearValue = targetLinear;
                 mCurrentValue = target;
-                mProperty.setValue(mObject, target);
-                if (mAnimating) {
-                    mAnimating = false;
-                    cancelAnimationCallback();
-                }
-                if (mListener != null) {
-                    mListener.onAnimationEnd();
-                }
+                setPropertyValue(target);
+                mAnimating = false;
                 return true;
             }
             return false;
+        }
+
+        // Adjust the rate so that we do not exceed our maximum animation time.
+        if (target > mCurrentValue && mAnimationIncreaseMaxTimeSecs > 0.0f
+                && ((target - mCurrentValue) / rate) > mAnimationIncreaseMaxTimeSecs) {
+            rate = (target - mCurrentValue) / mAnimationIncreaseMaxTimeSecs;
+        } else if (target < mCurrentValue && mAnimationDecreaseMaxTimeSecs > 0.0f
+                && ((mCurrentValue - target) / rate) > mAnimationDecreaseMaxTimeSecs) {
+            rate = (mCurrentValue - target) / mAnimationDecreaseMaxTimeSecs;
         }
 
         // Adjust the rate based on the closest target.
@@ -88,20 +111,20 @@ class RampAnimator<T> {
         // Otherwise, continue at the previous rate.
         if (!mAnimating
                 || rate > mRate
-                || (target <= mCurrentValue && mCurrentValue <= mTargetValue)
-                || (mTargetValue <= mCurrentValue && mCurrentValue <= target)) {
+                || (target <= mCurrentValue && mCurrentValue <= mTargetHlgValue)
+                || (mTargetHlgValue <= mCurrentValue && mCurrentValue <= target)) {
             mRate = rate;
         }
 
-        final boolean changed = (mTargetValue != target);
-        mTargetValue = target;
+        final boolean changed = (mTargetHlgValue != target);
+        mTargetHlgValue = target;
+        mTargetLinearValue = targetLinear;
 
         // Start animating.
         if (!mAnimating && target != mCurrentValue) {
             mAnimating = true;
             mAnimatedValue = mCurrentValue;
             mLastFrameTimeNanos = System.nanoTime();
-            postAnimationCallback();
         }
 
         return changed;
@@ -110,89 +133,81 @@ class RampAnimator<T> {
     /**
      * Returns true if the animation is running.
      */
-    public boolean isAnimating() {
+    boolean isAnimating() {
         return mAnimating;
     }
 
     /**
-     * Sets a listener to watch for animation events.
+     * Sets the brightness property by converting the given value from HLG space
+     * into linear space.
      */
-    public void setListener(Listener listener) {
-        mListener = listener;
+    private void setPropertyValue(float val) {
+        // To avoid linearVal inconsistency when converting to HLG and back to linear space
+        // used original target linear value for final animation step
+        float linearVal =
+                val == mTargetHlgValue ? mTargetLinearValue : BrightnessUtils.convertGammaToLinear(
+                        val);
+        mProperty.setValue(mObject, linearVal);
     }
 
-    private void postAnimationCallback() {
-        mChoreographer.postCallback(Choreographer.CALLBACK_ANIMATION, mAnimationCallback, null);
-    }
+    void performNextAnimationStep(long frameTimeNanos) {
+        final float timeDelta = (frameTimeNanos - mLastFrameTimeNanos) * 0.000000001f;
+        mLastFrameTimeNanos = frameTimeNanos;
 
-    private void cancelAnimationCallback() {
-        mChoreographer.removeCallbacks(Choreographer.CALLBACK_ANIMATION, mAnimationCallback, null);
-    }
-
-    private final Runnable mAnimationCallback = new Runnable() {
-        @Override // Choreographer callback
-        public void run() {
-            final long frameTimeNanos = mChoreographer.getFrameTimeNanos();
-            final float timeDelta = (frameTimeNanos - mLastFrameTimeNanos)
-                    * 0.000000001f;
-            mLastFrameTimeNanos = frameTimeNanos;
-
-            // Advance the animated value towards the target at the specified rate
-            // and clamp to the target. This gives us the new current value but
-            // we keep the animated value around to allow for fractional increments
-            // towards the target.
-            final float scale = ValueAnimator.getDurationScale();
-            if (scale == 0) {
-                // Animation off.
-                mAnimatedValue = mTargetValue;
+        // Advance the animated value towards the target at the specified rate
+        // and clamp to the target. This gives us the new current value but
+        // we keep the animated value around to allow for fractional increments
+        // towards the target.
+        final float scale = ValueAnimator.getDurationScale();
+        if (scale == 0) {
+            // Animation off.
+            mAnimatedValue = mTargetHlgValue;
+        } else {
+            final float amount = timeDelta * mRate / scale;
+            if (mTargetHlgValue > mCurrentValue) {
+                mAnimatedValue = Math.min(mAnimatedValue + amount, mTargetHlgValue);
             } else {
-                final float amount = timeDelta * mRate / scale;
-                if (mTargetValue > mCurrentValue) {
-                    mAnimatedValue = Math.min(mAnimatedValue + amount, mTargetValue);
-                } else {
-                    mAnimatedValue = Math.max(mAnimatedValue - amount, mTargetValue);
-                }
-            }
-            final float oldCurrentValue = mCurrentValue;
-            mCurrentValue = mAnimatedValue;
-            if (oldCurrentValue != mCurrentValue) {
-                mProperty.setValue(mObject, mCurrentValue);
-            }
-            if (mTargetValue != mCurrentValue) {
-                postAnimationCallback();
-            } else {
-                mAnimating = false;
-                if (mListener != null) {
-                    mListener.onAnimationEnd();
-                }
+                mAnimatedValue = Math.max(mAnimatedValue - amount, mTargetHlgValue);
             }
         }
-    };
+        final float oldCurrentValue = mCurrentValue;
+        mCurrentValue = mAnimatedValue;
+        if (oldCurrentValue != mCurrentValue) {
+            setPropertyValue(mCurrentValue);
+        }
+        if (mTargetHlgValue == mCurrentValue) {
+            mAnimating = false;
+        }
+    }
 
     public interface Listener {
         void onAnimationEnd();
     }
 
     static class DualRampAnimator<T> {
+        private final Choreographer mChoreographer;
         private final RampAnimator<T> mFirst;
         private final RampAnimator<T> mSecond;
-        private final Listener mInternalListener = new Listener() {
-            @Override
-            public void onAnimationEnd() {
-                if (mListener != null && !isAnimating()) {
-                    mListener.onAnimationEnd();
-                }
-            }
-        };
 
         private Listener mListener;
+        private boolean mAwaitingCallback;
 
         DualRampAnimator(T object, FloatProperty<T> firstProperty,
                 FloatProperty<T> secondProperty) {
-            mFirst = new RampAnimator(object, firstProperty);
-            mFirst.setListener(mInternalListener);
-            mSecond = new RampAnimator(object, secondProperty);
-            mSecond.setListener(mInternalListener);
+            mChoreographer = Choreographer.getInstance();
+            mFirst = new RampAnimator<>(object, firstProperty);
+            mSecond = new RampAnimator<>(object, secondProperty);
+        }
+
+        /**
+         * Sets the maximum time that a brightness animation can take.
+         */
+        public void setAnimationTimeLimits(long animationRampIncreaseMaxTimeMillis,
+                long animationRampDecreaseMaxTimeMillis) {
+            mFirst.setAnimationTimeLimits(animationRampIncreaseMaxTimeMillis,
+                    animationRampDecreaseMaxTimeMillis);
+            mSecond.setAnimationTimeLimits(animationRampIncreaseMaxTimeMillis,
+                    animationRampDecreaseMaxTimeMillis);
         }
 
         /**
@@ -201,23 +216,62 @@ class RampAnimator<T> {
          * If this is the first time the property is being set or if the rate is 0,
          * the value jumps directly to the target.
          *
-         * @param firstTarget The first target value.
-         * @param secondTarget The second target value.
+         * @param linearFirstTarget The first target value in linear space.
+         * @param linearSecondTarget The second target value in linear space.
          * @param rate The convergence rate in units per second, or 0 to set the value immediately.
          * @return True if either target differs from the previous target.
          */
-        public boolean animateTo(float firstTarget, float secondTarget, float rate) {
-            final boolean firstRetval = mFirst.animateTo(firstTarget, rate);
-            final boolean secondRetval = mSecond.animateTo(secondTarget, rate);
-            return firstRetval && secondRetval;
+        public boolean animateTo(float linearFirstTarget, float linearSecondTarget, float rate) {
+            boolean animationTargetChanged = mFirst.setAnimationTarget(linearFirstTarget, rate);
+            animationTargetChanged |= mSecond.setAnimationTarget(linearSecondTarget, rate);
+            boolean shouldBeAnimating = isAnimating();
+
+            if (shouldBeAnimating != mAwaitingCallback) {
+                if (shouldBeAnimating) {
+                    mAwaitingCallback = true;
+                    postAnimationCallback();
+                } else if (mAwaitingCallback) {
+                    mChoreographer.removeCallbacks(Choreographer.CALLBACK_ANIMATION,
+                            mAnimationCallback, null);
+                    mAwaitingCallback = false;
+                }
+            }
+            return animationTargetChanged;
         }
 
+        /**
+        * Sets a listener to watch for animation events.
+        */
         public void setListener(Listener listener) {
             mListener = listener;
         }
 
+        /**
+        * Returns true if the animation is running.
+        */
         public boolean isAnimating() {
-            return mFirst.isAnimating() && mSecond.isAnimating();
+            return mFirst.isAnimating() || mSecond.isAnimating();
         }
+
+        private void postAnimationCallback() {
+            mChoreographer.postCallback(Choreographer.CALLBACK_ANIMATION, mAnimationCallback, null);
+        }
+
+        private final Runnable mAnimationCallback = new Runnable() {
+            @Override // Choreographer callback
+            public void run() {
+                long frameTimeNanos = mChoreographer.getFrameTimeNanos();
+                mFirst.performNextAnimationStep(frameTimeNanos);
+                mSecond.performNextAnimationStep(frameTimeNanos);
+                if (isAnimating()) {
+                    postAnimationCallback();
+                } else {
+                    if (mListener != null) {
+                        mListener.onAnimationEnd();
+                    }
+                    mAwaitingCallback = false;
+                }
+            }
+        };
     }
 }

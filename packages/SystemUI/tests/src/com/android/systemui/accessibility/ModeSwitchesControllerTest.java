@@ -22,27 +22,34 @@ import android.content.pm.ActivityInfo;
 import android.hardware.display.DisplayManager;
 import android.provider.Settings;
 import android.testing.AndroidTestingRunner;
+import android.testing.TestableLooper;
 import android.view.Display;
+import android.view.View;
 
 import androidx.test.filters.SmallTest;
 
 import com.android.systemui.SysuiTestCase;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
 @SmallTest
 @RunWith(AndroidTestingRunner.class)
 /** Tests the ModeSwitchesController. */
+@TestableLooper.RunWithLooper(setAsMainLooper = true)
 public class ModeSwitchesControllerTest extends SysuiTestCase {
 
     private FakeSwitchSupplier mSupplier;
-    @Mock
     private MagnificationModeSwitch mModeSwitch;
     private ModeSwitchesController mModeSwitchesController;
+    private View mSpyView;
+    @Mock
+    private MagnificationModeSwitch.ClickListener mListener;
 
 
     @Before
@@ -50,6 +57,14 @@ public class ModeSwitchesControllerTest extends SysuiTestCase {
         MockitoAnnotations.initMocks(this);
         mSupplier = new FakeSwitchSupplier(mContext.getSystemService(DisplayManager.class));
         mModeSwitchesController = new ModeSwitchesController(mSupplier);
+        mModeSwitchesController.setClickListenerDelegate(mListener);
+        mModeSwitch = Mockito.spy(new MagnificationModeSwitch(mContext, mModeSwitchesController));
+        mSpyView = Mockito.spy(new View(mContext));
+    }
+
+    @After
+    public void tearDown() {
+        mModeSwitchesController.removeButton(Display.DEFAULT_DISPLAY);
     }
 
     @Test
@@ -77,6 +92,16 @@ public class ModeSwitchesControllerTest extends SysuiTestCase {
         mModeSwitchesController.onConfigurationChanged(ActivityInfo.CONFIG_DENSITY);
 
         verify(mModeSwitch).onConfigurationChanged(ActivityInfo.CONFIG_DENSITY);
+    }
+
+    @Test
+    public void testOnSwitchClick_showWindowModeButton_invokeListener() {
+        mModeSwitchesController.showButton(Display.DEFAULT_DISPLAY,
+                Settings.Secure.ACCESSIBILITY_MAGNIFICATION_MODE_FULLSCREEN);
+
+        mModeSwitch.onSingleTap(mSpyView);
+
+        verify(mListener).onClick(mContext.getDisplayId());
     }
 
     private class FakeSwitchSupplier extends DisplayIdIndexSupplier<MagnificationModeSwitch> {

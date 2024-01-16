@@ -24,6 +24,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationChannelGroup;
 import android.app.NotificationHistory;
 import android.app.NotificationManager;
+import android.content.AttributionSource;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.ParceledListSlice;
@@ -47,8 +48,8 @@ interface INotificationManager
     void cancelAllNotifications(String pkg, int userId);
 
     void clearData(String pkg, int uid, boolean fromApp);
-    void enqueueTextToast(String pkg, IBinder token, CharSequence text, int duration, int displayId, @nullable ITransientNotificationCallback callback);
-    void enqueueToast(String pkg, IBinder token, ITransientNotification callback, int duration, int displayId);
+    void enqueueTextToast(String pkg, IBinder token, CharSequence text, int duration, boolean isUiContext, int displayId, @nullable ITransientNotificationCallback callback);
+    void enqueueToast(String pkg, IBinder token, ITransientNotification callback, int duration, boolean isUiContext, int displayId);
     void cancelToast(String pkg, IBinder token);
     void finishToken(String pkg, IBinder token);
 
@@ -57,12 +58,14 @@ interface INotificationManager
     @UnsupportedAppUsage
     void cancelNotificationWithTag(String pkg, String opPkg, String tag, int id, int userId);
 
+    boolean isInCall(String pkg, int uid);
     void setShowBadge(String pkg, int uid, boolean showBadge);
     boolean canShowBadge(String pkg, int uid);
     boolean hasSentValidMsg(String pkg, int uid);
     boolean isInInvalidMsgState(String pkg, int uid);
     boolean hasUserDemotedInvalidMsgApp(String pkg, int uid);
     void setInvalidMsgAppDemoted(String pkg, int uid, boolean isDemoted);
+    boolean hasSentValidBubble(String pkg, int uid);
     void setNotificationsEnabledForPackage(String pkg, int uid, boolean enabled);
     /**
      * Updates the notification's enabled state. Additionally locks importance for all of the
@@ -75,10 +78,9 @@ interface INotificationManager
     boolean areNotificationsEnabledForPackage(String pkg, int uid);
     boolean areNotificationsEnabled(String pkg);
     int getPackageImportance(String pkg);
+    boolean isImportanceLocked(String pkg, int uid);
 
     List<String> getAllowedAssistantAdjustments(String pkg);
-    void allowAssistantAdjustment(String adjustmentType);
-    void disallowAssistantAdjustment(String adjustmentType);
 
     boolean shouldHideSilentStatusIcons(String callingPkg);
     void setHideSilentStatusIcons(boolean hide);
@@ -114,12 +116,11 @@ interface INotificationManager
     NotificationChannelGroup getNotificationChannelGroup(String pkg, String channelGroupId);
     ParceledListSlice getNotificationChannelGroups(String pkg);
     boolean onlyHasDefaultChannel(String pkg, int uid);
-    int getBlockedAppCount(int userId);
     boolean areChannelsBypassingDnd();
-    int getAppsBypassingDndCount(int uid);
-    ParceledListSlice getNotificationChannelsBypassingDnd(String pkg, int userId);
+    ParceledListSlice getNotificationChannelsBypassingDnd(String pkg, int uid);
     boolean isPackagePaused(String pkg);
     void deleteNotificationHistoryItem(String pkg, int uid, long postedTime);
+    boolean isPermissionFixed(String pkg, int userId);
 
     void silenceNotificationSound();
 
@@ -147,6 +148,7 @@ interface INotificationManager
 
     void requestBindListener(in ComponentName component);
     void requestUnbindListener(in INotificationListener token);
+    void requestUnbindListenerComponent(in ComponentName component);
     void requestBindProvider(in ComponentName component);
     void requestUnbindProvider(in IConditionProvider token);
 
@@ -157,6 +159,7 @@ interface INotificationManager
     void clearRequestedListenerHints(in INotificationListener token);
     void requestHintsFromListener(in INotificationListener token, int hints);
     int getHintsFromListener(in INotificationListener token);
+    int getHintsFromListenerNoToken();
     void requestInterruptionFilterFromListener(in INotificationListener token, int interruptionFilter);
     int getInterruptionFilterFromListener(in INotificationListener token);
     void setOnNotificationPostedTrimFromListener(in INotificationListener token, int trim);
@@ -175,6 +178,7 @@ interface INotificationManager
 
     ComponentName getEffectsSuppressor();
     boolean matchesCallFilter(in Bundle extras);
+    void cleanUpCallersAfter(long timeThreshold);
     boolean isSystemConditionProviderEnabled(String path);
 
     boolean isNotificationListenerAccessGranted(in ComponentName listener);
@@ -222,6 +226,7 @@ interface INotificationManager
     void setNotificationDelegate(String callingPkg, String delegate);
     String getNotificationDelegate(String callingPkg);
     boolean canNotifyAsPackage(String callingPkg, String targetPkg, int userId);
+    boolean canUseFullScreenIntent(in AttributionSource attributionSource);
 
     void setPrivateNotificationsAllowed(boolean allow);
     boolean getPrivateNotificationsAllowed();
@@ -232,5 +237,6 @@ interface INotificationManager
     void setListenerFilter(in ComponentName cn, int userId, in NotificationListenerFilter nlf);
     void migrateNotificationFilter(in INotificationListener token, int defaultTypes, in List<String> disallowedPkgs);
 
+    @EnforcePermission("MANAGE_TOAST_RATE_LIMITING")
     void setToastRateLimitingEnabled(boolean enable);
 }

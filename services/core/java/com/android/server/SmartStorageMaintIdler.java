@@ -25,6 +25,7 @@ import android.content.Context;
 import android.util.Slog;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class SmartStorageMaintIdler extends JobService {
     private static final String TAG = "SmartStorageMaintIdler";
@@ -34,43 +35,51 @@ public class SmartStorageMaintIdler extends JobService {
 
     private static final int SMART_MAINT_JOB_ID = 2808;
 
-    private boolean mStarted;
+    private final AtomicBoolean mStarted = new AtomicBoolean(false);
     private JobParameters mJobParams;
     private final Runnable mFinishCallback = new Runnable() {
         @Override
         public void run() {
             Slog.i(TAG, "Got smart storage maintenance service completion callback");
-            if (mStarted) {
+            if (mStarted.get()) {
                 jobFinished(mJobParams, false);
-                mStarted = false;
+                mStarted.set(false);
             }
             // ... and try again in a next period
             scheduleSmartIdlePass(SmartStorageMaintIdler.this,
-                StorageManagerService.SMART_IDLE_MAINT_PERIOD);
+                StorageManagerService.sSmartIdleMaintPeriod);
         }
     };
 
     @Override
     public boolean onStartJob(JobParameters params) {
-        mJobParams = params;
-        StorageManagerService ms = StorageManagerService.sSelf;
-        if (ms != null) {
-            mStarted = true;
-            ms.runSmartIdleMaint(mFinishCallback);
+        final StorageManagerService ms = StorageManagerService.sSelf;
+        if (mStarted.compareAndSet(false, true)) {
+            new Thread() {
+                public void run() {
+                    mJobParams = params;
+                    if (ms != null) {
+                        ms.runSmartIdleMaint(mFinishCallback);
+                    } else {
+                        mStarted.set(false);
+                    }
+                }
+            }.start();
+            return ms != null;
         }
-        return ms != null;
+        return false;
     }
 
     @Override
     public boolean onStopJob(JobParameters params) {
-        mStarted = false;
+        mStarted.set(false);
         return false;
     }
 
     /**
      * Schedule the smart storage idle maintenance job
      */
-    public static void scheduleSmartIdlePass(Context context, int nHours) {
+    public static void scheduleSmartIdlePass(Context context, int nMinutes) {
         StorageManagerService ms = StorageManagerService.sSelf;
         if ((ms == null) || ms.isPassedLifetimeThresh()) {
             return;
@@ -78,7 +87,7 @@ public class SmartStorageMaintIdler extends JobService {
 
         JobScheduler tm = context.getSystemService(JobScheduler.class);
 
-        long nextScheduleTime = TimeUnit.HOURS.toMillis(nHours);
+        long nextScheduleTime = TimeUnit.MINUTES.toMillis(nMinutes);
 
         JobInfo.Builder builder = new JobInfo.Builder(SMART_MAINT_JOB_ID,
             SMART_STORAGE_MAINT_SERVICE);

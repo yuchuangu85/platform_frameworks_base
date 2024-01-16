@@ -28,9 +28,6 @@ import android.annotation.Nullable;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.RemoteException;
-import android.view.DisplayInfo;
-import android.view.ViewGroup;
-import android.view.WindowManager;
 import android.view.animation.Animation;
 
 import com.android.internal.protolog.common.ProtoLog;
@@ -44,7 +41,7 @@ class WallpaperWindowToken extends WindowToken {
 
     private static final String TAG = TAG_WITH_CLASS_NAME ? "WallpaperWindowToken" : TAG_WM;
 
-    private boolean mVisibleRequested = false;
+    private boolean mShowWhenLocked = false;
 
     WallpaperWindowToken(WindowManagerService service, IBinder token, boolean explicit,
             DisplayContent dc, boolean ownerCanManageAppTokens) {
@@ -68,6 +65,33 @@ class WallpaperWindowToken extends WindowToken {
     void setExiting(boolean animateExit) {
         super.setExiting(animateExit);
         mDisplayContent.mWallpaperController.removeWallpaperToken(this);
+    }
+
+    /**
+     * Controls whether this wallpaper shows underneath the keyguard or is hidden and only
+     * revealed once keyguard is dismissed.
+     */
+    void setShowWhenLocked(boolean showWhenLocked) {
+        if (showWhenLocked == mShowWhenLocked) {
+            return;
+        }
+        mShowWhenLocked = showWhenLocked;
+        if (mDisplayContent.mWallpaperController.mIsLockscreenLiveWallpaperEnabled) {
+            // Move the window token to the front (private) or back (showWhenLocked). This is
+            // possible
+            // because the DisplayArea underneath TaskDisplayArea only contains TYPE_WALLPAPER
+            // windows.
+            final int position = showWhenLocked ? POSITION_BOTTOM : POSITION_TOP;
+
+            // Note: Moving all the way to the front or back breaks ordering based on addition
+            // times.
+            // We should never have more than one non-animating token of each type.
+            getParent().positionChildAt(position, this /* child */, false /*includingParents */);
+        }
+    }
+
+    boolean canShowWhenLocked() {
+        return mShowWhenLocked;
     }
 
     void sendWindowWallpaperCommand(
@@ -105,17 +129,14 @@ class WallpaperWindowToken extends WindowToken {
     }
 
     void updateWallpaperWindows(boolean visible) {
-        if (isVisible() != visible) {
+        if (mVisibleRequested != visible) {
             ProtoLog.d(WM_DEBUG_WALLPAPER, "Wallpaper token %s visible=%b",
                     token, visible);
             setVisibility(visible);
         }
-        final WallpaperController wallpaperController = mDisplayContent.mWallpaperController;
-        if (mTransitionController.isShellTransitionsEnabled()) {
-            return;
-        }
 
-        final WindowState wallpaperTarget = wallpaperController.getWallpaperTarget();
+        final WindowState wallpaperTarget =
+                mDisplayContent.mWallpaperController.getWallpaperTarget();
 
         if (visible && wallpaperTarget != null) {
             final RecentsAnimationController recentsAnimationController =
@@ -128,12 +149,18 @@ class WallpaperWindowToken extends WindowToken {
                 recentsAnimationController.linkFixedRotationTransformIfNeeded(this);
             } else if ((wallpaperTarget.mActivityRecord == null
                     // Ignore invisible activity because it may be moving to background.
-                    || wallpaperTarget.mActivityRecord.mVisibleRequested)
+                    || wallpaperTarget.mActivityRecord.isVisibleRequested())
                     && wallpaperTarget.mToken.hasFixedRotationTransform()) {
                 // If the wallpaper target has a fixed rotation, we want the wallpaper to follow its
                 // rotation
                 linkFixedRotationTransform(wallpaperTarget.mToken);
             }
+        }
+        if (mTransitionController.inTransition(this)) {
+            // If wallpaper is in transition, setVisible() will be called from commitVisibility()
+            // when finishing transition. Otherwise commitVisibility() is already called from above
+            // setVisibility().
+            return;
         }
 
         setVisible(visible);
@@ -155,10 +182,12 @@ class WallpaperWindowToken extends WindowToken {
      * transition. In that situation, make sure to call {@link #commitVisibility} when done.
      */
     void setVisibility(boolean visible) {
-        // Before setting mVisibleRequested so we can track changes.
-        mTransitionController.collect(this);
+        if (mVisibleRequested != visible) {
+            // Before setting mVisibleRequested so we can track changes.
+            mTransitionController.collect(this);
 
-        setVisibleRequested(visible);
+            setVisibleRequested(visible);
+        }
 
         // If in a transition, defer commits for activities that are going invisible
         if (!visible && (mTransitionController.inTransition()
@@ -169,10 +198,7 @@ class WallpaperWindowToken extends WindowToken {
         commitVisibility(visible);
     }
 
-    /**
-     * Commits the visibility of this token. This will directly update the visibility without
-     * regard for other state (like being in a transition).
-     */
+    /** Commits the visibility of this token. This will directly update the visibility. */
     void commitVisibility(boolean visible) {
         if (visible == isVisible()) return;
 
@@ -182,23 +208,6 @@ class WallpaperWindowToken extends WindowToken {
 
         setVisibleRequested(visible);
         setVisible(visible);
-    }
-
-    @Override
-    void adjustWindowParams(WindowState win, WindowManager.LayoutParams attrs) {
-        if (attrs.height == ViewGroup.LayoutParams.MATCH_PARENT
-                || attrs.width == ViewGroup.LayoutParams.MATCH_PARENT) {
-            return;
-        }
-
-        final DisplayInfo displayInfo = win.getDisplayInfo();
-
-        final float layoutScale = Math.max(
-                (float) displayInfo.logicalHeight / (float) attrs.height,
-                (float) displayInfo.logicalWidth / (float) attrs.width);
-        attrs.height = (int) (attrs.height * layoutScale);
-        attrs.width = (int) (attrs.width * layoutScale);
-        attrs.flags |= WindowManager.LayoutParams.FLAG_SCALED;
     }
 
     boolean hasVisibleNotDrawnWallpaper() {
@@ -227,15 +236,17 @@ class WallpaperWindowToken extends WindowToken {
         return false;
     }
 
-    void setVisibleRequested(boolean visible) {
-        if (mVisibleRequested == visible) return;
-        mVisibleRequested = visible;
+    @Override
+    protected boolean setVisibleRequested(boolean visible) {
+        if (!super.setVisibleRequested(visible)) return false;
         setInsetsFrozen(!visible);
+        return true;
     }
 
     @Override
-    boolean isVisibleRequested() {
-        return mVisibleRequested;
+    protected boolean onChildVisibleRequestedChanged(@Nullable WindowContainer child) {
+        // Wallpaper manages visibleRequested directly (it's not determined by children)
+        return false;
     }
 
     @Override

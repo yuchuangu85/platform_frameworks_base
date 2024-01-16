@@ -12,6 +12,7 @@
 #include "ResourceTable.h"
 #include "XMLNode.h"
 
+#include <androidfw/PathUtils.h>
 #include <utils/Errors.h>
 #include <utils/KeyedVector.h>
 #include <utils/List.h>
@@ -240,13 +241,13 @@ static void printResolvedResourceAttribute(const ResTable& resTable, const ResXM
     }
     if (value.dataType == Res_value::TYPE_STRING) {
         String8 result = AaptXml::getResolvedAttribute(resTable, tree, attrRes, outError);
-        printf("%s='%s'", attrLabel.string(),
-                ResTable::normalizeForOutput(result.string()).string());
+        printf("%s='%s'", attrLabel.c_str(),
+                ResTable::normalizeForOutput(result.c_str()).c_str());
     } else if (Res_value::TYPE_FIRST_INT <= value.dataType &&
             value.dataType <= Res_value::TYPE_LAST_INT) {
-        printf("%s='%d'", attrLabel.string(), value.data);
+        printf("%s='%d'", attrLabel.c_str(), value.data);
     } else {
-        printf("%s='0x%x'", attrLabel.string(), (int)value.data);
+        printf("%s='0x%x'", attrLabel.c_str(), (int)value.data);
     }
 }
 
@@ -353,23 +354,23 @@ static void printCompatibleScreens(ResXMLTree& tree, String8* outError) {
 }
 
 static void printUsesPermission(const String8& name, bool optional=false, int maxSdkVersion=-1,
-        const String8& requiredFeature = String8::empty(),
-        const String8& requiredNotFeature = String8::empty()) {
-    printf("uses-permission: name='%s'", ResTable::normalizeForOutput(name.string()).string());
+        const String8& requiredFeature = String8(),
+        const String8& requiredNotFeature = String8()) {
+    printf("uses-permission: name='%s'", ResTable::normalizeForOutput(name.c_str()).c_str());
     if (maxSdkVersion != -1) {
          printf(" maxSdkVersion='%d'", maxSdkVersion);
     }
     if (requiredFeature.length() > 0) {
-         printf(" requiredFeature='%s'", requiredFeature.string());
+         printf(" requiredFeature='%s'", requiredFeature.c_str());
     }
     if (requiredNotFeature.length() > 0) {
-         printf(" requiredNotFeature='%s'", requiredNotFeature.string());
+         printf(" requiredNotFeature='%s'", requiredNotFeature.c_str());
     }
     printf("\n");
 
     if (optional) {
         printf("optional-permission: name='%s'",
-                ResTable::normalizeForOutput(name.string()).string());
+                ResTable::normalizeForOutput(name.c_str()).c_str());
         if (maxSdkVersion != -1) {
             printf(" maxSdkVersion='%d'", maxSdkVersion);
         }
@@ -380,7 +381,7 @@ static void printUsesPermission(const String8& name, bool optional=false, int ma
 static void printUsesPermissionSdk23(const String8& name, int maxSdkVersion=-1) {
     printf("uses-permission-sdk-23: ");
 
-    printf("name='%s'", ResTable::normalizeForOutput(name.string()).string());
+    printf("name='%s'", ResTable::normalizeForOutput(name.c_str()).c_str());
     if (maxSdkVersion != -1) {
         printf(" maxSdkVersion='%d'", maxSdkVersion);
     }
@@ -390,17 +391,17 @@ static void printUsesPermissionSdk23(const String8& name, int maxSdkVersion=-1) 
 static void printUsesImpliedPermission(const String8& name, const String8& reason,
         const int32_t maxSdkVersion = -1) {
     printf("uses-implied-permission: name='%s'",
-            ResTable::normalizeForOutput(name.string()).string());
+            ResTable::normalizeForOutput(name.c_str()).c_str());
     if (maxSdkVersion != -1) {
         printf(" maxSdkVersion='%d'", maxSdkVersion);
     }
-    printf(" reason='%s'\n", ResTable::normalizeForOutput(reason.string()).string());
+    printf(" reason='%s'\n", ResTable::normalizeForOutput(reason.c_str()).c_str());
 }
 
 Vector<String8> getNfcAidCategories(AssetManager& assets, const String8& xmlPath, bool offHost,
         String8 *outError = NULL)
 {
-    Asset* aidAsset = assets.openNonAsset(xmlPath, Asset::ACCESS_BUFFER);
+    Asset* aidAsset = assets.openNonAsset(xmlPath.c_str(), Asset::ACCESS_BUFFER);
     if (aidAsset == NULL) {
         if (outError != NULL) *outError = "xml resource does not exist";
         return Vector<String8>();
@@ -556,7 +557,7 @@ static void addImpliedFeature(KeyedVector<String8, ImpliedFeature>* impliedFeatu
 
 static void printFeatureGroupImpl(const FeatureGroup& grp,
                                   const KeyedVector<String8, ImpliedFeature>* impliedFeatures) {
-    printf("feature-group: label='%s'\n", grp.label.string());
+    printf("feature-group: label='%s'\n", grp.label.c_str());
 
     if (grp.openGLESVersion > 0) {
         printf("  uses-gl-es: '0x%x'\n", grp.openGLESVersion);
@@ -570,7 +571,7 @@ static void printFeatureGroupImpl(const FeatureGroup& grp,
 
         const String8& featureName = grp.features.keyAt(i);
         printf("  uses-feature%s: name='%s'", (required ? "" : "-not-required"),
-                ResTable::normalizeForOutput(featureName.string()).string());
+                ResTable::normalizeForOutput(featureName.c_str()).c_str());
 
         if (version > 0) {
             printf(" version='%d'", version);
@@ -589,15 +590,15 @@ static void printFeatureGroupImpl(const FeatureGroup& grp,
         }
 
         String8 printableFeatureName(ResTable::normalizeForOutput(
-                    impliedFeature.name.string()));
+                    impliedFeature.name.c_str()));
         const char* sdk23Suffix = impliedFeature.impliedBySdk23 ? "-sdk-23" : "";
 
-        printf("  uses-feature%s: name='%s'\n", sdk23Suffix, printableFeatureName.string());
+        printf("  uses-feature%s: name='%s'\n", sdk23Suffix, printableFeatureName.c_str());
         printf("  uses-implied-feature%s: name='%s' reason='", sdk23Suffix,
-               printableFeatureName.string());
+               printableFeatureName.c_str());
         const size_t numReasons = impliedFeature.reasons.size();
         for (size_t j = 0; j < numReasons; j++) {
-            printf("%s", impliedFeature.reasons[j].string());
+            printf("%s", impliedFeature.reasons[j].c_str());
             if (j + 2 < numReasons) {
                 printf(", ");
             } else if (j + 1 < numReasons) {
@@ -649,43 +650,43 @@ static void addImpliedFeaturesForPermission(const int targetSdk, const String8& 
                                             bool impliedBySdk23Permission) {
     if (name == "android.permission.CAMERA") {
         addImpliedFeature(impliedFeatures, "android.hardware.camera",
-                          String8::format("requested %s permission", name.string()),
+                          String8::format("requested %s permission", name.c_str()),
                           impliedBySdk23Permission);
     } else if (name == "android.permission.ACCESS_FINE_LOCATION") {
         if (targetSdk < SDK_LOLLIPOP) {
             addImpliedFeature(impliedFeatures, "android.hardware.location.gps",
-                              String8::format("requested %s permission", name.string()),
+                              String8::format("requested %s permission", name.c_str()),
                               impliedBySdk23Permission);
             addImpliedFeature(impliedFeatures, "android.hardware.location.gps",
                               String8::format("targetSdkVersion < %d", SDK_LOLLIPOP),
                               impliedBySdk23Permission);
         }
         addImpliedFeature(impliedFeatures, "android.hardware.location",
-                String8::format("requested %s permission", name.string()),
+                String8::format("requested %s permission", name.c_str()),
                 impliedBySdk23Permission);
     } else if (name == "android.permission.ACCESS_COARSE_LOCATION") {
         if (targetSdk < SDK_LOLLIPOP) {
             addImpliedFeature(impliedFeatures, "android.hardware.location.network",
-                              String8::format("requested %s permission", name.string()),
+                              String8::format("requested %s permission", name.c_str()),
                               impliedBySdk23Permission);
             addImpliedFeature(impliedFeatures, "android.hardware.location.network",
                               String8::format("targetSdkVersion < %d", SDK_LOLLIPOP),
                               impliedBySdk23Permission);
         }
         addImpliedFeature(impliedFeatures, "android.hardware.location",
-                          String8::format("requested %s permission", name.string()),
+                          String8::format("requested %s permission", name.c_str()),
                           impliedBySdk23Permission);
     } else if (name == "android.permission.ACCESS_MOCK_LOCATION" ||
                name == "android.permission.ACCESS_LOCATION_EXTRA_COMMANDS" ||
                name == "android.permission.INSTALL_LOCATION_PROVIDER") {
         addImpliedFeature(impliedFeatures, "android.hardware.location",
-                          String8::format("requested %s permission", name.string()),
+                          String8::format("requested %s permission", name.c_str()),
                           impliedBySdk23Permission);
     } else if (name == "android.permission.BLUETOOTH" ||
                name == "android.permission.BLUETOOTH_ADMIN") {
         if (targetSdk > SDK_DONUT) {
             addImpliedFeature(impliedFeatures, "android.hardware.bluetooth",
-                              String8::format("requested %s permission", name.string()),
+                              String8::format("requested %s permission", name.c_str()),
                               impliedBySdk23Permission);
             addImpliedFeature(impliedFeatures, "android.hardware.bluetooth",
                               String8::format("targetSdkVersion > %d", SDK_DONUT),
@@ -693,13 +694,13 @@ static void addImpliedFeaturesForPermission(const int targetSdk, const String8& 
         }
     } else if (name == "android.permission.RECORD_AUDIO") {
         addImpliedFeature(impliedFeatures, "android.hardware.microphone",
-                          String8::format("requested %s permission", name.string()),
+                          String8::format("requested %s permission", name.c_str()),
                           impliedBySdk23Permission);
     } else if (name == "android.permission.ACCESS_WIFI_STATE" ||
                name == "android.permission.CHANGE_WIFI_STATE" ||
                name == "android.permission.CHANGE_WIFI_MULTICAST_STATE") {
         addImpliedFeature(impliedFeatures, "android.hardware.wifi",
-                          String8::format("requested %s permission", name.string()),
+                          String8::format("requested %s permission", name.c_str()),
                           impliedBySdk23Permission);
     } else if (name == "android.permission.CALL_PHONE" ||
                name == "android.permission.CALL_PRIVILEGED" ||
@@ -746,7 +747,7 @@ int doDump(Bundle* bundle)
     for (size_t i = 0; i < bundle->getPackageIncludes().size(); i++) {
       const String8& assetPath = bundle->getPackageIncludes()[i];
       if (!assets.addAssetPath(assetPath, NULL)) {
-        fprintf(stderr, "ERROR: included asset path %s could not be loaded\n", assetPath.string());
+        fprintf(stderr, "ERROR: included asset path %s could not be loaded\n", assetPath.c_str());
         return 1;
       }
     }
@@ -769,7 +770,7 @@ int doDump(Bundle* bundle)
     config.country[1] = 'S';
     config.orientation = ResTable_config::ORIENTATION_PORT;
     config.density = ResTable_config::DENSITY_MEDIUM;
-    config.sdkVersion = 10000; // Very high.
+    config.sdkVersion = SDK_CUR_DEVELOPMENT; // Very high.
     config.screenWidthDp = 320;
     config.screenHeightDp = 480;
     config.smallestScreenWidthDp = 320;
@@ -890,7 +891,7 @@ int doDump(Bundle* bundle)
                     goto bail;
                 }
                 String8 tag(ctag16);
-                //printf("Depth %d tag %s\n", depth, tag.string());
+                //printf("Depth %d tag %s\n", depth, tag.c_str());
                 if (depth == 1) {
                     if (tag != "manifest") {
                         SourcePos(manifestFile, tree.getLineNumber()).error(
@@ -898,14 +899,14 @@ int doDump(Bundle* bundle)
                         goto bail;
                     }
                     String8 pkg = AaptXml::getAttribute(tree, NULL, "package", NULL);
-                    printf("package: %s\n", ResTable::normalizeForOutput(pkg.string()).string());
+                    printf("package: %s\n", ResTable::normalizeForOutput(pkg.c_str()).c_str());
                 } else if (depth == 2) {
                     if (tag == "permission") {
                         String8 error;
                         String8 name = AaptXml::getAttribute(tree, NAME_ATTR, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:name': %s", error.string());
+                                    "ERROR getting 'android:name': %s", error.c_str());
                             goto bail;
                         }
 
@@ -915,13 +916,13 @@ int doDump(Bundle* bundle)
                             goto bail;
                         }
                         printf("permission: %s\n",
-                                ResTable::normalizeForOutput(name.string()).string());
+                                ResTable::normalizeForOutput(name.c_str()).c_str());
                     } else if (tag == "uses-permission") {
                         String8 error;
                         String8 name = AaptXml::getAttribute(tree, NAME_ATTR, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:name' attribute: %s", error.string());
+                                    "ERROR getting 'android:name' attribute: %s", error.c_str());
                             goto bail;
                         }
 
@@ -938,7 +939,7 @@ int doDump(Bundle* bundle)
                         String8 name = AaptXml::getAttribute(tree, NAME_ATTR, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:name' attribute: %s", error.string());
+                                    "ERROR getting 'android:name' attribute: %s", error.c_str());
                             goto bail;
                         }
 
@@ -1028,7 +1029,6 @@ int doDump(Bundle* bundle)
             // These permissions are required by services implementing services
             // the system binds to (IME, Accessibility, PrintServices, etc.)
             bool hasBindDeviceAdminPermission = false;
-            bool hasBindInputMethodPermission = false;
             bool hasBindAccessibilityServicePermission = false;
             bool hasBindPrintServicePermission = false;
             bool hasBindNfcServicePermission = false;
@@ -1134,12 +1134,12 @@ int doDump(Bundle* bundle)
                 if (code == ResXMLTree::END_TAG) {
                     depth--;
                     if (depth < 2) {
-                        if (withinSupportsInput && !supportedInput.isEmpty()) {
+                        if (withinSupportsInput && !supportedInput.empty()) {
                             printf("supports-input: '");
                             const size_t N = supportedInput.size();
                             for (size_t i=0; i<N; i++) {
                                 printf("%s", ResTable::normalizeForOutput(
-                                        supportedInput[i].string()).string());
+                                        supportedInput[i].c_str()).c_str());
                                 if (i != N - 1) {
                                     printf("' '");
                                 } else {
@@ -1158,27 +1158,27 @@ int doDump(Bundle* bundle)
                                 printf("launchable-activity:");
                                 if (aName.length() > 0) {
                                     printf(" name='%s' ",
-                                            ResTable::normalizeForOutput(aName.string()).string());
+                                            ResTable::normalizeForOutput(aName.c_str()).c_str());
                                 }
                                 printf(" label='%s' icon='%s'\n",
-                                       ResTable::normalizeForOutput(activityLabel.string())
-                                                .string(),
-                                       ResTable::normalizeForOutput(activityIcon.string())
-                                                .string());
+                                       ResTable::normalizeForOutput(activityLabel.c_str())
+                                                .c_str(),
+                                       ResTable::normalizeForOutput(activityIcon.c_str())
+                                                .c_str());
                             }
                             if (isLeanbackLauncherActivity) {
                                 printf("leanback-launchable-activity:");
                                 if (aName.length() > 0) {
                                     printf(" name='%s' ",
-                                            ResTable::normalizeForOutput(aName.string()).string());
+                                            ResTable::normalizeForOutput(aName.c_str()).c_str());
                                 }
                                 printf(" label='%s' icon='%s' banner='%s'\n",
-                                       ResTable::normalizeForOutput(activityLabel.string())
-                                                .string(),
-                                       ResTable::normalizeForOutput(activityIcon.string())
-                                                .string(),
-                                       ResTable::normalizeForOutput(activityBanner.string())
-                                                .string());
+                                       ResTable::normalizeForOutput(activityLabel.c_str())
+                                                .c_str(),
+                                       ResTable::normalizeForOutput(activityIcon.c_str())
+                                                .c_str(),
+                                       ResTable::normalizeForOutput(activityBanner.c_str())
+                                                .c_str());
                             }
                         }
                         if (!hasIntentFilter) {
@@ -1266,7 +1266,7 @@ int doDump(Bundle* bundle)
                     goto bail;
                 }
                 String8 tag(ctag16);
-                //printf("Depth %d,  %s\n", depth, tag.string());
+                //printf("Depth %d,  %s\n", depth, tag.c_str());
                 if (depth == 1) {
                     if (tag != "manifest") {
                         SourcePos(manifestFile, tree.getLineNumber()).error(
@@ -1275,13 +1275,13 @@ int doDump(Bundle* bundle)
                     }
                     pkg = AaptXml::getAttribute(tree, NULL, "package", NULL);
                     printf("package: name='%s' ",
-                            ResTable::normalizeForOutput(pkg.string()).string());
+                            ResTable::normalizeForOutput(pkg.c_str()).c_str());
                     int32_t versionCode = AaptXml::getIntegerAttribute(tree, VERSION_CODE_ATTR,
                             &error);
                     if (error != "") {
                         SourcePos(manifestFile, tree.getLineNumber()).error(
                                 "ERROR getting 'android:versionCode' attribute: %s",
-                                error.string());
+                                error.c_str());
                         goto bail;
                     }
                     if (versionCode > 0) {
@@ -1294,28 +1294,42 @@ int doDump(Bundle* bundle)
                     if (error != "") {
                         SourcePos(manifestFile, tree.getLineNumber()).error(
                                 "ERROR getting 'android:versionName' attribute: %s",
-                                error.string());
+                                error.c_str());
                         goto bail;
                     }
                     printf("versionName='%s'",
-                            ResTable::normalizeForOutput(versionName.string()).string());
+                            ResTable::normalizeForOutput(versionName.c_str()).c_str());
 
                     String8 splitName = AaptXml::getAttribute(tree, NULL, "split");
-                    if (!splitName.isEmpty()) {
+                    if (!splitName.empty()) {
                         printf(" split='%s'", ResTable::normalizeForOutput(
-                                    splitName.string()).string());
+                                    splitName.c_str()).c_str());
                     }
 
+                    // For 'platformBuildVersionName', using both string and int type as a fallback
+                    // since it may be the code name of Android or the API level.
                     String8 platformBuildVersionName = AaptXml::getAttribute(tree, NULL,
                             "platformBuildVersionName");
+                    int32_t platformBuildVersionNameInt =
+                            AaptXml::getIntegerAttribute(tree, NULL, "platformBuildVersionName", 0,
+                                                         NULL);
                     if (platformBuildVersionName != "") {
-                        printf(" platformBuildVersionName='%s'", platformBuildVersionName.string());
+                        printf(" platformBuildVersionName='%s'", platformBuildVersionName.c_str());
+                    } else if (platformBuildVersionNameInt > 0) {
+                        printf(" platformBuildVersionName='%d'", platformBuildVersionNameInt);
                     }
 
+                    // For 'platformBuildVersionCode', using both string and int type as a fallback
+                    // since it may be the code name of Android or the API level.
                     String8 platformBuildVersionCode = AaptXml::getAttribute(tree, NULL,
                             "platformBuildVersionCode");
+                    int32_t platformBuildVersionCodeInt =
+                            AaptXml::getIntegerAttribute(tree, NULL, "platformBuildVersionCode", 0,
+                                                         NULL);
                     if (platformBuildVersionCode != "") {
-                        printf(" platformBuildVersionCode='%s'", platformBuildVersionCode.string());
+                        printf(" platformBuildVersionCode='%s'", platformBuildVersionCode.c_str());
+                    } else if (platformBuildVersionCodeInt > 0) {
+                        printf(" platformBuildVersionCode='%d'", platformBuildVersionCodeInt);
                     }
 
                     int32_t compileSdkVersion = AaptXml::getIntegerAttribute(tree,
@@ -1323,7 +1337,7 @@ int doDump(Bundle* bundle)
                     if (error != "") {
                         SourcePos(manifestFile, tree.getLineNumber()).error(
                                 "ERROR getting 'android:compileSdkVersion' attribute: %s",
-                                error.string());
+                                error.c_str());
                         goto bail;
                     }
                     if (compileSdkVersion > 0) {
@@ -1334,7 +1348,7 @@ int doDump(Bundle* bundle)
                             COMPILE_SDK_VERSION_CODENAME_ATTR, &error);
                     if (compileSdkVersionCodename != "") {
                         printf(" compileSdkVersionCodename='%s'", ResTable::normalizeForOutput(
-                                compileSdkVersionCodename.string()).string());
+                                compileSdkVersionCodename.c_str()).c_str());
                     }
 
                     printf("\n");
@@ -1344,7 +1358,7 @@ int doDump(Bundle* bundle)
                     if (error != "") {
                         SourcePos(manifestFile, tree.getLineNumber()).error(
                                 "ERROR getting 'android:installLocation' attribute: %s",
-                                error.string());
+                                error.c_str());
                         goto bail;
                     }
 
@@ -1374,7 +1388,7 @@ int doDump(Bundle* bundle)
                         String8 label;
                         const size_t NL = locales.size();
                         for (size_t i=0; i<NL; i++) {
-                            const char* localeStr =  locales[i].string();
+                            const char* localeStr =  locales[i].c_str();
                             assets.setConfiguration(config, localeStr != NULL ? localeStr : "");
                             String8 llabel = AaptXml::getResolvedAttribute(res, tree, LABEL_ATTR,
                                     &error);
@@ -1382,13 +1396,13 @@ int doDump(Bundle* bundle)
                                 if (localeStr == NULL || strlen(localeStr) == 0) {
                                     label = llabel;
                                     printf("application-label:'%s'\n",
-                                            ResTable::normalizeForOutput(llabel.string()).string());
+                                            ResTable::normalizeForOutput(llabel.c_str()).c_str());
                                 } else {
                                     if (label == "") {
                                         label = llabel;
                                     }
                                     printf("application-label-%s:'%s'\n", localeStr,
-                                           ResTable::normalizeForOutput(llabel.string()).string());
+                                           ResTable::normalizeForOutput(llabel.c_str()).c_str());
                                 }
                             }
                         }
@@ -1402,7 +1416,7 @@ int doDump(Bundle* bundle)
                                     &error);
                             if (icon != "") {
                                 printf("application-icon-%d:'%s'\n", densities[i],
-                                        ResTable::normalizeForOutput(icon.string()).string());
+                                        ResTable::normalizeForOutput(icon.c_str()).c_str());
                             }
                         }
                         assets.setConfiguration(config);
@@ -1410,7 +1424,7 @@ int doDump(Bundle* bundle)
                         String8 icon = AaptXml::getResolvedAttribute(res, tree, ICON_ATTR, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:icon' attribute: %s", error.string());
+                                    "ERROR getting 'android:icon' attribute: %s", error.c_str());
                             goto bail;
                         }
                         int32_t testOnly = AaptXml::getIntegerAttribute(tree, TEST_ONLY_ATTR, 0,
@@ -1418,7 +1432,7 @@ int doDump(Bundle* bundle)
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
                                     "ERROR getting 'android:testOnly' attribute: %s",
-                                    error.string());
+                                    error.c_str());
                             goto bail;
                         }
 
@@ -1426,15 +1440,15 @@ int doDump(Bundle* bundle)
                                                                        &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:banner' attribute: %s", error.string());
+                                    "ERROR getting 'android:banner' attribute: %s", error.c_str());
                             goto bail;
                         }
                         printf("application: label='%s' ",
-                                ResTable::normalizeForOutput(label.string()).string());
-                        printf("icon='%s'", ResTable::normalizeForOutput(icon.string()).string());
+                                ResTable::normalizeForOutput(label.c_str()).c_str());
+                        printf("icon='%s'", ResTable::normalizeForOutput(icon.c_str()).c_str());
                         if (banner != "") {
                             printf(" banner='%s'",
-                                   ResTable::normalizeForOutput(banner.string()).string());
+                                   ResTable::normalizeForOutput(banner.c_str()).c_str());
                         }
                         printf("\n");
                         if (testOnly != 0) {
@@ -1445,7 +1459,7 @@ int doDump(Bundle* bundle)
                                 ISGAME_ATTR, 0, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:isGame' attribute: %s", error.string());
+                                    "ERROR getting 'android:isGame' attribute: %s", error.c_str());
                             goto bail;
                         }
                         if (isGame != 0) {
@@ -1457,7 +1471,7 @@ int doDump(Bundle* bundle)
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
                                     "ERROR getting 'android:debuggable' attribute: %s",
-                                    error.string());
+                                    error.c_str());
                             goto bail;
                         }
                         if (debuggable != 0) {
@@ -1487,12 +1501,12 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:minSdkVersion' attribute: %s",
-                                        error.string());
+                                        error.c_str());
                                 goto bail;
                             }
-                            if (name == "Donut") targetSdk = 4;
+                            if (name == "Donut") targetSdk = SDK_DONUT;
                             printf("sdkVersion:'%s'\n",
-                                    ResTable::normalizeForOutput(name.string()).string());
+                                    ResTable::normalizeForOutput(name.c_str()).c_str());
                         } else if (code != -1) {
                             targetSdk = code;
                             printf("sdkVersion:'%d'\n", code);
@@ -1509,12 +1523,17 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:targetSdkVersion' attribute: %s",
-                                        error.string());
+                                        error.c_str());
                                 goto bail;
                             }
-                            if (name == "Donut" && targetSdk < 4) targetSdk = 4;
+                            if (name == "Donut" && targetSdk < SDK_DONUT) {
+                                targetSdk = SDK_DONUT;
+                            } else if (name != "" && targetSdk == 0) {
+                                // Bump to current development version
+                                targetSdk = SDK_CUR_DEVELOPMENT;
+                            }
                             printf("targetSdkVersion:'%s'\n",
-                                    ResTable::normalizeForOutput(name.string()).string());
+                                    ResTable::normalizeForOutput(name.c_str()).c_str());
                         } else if (code != -1) {
                             if (targetSdk < code) {
                                 targetSdk = code;
@@ -1574,7 +1593,7 @@ int doDump(Bundle* bundle)
                         group.label = AaptXml::getResolvedAttribute(res, tree, LABEL_ATTR, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:label' attribute: %s", error.string());
+                                    "ERROR getting 'android:label' attribute: %s", error.c_str());
                             goto bail;
                         }
                         featureGroups.add(group);
@@ -1590,7 +1609,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "failed to read attribute 'android:required': %s",
-                                        error.string());
+                                        error.c_str());
                                 goto bail;
                             }
 
@@ -1599,7 +1618,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "failed to read attribute 'android:version': %s",
-                                        error.string());
+                                        error.c_str());
                                 goto bail;
                             }
 
@@ -1620,7 +1639,7 @@ int doDump(Bundle* bundle)
                         String8 name = AaptXml::getAttribute(tree, NAME_ATTR, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:name' attribute: %s", error.string());
+                                    "ERROR getting 'android:name' attribute: %s", error.c_str());
                             goto bail;
                         }
 
@@ -1664,7 +1683,7 @@ int doDump(Bundle* bundle)
                         String8 name = AaptXml::getAttribute(tree, NAME_ATTR, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:name' attribute: %s", error.string());
+                                    "ERROR getting 'android:name' attribute: %s", error.c_str());
                             goto bail;
                         }
 
@@ -1683,37 +1702,37 @@ int doDump(Bundle* bundle)
                         String8 name = AaptXml::getAttribute(tree, NAME_ATTR, &error);
                         if (name != "" && error == "") {
                             printf("uses-package:'%s'\n",
-                                    ResTable::normalizeForOutput(name.string()).string());
+                                    ResTable::normalizeForOutput(name.c_str()).c_str());
                         } else {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:name' attribute: %s", error.string());
+                                    "ERROR getting 'android:name' attribute: %s", error.c_str());
                             goto bail;
                         }
                     } else if (tag == "original-package") {
                         String8 name = AaptXml::getAttribute(tree, NAME_ATTR, &error);
                         if (name != "" && error == "") {
                             printf("original-package:'%s'\n",
-                                    ResTable::normalizeForOutput(name.string()).string());
+                                    ResTable::normalizeForOutput(name.c_str()).c_str());
                         } else {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:name' attribute: %s", error.string());
+                                    "ERROR getting 'android:name' attribute: %s", error.c_str());
                             goto bail;
                         }
                     } else if (tag == "supports-gl-texture") {
                         String8 name = AaptXml::getAttribute(tree, NAME_ATTR, &error);
                         if (name != "" && error == "") {
                             printf("supports-gl-texture:'%s'\n",
-                                    ResTable::normalizeForOutput(name.string()).string());
+                                    ResTable::normalizeForOutput(name.c_str()).c_str());
                         } else {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:name' attribute: %s", error.string());
+                                    "ERROR getting 'android:name' attribute: %s", error.c_str());
                             goto bail;
                         }
                     } else if (tag == "compatible-screens") {
                         printCompatibleScreens(tree, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting compatible screens: %s", error.string());
+                                    "ERROR getting compatible screens: %s", error.c_str());
                             goto bail;
                         }
                         depth--;
@@ -1724,8 +1743,8 @@ int doDump(Bundle* bundle)
                                                                       &error);
                             if (publicKey != "" && error == "") {
                                 printf("package-verifier: name='%s' publicKey='%s'\n",
-                                        ResTable::normalizeForOutput(name.string()).string(),
-                                        ResTable::normalizeForOutput(publicKey.string()).string());
+                                        ResTable::normalizeForOutput(name.c_str()).c_str(),
+                                        ResTable::normalizeForOutput(publicKey.c_str()).c_str());
                             }
                         }
                     }
@@ -1738,7 +1757,6 @@ int doDump(Bundle* bundle)
                     hasMetaHostPaymentCategory = false;
                     hasMetaOffHostPaymentCategory = false;
                     hasBindDeviceAdminPermission = false;
-                    hasBindInputMethodPermission = false;
                     hasBindAccessibilityServicePermission = false;
                     hasBindPrintServicePermission = false;
                     hasBindNfcServicePermission = false;
@@ -1752,7 +1770,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:name' attribute: %s",
-                                        error.string());
+                                        error.c_str());
                                 goto bail;
                             }
 
@@ -1761,7 +1779,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:label' attribute: %s",
-                                        error.string());
+                                        error.c_str());
                                 goto bail;
                             }
 
@@ -1770,7 +1788,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:icon' attribute: %s",
-                                        error.string());
+                                        error.c_str());
                                 goto bail;
                             }
 
@@ -1779,7 +1797,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:banner' attribute: %s",
-                                        error.string());
+                                        error.c_str());
                                 goto bail;
                             }
 
@@ -1807,14 +1825,14 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:name' attribute for uses-library"
-                                        " %s", error.string());
+                                        " %s", error.c_str());
                                 goto bail;
                             }
                             int req = AaptXml::getIntegerAttribute(tree,
                                     REQUIRED_ATTR, 1);
                             printf("uses-library%s:'%s'\n",
                                     req ? "" : "-not-required", ResTable::normalizeForOutput(
-                                            libraryName.string()).string());
+                                            libraryName.c_str()).c_str());
                         } else if (tag == "receiver") {
                             withinReceiver = true;
                             receiverName = AaptXml::getAttribute(tree, NAME_ATTR, &error);
@@ -1822,7 +1840,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:name' attribute for receiver:"
-                                        " %s", error.string());
+                                        " %s", error.c_str());
                                 goto bail;
                             }
 
@@ -1836,7 +1854,7 @@ int doDump(Bundle* bundle)
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:permission' attribute for"
                                         " receiver '%s': %s",
-                                        receiverName.string(), error.string());
+                                        receiverName.c_str(), error.c_str());
                             }
                         } else if (tag == "service") {
                             withinService = true;
@@ -1845,16 +1863,14 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:name' attribute for "
-                                        "service:%s", error.string());
+                                        "service:%s", error.c_str());
                                 goto bail;
                             }
 
                             String8 permission = AaptXml::getAttribute(tree, PERMISSION_ATTR,
                                     &error);
                             if (error == "") {
-                                if (permission == "android.permission.BIND_INPUT_METHOD") {
-                                    hasBindInputMethodPermission = true;
-                                } else if (permission ==
+                                if (permission ==
                                         "android.permission.BIND_ACCESSIBILITY_SERVICE") {
                                     hasBindAccessibilityServicePermission = true;
                                 } else if (permission ==
@@ -1872,7 +1888,7 @@ int doDump(Bundle* bundle)
                             } else {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:permission' attribute for "
-                                        "service '%s': %s", serviceName.string(), error.string());
+                                        "service '%s': %s", serviceName.c_str(), error.c_str());
                             }
                         } else if (tag == "provider") {
                             withinProvider = true;
@@ -1882,7 +1898,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:exported' attribute for provider:"
-                                        " %s", error.string());
+                                        " %s", error.c_str());
                                 goto bail;
                             }
 
@@ -1891,7 +1907,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:grantUriPermissions' attribute for "
-                                        "provider: %s", error.string());
+                                        "provider: %s", error.c_str());
                                 goto bail;
                             }
 
@@ -1900,7 +1916,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:permission' attribute for "
-                                        "provider: %s", error.string());
+                                        "provider: %s", error.c_str());
                                 goto bail;
                             }
 
@@ -1913,11 +1929,11 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:name' attribute for "
-                                        "meta-data: %s", error.string());
+                                        "meta-data: %s", error.c_str());
                                 goto bail;
                             }
                             printf("meta-data: name='%s' ",
-                                    ResTable::normalizeForOutput(metaDataName.string()).string());
+                                    ResTable::normalizeForOutput(metaDataName.c_str()).c_str());
                             printResolvedResourceAttribute(res, tree, VALUE_ATTR, String8("value"),
                                     &error);
                             if (error != "") {
@@ -1929,7 +1945,7 @@ int doDump(Bundle* bundle)
                                     SourcePos(manifestFile, tree.getLineNumber()).error(
                                             "ERROR getting 'android:value' or "
                                             "'android:resource' attribute for "
-                                            "meta-data: %s", error.string());
+                                            "meta-data: %s", error.c_str());
                                     goto bail;
                                 }
                             }
@@ -1941,7 +1957,7 @@ int doDump(Bundle* bundle)
                             } else {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:name' attribute: %s",
-                                        error.string());
+                                        error.c_str());
                                 goto bail;
                             }
                         }
@@ -1954,13 +1970,13 @@ int doDump(Bundle* bundle)
                             Feature feature(true);
 
                             int32_t featureVers = AaptXml::getIntegerAttribute(
-                                    tree, androidSchema.string(), "version", 0, &error);
+                                    tree, androidSchema.c_str(), "version", 0, &error);
                             if (error == "") {
                                 feature.version = featureVers;
                             } else {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "failed to read attribute 'android:version': %s",
-                                        error.string());
+                                        error.c_str());
                                 goto bail;
                             }
 
@@ -2001,8 +2017,8 @@ int doDump(Bundle* bundle)
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
                                     "ERROR getting 'android:name' attribute for "
-                                    "meta-data tag in service '%s': %s", serviceName.string(),
-                                    error.string());
+                                    "meta-data tag in service '%s': %s", serviceName.c_str(),
+                                    error.c_str());
                             goto bail;
                         }
 
@@ -2019,7 +2035,7 @@ int doDump(Bundle* bundle)
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting 'android:resource' attribute for "
                                         "meta-data tag in service '%s': %s",
-                                        serviceName.string(), error.string());
+                                        serviceName.c_str(), error.c_str());
                                 goto bail;
                             }
 
@@ -2028,7 +2044,7 @@ int doDump(Bundle* bundle)
                             if (error != "") {
                                 SourcePos(manifestFile, tree.getLineNumber()).error(
                                         "ERROR getting AID category for service '%s'",
-                                        serviceName.string());
+                                        serviceName.c_str());
                                 goto bail;
                             }
 
@@ -2049,7 +2065,7 @@ int doDump(Bundle* bundle)
                         action = AaptXml::getAttribute(tree, NAME_ATTR, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'android:name' attribute: %s", error.string());
+                                    "ERROR getting 'android:name' attribute: %s", error.c_str());
                             goto bail;
                         }
 
@@ -2105,7 +2121,7 @@ int doDump(Bundle* bundle)
                         String8 category = AaptXml::getAttribute(tree, NAME_ATTR, &error);
                         if (error != "") {
                             SourcePos(manifestFile, tree.getLineNumber()).error(
-                                    "ERROR getting 'name' attribute: %s", error.string());
+                                    "ERROR getting 'name' attribute: %s", error.c_str());
                             goto bail;
                         }
                         if (withinActivity) {
@@ -2122,7 +2138,7 @@ int doDump(Bundle* bundle)
             }
 
             // Pre-1.6 implicitly granted permission compatibility logic
-            if (targetSdk < 4) {
+            if (targetSdk < SDK_DONUT) {
                 if (!hasWriteExternalStoragePermission) {
                     printUsesPermission(String8("android.permission.WRITE_EXTERNAL_STORAGE"));
                     printUsesImpliedPermission(String8("android.permission.WRITE_EXTERNAL_STORAGE"),
@@ -2149,7 +2165,7 @@ int doDump(Bundle* bundle)
             }
 
             // Pre-JellyBean call log permission compatibility.
-            if (targetSdk < 16) {
+            if (targetSdk < SDK_JELLY_BEAN) {
                 if (!hasReadCallLogPermission && hasReadContactsPermission) {
                     printUsesPermission(String8("android.permission.READ_CALL_LOG"));
                     printUsesImpliedPermission(String8("android.permission.READ_CALL_LOG"),
@@ -2291,21 +2307,23 @@ int doDump(Bundle* bundle)
             // the screen size support was introduced, so all default to
             // enabled.
             if (smallScreen > 0) {
-                smallScreen = targetSdk >= 4 ? -1 : 0;
+                smallScreen = targetSdk >= SDK_DONUT ? -1 : 0;
             }
             if (normalScreen > 0) {
                 normalScreen = -1;
             }
             if (largeScreen > 0) {
-                largeScreen = targetSdk >= 4 ? -1 : 0;
+                largeScreen = targetSdk >= SDK_DONUT ? -1 : 0;
             }
             if (xlargeScreen > 0) {
                 // Introduced in Gingerbread.
-                xlargeScreen = targetSdk >= 9 ? -1 : 0;
+                xlargeScreen = targetSdk >= SDK_GINGERBREAD ? -1 : 0;
             }
             if (anyDensity > 0) {
-                anyDensity = (targetSdk >= 4 || requiresSmallestWidthDp > 0
-                        || compatibleWidthLimitDp > 0) ? -1 : 0;
+                anyDensity = (targetSdk >= SDK_DONUT || requiresSmallestWidthDp > 0 ||
+                              compatibleWidthLimitDp > 0)
+                        ? -1
+                        : 0;
             }
             printf("supports-screens:");
             if (smallScreen != 0) {
@@ -2335,7 +2353,7 @@ int doDump(Bundle* bundle)
             printf("locales:");
             const size_t NL = locales.size();
             for (size_t i=0; i<NL; i++) {
-                const char* localeStr =  locales[i].string();
+                const char* localeStr =  locales[i].c_str();
                 if (localeStr == NULL || strlen(localeStr) == 0) {
                     localeStr = "--_--";
                 }
@@ -2356,7 +2374,7 @@ int doDump(Bundle* bundle)
                     SortedVector<String8> architectures;
                     for (size_t i=0; i<dir->getFileCount(); i++) {
                         architectures.add(ResTable::normalizeForOutput(
-                                dir->getFileName(i).string()));
+                                dir->getFileName(i).c_str()));
                     }
 
                     bool outputAltNativeCode = false;
@@ -2384,7 +2402,7 @@ int doDump(Bundle* bundle)
                         }
 
                         if (index >= 0) {
-                            printf("native-code: '%s'\n", architectures[index].string());
+                            printf("native-code: '%s'\n", architectures[index].c_str());
                             architectures.removeAt(index);
                             outputAltNativeCode = true;
                         }
@@ -2397,7 +2415,7 @@ int doDump(Bundle* bundle)
                         }
                         printf("native-code:");
                         for (size_t i = 0; i < archCount; i++) {
-                            printf(" '%s'", architectures[i].string());
+                            printf(" '%s'", architectures[i].c_str());
                         }
                         printf("\n");
                     }
@@ -2411,7 +2429,7 @@ int doDump(Bundle* bundle)
             res.getConfigurations(&configs);
             const size_t N = configs.size();
             for (size_t i=0; i<N; i++) {
-                printf("%s\n", configs[i].toString().string());
+                printf("%s\n", configs[i].toString().c_str());
             }
         } else {
             fprintf(stderr, "ERROR: unknown dump option '%s'\n", option);
@@ -2469,15 +2487,15 @@ int doAdd(Bundle* bundle)
     for (int i = 1; i < bundle->getFileSpecCount(); i++) {
         const char* fileName = bundle->getFileSpecEntry(i);
 
-        if (strcasecmp(String8(fileName).getPathExtension().string(), ".gz") == 0) {
+        if (strcasecmp(getPathExtension(String8(fileName)).c_str(), ".gz") == 0) {
             printf(" '%s'... (from gzip)\n", fileName);
-            result = zip->addGzip(fileName, String8(fileName).getBasePath().string(), NULL);
+            result = zip->addGzip(fileName, getBasePath(String8(fileName)).c_str(), NULL);
         } else {
             if (bundle->getJunkPath()) {
-                String8 storageName = String8(fileName).getPathLeaf();
+                String8 storageName = getPathLeaf(String8(fileName));
                 printf(" '%s' as '%s'...\n", fileName,
-                        ResTable::normalizeForOutput(storageName.string()).string());
-                result = zip->add(fileName, storageName.string(),
+                        ResTable::normalizeForOutput(storageName.c_str()).c_str());
+                result = zip->add(fileName, storageName.c_str(),
                                   bundle->getCompressionMethod(), NULL);
             } else {
                 printf(" '%s'...\n", fileName);
@@ -2564,7 +2582,7 @@ static status_t addResourcesToBuilder(const sp<AaptDir>& dir, const sp<ApkBuilde
     for (size_t i = 0; i < numDirs; i++) {
         bool ignore = ignoreConfig;
         const sp<AaptDir>& subDir = dir->getDirs().valueAt(i);
-        const char* dirStr = subDir->getLeaf().string();
+        const char* dirStr = subDir->getLeaf().c_str();
         if (!ignore && strstr(dirStr, "mipmap") == dirStr) {
             ignore = true;
         }
@@ -2587,7 +2605,7 @@ static status_t addResourcesToBuilder(const sp<AaptDir>& dir, const sp<ApkBuilde
             }
             if (err != NO_ERROR) {
                 fprintf(stderr, "Failed to add %s (%s) to builder.\n",
-                        gp->getPath().string(), gp->getFiles()[j]->getPrintableSource().string());
+                        gp->getPath().c_str(), gp->getFiles()[j]->getPrintableSource().c_str());
                 return err;
             }
         }
@@ -2600,16 +2618,16 @@ static String8 buildApkName(const String8& original, const sp<ApkSplit>& split) 
         return original;
     }
 
-    String8 ext(original.getPathExtension());
+    String8 ext(getPathExtension(original));
     if (ext == String8(".apk")) {
         return String8::format("%s_%s%s",
-                original.getBasePath().string(),
-                split->getDirectorySafeName().string(),
-                ext.string());
+                getBasePath(original).c_str(),
+                split->getDirectorySafeName().c_str(),
+                ext.c_str());
     }
 
-    return String8::format("%s_%s", original.string(),
-            split->getDirectorySafeName().string());
+    return String8::format("%s_%s", original.c_str(),
+            split->getDirectorySafeName().c_str());
 }
 
 /*
@@ -2695,7 +2713,7 @@ int doPackage(Bundle* bundle)
         for (size_t i = 0; i < numSplits; i++) {
             std::set<ConfigDescription> configs;
             if (!AaptConfig::parseCommaSeparatedList(splitStrs[i], &configs)) {
-                fprintf(stderr, "ERROR: failed to parse split configuration '%s'\n", splitStrs[i].string());
+                fprintf(stderr, "ERROR: failed to parse split configuration '%s'\n", splitStrs[i].c_str());
                 goto bail;
             }
 
@@ -2739,10 +2757,10 @@ int doPackage(Bundle* bundle)
             // generate the dependency file in the R.java package subdirectory
             // e.g. gen/com/foo/app/R.java.d
             dependencyFile = String8(bundle->getRClassDir());
-            dependencyFile.appendPath("R.java.d");
+            appendPath(dependencyFile, "R.java.d");
         }
         // Make sure we have a clean dependency file to start with
-        fp = fopen(dependencyFile, "w");
+        fp = fopen(dependencyFile.c_str(), "w");
         fclose(fp);
     }
 
@@ -2818,7 +2836,7 @@ int doPackage(Bundle* bundle)
             String8 outputPath = buildApkName(String8(outputAPKFile), split);
             err = writeAPK(bundle, outputPath, split);
             if (err != NO_ERROR) {
-                fprintf(stderr, "ERROR: packaging of '%s' failed\n", outputPath.string());
+                fprintf(stderr, "ERROR: packaging of '%s' failed\n", outputPath.c_str());
                 goto bail;
             }
         }
@@ -2831,7 +2849,7 @@ int doPackage(Bundle* bundle)
     if (bundle->getGenDependencies()) {
         // Now that writeResourceSymbols or writeAPK has taken care of writing
         // the targets to our dependency file, we'll write the prereqs
-        fp = fopen(dependencyFile, "a+");
+        fp = fopen(dependencyFile.c_str(), "a+");
         fprintf(fp, " : ");
         bool includeRaw = (outputAPKFile != NULL);
         err = writeDependencyPreReqs(bundle, assets, fp, includeRaw);

@@ -16,8 +16,8 @@
 
 package android.os;
 
-import android.annotation.NonNull;
 import android.annotation.IntDef;
+import android.annotation.NonNull;
 import android.annotation.SystemApi;
 
 import java.lang.annotation.Retention;
@@ -26,8 +26,9 @@ import java.lang.annotation.RetentionPolicy;
 /**
  * Interface for classes whose instances can be written to
  * and restored from a {@link Parcel}.  Classes implementing the Parcelable
- * interface must also have a non-null static field called <code>CREATOR</code>
- * of a type that implements the {@link Parcelable.Creator} interface.
+ * interface must also have a non-null public static field called
+ * <code>CREATOR</code> of a type that implements the {@link Parcelable.Creator}
+ * interface.
  *
  * <p>A typical implementation of Parcelable is:</p>
  *
@@ -45,16 +46,13 @@ import java.lang.annotation.RetentionPolicy;
  *         out.writeInt(mData)
  *     }
  *
- *     companion object {
- *         val CREATOR: Parcelable.Creator&lt;MyParcelable?&gt;
- *                 = object : Parcelable.Creator&lt;MyParcelable?&gt; {
- *             override fun createFromParcel(`in`: Parcel): MyParcelable? {
- *                 return MyParcelable(`in`)
- *             }
+ *     companion object CREATOR: Parcelable.Creator&lt;MyParcelable?&gt; {
+ *         override fun createFromParcel(`in`: Parcel): MyParcelable? {
+ *             return MyParcelable(`in`)
+ *         }
  *
- *             override fun newArray(size: Int): Array&lt;MyParcelable?&gt; {
- *                 return arrayOfNulls(size)
- *             }
+ *         override fun newArray(size: Int): Array&lt;MyParcelable?&gt; {
+ *             return arrayOfNulls(size)
  *         }
  *     }
  * }
@@ -191,7 +189,7 @@ public interface Parcelable {
      * @return true if this parcelable is stable.
      * @hide
      */
-    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    @SystemApi(client = SystemApi.Client.PRIVILEGED_APPS)
     default @Stability int getStability() {
         return PARCELABLE_STABILITY_LOCAL;
     }

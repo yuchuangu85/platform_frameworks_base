@@ -12,10 +12,27 @@ java_binary_host {
     manifest: "manifest.txt",
     srcs: ["src/**/*.java"],
     static_libs: [
-        "asm-7.0",
-        "asm-commons-7.0",
-        "asm-tree-7.0",
-        "asm-analysis-7.0",
-        "guava-21.0",
+        "guava",
+        "ow2-asm",
+        "ow2-asm-analysis",
+        "ow2-asm-commons",
+        "ow2-asm-tree",
+    ],
+}
+
+java_library_host {
+   name: "lockedregioncodeinjection_input",
+   manifest: "test/manifest.txt",
+   srcs: ["test/*/*.java"],
+   static_libs: [
+        "guava",
+        "ow2-asm",
+        "ow2-asm-analysis",
+        "ow2-asm-commons",
+        "ow2-asm-tree",
+        "hamcrest-library",
+        "hamcrest",
+        "platform-test-annotations",
+        "junit",
     ],
 }

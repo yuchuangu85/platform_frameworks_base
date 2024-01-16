@@ -16,10 +16,14 @@
 
 package com.android.server.biometrics.sensors;
 
+import static com.android.server.biometrics.sensors.BiometricSchedulerOperation.STATE_STARTED;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.hardware.biometrics.IBiometricService;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ServiceManager;
 import android.os.UserHandle;
 import android.util.Slog;
@@ -52,57 +56,64 @@ public class UserAwareBiometricScheduler extends BiometricScheduler {
     @NonNull private final UserSwitchCallback mUserSwitchCallback;
     @Nullable private StopUserClient<?> mStopUserClient;
 
-    private class ClientFinishedCallback implements BaseClientMonitor.Callback {
-        private final BaseClientMonitor mOwner;
+    private class ClientFinishedCallback implements ClientMonitorCallback {
+        @NonNull private final BaseClientMonitor mOwner;
 
-        ClientFinishedCallback(BaseClientMonitor owner) {
+        ClientFinishedCallback(@NonNull BaseClientMonitor owner) {
             mOwner = owner;
         }
 
         @Override
         public void onClientFinished(@NonNull BaseClientMonitor clientMonitor, boolean success) {
             mHandler.post(() -> {
-                if (mOwner != clientMonitor) {
-                    Slog.e(getTag(), "[Wrong client finished], actual: "
-                            + clientMonitor + ", expected: " + mOwner);
-                    return;
-                }
+                Slog.d(getTag(), "[Client finished] " + clientMonitor + ", success: " + success);
 
-                Slog.d(getTag(), "[Client finished] "
-                        + clientMonitor + ", success: " + success);
-                if (mCurrentOperation != null && mCurrentOperation.mClientMonitor == mOwner) {
+                // Set mStopUserClient to null when StopUserClient fails. Otherwise it's possible
+                // for that the queue will wait indefinitely until the field is cleared.
+                if (clientMonitor instanceof StopUserClient<?>) {
+                    if (!success) {
+                        Slog.w(getTag(), "StopUserClient failed(), is the HAL stuck? "
+                                + "Clearing mStopUserClient");
+                    }
+                    mStopUserClient = null;
+                }
+                if (mCurrentOperation != null && mCurrentOperation.isFor(mOwner)) {
                     mCurrentOperation = null;
-                    startNextOperationIfIdle();
                 } else {
-                    // can usually be ignored (hal died, etc.)
-                    Slog.d(getTag(), "operation is already null or different (reset?): "
+                    // can happen if the hal dies and is usually okay
+                    // do not unset the current operation that may be newer
+                    Slog.w(getTag(), "operation is already null or different (reset?): "
                             + mCurrentOperation);
                 }
+                startNextOperationIfIdle();
             });
         }
     }
 
     @VisibleForTesting
-    UserAwareBiometricScheduler(@NonNull String tag, @SensorType int sensorType,
+    public UserAwareBiometricScheduler(@NonNull String tag,
+            @NonNull Handler handler,
+            @SensorType int sensorType,
             @Nullable GestureAvailabilityDispatcher gestureAvailabilityDispatcher,
             @NonNull IBiometricService biometricService,
             @NonNull CurrentUserRetriever currentUserRetriever,
-            @NonNull UserSwitchCallback userSwitchCallback,
-            @NonNull CoexCoordinator coexCoordinator) {
-        super(tag, sensorType, gestureAvailabilityDispatcher, biometricService,
-                LOG_NUM_RECENT_OPERATIONS, coexCoordinator);
+            @NonNull UserSwitchCallback userSwitchCallback) {
+        super(tag, handler, sensorType, gestureAvailabilityDispatcher, biometricService,
+                LOG_NUM_RECENT_OPERATIONS);
 
         mCurrentUserRetriever = currentUserRetriever;
         mUserSwitchCallback = userSwitchCallback;
     }
 
-    public UserAwareBiometricScheduler(@NonNull String tag, @SensorType int sensorType,
+    public UserAwareBiometricScheduler(@NonNull String tag,
+            @SensorType int sensorType,
             @Nullable GestureAvailabilityDispatcher gestureAvailabilityDispatcher,
             @NonNull CurrentUserRetriever currentUserRetriever,
             @NonNull UserSwitchCallback userSwitchCallback) {
-        this(tag, sensorType, gestureAvailabilityDispatcher, IBiometricService.Stub.asInterface(
-                ServiceManager.getService(Context.BIOMETRIC_SERVICE)), currentUserRetriever,
-                userSwitchCallback, CoexCoordinator.getInstance());
+        this(tag, new Handler(Looper.getMainLooper()), sensorType, gestureAvailabilityDispatcher,
+                IBiometricService.Stub.asInterface(
+                        ServiceManager.getService(Context.BIOMETRIC_SERVICE)),
+                currentUserRetriever, userSwitchCallback);
     }
 
     @Override
@@ -122,7 +133,7 @@ public class UserAwareBiometricScheduler extends BiometricScheduler {
         }
 
         final int currentUserId = mCurrentUserRetriever.getCurrentUserId();
-        final int nextUserId = mPendingOperations.getFirst().mClientMonitor.getTargetUserId();
+        final int nextUserId = mPendingOperations.getFirst().getTargetUserId();
 
         if (nextUserId == currentUserId) {
             super.startNextOperationIfIdle();
@@ -133,8 +144,8 @@ public class UserAwareBiometricScheduler extends BiometricScheduler {
                     new ClientFinishedCallback(startClient);
 
             Slog.d(getTag(), "[Starting User] " + startClient);
-            mCurrentOperation = new Operation(
-                    startClient, finishedCallback, Operation.STATE_STARTED);
+            mCurrentOperation = new BiometricSchedulerOperation(
+                    startClient, finishedCallback, STATE_STARTED);
             startClient.start(finishedCallback);
         } else {
             if (mStopUserClient != null) {
@@ -147,8 +158,8 @@ public class UserAwareBiometricScheduler extends BiometricScheduler {
 
                 Slog.d(getTag(), "[Stopping User] current: " + currentUserId
                         + ", next: " + nextUserId + ". " + mStopUserClient);
-                mCurrentOperation = new Operation(
-                        mStopUserClient, finishedCallback, Operation.STATE_STARTED);
+                mCurrentOperation = new BiometricSchedulerOperation(
+                        mStopUserClient, finishedCallback, STATE_STARTED);
                 mStopUserClient.start(finishedCallback);
             }
         }
@@ -163,5 +174,10 @@ public class UserAwareBiometricScheduler extends BiometricScheduler {
         Slog.d(getTag(), "[OnUserStopped]: " + mStopUserClient);
         mStopUserClient.onUserStopped();
         mStopUserClient = null;
+    }
+
+    @VisibleForTesting
+    @Nullable public StopUserClient<?> getStopUserClient() {
+        return mStopUserClient;
     }
 }

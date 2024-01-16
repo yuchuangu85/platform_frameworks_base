@@ -33,6 +33,7 @@ public class PromptInfo implements Parcelable {
     @NonNull private CharSequence mTitle;
     private boolean mUseDefaultTitle;
     @Nullable private CharSequence mSubtitle;
+    private boolean mUseDefaultSubtitle;
     @Nullable private CharSequence mDescription;
     @Nullable private CharSequence mDeviceCredentialTitle;
     @Nullable private CharSequence mDeviceCredentialSubtitle;
@@ -46,6 +47,7 @@ public class PromptInfo implements Parcelable {
     @NonNull private List<Integer> mAllowedSensorIds = new ArrayList<>();
     private boolean mAllowBackgroundAuthentication;
     private boolean mIgnoreEnrollmentState;
+    private boolean mIsForLegacyFingerprintManager = false;
 
     public PromptInfo() {
 
@@ -55,6 +57,7 @@ public class PromptInfo implements Parcelable {
         mTitle = in.readCharSequence();
         mUseDefaultTitle = in.readBoolean();
         mSubtitle = in.readCharSequence();
+        mUseDefaultSubtitle = in.readBoolean();
         mDescription = in.readCharSequence();
         mDeviceCredentialTitle = in.readCharSequence();
         mDeviceCredentialSubtitle = in.readCharSequence();
@@ -65,9 +68,10 @@ public class PromptInfo implements Parcelable {
         mAuthenticators = in.readInt();
         mDisallowBiometricsIfPolicyExists = in.readBoolean();
         mReceiveSystemEvents = in.readBoolean();
-        mAllowedSensorIds = in.readArrayList(Integer.class.getClassLoader());
+        mAllowedSensorIds = in.readArrayList(Integer.class.getClassLoader(), java.lang.Integer.class);
         mAllowBackgroundAuthentication = in.readBoolean();
         mIgnoreEnrollmentState = in.readBoolean();
+        mIsForLegacyFingerprintManager = in.readBoolean();
     }
 
     public static final Creator<PromptInfo> CREATOR = new Creator<PromptInfo>() {
@@ -92,6 +96,7 @@ public class PromptInfo implements Parcelable {
         dest.writeCharSequence(mTitle);
         dest.writeBoolean(mUseDefaultTitle);
         dest.writeCharSequence(mSubtitle);
+        dest.writeBoolean(mUseDefaultSubtitle);
         dest.writeCharSequence(mDescription);
         dest.writeCharSequence(mDeviceCredentialTitle);
         dest.writeCharSequence(mDeviceCredentialSubtitle);
@@ -105,12 +110,22 @@ public class PromptInfo implements Parcelable {
         dest.writeList(mAllowedSensorIds);
         dest.writeBoolean(mAllowBackgroundAuthentication);
         dest.writeBoolean(mIgnoreEnrollmentState);
+        dest.writeBoolean(mIsForLegacyFingerprintManager);
     }
 
+    // LINT.IfChange
     public boolean containsTestConfigurations() {
-        if (!mAllowedSensorIds.isEmpty()) {
+        if (mIsForLegacyFingerprintManager
+                && mAllowedSensorIds.size() == 1
+                && !mAllowBackgroundAuthentication) {
+            return false;
+        } else if (!mAllowedSensorIds.isEmpty()) {
             return true;
         } else if (mAllowBackgroundAuthentication) {
+            return true;
+        } else if (mIsForLegacyFingerprintManager) {
+            return true;
+        } else if (mIgnoreEnrollmentState) {
             return true;
         }
         return false;
@@ -120,6 +135,8 @@ public class PromptInfo implements Parcelable {
         if (mDisallowBiometricsIfPolicyExists) {
             return true;
         } else if (mUseDefaultTitle) {
+            return true;
+        } else if (mUseDefaultSubtitle) {
             return true;
         } else if (mDeviceCredentialTitle != null) {
             return true;
@@ -132,6 +149,7 @@ public class PromptInfo implements Parcelable {
         }
         return false;
     }
+    // LINT.ThenChange(frameworks/base/core/java/android/hardware/biometrics/BiometricPrompt.java)
 
     // Setters
 
@@ -145,6 +163,10 @@ public class PromptInfo implements Parcelable {
 
     public void setSubtitle(CharSequence subtitle) {
         mSubtitle = subtitle;
+    }
+
+    public void setUseDefaultSubtitle(boolean useDefaultSubtitle) {
+        mUseDefaultSubtitle = useDefaultSubtitle;
     }
 
     public void setDescription(CharSequence description) {
@@ -188,7 +210,8 @@ public class PromptInfo implements Parcelable {
     }
 
     public void setAllowedSensorIds(@NonNull List<Integer> sensorIds) {
-        mAllowedSensorIds = sensorIds;
+        mAllowedSensorIds.clear();
+        mAllowedSensorIds.addAll(sensorIds);
     }
 
     public void setAllowBackgroundAuthentication(boolean allow) {
@@ -197,6 +220,12 @@ public class PromptInfo implements Parcelable {
 
     public void setIgnoreEnrollmentState(boolean ignoreEnrollmentState) {
         mIgnoreEnrollmentState = ignoreEnrollmentState;
+    }
+
+    public void setIsForLegacyFingerprintManager(int sensorId) {
+        mIsForLegacyFingerprintManager = true;
+        mAllowedSensorIds.clear();
+        mAllowedSensorIds.add(sensorId);
     }
 
     // Getters
@@ -211,6 +240,10 @@ public class PromptInfo implements Parcelable {
 
     public CharSequence getSubtitle() {
         return mSubtitle;
+    }
+
+    public boolean isUseDefaultSubtitle() {
+        return mUseDefaultSubtitle;
     }
 
     public CharSequence getDescription() {
@@ -271,5 +304,9 @@ public class PromptInfo implements Parcelable {
 
     public boolean isIgnoreEnrollmentState() {
         return mIgnoreEnrollmentState;
+    }
+
+    public boolean isForLegacyFingerprintManager() {
+        return mIsForLegacyFingerprintManager;
     }
 }

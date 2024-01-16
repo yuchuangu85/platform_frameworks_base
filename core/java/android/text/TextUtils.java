@@ -70,7 +70,6 @@ import android.util.Log;
 import android.util.Printer;
 import android.view.View;
 
-import com.android.internal.R;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.Preconditions;
 
@@ -94,7 +93,9 @@ public class TextUtils {
     private static final String ELLIPSIS_NORMAL = "\u2026"; // HORIZONTAL ELLIPSIS (…)
     private static final String ELLIPSIS_TWO_DOTS = "\u2025"; // TWO DOT LEADER (‥)
 
-    private static final int LINE_FEED_CODE_POINT = 10;
+    /** @hide */
+    public static final int LINE_FEED_CODE_POINT = 10;
+
     private static final int NBSP_CODE_POINT = 160;
 
     /**
@@ -349,6 +350,53 @@ public class TextUtils {
 
         return ret;
     }
+
+
+    /**
+     * Returns the longest prefix of a string for which the UTF-8 encoding fits into the given
+     * number of bytes, with the additional guarantee that the string is not truncated in the middle
+     * of a valid surrogate pair.
+     *
+     * <p>Unpaired surrogates are counted as taking 3 bytes of storage. However, a subsequent
+     * attempt to actually encode a string containing unpaired surrogates is likely to be rejected
+     * by the UTF-8 implementation.
+     *
+     * (copied from google/thirdparty)
+     *
+     * @param str a string
+     * @param maxbytes the maximum number of UTF-8 encoded bytes
+     * @return the beginning of the string, so that it uses at most maxbytes bytes in UTF-8
+     * @throws IndexOutOfBoundsException if maxbytes is negative
+     *
+     * @hide
+     */
+    public static String truncateStringForUtf8Storage(String str, int maxbytes) {
+        if (maxbytes < 0) {
+            throw new IndexOutOfBoundsException();
+        }
+
+        int bytes = 0;
+        for (int i = 0, len = str.length(); i < len; i++) {
+            char c = str.charAt(i);
+            if (c < 0x80) {
+                bytes += 1;
+            } else if (c < 0x800) {
+                bytes += 2;
+            } else if (c < Character.MIN_SURROGATE
+                    || c > Character.MAX_SURROGATE
+                    || str.codePointAt(i) < Character.MIN_SUPPLEMENTARY_CODE_POINT) {
+                bytes += 3;
+            } else {
+                bytes += 4;
+                i += (bytes > maxbytes) ? 0 : 1;
+            }
+            if (bytes > maxbytes) {
+                return str.substring(0, i);
+            }
+        }
+        return str;
+    }
+
 
     /**
      * Returns a string containing the tokens joined by delimiters.
@@ -824,126 +872,128 @@ public class TextUtils {
                 if (kind == 0)
                     break;
 
+                final Object span;
                 switch (kind) {
                 case ALIGNMENT_SPAN:
-                    readSpan(p, sp, new AlignmentSpan.Standard(p));
+                    span = new AlignmentSpan.Standard(p);
                     break;
 
                 case FOREGROUND_COLOR_SPAN:
-                    readSpan(p, sp, new ForegroundColorSpan(p));
+                    span = new ForegroundColorSpan(p);
                     break;
 
                 case RELATIVE_SIZE_SPAN:
-                    readSpan(p, sp, new RelativeSizeSpan(p));
+                    span = new RelativeSizeSpan(p);
                     break;
 
                 case SCALE_X_SPAN:
-                    readSpan(p, sp, new ScaleXSpan(p));
+                    span = new ScaleXSpan(p);
                     break;
 
                 case STRIKETHROUGH_SPAN:
-                    readSpan(p, sp, new StrikethroughSpan(p));
+                    span = new StrikethroughSpan(p);
                     break;
 
                 case UNDERLINE_SPAN:
-                    readSpan(p, sp, new UnderlineSpan(p));
+                    span = new UnderlineSpan(p);
                     break;
 
                 case STYLE_SPAN:
-                    readSpan(p, sp, new StyleSpan(p));
+                    span = new StyleSpan(p);
                     break;
 
                 case BULLET_SPAN:
-                    readSpan(p, sp, new BulletSpan(p));
+                    span = new BulletSpan(p);
                     break;
 
                 case QUOTE_SPAN:
-                    readSpan(p, sp, new QuoteSpan(p));
+                    span = new QuoteSpan(p);
                     break;
 
                 case LEADING_MARGIN_SPAN:
-                    readSpan(p, sp, new LeadingMarginSpan.Standard(p));
+                    span = new LeadingMarginSpan.Standard(p);
                     break;
 
                 case URL_SPAN:
-                    readSpan(p, sp, new URLSpan(p));
+                    span = new URLSpan(p);
                     break;
 
                 case BACKGROUND_COLOR_SPAN:
-                    readSpan(p, sp, new BackgroundColorSpan(p));
+                    span = new BackgroundColorSpan(p);
                     break;
 
                 case TYPEFACE_SPAN:
-                    readSpan(p, sp, new TypefaceSpan(p));
+                    span = new TypefaceSpan(p);
                     break;
 
                 case SUPERSCRIPT_SPAN:
-                    readSpan(p, sp, new SuperscriptSpan(p));
+                    span = new SuperscriptSpan(p);
                     break;
 
                 case SUBSCRIPT_SPAN:
-                    readSpan(p, sp, new SubscriptSpan(p));
+                    span = new SubscriptSpan(p);
                     break;
 
                 case ABSOLUTE_SIZE_SPAN:
-                    readSpan(p, sp, new AbsoluteSizeSpan(p));
+                    span = new AbsoluteSizeSpan(p);
                     break;
 
                 case TEXT_APPEARANCE_SPAN:
-                    readSpan(p, sp, new TextAppearanceSpan(p));
+                    span = new TextAppearanceSpan(p);
                     break;
 
                 case ANNOTATION:
-                    readSpan(p, sp, new Annotation(p));
+                    span = new Annotation(p);
                     break;
 
                 case SUGGESTION_SPAN:
-                    readSpan(p, sp, new SuggestionSpan(p));
+                    span = new SuggestionSpan(p);
                     break;
 
                 case SPELL_CHECK_SPAN:
-                    readSpan(p, sp, new SpellCheckSpan(p));
+                    span = new SpellCheckSpan(p);
                     break;
 
                 case SUGGESTION_RANGE_SPAN:
-                    readSpan(p, sp, new SuggestionRangeSpan(p));
+                    span = new SuggestionRangeSpan(p);
                     break;
 
                 case EASY_EDIT_SPAN:
-                    readSpan(p, sp, new EasyEditSpan(p));
+                    span = new EasyEditSpan(p);
                     break;
 
                 case LOCALE_SPAN:
-                    readSpan(p, sp, new LocaleSpan(p));
+                    span = new LocaleSpan(p);
                     break;
 
                 case TTS_SPAN:
-                    readSpan(p, sp, new TtsSpan(p));
+                    span = new TtsSpan(p);
                     break;
 
                 case ACCESSIBILITY_CLICKABLE_SPAN:
-                    readSpan(p, sp, new AccessibilityClickableSpan(p));
+                    span = new AccessibilityClickableSpan(p);
                     break;
 
                 case ACCESSIBILITY_URL_SPAN:
-                    readSpan(p, sp, new AccessibilityURLSpan(p));
+                    span = new AccessibilityURLSpan(p);
                     break;
 
                 case LINE_BACKGROUND_SPAN:
-                    readSpan(p, sp, new LineBackgroundSpan.Standard(p));
+                    span = new LineBackgroundSpan.Standard(p);
                     break;
 
                 case LINE_HEIGHT_SPAN:
-                    readSpan(p, sp, new LineHeightSpan.Standard(p));
+                    span = new LineHeightSpan.Standard(p);
                     break;
 
                 case ACCESSIBILITY_REPLACEMENT_SPAN:
-                    readSpan(p, sp, new AccessibilityReplacementSpan(p));
+                    span = new AccessibilityReplacementSpan(p);
                     break;
 
                 default:
                     throw new RuntimeException("bogus span encoding " + kind);
                 }
+                readSpan(p, sp, span);
             }
 
             return sp;
@@ -1183,8 +1233,8 @@ public class TextUtils {
 
     /**
      * Transforms a CharSequences to uppercase, copying the sources spans and keeping them spans as
-     * much as possible close to their relative original places. In the case the the uppercase
-     * string is identical to the sources, the source itself is returned instead of being copied.
+     * much as possible close to their relative original places. If uppercase string is identical
+     * to the sources, the source itself is returned instead of being copied.
      *
      * If copySpans is set, source must be an instance of Spanned.
      *
@@ -2071,15 +2121,6 @@ public class TextUtils {
     }
 
     /**
-     * Return localized string representing the given number of selected items.
-     *
-     * @hide
-     */
-    public static CharSequence formatSelectedCount(int count) {
-        return Resources.getSystem().getQuantityString(R.plurals.selected_count, count, count);
-    }
-
-    /**
      * Simple alternative to {@link String#format} which purposefully supports
      * only a small handful of substitutions to improve execution speed.
      * Benchmarking reveals this optimized alternative performs 6.5x faster for
@@ -2292,14 +2333,33 @@ public class TextUtils {
         return trimmed;
     }
 
-    private static boolean isNewline(int codePoint) {
+    /** @hide */
+    public static boolean isNewline(int codePoint) {
         int type = Character.getType(codePoint);
         return type == Character.PARAGRAPH_SEPARATOR || type == Character.LINE_SEPARATOR
                 || codePoint == LINE_FEED_CODE_POINT;
     }
 
-    private static boolean isWhiteSpace(int codePoint) {
+    /** @hide */
+    public static boolean isWhitespace(int codePoint) {
         return Character.isWhitespace(codePoint) || codePoint == NBSP_CODE_POINT;
+    }
+
+    /** @hide */
+    public static boolean isWhitespaceExceptNewline(int codePoint) {
+        return isWhitespace(codePoint) && !isNewline(codePoint);
+    }
+
+    /** @hide */
+    public static boolean isPunctuation(int codePoint) {
+        int type = Character.getType(codePoint);
+        return type == Character.CONNECTOR_PUNCTUATION
+                || type == Character.DASH_PUNCTUATION
+                || type == Character.END_PUNCTUATION
+                || type == Character.FINAL_QUOTE_PUNCTUATION
+                || type == Character.INITIAL_QUOTE_PUNCTUATION
+                || type == Character.OTHER_PUNCTUATION
+                || type == Character.START_PUNCTUATION;
     }
 
     /** @hide */
@@ -2393,7 +2453,7 @@ public class TextUtils {
                 gettingCleaned.removeRange(offset, offset + codePointLen);
             } else if (type == Character.CONTROL && !isNewline) {
                 gettingCleaned.removeRange(offset, offset + codePointLen);
-            } else if (trim && !isWhiteSpace(codePoint)) {
+            } else if (trim && !isWhitespace(codePoint)) {
                 // This is only executed if the code point is not removed
                 if (firstNonWhiteSpace == -1) {
                     firstNonWhiteSpace = offset;

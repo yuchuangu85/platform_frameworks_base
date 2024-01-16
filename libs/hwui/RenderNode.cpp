@@ -152,6 +152,9 @@ void RenderNode::damageSelf(TreeInfo& info) {
             // TODO: Get this from the display list ops or something
             info.damageAccumulator->dirty(DIRTY_MIN, DIRTY_MIN, DIRTY_MAX, DIRTY_MAX);
         }
+        if (!mIsTextureView) {
+            info.out.solelyTextureViewUpdates = false;
+        }
     }
 }
 
@@ -255,6 +258,12 @@ void RenderNode::prepareTreeImpl(TreeObserver& observer, TreeInfo& info, bool fu
     prepareLayer(info, animatorDirtyMask);
     if (info.mode == TreeInfo::MODE_FULL) {
         pushStagingDisplayListChanges(observer, info);
+    }
+
+    // always damageSelf when filtering backdrop content, or else the BackdropFilterDrawable will
+    // get a wrong snapshot of previous content.
+    if (mProperties.layerProperties().getBackdropImageFilter()) {
+        damageSelf(info);
     }
 
     if (mDisplayList) {

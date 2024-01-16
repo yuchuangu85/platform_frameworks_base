@@ -19,6 +19,8 @@ package com.android.server.hdmi;
 import android.annotation.IntDef;
 import android.annotation.StringDef;
 import android.hardware.hdmi.HdmiDeviceInfo;
+import android.hardware.tv.hdmi.connection.HpdSignal;
+import android.hardware.tv.hdmi.earc.IEArcStatus;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -81,7 +83,7 @@ final class Constants {
     public static final int ADDR_BROADCAST = 15;
 
     /** Logical address used to indicate it is not initialized or invalid. */
-    public static final int ADDR_INVALID = -1;
+    public static final int ADDR_INVALID = HdmiDeviceInfo.ADDR_INVALID;
 
     /** Logical address used to indicate the source comes from internal device. */
     public static final int ADDR_INTERNAL = HdmiDeviceInfo.ADDR_INTERNAL;
@@ -118,6 +120,7 @@ final class Constants {
             MESSAGE_SYSTEM_AUDIO_MODE_REQUEST,
             MESSAGE_GIVE_AUDIO_STATUS,
             MESSAGE_SET_SYSTEM_AUDIO_MODE,
+            MESSAGE_SET_AUDIO_VOLUME_LEVEL,
             MESSAGE_REPORT_AUDIO_STATUS,
             MESSAGE_GIVE_SYSTEM_AUDIO_MODE_STATUS,
             MESSAGE_SYSTEM_AUDIO_MODE_STATUS,
@@ -197,6 +200,7 @@ final class Constants {
     static final int MESSAGE_SYSTEM_AUDIO_MODE_REQUEST = 0x70;
     static final int MESSAGE_GIVE_AUDIO_STATUS = 0x71;
     static final int MESSAGE_SET_SYSTEM_AUDIO_MODE = 0x72;
+    static final int MESSAGE_SET_AUDIO_VOLUME_LEVEL = 0x73;
     static final int MESSAGE_REPORT_AUDIO_STATUS = 0x7A;
     static final int MESSAGE_GIVE_SYSTEM_AUDIO_MODE_STATUS = 0x7D;
     static final int MESSAGE_SYSTEM_AUDIO_MODE_STATUS = 0x7E;
@@ -243,7 +247,7 @@ final class Constants {
     static final int MESSAGE_CDC_MESSAGE = 0xF8;
     static final int MESSAGE_ABORT = 0xFF;
 
-    static final int UNKNOWN_VENDOR_ID = 0xFFFFFF;
+    static final int VENDOR_ID_UNKNOWN = HdmiDeviceInfo.VENDOR_ID_UNKNOWN;
 
     static final int TRUE = 1;
     static final int FALSE = 0;
@@ -335,6 +339,8 @@ final class Constants {
     static final int AUDIO_CODEC_WMAPRO = 0xE; // Support WMA-Pro
     static final int AUDIO_CODEC_MAX = 0xF;
 
+    static final int AUDIO_FORMAT_MASK = 0b0111_1000;
+
     @StringDef({
         AUDIO_DEVICE_ARC_IN,
         AUDIO_DEVICE_SPDIF,
@@ -388,6 +394,17 @@ final class Constants {
     static final int POLL_ITERATION_REVERSE_ORDER = 0x20000;
 
     static final int UNKNOWN_VOLUME = -1;
+
+    // This constant is used in two operands in the CEC spec.
+    //
+    // CEC 1.4: [Audio Volume Status] (part of [Audio Status]) - operand for <Report Audio Status>
+    // Indicates that the current audio volume status is unknown.
+    //
+    // CEC 2.1a: [Audio Volume Level] - operand for <Set Audio Volume Level>
+    // Part of the Absolute Volume Control feature. Indicates that no change shall be made to the
+    // volume level of the recipient. This allows <Set Audio Volume Level> to be sent to determine
+    // whether the recipient supports Absolute Volume Control.
+    static final int AUDIO_VOLUME_STATUS_UNKNOWN = 0x7F;
 
     // States of property PROPERTY_SYSTEM_AUDIO_CONTROL_ON_POWER_ON
     // to decide if turn on the system audio control when power on the device
@@ -583,6 +600,47 @@ final class Constants {
             RC_PROFILE_SOURCE_HANDLES_MEDIA_CONTEXT_SENSITIVE_MENU
     })
     @interface RcProfileSource {}
+
+    static final int HDMI_EARC_STATUS_IDLE = IEArcStatus.IDLE; // IDLE1
+    static final int HDMI_EARC_STATUS_EARC_PENDING =
+            IEArcStatus.EARC_PENDING; // DISC1 and DISC2
+    static final int HDMI_EARC_STATUS_ARC_PENDING = IEArcStatus.ARC_PENDING; // IDLE2 for ARC
+    static final int HDMI_EARC_STATUS_EARC_CONNECTED =
+            IEArcStatus.EARC_CONNECTED; // eARC connected
+
+    @IntDef({
+            HDMI_EARC_STATUS_IDLE,
+            HDMI_EARC_STATUS_EARC_PENDING,
+            HDMI_EARC_STATUS_ARC_PENDING,
+            HDMI_EARC_STATUS_EARC_CONNECTED
+            })
+    @interface EarcStatus {}
+
+    static final int HDMI_HPD_TYPE_PHYSICAL =
+            HpdSignal.HDMI_HPD_PHYSICAL; // Default. Physical hotplug signal.
+    static final int HDMI_HPD_TYPE_STATUS_BIT =
+            HpdSignal.HDMI_HPD_STATUS_BIT; // HDMI_HPD status bit.
+
+    @IntDef({
+            HDMI_HPD_TYPE_PHYSICAL,
+            HDMI_HPD_TYPE_STATUS_BIT
+    })
+    @interface HpdSignalType {}
+
+    static final String DEVICE_CONFIG_FEATURE_FLAG_SOUNDBAR_MODE = "enable_soundbar_mode";
+    static final String DEVICE_CONFIG_FEATURE_FLAG_ENABLE_EARC_TX = "enable_earc_tx";
+    static final String DEVICE_CONFIG_FEATURE_FLAG_TRANSITION_ARC_TO_EARC_TX =
+            "transition_arc_to_earc_tx";
+    // Name is abbreviated slightly to avoid line length issues
+    static final String DEVICE_CONFIG_FEATURE_FLAG_TV_NUMERIC_SOUNDBAR_VOLUME_UI =
+            "enable_numeric_soundbar_volume_ui_on_tv";
+    @StringDef({
+            DEVICE_CONFIG_FEATURE_FLAG_SOUNDBAR_MODE,
+            DEVICE_CONFIG_FEATURE_FLAG_ENABLE_EARC_TX,
+            DEVICE_CONFIG_FEATURE_FLAG_TRANSITION_ARC_TO_EARC_TX,
+            DEVICE_CONFIG_FEATURE_FLAG_TV_NUMERIC_SOUNDBAR_VOLUME_UI
+    })
+    @interface FeatureFlag {}
 
     private Constants() {
         /* cannot be instantiated */

@@ -116,8 +116,10 @@ public final class FrameMetrics {
      * and be issued to the display subsystem.
      * </p>
      * <p>
-     * Equal to the sum of the values of all other time-valued metric
-     * identifiers.
+     * The total duration is the difference in time between when the frame
+     * began and when it ended. This value may not be exactly equal to the
+     * sum of the values of all other time-valued metric identifiers because
+     * some stages may happen concurrently.
      * </p>
      */
     public static final int TOTAL_DURATION = 8;
@@ -254,8 +256,9 @@ public final class FrameMetrics {
         int GPU_COMPLETED = 19;
         int SWAP_BUFFERS_COMPLETED = 20;
         int DISPLAY_PRESENT_TIME = 21;
+        int COMMAND_SUBMISSION_COMPLETED = 22;
 
-        int FRAME_STATS_COUNT = 22; // must always be last and in sync with
+        int FRAME_STATS_COUNT = 23; // must always be last and in sync with
                                     // FrameInfoIndex::NumIndexes in libs/hwui/FrameInfo.h
     }
 
@@ -291,7 +294,7 @@ public final class FrameMetrics {
         // RESERVED VSYNC_TIMESTAMP
         0, 0,
         // GPU_DURATION
-        Index.SWAP_BUFFERS, Index.GPU_COMPLETED,
+        Index.COMMAND_SUBMISSION_COMPLETED, Index.GPU_COMPLETED,
         // DEADLINE
         Index.INTENDED_VSYNC, Index.FRAME_DEADLINE,
     };

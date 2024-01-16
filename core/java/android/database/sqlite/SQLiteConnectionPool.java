@@ -32,6 +32,7 @@ import android.util.Printer;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 
+import dalvik.annotation.optimization.NeverCompile;
 import dalvik.system.CloseGuard;
 
 import java.io.Closeable;
@@ -103,10 +104,18 @@ public final class SQLiteConnectionPool implements Closeable {
             new ArrayList<SQLiteConnection>();
     private SQLiteConnection mAvailablePrimaryConnection;
 
+    // Prepare statement cache statistics
+    public int mTotalPrepareStatementCacheMiss = 0;
+    public int mTotalPrepareStatements = 0;
+
     @GuardedBy("mLock")
     private IdleConnectionHandler mIdleConnectionHandler;
 
-    private final AtomicLong mTotalExecutionTimeCounter = new AtomicLong(0);
+    // whole execution time for this connection in milliseconds.
+    private final AtomicLong mTotalStatementsTime = new AtomicLong(0);
+
+    // total statements executed by this connection
+    private final AtomicLong mTotalStatementsCount = new AtomicLong(0);
 
     // Describes what should happen to an acquired connection when it is returned to the pool.
     enum AcquiredConnectionStatus {
@@ -166,8 +175,8 @@ public final class SQLiteConnectionPool implements Closeable {
         // If timeout is set, setup idle connection handler
         // In case of MAX_VALUE - idle connections are never closed
         if (mConfiguration.idleConnectionTimeoutMs != Long.MAX_VALUE) {
-            setupIdleConnectionHandler(Looper.getMainLooper(),
-                    mConfiguration.idleConnectionTimeoutMs);
+            setupIdleConnectionHandler(
+                    Looper.getMainLooper(), mConfiguration.idleConnectionTimeoutMs, null);
         }
     }
 
@@ -214,7 +223,7 @@ public final class SQLiteConnectionPool implements Closeable {
 
         // Mark the pool as being open for business.
         mIsOpen = true;
-        mCloseGuard.open("close");
+        mCloseGuard.open("SQLiteConnectionPool.close");
     }
 
     /**
@@ -286,8 +295,11 @@ public final class SQLiteConnectionPool implements Closeable {
         synchronized (mLock) {
             throwIfClosedLocked();
 
-            boolean walModeChanged = ((configuration.openFlags ^ mConfiguration.openFlags)
-                    & SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING) != 0;
+            boolean isWalCurrentMode = mConfiguration.resolveJournalMode().equalsIgnoreCase(
+                    SQLiteDatabase.JOURNAL_MODE_WAL);
+            boolean isWalNewMode = configuration.resolveJournalMode().equalsIgnoreCase(
+                    SQLiteDatabase.JOURNAL_MODE_WAL);
+            boolean walModeChanged = isWalCurrentMode ^ isWalNewMode;
             if (walModeChanged) {
                 // WAL mode can only be changed if there are no acquired connections
                 // because we need to close all but the primary connection first.
@@ -418,7 +430,7 @@ public final class SQLiteConnectionPool implements Closeable {
                     mAvailablePrimaryConnection = connection;
                 }
                 wakeConnectionWaitersLocked();
-            } else if (mAvailableNonPrimaryConnections.size() >= mMaxConnectionPoolSize - 1) {
+            } else if (mAvailableNonPrimaryConnections.size() >= mMaxConnectionPoolSize) {
                 closeConnectionAndLogExceptionsLocked(connection);
             } else {
                 if (recycleConnectionLocked(connection, status)) {
@@ -447,6 +459,11 @@ public final class SQLiteConnectionPool implements Closeable {
             return false;
         }
         return true;
+    }
+
+    @VisibleForTesting
+    public boolean hasAnyAvailableNonPrimaryConnection() {
+        return mAvailableNonPrimaryConnections.size() > 0;
     }
 
     /**
@@ -495,6 +512,12 @@ public final class SQLiteConnectionPool implements Closeable {
             for (SQLiteConnection connection : mAcquiredConnections.keySet()) {
                 connection.collectDbStatsUnsafe(dbStatsList);
             }
+
+            // Global pool stats
+            DbStats poolStats = new DbStats(mConfiguration.path, 0, 0, 0,
+                    mTotalPrepareStatements - mTotalPrepareStatementCacheMiss,
+                    mTotalPrepareStatementCacheMiss, mTotalPrepareStatements, true);
+            dbStatsList.add(poolStats);
         }
     }
 
@@ -536,7 +559,8 @@ public final class SQLiteConnectionPool implements Closeable {
     }
 
     void onStatementExecuted(long executionTimeMs) {
-        mTotalExecutionTimeCounter.addAndGet(executionTimeMs);
+        mTotalStatementsTime.addAndGet(executionTimeMs);
+        mTotalStatementsCount.incrementAndGet();
     }
 
     // Can't throw.
@@ -1037,8 +1061,7 @@ public final class SQLiteConnectionPool implements Closeable {
     }
 
     private void setMaxConnectionPoolSizeLocked() {
-        if (!mConfiguration.isInMemoryDb()
-                && (mConfiguration.openFlags & SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING) != 0) {
+        if (mConfiguration.resolveJournalMode().equalsIgnoreCase(SQLiteDatabase.JOURNAL_MODE_WAL)) {
             mMaxConnectionPoolSize = SQLiteGlobal.getWALConnectionPoolSize();
         } else {
             // We don't actually need to always restrict the connection pool size to 1
@@ -1054,9 +1077,11 @@ public final class SQLiteConnectionPool implements Closeable {
      * Set up the handler based on the provided looper and timeout.
      */
     @VisibleForTesting
-    public void setupIdleConnectionHandler(Looper looper, long timeoutMs) {
+    public void setupIdleConnectionHandler(
+            Looper looper, long timeoutMs, Runnable onAllConnectionsIdle) {
         synchronized (mLock) {
-            mIdleConnectionHandler = new IdleConnectionHandler(looper, timeoutMs);
+            mIdleConnectionHandler =
+                    new IdleConnectionHandler(looper, timeoutMs, onAllConnectionsIdle);
         }
     }
 
@@ -1111,17 +1136,27 @@ public final class SQLiteConnectionPool implements Closeable {
         Printer indentedPrinter = PrefixPrinter.create(printer, "    ");
         synchronized (mLock) {
             if (directories != null) {
-                directories.add(new File(mConfiguration.path).getParent());
+                String parent = new File(mConfiguration.path).getParent();
+                if (parent != null) {
+                    directories.add(parent);
+                }
             }
             boolean isCompatibilityWalEnabled = mConfiguration.isLegacyCompatibilityWalEnabled();
             printer.println("Connection pool for " + mConfiguration.path + ":");
             printer.println("  Open: " + mIsOpen);
             printer.println("  Max connections: " + mMaxConnectionPoolSize);
-            printer.println("  Total execution time: " + mTotalExecutionTimeCounter);
+            printer.println("  Total execution time (ms): " + mTotalStatementsTime);
+            printer.println("  Total statements executed: " + mTotalStatementsCount);
+            if (mTotalStatementsCount.get() > 0) {
+                // Avoid division by 0 by filtering out logs where there are no statements executed.
+                printer.println("  Average time per statement (ms): "
+                        + mTotalStatementsTime.get() / mTotalStatementsCount.get());
+            }
             printer.println("  Configuration: openFlags=" + mConfiguration.openFlags
                     + ", isLegacyCompatibilityWalEnabled=" + isCompatibilityWalEnabled
-                    + ", journalMode=" + TextUtils.emptyIfNull(mConfiguration.journalMode)
-                    + ", syncMode=" + TextUtils.emptyIfNull(mConfiguration.syncMode));
+                    + ", journalMode=" + TextUtils.emptyIfNull(mConfiguration.resolveJournalMode())
+                    + ", syncMode=" + TextUtils.emptyIfNull(mConfiguration.resolveSyncMode()));
+            printer.println("  IsReadOnlyDatabase=" + mConfiguration.isReadOnlyDatabase());
 
             if (isCompatibilityWalEnabled) {
                 printer.println("  Compatibility WAL enabled: wal_syncmode="
@@ -1182,6 +1217,24 @@ public final class SQLiteConnectionPool implements Closeable {
         }
     }
 
+    /** @hide */
+    @NeverCompile
+    public double getStatementCacheMissRate() {
+        if (mTotalPrepareStatements == 0) {
+            // no statements executed thus no miss rate.
+            return 0;
+        }
+        return (double) mTotalPrepareStatementCacheMiss / (double) mTotalPrepareStatements;
+    }
+
+    public long getTotalStatementsTime() {
+        return mTotalStatementsTime.get();
+    }
+
+    public long getTotalStatementsCount() {
+        return mTotalStatementsCount.get();
+    }
+
     @Override
     public String toString() {
         return "SQLiteConnectionPool: " + mConfiguration.path;
@@ -1206,10 +1259,12 @@ public final class SQLiteConnectionPool implements Closeable {
 
     private class IdleConnectionHandler extends Handler {
         private final long mTimeout;
+        private final Runnable mOnAllConnectionsIdle;
 
-        IdleConnectionHandler(Looper looper, long timeout) {
+        IdleConnectionHandler(Looper looper, long timeout, Runnable onAllConnectionsIdle) {
             super(looper);
             mTimeout = timeout;
+            this.mOnAllConnectionsIdle = onAllConnectionsIdle;
         }
 
         @Override
@@ -1224,6 +1279,9 @@ public final class SQLiteConnectionPool implements Closeable {
                         Log.d(TAG, "Closed idle connection " + mConfiguration.label + " " + msg.what
                                 + " after " + mTimeout);
                     }
+                }
+                if (mOnAllConnectionsIdle != null) {
+                    mOnAllConnectionsIdle.run();
                 }
             }
         }

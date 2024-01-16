@@ -35,7 +35,6 @@ import android.os.Message;
 import android.os.ParcelUuid;
 import android.os.SystemClock;
 import android.text.TextUtils;
-import android.util.EventLog;
 import android.util.Log;
 import android.util.LruCache;
 import android.util.Pair;
@@ -48,12 +47,14 @@ import com.android.settingslib.Utils;
 import com.android.settingslib.utils.ThreadUtils;
 import com.android.settingslib.widget.AdaptiveOutlineDrawable;
 
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Stream;
 
 /**
  * CachedBluetoothDevice represents a remote Bluetooth device. It contains
@@ -77,10 +78,13 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
     private final LocalBluetoothProfileManager mProfileManager;
     private final Object mProfileLock = new Object();
     BluetoothDevice mDevice;
-    private long mHiSyncId;
+    private HearingAidInfo mHearingAidInfo;
     private int mGroupId;
+    private Timestamp mBondTimestamp;
+
     // Need this since there is no method for getting RSSI
     short mRssi;
+
     // mProfiles and mRemovedProfiles does not do swap() between main and sub device. It is
     // because current sub device is only for HearingAid and its profile is the same.
     private final Collection<LocalBluetoothProfile> mProfiles = new CopyOnWriteArrayList<>();
@@ -115,7 +119,8 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
     private boolean mIsHeadsetProfileConnectedFail = false;
     private boolean mIsHearingAidProfileConnectedFail = false;
     private boolean mIsLeAudioProfileConnectedFail = false;
-    private boolean mUnpairing = false;
+    private boolean mUnpairing;
+
     // Group second device for Hearing Aid
     private CachedBluetoothDevice mSubDevice;
     // Group member devices for the coordinated set
@@ -155,9 +160,14 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
         mProfileManager = profileManager;
         mDevice = device;
         fillData();
-        mHiSyncId = BluetoothHearingAid.HI_SYNC_ID_INVALID;
         mGroupId = BluetoothCsipSetCoordinator.GROUP_ID_INVALID;
         initDrawableCache();
+        mUnpairing = false;
+    }
+
+    /** Clears any pending messages in the message queue. */
+    public void release() {
+        mHandler.removeCallbacksAndMessages(null);
     }
 
     private void initDrawableCache() {
@@ -203,7 +213,7 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
 
         synchronized (mProfileLock) {
             if (profile instanceof A2dpProfile || profile instanceof HeadsetProfile
-                    || profile instanceof HearingAidProfile) {
+                    || profile instanceof HearingAidProfile || profile instanceof LeAudioProfile) {
                 setProfileConnectedStatus(profile.getProfileId(), false);
                 switch (newProfileState) {
                     case BluetoothProfile.STATE_CONNECTED:
@@ -221,7 +231,20 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
                     case BluetoothProfile.STATE_DISCONNECTED:
                         if (mHandler.hasMessages(profile.getProfileId())) {
                             mHandler.removeMessages(profile.getProfileId());
-                            setProfileConnectedStatus(profile.getProfileId(), true);
+                            if (profile.getConnectionPolicy(mDevice) >
+                                BluetoothProfile.CONNECTION_POLICY_FORBIDDEN) {
+                                /*
+                                 * If we received state DISCONNECTED and previous state was
+                                 * CONNECTING and connection policy is FORBIDDEN or UNKNOWN
+                                 * then it's not really a failure to connect.
+                                 *
+                                 * Connection profile is considered as failed when connection
+                                 * policy indicates that profile should be connected
+                                 * but it got disconnected.
+                                 */
+                                Log.w(TAG, "onProfileStateChanged(): Failed to connect profile");
+                                setProfileConnectedStatus(profile.getProfileId(), true);
+                            }
                         }
                         break;
                     default:
@@ -285,10 +308,11 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
         synchronized (mProfileLock) {
             if (getGroupId() != BluetoothCsipSetCoordinator.GROUP_ID_INVALID) {
                 for (CachedBluetoothDevice member : getMemberDevice()) {
-                    Log.d(TAG, "Disconnect the member(" + member.getAddress() + ")");
+                    Log.d(TAG, "Disconnect the member:" + member);
                     member.disconnect();
                 }
             }
+            Log.d(TAG, "Disconnect " + this);
             mDevice.disconnect();
         }
         // Disconnect  PBAP server in case its connected
@@ -333,16 +357,30 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
         connectDevice();
     }
 
-    public long getHiSyncId() {
-        return mHiSyncId;
+    void setHearingAidInfo(HearingAidInfo hearingAidInfo) {
+        mHearingAidInfo = hearingAidInfo;
     }
 
-    public void setHiSyncId(long id) {
-        mHiSyncId = id;
-    }
-
+    /**
+     * @return {@code true} if {@code cachedBluetoothDevice} is hearing aid device
+     */
     public boolean isHearingAidDevice() {
-        return mHiSyncId != BluetoothHearingAid.HI_SYNC_ID_INVALID;
+        return mHearingAidInfo != null;
+    }
+
+    public int getDeviceSide() {
+        return mHearingAidInfo != null
+                ? mHearingAidInfo.getSide() : HearingAidInfo.DeviceSide.SIDE_INVALID;
+    }
+
+    public int getDeviceMode() {
+        return mHearingAidInfo != null
+                ? mHearingAidInfo.getMode() : HearingAidInfo.DeviceMode.MODE_INVALID;
+    }
+
+    public long getHiSyncId() {
+        return mHearingAidInfo != null
+                ? mHearingAidInfo.getHiSyncId() : BluetoothHearingAid.HI_SYNC_ID_INVALID;
     }
 
     /**
@@ -378,6 +416,7 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
     * @param id the group id from the CSIP.
     */
     public void setGroupId(int id) {
+        Log.d(TAG, this.getDevice().getAnonymizedAddress() + " set GroupId " + id);
         mGroupId = id;
     }
 
@@ -401,11 +440,11 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
                 Log.d(TAG, "No profiles. Maybe we will connect later for device " + mDevice);
                 return;
             }
-
+            Log.d(TAG, "connect " + this);
             mDevice.connect();
             if (getGroupId() != BluetoothCsipSetCoordinator.GROUP_ID_INVALID) {
                 for (CachedBluetoothDevice member : getMemberDevice()) {
-                    Log.d(TAG, "connect the member(" + member.getAddress() + ")");
+                    Log.d(TAG, "connect the member:" + member);
                     member.connect();
                 }
             }
@@ -491,7 +530,7 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
     }
 
     // TODO: do any of these need to run async on a background thread?
-    private void fillData() {
+    void fillData() {
         updateProfiles();
         fetchActiveDevices();
         migratePhonebookPermissionChoice();
@@ -541,9 +580,14 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
      */
     public void setName(String name) {
         // Prevent getName() to be set to null if setName(null) is called
-        if (name != null && !TextUtils.equals(name, getName())) {
-            mDevice.setAlias(name);
-            dispatchAttributesChanged();
+        if (TextUtils.isEmpty(name) || TextUtils.equals(name, getName())) {
+            return;
+        }
+        mDevice.setAlias(name);
+        dispatchAttributesChanged();
+
+        for (CachedBluetoothDevice cbd : mMemberDevices) {
+            cbd.setName(name);
         }
     }
 
@@ -609,6 +653,20 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
         return mDevice.getBatteryLevel();
     }
 
+    /**
+     * Get the lowest battery level from remote device and its member devices
+     * @return battery level in percentage [0-100] or
+     * {@link BluetoothDevice#BATTERY_LEVEL_UNKNOWN}
+     */
+    public int getMinBatteryLevelWithMemberDevices() {
+        return Stream.concat(Stream.of(this), mMemberDevices.stream())
+                .mapToInt(cachedDevice -> cachedDevice.getBatteryLevel())
+                .filter(batteryLevel -> batteryLevel > BluetoothDevice.BATTERY_LEVEL_UNKNOWN)
+                .min()
+                .orElse(BluetoothDevice.BATTERY_LEVEL_UNKNOWN);
+    }
+
+
     void refresh() {
         ThreadUtils.postOnBackgroundThread(() -> {
             if (BluetoothUtils.isAdvancedDetailsHeader(mDevice)) {
@@ -645,6 +703,12 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
      * @param bluetoothProfile the Bluetooth profile
      */
     public void onActiveDeviceChanged(boolean isActive, int bluetoothProfile) {
+        if (BluetoothUtils.D) {
+            Log.d(TAG, "onActiveDeviceChanged: "
+                    + "profile " + BluetoothProfile.getProfileName(bluetoothProfile)
+                    + ", device " + mDevice.getAnonymizedAddress()
+                    + ", isActive " + isActive);
+        }
         boolean changed = false;
         switch (bluetoothProfile) {
         case BluetoothProfile.A2DP:
@@ -679,6 +743,14 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
     void onAudioModeChanged() {
         dispatchAttributesChanged();
     }
+
+    /**
+     * Notify that the audio category has changed.
+     */
+    public void onAudioDeviceCategoryChanged() {
+        dispatchAttributesChanged();
+    }
+
     /**
      * Get the device status as active or non-active per Bluetooth profile.
      *
@@ -754,8 +826,6 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
         List<ParcelUuid> uuidsList = mLocalAdapter.getUuidsList();
         ParcelUuid[] localUuids = new ParcelUuid[uuidsList.size()];
         uuidsList.toArray(localUuids);
-
-        if (localUuids == null) return false;
 
         /*
          * Now we know if the device supports PBAP, update permissions...
@@ -840,13 +910,23 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
             mDevice.setPhonebookAccessPermission(BluetoothDevice.ACCESS_UNKNOWN);
             mDevice.setMessageAccessPermission(BluetoothDevice.ACCESS_UNKNOWN);
             mDevice.setSimAccessPermission(BluetoothDevice.ACCESS_UNKNOWN);
+
+            mBondTimestamp = null;
         }
 
         refresh();
 
-        if (bondState == BluetoothDevice.BOND_BONDED && mDevice.isBondingInitiatedLocally()) {
-            connect();
+        if (bondState == BluetoothDevice.BOND_BONDED) {
+            mBondTimestamp = new Timestamp(System.currentTimeMillis());
+
+            if (mDevice.isBondingInitiatedLocally()) {
+                connect();
+            }
         }
+    }
+
+    public Timestamp getBondTimestamp() {
+        return mBondTimestamp;
     }
 
     public BluetoothClass getBtClass() {
@@ -890,7 +970,15 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
 
     @Override
     public String toString() {
-        return mDevice.toString();
+        return "CachedBluetoothDevice{"
+                + "anonymizedAddress="
+                + mDevice.getAnonymizedAddress()
+                + ", name="
+                + getName()
+                + ", groupId="
+                + mGroupId
+                + ", member=" + mMemberDevices
+                + "}";
     }
 
     @Override
@@ -990,16 +1078,7 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
         if (BluetoothUuid.containsAnyUuid(uuids, PbapServerProfile.PBAB_CLIENT_UUIDS)) {
             // The pairing dialog now warns of phone-book access for paired devices.
             // No separate prompt is displayed after pairing.
-            final BluetoothClass bluetoothClass = mDevice.getBluetoothClass();
-            if (mDevice.getPhonebookAccessPermission() == BluetoothDevice.ACCESS_UNKNOWN) {
-                if (bluetoothClass != null && (bluetoothClass.getDeviceClass()
-                        == BluetoothClass.Device.AUDIO_VIDEO_HANDSFREE
-                        || bluetoothClass.getDeviceClass()
-                        == BluetoothClass.Device.AUDIO_VIDEO_WEARABLE_HEADSET)) {
-                    EventLog.writeEvent(0x534e4554, "138529441", -1, "");
-                }
-                mDevice.setPhonebookAccessPermission(BluetoothDevice.ACCESS_REJECTED);
-            }
+            mDevice.getPhonebookAccessPermission();
         }
     }
 
@@ -1083,7 +1162,7 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
         // BluetoothDevice.BATTERY_LEVEL_BLUETOOTH_OFF, or BluetoothDevice.BATTERY_LEVEL_UNKNOWN,
         // any other value should be a framework bug. Thus assume here that if value is greater
         // than BluetoothDevice.BATTERY_LEVEL_UNKNOWN, it must be valid
-        final int batteryLevel = getBatteryLevel();
+        final int batteryLevel = getMinBatteryLevelWithMemberDevices();
         if (batteryLevel > BluetoothDevice.BATTERY_LEVEL_UNKNOWN) {
             // TODO: name com.android.settingslib.bluetooth.Utils something different
             batteryLevelPercentageString =
@@ -1109,7 +1188,8 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
                 stringRes = R.string.bluetooth_battery_level;
             }
 
-            // Set active string in following device connected situation.
+            // Set active string in following device connected situation, also show battery
+            // information if they have.
             //    1. Hearing Aid device active.
             //    2. Headset device active with in-calling state.
             //    3. A2DP device active without in-calling state.
@@ -1126,6 +1206,33 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
                         stringRes = R.string.bluetooth_active_battery_level;
                     } else {
                         stringRes = R.string.bluetooth_active_no_battery_level;
+                    }
+                }
+
+                // Try to show left/right information if can not get it from battery for hearing
+                // aids specifically.
+                boolean isActiveAshaHearingAid = mIsActiveDeviceHearingAid;
+                boolean isActiveLeAudioHearingAid = mIsActiveDeviceLeAudio
+                        && isConnectedHapClientDevice();
+                if ((isActiveAshaHearingAid || isActiveLeAudioHearingAid)
+                        && stringRes == R.string.bluetooth_active_no_battery_level) {
+                    final Set<CachedBluetoothDevice> memberDevices = getMemberDevice();
+                    final CachedBluetoothDevice subDevice = getSubDevice();
+                    if (memberDevices.stream().anyMatch(m -> m.isConnected())) {
+                        stringRes = R.string.bluetooth_hearing_aid_left_and_right_active;
+                    } else if (subDevice != null && subDevice.isConnected()) {
+                        stringRes = R.string.bluetooth_hearing_aid_left_and_right_active;
+                    } else {
+                        int deviceSide = getDeviceSide();
+                        if (deviceSide == HearingAidInfo.DeviceSide.SIDE_LEFT_AND_RIGHT) {
+                            stringRes = R.string.bluetooth_hearing_aid_left_and_right_active;
+                        } else if (deviceSide == HearingAidInfo.DeviceSide.SIDE_LEFT) {
+                            stringRes = R.string.bluetooth_hearing_aid_left_active;
+                        } else if (deviceSide == HearingAidInfo.DeviceSide.SIDE_RIGHT) {
+                            stringRes = R.string.bluetooth_hearing_aid_right_active;
+                        } else {
+                            stringRes = R.string.bluetooth_active_no_battery_level;
+                        }
                     }
                 }
             }
@@ -1149,15 +1256,39 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
     }
 
     private boolean isProfileConnectedFail() {
+        Log.d(TAG, "anonymizedAddress=" + mDevice.getAnonymizedAddress()
+                + " mIsA2dpProfileConnectedFail=" + mIsA2dpProfileConnectedFail
+                + " mIsHearingAidProfileConnectedFail=" + mIsHearingAidProfileConnectedFail
+                + " mIsLeAudioProfileConnectedFail=" + mIsLeAudioProfileConnectedFail
+                + " mIsHeadsetProfileConnectedFail=" + mIsHeadsetProfileConnectedFail
+                + " isConnectedSapDevice()=" + isConnectedSapDevice());
+
         return mIsA2dpProfileConnectedFail || mIsHearingAidProfileConnectedFail
                 || (!isConnectedSapDevice() && mIsHeadsetProfileConnectedFail)
                 || mIsLeAudioProfileConnectedFail;
     }
 
     /**
-     * @return resource for android auto string that describes the connection state of this device.
+     * See {@link #getCarConnectionSummary(boolean, boolean)}
      */
     public String getCarConnectionSummary() {
+        return getCarConnectionSummary(false /* shortSummary */);
+    }
+
+    /**
+     * See {@link #getCarConnectionSummary(boolean, boolean)}
+     */
+    public String getCarConnectionSummary(boolean shortSummary) {
+        return getCarConnectionSummary(shortSummary, true /* useDisconnectedString */);
+    }
+
+    /**
+     * Returns android auto string that describes the connection state of this device.
+     *
+     * @param shortSummary {@code true} if need to return short version summary
+     * @param useDisconnectedString {@code true} if need to return disconnected summary string
+     */
+    public String getCarConnectionSummary(boolean shortSummary, boolean useDisconnectedString) {
         boolean profileConnected = false;       // at least one profile is connected
         boolean a2dpNotConnected = false;       // A2DP is preferred but not connected
         boolean hfpNotConnected = false;        // HFP is preferred but not connected
@@ -1175,6 +1306,10 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
                                 BluetoothUtils.getConnectionStateSummary(connectionStatus));
 
                     case BluetoothProfile.STATE_CONNECTED:
+                        if (shortSummary) {
+                            return mContext.getString(BluetoothUtils.getConnectionStateSummary(
+                                    connectionStatus), /* formatArgs= */ "");
+                        }
                         profileConnected = true;
                         break;
 
@@ -1202,7 +1337,7 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
         // BluetoothDevice.BATTERY_LEVEL_BLUETOOTH_OFF, or BluetoothDevice.BATTERY_LEVEL_UNKNOWN,
         // any other value should be a framework bug. Thus assume here that if value is greater
         // than BluetoothDevice.BATTERY_LEVEL_UNKNOWN, it must be valid
-        final int batteryLevel = getBatteryLevel();
+        final int batteryLevel = getMinBatteryLevelWithMemberDevices();
         if (batteryLevel > BluetoothDevice.BATTERY_LEVEL_UNKNOWN) {
             // TODO: name com.android.settingslib.bluetooth.Utils something different
             batteryLevelPercentageString =
@@ -1271,8 +1406,10 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
             }
         }
 
-        return getBondState() == BluetoothDevice.BOND_BONDING ?
-                mContext.getString(R.string.bluetooth_pairing) : null;
+        if (getBondState() == BluetoothDevice.BOND_BONDING) {
+            return mContext.getString(R.string.bluetooth_pairing);
+        }
+        return useDisconnectedString ? mContext.getString(R.string.bluetooth_disconnected) : null;
     }
 
     /**
@@ -1294,12 +1431,38 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
     }
 
     /**
-     * @return {@code true} if {@code cachedBluetoothDevice} is Hearing Aid device
+     * @return {@code true} if {@code cachedBluetoothDevice} is ASHA hearing aid device
      */
-    public boolean isConnectedHearingAidDevice() {
+    public boolean isConnectedAshaHearingAidDevice() {
         HearingAidProfile hearingAidProfile = mProfileManager.getHearingAidProfile();
         return hearingAidProfile != null && hearingAidProfile.getConnectionStatus(mDevice) ==
                 BluetoothProfile.STATE_CONNECTED;
+    }
+
+    /**
+     * @return {@code true} if {@code cachedBluetoothDevice} is HAP device
+     */
+    public boolean isConnectedHapClientDevice() {
+        HapClientProfile hapClientProfile = mProfileManager.getHapClientProfile();
+        return hapClientProfile != null && hapClientProfile.getConnectionStatus(mDevice)
+                == BluetoothProfile.STATE_CONNECTED;
+    }
+
+    /**
+     * @return {@code true} if {@code cachedBluetoothDevice} is LeAudio hearing aid device
+     */
+    public boolean isConnectedLeAudioHearingAidDevice() {
+        return isConnectedHapClientDevice() && isConnectedLeAudioDevice();
+    }
+
+    /**
+     * @return {@code true} if {@code cachedBluetoothDevice} is hearing aid device
+     *
+     * The device may be an ASHA hearing aid that supports {@link HearingAidProfile} or a LeAudio
+     * hearing aid that supports {@link HapClientProfile} and {@link LeAudioProfile}.
+     */
+    public boolean isConnectedHearingAidDevice() {
+        return isConnectedAshaHearingAidDevice() || isConnectedLeAudioHearingAidDevice();
     }
 
     /**
@@ -1328,16 +1491,21 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
     public void switchSubDeviceContent() {
         // Backup from main device
         BluetoothDevice tmpDevice = mDevice;
-        short tmpRssi = mRssi;
-        boolean tmpJustDiscovered = mJustDiscovered;
+        final short tmpRssi = mRssi;
+        final boolean tmpJustDiscovered = mJustDiscovered;
+        final HearingAidInfo tmpHearingAidInfo = mHearingAidInfo;
         // Set main device from sub device
+        release();
         mDevice = mSubDevice.mDevice;
         mRssi = mSubDevice.mRssi;
         mJustDiscovered = mSubDevice.mJustDiscovered;
+        mHearingAidInfo = mSubDevice.mHearingAidInfo;
         // Set sub device from backup
+        mSubDevice.release();
         mSubDevice.mDevice = tmpDevice;
         mSubDevice.mRssi = tmpRssi;
         mSubDevice.mJustDiscovered = tmpJustDiscovered;
+        mSubDevice.mHearingAidInfo = tmpHearingAidInfo;
         fetchActiveDevices();
     }
 
@@ -1351,7 +1519,8 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
     /**
      * Store the member devices that are in the same coordinated set.
      */
-    public void setMemberDevice(CachedBluetoothDevice memberDevice) {
+    public void addMemberDevice(CachedBluetoothDevice memberDevice) {
+        Log.d(TAG, this + " addMemberDevice = " + memberDevice);
         mMemberDevices.add(memberDevice);
     }
 
@@ -1359,6 +1528,7 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
      * Remove a device from the member device sets.
      */
     public void removeMemberDevice(CachedBluetoothDevice memberDevice) {
+        memberDevice.release();
         mMemberDevices.remove(memberDevice);
     }
 
@@ -1367,26 +1537,35 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
      * first connected device in the coordinated set, and then switch the content of the main
      * device and member devices.
      *
-     * @param prevMainDevice the previous Main device, it will be added into the member device set.
-     * @param newMainDevie the new Main device, it will be removed from the member device set.
+     * @param newMainDevice the new Main device which is from the previous main device's member
+     *                      list.
      */
-    public void switchMemberDeviceContent(CachedBluetoothDevice prevMainDevice,
-            CachedBluetoothDevice newMainDevie) {
-        // Backup from main device
+    public void switchMemberDeviceContent(CachedBluetoothDevice newMainDevice) {
+        // Remove the sub device from mMemberDevices first to prevent hash mismatch problem due
+        // to mDevice switch
+        removeMemberDevice(newMainDevice);
+
+        // Backup from current main device
         final BluetoothDevice tmpDevice = mDevice;
         final short tmpRssi = mRssi;
         final boolean tmpJustDiscovered = mJustDiscovered;
+
         // Set main device from sub device
-        mDevice = newMainDevie.mDevice;
-        mRssi = newMainDevie.mRssi;
-        mJustDiscovered = newMainDevie.mJustDiscovered;
-        setMemberDevice(prevMainDevice);
-        mMemberDevices.remove(newMainDevie);
+        release();
+        mDevice = newMainDevice.mDevice;
+        mRssi = newMainDevice.mRssi;
+        mJustDiscovered = newMainDevice.mJustDiscovered;
+        fillData();
+
         // Set sub device from backup
-        newMainDevie.mDevice = tmpDevice;
-        newMainDevie.mRssi = tmpRssi;
-        newMainDevie.mJustDiscovered = tmpJustDiscovered;
-        fetchActiveDevices();
+        newMainDevice.release();
+        newMainDevice.mDevice = tmpDevice;
+        newMainDevice.mRssi = tmpRssi;
+        newMainDevice.mJustDiscovered = tmpJustDiscovered;
+        newMainDevice.fillData();
+
+        // Add the sub device back into mMemberDevices with correct hash
+        addMemberDevice(newMainDevice);
     }
 
     /**
@@ -1408,8 +1587,7 @@ public class CachedBluetoothDevice implements Comparable<CachedBluetoothDevice> 
             refresh();
         }
 
-        return new Pair<>(BluetoothUtils.buildBtRainbowDrawable(
-                        mContext, pair.first, getAddress().hashCode()), pair.second);
+        return BluetoothUtils.getBtRainbowDrawableWithDescription(mContext, this);
     }
 
     void releaseLruCache() {

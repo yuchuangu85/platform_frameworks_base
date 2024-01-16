@@ -3,9 +3,6 @@ Landroid/app/IActivityManager$Stub$Proxy;->updatePersistentConfiguration(Landroi
 Landroid/app/IActivityManager$Stub;->asInterface(Landroid/os/IBinder;)Landroid/app/IActivityManager;
 Landroid/app/IInstrumentationWatcher$Stub;-><init>()V
 Landroid/app/INotificationManager$Stub;->TRANSACTION_enqueueNotificationWithTag:I
-Landroid/bluetooth/IBluetooth$Stub$Proxy;->getConnectionState(Landroid/bluetooth/BluetoothDevice;)I
-Landroid/bluetooth/IBluetooth$Stub;->TRANSACTION_enable:I
-Landroid/bluetooth/IBluetoothManager$Stub;->TRANSACTION_enable:I
 Landroid/companion/ICompanionDeviceDiscoveryService$Stub;-><init>()V
 Landroid/content/om/IOverlayManager$Stub;->asInterface(Landroid/os/IBinder;)Landroid/content/om/IOverlayManager;
 Landroid/content/pm/IPackageManager$Stub;->TRANSACTION_getApplicationInfo:I
@@ -42,7 +39,6 @@ Lcom/android/ims/internal/uce/options/IOptionsService$Stub;-><init>()V
 Lcom/android/ims/internal/uce/presence/IPresenceService$Stub;-><init>()V
 Lcom/android/ims/internal/uce/uceservice/IUceListener$Stub;-><init>()V
 Lcom/android/ims/internal/uce/uceservice/IUceService$Stub;-><init>()V
-Lcom/android/internal/app/IVoiceInteractionManagerService$Stub$Proxy;->showSessionFromSession(Landroid/os/IBinder;Landroid/os/Bundle;I)Z
 Lcom/android/internal/appwidget/IAppWidgetService$Stub;->TRANSACTION_bindAppWidgetId:I
 Lcom/android/internal/telephony/ITelephony$Stub;->DESCRIPTOR:Ljava/lang/String;
 Lcom/android/internal/telephony/ITelephony$Stub;->TRANSACTION_dial:I

@@ -20,13 +20,25 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.PixelFormat;
+import android.graphics.Rect;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.os.RemoteException;
+import android.util.Log;
 import android.view.accessibility.IAccessibilityEmbeddedConnection;
+import android.window.ISurfaceSyncGroup;
+import android.window.WindowTokenClient;
+
+import dalvik.system.CloseGuard;
 
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Utility class for adding a View hierarchy to a {@link SurfaceControl}. The View hierarchy
@@ -39,11 +51,79 @@ import java.util.Objects;
  * {@link SurfaceView#setChildSurfacePackage}.
  */
 public class SurfaceControlViewHost {
+    private final static String TAG = "SurfaceControlViewHost";
     private final ViewRootImpl mViewRoot;
-    private WindowlessWindowManager mWm;
+    private final CloseGuard mCloseGuard = CloseGuard.get();
+    private final WindowlessWindowManager mWm;
 
     private SurfaceControl mSurfaceControl;
     private IAccessibilityEmbeddedConnection mAccessibilityEmbeddedConnection;
+    private boolean mReleased = false;
+
+    private final class ISurfaceControlViewHostImpl extends ISurfaceControlViewHost.Stub {
+        @Override
+        public void onConfigurationChanged(Configuration configuration) {
+            if (mViewRoot == null) {
+                return;
+            }
+            mViewRoot.mHandler.post(() -> {
+                mWm.setConfiguration(configuration);
+                if (mViewRoot != null) {
+                    mViewRoot.forceWmRelayout();
+                }
+            });
+        }
+
+        @Override
+        public void onDispatchDetachedFromWindow() {
+            if (mViewRoot == null) {
+                return;
+            }
+            mViewRoot.mHandler.post(() -> {
+                release();
+            });
+        }
+
+        @Override
+        public void onInsetsChanged(InsetsState state, Rect frame) {
+            if (mViewRoot != null) {
+                mViewRoot.mHandler.post(() -> {
+                    mViewRoot.setOverrideInsetsFrame(frame);
+                });
+            }
+            mWm.setInsetsState(state);
+        }
+
+        @Override
+        public ISurfaceSyncGroup getSurfaceSyncGroup() {
+            CompletableFuture<ISurfaceSyncGroup> surfaceSyncGroup = new CompletableFuture<>();
+            // If the call came from in process and it's already running on the UI thread, return
+            // results immediately instead of posting to the main thread. If we post to the main
+            // thread, it will block itself and the return value will always be null.
+            if (Thread.currentThread() == mViewRoot.mThread) {
+                return mViewRoot.getOrCreateSurfaceSyncGroup().mISurfaceSyncGroup;
+            } else {
+                mViewRoot.mHandler.post(
+                        () -> surfaceSyncGroup.complete(
+                                mViewRoot.getOrCreateSurfaceSyncGroup().mISurfaceSyncGroup));
+            }
+            try {
+                return surfaceSyncGroup.get(1, TimeUnit.SECONDS);
+            } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                Log.e(TAG, "Failed to get SurfaceSyncGroup for SCVH", e);
+            }
+            return null;
+        }
+
+        @Override
+        public void attachParentInterface(@Nullable ISurfaceControlViewHostParent parentInterface) {
+            mViewRoot.mHandler.post(() -> mWm.setParentInterface(parentInterface));
+        }
+    }
+
+    private ISurfaceControlViewHost mRemoteInterface = new ISurfaceControlViewHostImpl();
+
+    private ViewRootImpl.ConfigChangedCallback mConfigChangedCallback;
 
     /**
      * Package encapsulating a Surface hierarchy which contains interactive view
@@ -71,12 +151,15 @@ public class SurfaceControlViewHost {
         private SurfaceControl mSurfaceControl;
         private final IAccessibilityEmbeddedConnection mAccessibilityEmbeddedConnection;
         private final IBinder mInputToken;
+        @NonNull
+        private final ISurfaceControlViewHost mRemoteInterface;
 
         SurfacePackage(SurfaceControl sc, IAccessibilityEmbeddedConnection connection,
-                       IBinder inputToken) {
+                IBinder inputToken, @NonNull ISurfaceControlViewHost ri) {
             mSurfaceControl = sc;
             mAccessibilityEmbeddedConnection = connection;
             mInputToken = inputToken;
+            mRemoteInterface = ri;
         }
 
         /**
@@ -92,25 +175,30 @@ public class SurfaceControlViewHost {
         public SurfacePackage(@NonNull SurfacePackage other) {
             SurfaceControl otherSurfaceControl = other.mSurfaceControl;
             if (otherSurfaceControl != null && otherSurfaceControl.isValid()) {
-                mSurfaceControl = new SurfaceControl();
-                mSurfaceControl.copyFrom(otherSurfaceControl, "SurfacePackage");
+                mSurfaceControl = new SurfaceControl(otherSurfaceControl, "SurfacePackage");
             }
             mAccessibilityEmbeddedConnection = other.mAccessibilityEmbeddedConnection;
             mInputToken = other.mInputToken;
+            mRemoteInterface = other.mRemoteInterface;
         }
 
         private SurfacePackage(Parcel in) {
             mSurfaceControl = new SurfaceControl();
             mSurfaceControl.readFromParcel(in);
+            mSurfaceControl.setUnreleasedWarningCallSite("SurfacePackage(Parcel)");
             mAccessibilityEmbeddedConnection = IAccessibilityEmbeddedConnection.Stub.asInterface(
                     in.readStrongBinder());
             mInputToken = in.readStrongBinder();
+            mRemoteInterface = ISurfaceControlViewHost.Stub.asInterface(
+                in.readStrongBinder());
         }
 
         /**
-         * Use {@link SurfaceView#setChildSurfacePackage} or manually fix
-         * accessibility (see SurfaceView implementation).
-         * @hide
+         * Returns the {@link android.view.SurfaceControl} associated with this SurfacePackage for
+         * cases where more control is required.
+         *
+         * @return the SurfaceControl associated with this SurfacePackage and its containing
+         *     SurfaceControlViewHost
          */
         public @NonNull SurfaceControl getSurfaceControl() {
             return mSurfaceControl;
@@ -126,6 +214,52 @@ public class SurfaceControlViewHost {
             return mAccessibilityEmbeddedConnection;
         }
 
+        /**
+         * @hide
+         */
+        @NonNull
+        public ISurfaceControlViewHost getRemoteInterface() {
+            return mRemoteInterface;
+        }
+
+        /**
+         * Forward a configuration to the remote SurfaceControlViewHost.
+         * This will cause View#onConfigurationChanged to be invoked on the remote
+         * end. This does not automatically cause the SurfaceControlViewHost
+         * to be resized. The root View of a SurfaceControlViewHost
+         * is more akin to a PopupWindow in that the size is user specified
+         * independent of configuration width and height.
+         *
+         * In order to receive the configuration change via
+         * {@link View#onConfigurationChanged}, the context used with the
+         * SurfaceControlViewHost and it's embedded view hierarchy must
+         * be a WindowContext obtained from {@link Context#createWindowContext}.
+         *
+         * If a regular service context is used, then your embedded view hierarchy
+         * will always perceive the global configuration.
+         *
+         * @param c The configuration to forward
+         */
+        public void notifyConfigurationChanged(@NonNull Configuration c) {
+            try {
+                getRemoteInterface().onConfigurationChanged(c);
+            } catch (RemoteException e) {
+                e.rethrowAsRuntimeException();
+            }
+        }
+
+        /**
+         * Tear down the remote SurfaceControlViewHost and cause
+         * View#onDetachedFromWindow to be invoked on the other side.
+         */
+        public void notifyDetachedFromWindow() {
+            try {
+                getRemoteInterface().onDispatchDetachedFromWindow();
+            } catch (RemoteException e) {
+                e.rethrowAsRuntimeException();
+            }
+        }
+
         @Override
         public int describeContents() {
             return 0;
@@ -136,6 +270,7 @@ public class SurfaceControlViewHost {
             mSurfaceControl.writeToParcel(out, flags);
             out.writeStrongBinder(mAccessibilityEmbeddedConnection.asBinder());
             out.writeStrongBinder(mInputToken);
+            out.writeStrongBinder(mRemoteInterface.asBinder());
         }
 
         /**
@@ -173,15 +308,15 @@ public class SurfaceControlViewHost {
 
     /** @hide */
     public SurfaceControlViewHost(@NonNull Context c, @NonNull Display d,
-            @NonNull WindowlessWindowManager wwm) {
-        this(c, d, wwm, false /* useSfChoreographer */);
-    }
-
-    /** @hide */
-    public SurfaceControlViewHost(@NonNull Context c, @NonNull Display d,
-            @NonNull WindowlessWindowManager wwm, boolean useSfChoreographer) {
+            @NonNull WindowlessWindowManager wwm, @NonNull String callsite) {
+        mSurfaceControl = wwm.mRootSurface;
         mWm = wwm;
-        mViewRoot = new ViewRootImpl(c, d, mWm, useSfChoreographer);
+        mViewRoot = new ViewRootImpl(c, d, mWm, new WindowlessWindowLayout());
+        mCloseGuard.openWithCallSite("release", callsite);
+        setConfigCallback(c, d);
+
+        WindowManagerGlobal.getInstance().addWindowlessRoot(mViewRoot);
+
         mAccessibilityEmbeddedConnection = mViewRoot.getAccessibilityEmbeddedConnection();
     }
 
@@ -199,15 +334,52 @@ public class SurfaceControlViewHost {
      */
     public SurfaceControlViewHost(@NonNull Context context, @NonNull Display display,
             @Nullable IBinder hostToken) {
+        this(context, display, hostToken, "untracked");
+    }
+
+    /**
+     * Construct a new SurfaceControlViewHost. The root Surface will be
+     * allocated internally and is accessible via getSurfacePackage().
+     *
+     * The {@param hostToken} parameter, primarily used for ANR reporting,
+     * must be obtained from whomever will be hosting the embedded hierarchy.
+     * It's accessible from {@link SurfaceView#getHostToken}.
+     *
+     * @param context The Context object for your activity or application.
+     * @param display The Display the hierarchy will be placed on.
+     * @param hostToken The host token, as discussed above.
+     * @param callsite The call site, used for tracking leakage of the host
+     * @hide
+     */
+    public SurfaceControlViewHost(@NonNull Context context, @NonNull Display display,
+            @Nullable IBinder hostToken, @NonNull String callsite) {
         mSurfaceControl = new SurfaceControl.Builder()
                 .setContainerLayer()
                 .setName("SurfaceControlViewHost")
-                .setCallsite("SurfaceControlViewHost")
+                .setCallsite("SurfaceControlViewHost[" + callsite + "]")
                 .build();
         mWm = new WindowlessWindowManager(context.getResources().getConfiguration(),
                 mSurfaceControl, hostToken);
-        mViewRoot = new ViewRootImpl(context, display, mWm);
+
+        mViewRoot = new ViewRootImpl(context, display, mWm, new WindowlessWindowLayout());
+        mCloseGuard.openWithCallSite("release", callsite);
+        setConfigCallback(context, display);
+
+        WindowManagerGlobal.getInstance().addWindowlessRoot(mViewRoot);
+
         mAccessibilityEmbeddedConnection = mViewRoot.getAccessibilityEmbeddedConnection();
+    }
+
+    private void setConfigCallback(Context c, Display d) {
+        final IBinder token = c.getWindowContextToken();
+        mConfigChangedCallback = conf -> {
+            if (token instanceof WindowTokenClient) {
+                final WindowTokenClient w = (WindowTokenClient)  token;
+                w.onConfigurationChanged(conf, d.getDisplayId(), true);
+            }
+        };
+
+        ViewRootImpl.addConfigCallback(mConfigChangedCallback);
     }
 
     /**
@@ -215,11 +387,15 @@ public class SurfaceControlViewHost {
      */
     @Override
     protected void finalize() throws Throwable {
-        // We aren't on the UI thread here so we need to pass false to
-        // doDie
-        mViewRoot.die(false /* immediate */);
+        if (mReleased) {
+            return;
+        }
+        if (mCloseGuard != null) {
+            mCloseGuard.warnIfOpen();
+        }
+        // We aren't on the UI thread here so we need to pass false to doDie
+        doRelease(false /* immediate */);
     }
-
 
     /**
      * Return a SurfacePackage for the root SurfaceControl of the embedded hierarchy.
@@ -230,11 +406,18 @@ public class SurfaceControlViewHost {
      */
     public @Nullable SurfacePackage getSurfacePackage() {
         if (mSurfaceControl != null && mAccessibilityEmbeddedConnection != null) {
-            return new SurfacePackage(mSurfaceControl, mAccessibilityEmbeddedConnection,
-                    mViewRoot.getInputToken());
+            return new SurfacePackage(new SurfaceControl(mSurfaceControl, "getSurfacePackage"),
+                mAccessibilityEmbeddedConnection, getFocusGrantToken(), mRemoteInterface);
         } else {
             return null;
         }
+    }
+
+    /**
+     * @hide
+     */
+    public @NonNull AttachedSurfaceControl getRootSurfaceControl() {
+        return mViewRoot;
     }
 
     /**
@@ -260,6 +443,7 @@ public class SurfaceControlViewHost {
     public void setView(@NonNull View view, @NonNull WindowManager.LayoutParams attrs) {
         Objects.requireNonNull(view);
         attrs.flags |= WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED;
+        addWindowToken(attrs);
         view.setLayoutParams(attrs);
         mViewRoot.setView(view, attrs, null);
     }
@@ -288,22 +472,22 @@ public class SurfaceControlViewHost {
     }
 
     /**
-     * @hide
-     */
-    @TestApi
-    public void relayout(WindowManager.LayoutParams attrs) {
-        relayout(attrs, SurfaceControl.Transaction::apply);
-    }
-
-    /**
      * Forces relayout and draw and allows to set a custom callback when it is finished
      * @hide
      */
     public void relayout(WindowManager.LayoutParams attrs,
             WindowlessWindowManager.ResizeCompleteCallback callback) {
         mViewRoot.setLayoutParams(attrs, false);
-        mViewRoot.setReportNextDraw();
+        mViewRoot.setReportNextDraw(true /* syncBuffer */, "scvh_relayout");
         mWm.setCompletionCallback(mViewRoot.mWindow.asBinder(), callback);
+    }
+
+    /**
+     * @hide
+     */
+    @TestApi
+    public void relayout(WindowManager.LayoutParams attrs) {
+        mViewRoot.setLayoutParams(attrs, false);
     }
 
     /**
@@ -326,6 +510,52 @@ public class SurfaceControlViewHost {
      */
     public void release() {
         // ViewRoot will release mSurfaceControl for us.
-        mViewRoot.die(true /* immediate */);
+        doRelease(true /* immediate */);
+    }
+
+    private void doRelease(boolean immediate) {
+        if (mConfigChangedCallback != null) {
+            ViewRootImpl.removeConfigCallback(mConfigChangedCallback);
+            mConfigChangedCallback = null;
+        }
+
+        mViewRoot.die(immediate);
+        WindowManagerGlobal.getInstance().removeWindowlessRoot(mViewRoot);
+        mReleased = true;
+        mCloseGuard.close();
+    }
+
+    /**
+     * @hide
+     */
+    public IBinder getFocusGrantToken() {
+        return mWm.getFocusGrantToken(getWindowToken().asBinder());
+    }
+
+    private void addWindowToken(WindowManager.LayoutParams attrs) {
+        final WindowManagerImpl wm =
+                (WindowManagerImpl) mViewRoot.mContext.getSystemService(Context.WINDOW_SERVICE);
+        attrs.token = wm.getDefaultToken();
+    }
+
+    /**
+     * Transfer the currently in progress touch gesture to the parent
+     * (if any) of this SurfaceControlViewHost. This requires that the
+     * SurfaceControlViewHost was created with an associated hostInputToken.
+     *
+     * @return Whether the touch stream was transferred.
+     */
+    public boolean transferTouchGestureToHost() {
+        if (mViewRoot == null) {
+            return false;
+        }
+
+        final IWindowSession realWm = WindowManagerGlobal.getWindowSession();
+        try {
+            return realWm.transferEmbeddedTouchFocusToHost(mViewRoot.mWindow);
+        } catch (RemoteException e) {
+            e.rethrowAsRuntimeException();
+        }
+        return false;
     }
 }

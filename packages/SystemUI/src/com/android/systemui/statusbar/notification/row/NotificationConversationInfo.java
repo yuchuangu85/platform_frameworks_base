@@ -25,7 +25,7 @@ import static android.app.NotificationManager.IMPORTANCE_UNSPECIFIED;
 import static android.app.NotificationManager.Policy.CONVERSATION_SENDERS_ANYONE;
 import static android.app.NotificationManager.Policy.CONVERSATION_SENDERS_IMPORTANT;
 
-import static com.android.systemui.animation.Interpolators.FAST_OUT_SLOW_IN;
+import static com.android.app.animation.Interpolators.FAST_OUT_SLOW_IN;
 
 import static java.lang.annotation.RetentionPolicy.SOURCE;
 
@@ -48,6 +48,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.RemoteException;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.service.notification.StatusBarNotification;
 import android.text.TextUtils;
 import android.transition.ChangeBounds;
@@ -68,10 +69,10 @@ import com.android.systemui.R;
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.people.widget.PeopleSpaceWidgetManager;
+import com.android.systemui.shade.ShadeController;
 import com.android.systemui.statusbar.notification.NotificationChannelHelper;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.stack.StackStateAnimator;
-import com.android.systemui.statusbar.phone.ShadeController;
 import com.android.systemui.wmshell.BubblesManager;
 
 import java.lang.annotation.Retention;
@@ -118,6 +119,8 @@ public class NotificationConversationInfo extends LinearLayout implements
     private NotificationGuts mGutsContainer;
     private OnConversationSettingsClickListener mOnConversationSettingsClickListener;
 
+    private UserManager mUm;
+
     @VisibleForTesting
     boolean mSkipPost = false;
     private int mActualHeight;
@@ -154,10 +157,12 @@ public class NotificationConversationInfo extends LinearLayout implements
         // If the user selected Priority and the previous selection was not priority, show a
         // People Tile add request.
         if (mSelectedAction == ACTION_FAVORITE && getPriority() != mSelectedAction) {
-            mShadeController.animateCollapsePanels();
-            mPeopleSpaceWidgetManager.requestPinAppWidget(mShortcutInfo, new Bundle());
+            mShadeController.animateCollapseShade();
+            if (mUm.isSameProfileGroup(UserHandle.USER_SYSTEM, mSbn.getNormalizedUserId())) {
+                mPeopleSpaceWidgetManager.requestPinAppWidget(mShortcutInfo, new Bundle());
+            }
         }
-        mGutsContainer.closeControls(v, true);
+        mGutsContainer.closeControls(v, /* save= */ true);
     };
 
     public NotificationConversationInfo(Context context, AttributeSet attrs) {
@@ -186,9 +191,9 @@ public class NotificationConversationInfo extends LinearLayout implements
     }
 
     public void bindNotification(
-            @Action int selectedAction,
             ShortcutManager shortcutManager,
             PackageManager pm,
+            UserManager um,
             PeopleSpaceWidgetManager peopleSpaceWidgetManager,
             INotificationManager iNotificationManager,
             OnUserInteractionCallback onUserInteractionCallback,
@@ -205,8 +210,6 @@ public class NotificationConversationInfo extends LinearLayout implements
             OnConversationSettingsClickListener onConversationSettingsClickListener,
             Optional<BubblesManager> bubblesManagerOptional,
             ShadeController shadeController) {
-        mPressedApply = false;
-        mSelectedAction = selectedAction;
         mINotificationManager = iNotificationManager;
         mPeopleSpaceWidgetManager = peopleSpaceWidgetManager;
         mOnUserInteractionCallback = onUserInteractionCallback;
@@ -214,6 +217,7 @@ public class NotificationConversationInfo extends LinearLayout implements
         mEntry = entry;
         mSbn = entry.getSbn();
         mPm = pm;
+        mUm = um;
         mAppName = mPackageName;
         mOnSettingsClickListener = onSettingsClick;
         mNotificationChannel = notificationChannel;
@@ -266,9 +270,14 @@ public class NotificationConversationInfo extends LinearLayout implements
         snooze.setOnClickListener(mOnSnoozeClick);
         */
 
-        if (mAppBubble == BUBBLE_PREFERENCE_ALL) {
-            ((TextView) findViewById(R.id.default_summary)).setText(getResources().getString(
+        TextView defaultSummaryTextView = findViewById(R.id.default_summary);
+        if (mAppBubble == BUBBLE_PREFERENCE_ALL
+                && BubblesManager.areBubblesEnabled(mContext, mSbn.getUser())) {
+            defaultSummaryTextView.setText(getResources().getString(
                     R.string.notification_channel_summary_default_with_bubbles, mAppName));
+        } else {
+            defaultSummaryTextView.setText(getResources().getString(
+                    R.string.notification_channel_summary_default));
         }
 
         findViewById(R.id.priority).setOnClickListener(mOnFavoriteClick);
@@ -412,9 +421,7 @@ public class NotificationConversationInfo extends LinearLayout implements
     }
 
     @Override
-    public void onFinishedClosing() {
-        mSelectedAction = -1;
-    }
+    public void onFinishedClosing() { }
 
     @Override
     public boolean needsFalsingProtection() {
@@ -559,7 +566,7 @@ public class NotificationConversationInfo extends LinearLayout implements
     }
 
     @Override
-    public boolean shouldBeSaved() {
+    public boolean shouldBeSavedOnClose() {
         return mPressedApply;
     }
 
@@ -573,6 +580,12 @@ public class NotificationConversationInfo extends LinearLayout implements
         if (save && mSelectedAction > -1) {
             updateChannel();
         }
+
+        // Clear the selected importance when closing, so when when we open again,
+        // we starts from a clean state.
+        mSelectedAction = -1;
+        mPressedApply = false;
+
         return false;
     }
 

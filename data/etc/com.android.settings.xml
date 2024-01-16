@@ -23,6 +23,7 @@
         <permission name="android.permission.BLUETOOTH_PRIVILEGED"/>
         <permission name="android.permission.CHANGE_APP_IDLE_STATE"/>
         <permission name="android.permission.CHANGE_CONFIGURATION"/>
+        <permission name="android.permission.CONTROL_UI_TRACING"/>
         <permission name="android.permission.DELETE_PACKAGES"/>
         <permission name="android.permission.FORCE_STOP_PACKAGES"/>
         <permission name="android.permission.LOCAL_MAC_ADDRESS"/>
@@ -30,11 +31,13 @@
         <permission name="android.permission.MANAGE_DEBUGGING"/>
         <permission name="android.permission.MANAGE_DEVICE_ADMINS"/>
         <permission name="android.permission.MANAGE_FINGERPRINT"/>
+        <permission name="android.permission.MANAGE_GAME_MODE" />
         <permission name="android.permission.MANAGE_USB"/>
         <permission name="android.permission.MANAGE_USERS"/>
         <permission name="android.permission.MANAGE_USER_OEM_UNLOCK_STATE" />
         <permission name="android.permission.MASTER_CLEAR"/>
         <permission name="android.permission.MEDIA_CONTENT_CONTROL"/>
+        <permission name="android.permission.MODIFY_AUDIO_SETTINGS_PRIVILEGED" />
         <permission name="android.permission.MODIFY_PHONE_STATE"/>
         <permission name="android.permission.MOUNT_UNMOUNT_FILESYSTEMS"/>
         <permission name="android.permission.MOVE_PACKAGE"/>
@@ -45,6 +48,7 @@
         <permission name="android.permission.READ_PRIVILEGED_PHONE_STATE"/>
         <permission name="android.permission.READ_SEARCH_INDEXABLES"/>
         <permission name="android.permission.REBOOT"/>
+        <permission name="android.permission.RECOVERY"/>
         <permission name="android.permission.STATUS_BAR"/>
         <permission name="android.permission.SUGGEST_MANUAL_TIME_AND_ZONE"/>
         <permission name="android.permission.TETHER_PRIVILEGED"/>
@@ -59,5 +63,8 @@
         <permission name="android.permission.READ_DREAM_STATE"/>
         <permission name="android.permission.READ_DREAM_SUPPRESSION"/>
         <permission name="android.permission.RESTART_WIFI_SUBSYSTEM"/>
+        <permission name="android.permission.READ_SAFETY_CENTER_STATUS" />
+        <permission name="android.permission.SEND_SAFETY_CENTER_UPDATE" />
+        <permission name="android.permission.LIST_ENABLED_CREDENTIAL_PROVIDERS" />
     </privapp-permissions>
 </permissions>

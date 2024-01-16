@@ -26,15 +26,23 @@ import android.content.AttributionSource;
 import android.content.IContentProvider;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.os.ShellCallback;
 import android.os.ShellCommand;
 import android.provider.DeviceConfig;
+import android.provider.DeviceConfigShellCommandHandler;
 import android.provider.Settings;
+import android.provider.Settings.Config.SyncDisabledMode;
+import android.provider.UpdatableDeviceConfigServiceReadiness;
+
+import com.android.internal.util.FastPrintWriter;
 
 import java.io.FileDescriptor;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -55,8 +63,32 @@ public final class DeviceConfigService extends Binder {
 
     @Override
     public void onShellCommand(FileDescriptor in, FileDescriptor out, FileDescriptor err,
-            String[] args, ShellCallback callback, ResultReceiver resultReceiver) {
-        (new MyShellCommand(mProvider)).exec(this, in, out, err, args, callback, resultReceiver);
+            String[] args, ShellCallback callback, ResultReceiver resultReceiver)
+            throws RemoteException {
+        if (UpdatableDeviceConfigServiceReadiness.shouldStartUpdatableService()) {
+            callUpdableDeviceConfigShellCommandHandler(in, out, err, args, resultReceiver);
+        } else {
+            (new MyShellCommand(mProvider))
+                    .exec(this, in, out, err, args, callback, resultReceiver);
+        }
+    }
+
+    private void callUpdableDeviceConfigShellCommandHandler(FileDescriptor in, FileDescriptor out,
+            FileDescriptor err, String[] args, ResultReceiver resultReceiver) {
+        int result = -1;
+        try (
+                ParcelFileDescriptor inPfd = ParcelFileDescriptor.dup(in);
+                ParcelFileDescriptor outPfd = ParcelFileDescriptor.dup(out);
+                ParcelFileDescriptor errPfd = ParcelFileDescriptor.dup(err)) {
+            result = DeviceConfigShellCommandHandler.handleShellCommand(inPfd, outPfd, errPfd,
+                    args);
+        } catch (IOException e) {
+            PrintWriter pw = new FastPrintWriter(new FileOutputStream(err));
+            pw.println("dup() failed: " + e.getMessage());
+            pw.flush();
+        } finally {
+            resultReceiver.send(result, null);
+        }
     }
 
     static final class MyShellCommand extends ShellCommand {
@@ -69,7 +101,7 @@ public final class DeviceConfigService extends Binder {
             LIST,
             RESET,
             SET_SYNC_DISABLED_FOR_TESTS,
-            IS_SYNC_DISABLED_FOR_TESTS,
+            GET_SYNC_DISABLED_FOR_TESTS,
         }
 
         MyShellCommand(SettingsProvider provider) {
@@ -103,8 +135,8 @@ public final class DeviceConfigService extends Binder {
                 verb = CommandVerb.RESET;
             } else if ("set_sync_disabled_for_tests".equalsIgnoreCase(cmd)) {
                 verb = CommandVerb.SET_SYNC_DISABLED_FOR_TESTS;
-            } else if ("is_sync_disabled_for_tests".equalsIgnoreCase(cmd)) {
-                verb = CommandVerb.IS_SYNC_DISABLED_FOR_TESTS;
+            } else if ("get_sync_disabled_for_tests".equalsIgnoreCase(cmd)) {
+                verb = CommandVerb.GET_SYNC_DISABLED_FOR_TESTS;
                 if (peekNextArg() != null) {
                     perr.println("Bad arguments");
                     return -1;
@@ -117,7 +149,7 @@ public final class DeviceConfigService extends Binder {
             }
 
             // Parse args for those commands that have them.
-            int disableSyncMode = -1;
+            int syncDisabledModeArg = -1;
             int resetMode = -1;
             boolean makeDefault = false;
             String namespace = null;
@@ -154,15 +186,10 @@ public final class DeviceConfigService extends Binder {
                         }
                     }
                 } else if (verb == CommandVerb.SET_SYNC_DISABLED_FOR_TESTS) {
-                    if (disableSyncMode == -1) {
-                        // DISABLE_SYNC_FOR_TESTS 1st arg (required)
-                        if ("none".equalsIgnoreCase(arg)) {
-                            disableSyncMode = SYNC_DISABLED_MODE_NONE;
-                        } else if ("persistent".equalsIgnoreCase(arg)) {
-                            disableSyncMode = SYNC_DISABLED_MODE_PERSISTENT;
-                        } else if ("until_reboot".equalsIgnoreCase(arg)) {
-                            disableSyncMode = SYNC_DISABLED_MODE_UNTIL_REBOOT;
-                        } else {
+                    if (syncDisabledModeArg == -1) {
+                        // SET_SYNC_DISABLED_FOR_TESTS 1st arg (required)
+                        syncDisabledModeArg = parseSyncDisabledMode(arg);
+                        if (syncDisabledModeArg == -1) {
                             // invalid
                             perr.println("Invalid sync disabled mode: " + arg);
                             return -1;
@@ -252,10 +279,16 @@ public final class DeviceConfigService extends Binder {
                     DeviceConfig.resetToDefaults(resetMode, namespace);
                     break;
                 case SET_SYNC_DISABLED_FOR_TESTS:
-                    DeviceConfig.setSyncDisabled(disableSyncMode);
+                    DeviceConfig.setSyncDisabledMode(syncDisabledModeArg);
                     break;
-                case IS_SYNC_DISABLED_FOR_TESTS:
-                    pout.println(DeviceConfig.isSyncDisabled());
+                case GET_SYNC_DISABLED_FOR_TESTS:
+                    int syncDisabledModeInt = DeviceConfig.getSyncDisabledMode();
+                    String syncDisabledModeString = formatSyncDisabledMode(syncDisabledModeInt);
+                    if (syncDisabledModeString == null) {
+                        perr.println("Unknown mode: " + syncDisabledModeInt);
+                        return -1;
+                    }
+                    pout.println(syncDisabledModeString);
                     break;
                 default:
                     perr.println("Unspecified command");
@@ -295,8 +328,9 @@ public final class DeviceConfigService extends Binder {
                     + " syncing.");
             pw.println("        persistent: Sync is disabled, this state will survive a reboot.");
             pw.println("        until_reboot: Sync is disabled until the next reboot.");
-            pw.println("  is_sync_disabled_for_tests");
-            pw.println("      Prints 'true' if sync is disabled, 'false' otherwise.");
+            pw.println("  get_sync_disabled_for_tests");
+            pw.println("      Prints one of the SYNC_DISABLED_MODE values, see"
+                    + " set_sync_disabled_for_tests");
         }
 
         private boolean delete(IContentProvider provider, String namespace, String key) {
@@ -356,6 +390,33 @@ public final class DeviceConfigService extends Binder {
                     return null;
                 }
             }
+        }
+    }
+
+    private static @SyncDisabledMode int parseSyncDisabledMode(String arg) {
+        int syncDisabledMode;
+        if ("none".equalsIgnoreCase(arg)) {
+            syncDisabledMode = SYNC_DISABLED_MODE_NONE;
+        } else if ("persistent".equalsIgnoreCase(arg)) {
+            syncDisabledMode = SYNC_DISABLED_MODE_PERSISTENT;
+        } else if ("until_reboot".equalsIgnoreCase(arg)) {
+            syncDisabledMode = SYNC_DISABLED_MODE_UNTIL_REBOOT;
+        } else {
+            syncDisabledMode = -1;
+        }
+        return syncDisabledMode;
+    }
+
+    private static String formatSyncDisabledMode(@SyncDisabledMode int syncDisabledMode) {
+        switch (syncDisabledMode) {
+            case SYNC_DISABLED_MODE_NONE:
+                return "none";
+            case SYNC_DISABLED_MODE_PERSISTENT:
+                return "persistent";
+            case SYNC_DISABLED_MODE_UNTIL_REBOOT:
+                return "until_reboot";
+            default:
+                return null;
         }
     }
 }

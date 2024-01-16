@@ -38,20 +38,34 @@ import android.provider.Settings;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.ArraySet;
+import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.app.LocalePicker;
+import com.android.settingslib.devicestate.DeviceStateRotationLockSettingsManager;
 
+import java.io.FileNotFoundException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Locale;
+import java.util.Set;
 
 public class SettingsHelper {
     private static final String TAG = "SettingsHelper";
     private static final String SILENT_RINGTONE = "_silent";
     private static final String SETTINGS_REPLACED_KEY = "backup_skip_user_facing_data";
     private static final String SETTING_ORIGINAL_KEY_SUFFIX = "_original";
+    private static final String UNICODE_LOCALE_EXTENSION_FW = "fw";
+    private static final String UNICODE_LOCALE_EXTENSION_MU = "mu";
+    private static final String UNICODE_LOCALE_EXTENSION_NU = "nu";
     private static final float FLOAT_TOLERANCE = 0.01f;
+
+    /** See frameworks/base/core/res/res/values/config.xml#config_longPressOnPowerBehavior **/
+    private static final int LONG_PRESS_POWER_NOTHING = 0;
+    private static final int LONG_PRESS_POWER_GLOBAL_ACTIONS = 1;
+    private static final int LONG_PRESS_POWER_FOR_ASSISTANT = 5;
+    /** See frameworks/base/core/res/res/values/config.xml#config_keyChordPowerVolumeUp **/
+    private static final int KEY_CHORD_POWER_VOLUME_UP_GLOBAL_ACTIONS = 2;
 
     private Context mContext;
     private AudioManager mAudioManager;
@@ -87,6 +101,25 @@ public class SettingsHelper {
         sBroadcastOnRestoreSystemUI = new ArraySet<String>(2);
         sBroadcastOnRestoreSystemUI.add(Settings.Secure.QS_TILES);
         sBroadcastOnRestoreSystemUI.add(Settings.Secure.QS_AUTO_ADDED_TILES);
+    }
+
+    private static final ArraySet<String> UNICODE_LOCALE_SUPPORTED_EXTENSIONS = new ArraySet<>();
+
+    /**
+     * Current supported extensions are fw (first day of week) and mu (temperature unit) extension.
+     * User can set these extensions in Settings app, and it will be appended to the locale,
+     * for example: zh-Hant-TW-u-fw-mon-mu-celsius. So after the factory reset, these extensions
+     * should be restored as well because they are set by users.
+     * We do not put the nu (numbering system) extension here because it is an Android supported
+     * extension and defined in some particular locales, for example:
+     * ar-Arab-MA-u-nu-arab and ar-Arab-YE-u-nu-latn. See
+     * <code>frameworks/base/core/res/res/values/locale_config.xml</code>
+     * The nu extension should not be appended to the current/restored locale after factory reset
+     * if the current/restored locale does not have it.
+     */
+    static {
+        UNICODE_LOCALE_SUPPORTED_EXTENSIONS.add(UNICODE_LOCALE_EXTENSION_FW);
+        UNICODE_LOCALE_SUPPORTED_EXTENSIONS.add(UNICODE_LOCALE_EXTENSION_MU);
     }
 
     private interface SettingsLookup {
@@ -190,6 +223,12 @@ public class SettingsHelper {
                         && !displayColorModeVendorModeHintsMatch) {
                     return;
                 }
+            } else if (Settings.Global.POWER_BUTTON_LONG_PRESS.equals(name)) {
+                setLongPressPowerBehavior(cr, value);
+                return;
+            } else if (Settings.System.ACCELEROMETER_ROTATION.equals(name)
+                    && shouldSkipAutoRotateRestore()) {
+                return;
             }
 
             // Default case: write the restored value to settings
@@ -201,6 +240,7 @@ public class SettingsHelper {
             // If we fail to apply the setting, by definition nothing happened
             sendBroadcast = false;
             sendBroadcastSystemUI = false;
+            Log.e(TAG, "Failed to restore setting name: " + name + " + value: " + value, e);
         } finally {
             // If this was an element of interest, send the "we just restored it"
             // broadcast with the historical value now that the new value has
@@ -224,6 +264,12 @@ public class SettingsHelper {
                 }
             }
         }
+    }
+
+    private boolean shouldSkipAutoRotateRestore() {
+        // When device state based auto rotation settings are available, let's skip the restoring
+        // of the standard auto rotation settings to avoid conflicting setting values.
+        return DeviceStateRotationLockSettingsManager.isDeviceStateRotationLockEnabled(mContext);
     }
 
     public String onBackupValue(String name, String value) {
@@ -287,21 +333,30 @@ public class SettingsHelper {
      * @param value can be a canonicalized uri or "_silent" to indicate a silent (null) ringtone.
      */
     private void setRingtone(String name, String value) {
-        // If it's null, don't change the default
-        if (value == null) return;
-        final Uri ringtoneUri;
-        if (SILENT_RINGTONE.equals(value)) {
-            ringtoneUri = null;
-        } else {
-            Uri canonicalUri = Uri.parse(value);
-            ringtoneUri = mContext.getContentResolver().uncanonicalize(canonicalUri);
-            if (ringtoneUri == null) {
-                // Unrecognized or invalid Uri, don't restore
-                return;
-            }
-        }
-        final int ringtoneType = getRingtoneType(name);
+        Log.v(TAG, "Set ringtone for name: " + name + " value: " + value);
 
+        // If it's null, don't change the default.
+        if (value == null) return;
+        final int ringtoneType = getRingtoneType(name);
+        if (SILENT_RINGTONE.equals(value)) {
+            // SILENT_RINGTONE is a special constant generated by onBackupValue in the source
+            // device.
+            RingtoneManager.setActualDefaultRingtoneUri(mContext, ringtoneType, null);
+            return;
+        }
+
+        Uri ringtoneUri = null;
+        try {
+            ringtoneUri =
+                    RingtoneManager.getRingtoneUriForRestore(
+                            mContext.getContentResolver(), value, ringtoneType);
+        } catch (FileNotFoundException | IllegalArgumentException e) {
+            Log.w(TAG, "Failed to resolve " + value + ": " + e);
+            // Unrecognized or invalid Uri, don't restore
+            return;
+        }
+
+        Log.v(TAG, "setActualDefaultRingtoneUri type: " + ringtoneType + ", uri: " + ringtoneUri);
         RingtoneManager.setActualDefaultRingtoneUri(mContext, ringtoneType, ringtoneUri);
     }
 
@@ -374,6 +429,67 @@ public class SettingsHelper {
         }
     }
 
+    /**
+     * Correctly sets long press power button Behavior.
+     *
+     * The issue is that setting for LongPressPower button Behavior is not available on all devices
+     * and actually changes default Behavior of two properties - the long press power button
+     * and volume up + power button combo. OEM can also reconfigure these Behaviors in config.xml,
+     * so we need to be careful that we don't irreversibly change power button Behavior when
+     * restoring. Or switch to a non-default button Behavior.
+     */
+    private void setLongPressPowerBehavior(ContentResolver cr, String value) {
+        // We will not restore the value if the long press power setting option is unavailable.
+        if (!mContext.getResources().getBoolean(
+                com.android.internal.R.bool.config_longPressOnPowerForAssistantSettingAvailable)) {
+            return;
+        }
+
+        int longPressOnPowerBehavior;
+        try {
+            longPressOnPowerBehavior = Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            return;
+        }
+
+        if (longPressOnPowerBehavior < LONG_PRESS_POWER_NOTHING
+                || longPressOnPowerBehavior > LONG_PRESS_POWER_FOR_ASSISTANT) {
+            return;
+        }
+
+        // When user enables long press power for Assistant, we also switch the meaning
+        // of Volume Up + Power key chord to the "Show power menu" option.
+        // If the user disables long press power for Assistant, we switch back to default OEM
+        // Behavior configured in config.xml. If the default Behavior IS "LPP for Assistant",
+        // then we fall back to "Long press for Power Menu" Behavior.
+        if (longPressOnPowerBehavior == LONG_PRESS_POWER_FOR_ASSISTANT) {
+            Settings.Global.putInt(cr, Settings.Global.POWER_BUTTON_LONG_PRESS,
+                    LONG_PRESS_POWER_FOR_ASSISTANT);
+            Settings.Global.putInt(cr, Settings.Global.KEY_CHORD_POWER_VOLUME_UP,
+                    KEY_CHORD_POWER_VOLUME_UP_GLOBAL_ACTIONS);
+        } else {
+            // We're restoring "LPP for Assistant Disabled" state, prefer OEM config.xml Behavior
+            // if possible.
+            int longPressOnPowerDeviceBehavior = mContext.getResources().getInteger(
+                    com.android.internal.R.integer.config_longPressOnPowerBehavior);
+            if (longPressOnPowerDeviceBehavior == LONG_PRESS_POWER_FOR_ASSISTANT) {
+                // The default on device IS "LPP for Assistant Enabled" so fall back to power menu.
+                Settings.Global.putInt(cr, Settings.Global.POWER_BUTTON_LONG_PRESS,
+                        LONG_PRESS_POWER_GLOBAL_ACTIONS);
+            } else {
+                // The default is non-Assistant Behavior, so restore that default.
+                Settings.Global.putInt(cr, Settings.Global.POWER_BUTTON_LONG_PRESS,
+                        longPressOnPowerDeviceBehavior);
+            }
+
+            // Clear and restore default power + volume up Behavior as well.
+            int powerVolumeUpDefaultBehavior = mContext.getResources().getInteger(
+                    com.android.internal.R.integer.config_keyChordPowerVolumeUp);
+            Settings.Global.putInt(cr, Settings.Global.KEY_CHORD_POWER_VOLUME_UP,
+                    powerVolumeUpDefaultBehavior);
+        }
+    }
+
     /* package */ byte[] getLocaleData() {
         Configuration conf = mContext.getResources().getConfiguration();
         return conf.getLocales().toLanguageTags().getBytes();
@@ -419,25 +535,69 @@ public class SettingsHelper {
             allLocales.put(toFullLocale(locale), locale);
         }
 
+        // After restoring to reset locales, need to get extensions from restored locale. Get the
+        // first restored locale to check its extension.
+        final Locale restoredLocale = restore.isEmpty()
+                ? Locale.ROOT
+                : restore.get(0);
         final ArrayList<Locale> filtered = new ArrayList<>(current.size());
         for (int i = 0; i < current.size(); i++) {
-            final Locale locale = current.get(i);
+            Locale locale = copyExtensionToTargetLocale(restoredLocale, current.get(i));
             allLocales.remove(toFullLocale(locale));
             filtered.add(locale);
         }
 
         for (int i = 0; i < restore.size(); i++) {
-            final Locale locale = allLocales.remove(toFullLocale(restore.get(i)));
-            if (locale != null) {
-                filtered.add(locale);
+            final Locale restoredLocaleWithExtension = copyExtensionToTargetLocale(restoredLocale,
+                    getFilteredLocale(restore.get(i), allLocales));
+            if (restoredLocaleWithExtension != null) {
+                filtered.add(restoredLocaleWithExtension);
             }
         }
-
         if (filtered.size() == current.size()) {
             return current;  // Nothing added to current locale list.
         }
 
         return new LocaleList(filtered.toArray(new Locale[filtered.size()]));
+    }
+
+    private static Locale copyExtensionToTargetLocale(Locale restoredLocale,
+            Locale targetLocale) {
+        if (!restoredLocale.hasExtensions()) {
+            return targetLocale;
+        }
+
+        if (targetLocale == null) {
+            return null;
+        }
+
+        Locale.Builder builder = new Locale.Builder()
+                .setLocale(targetLocale);
+        Set<String> unicodeLocaleKeys = restoredLocale.getUnicodeLocaleKeys();
+        unicodeLocaleKeys.stream().forEach(key -> {
+            // Copy all supported extensions from restored locales except "nu" extension. The "nu"
+            // extension has been added in #getFilteredLocale(Locale, HashMap<Locale, Locale>)
+            // already, we don't need to add it again.
+            if (UNICODE_LOCALE_SUPPORTED_EXTENSIONS.contains(key)) {
+                builder.setUnicodeLocaleKeyword(key, restoredLocale.getUnicodeLocaleType(key));
+            }
+        });
+        return builder.build();
+    }
+
+    private static Locale getFilteredLocale(Locale restoreLocale,
+            HashMap<Locale, Locale> allLocales) {
+        Locale locale = allLocales.remove(toFullLocale(restoreLocale));
+        if (locale != null) {
+            return locale;
+        }
+
+        Locale filteredLocale = new Locale.Builder()
+                .setLocale(restoreLocale.stripExtensions())
+                .setUnicodeLocaleKeyword(UNICODE_LOCALE_EXTENSION_NU,
+                        restoreLocale.getUnicodeLocaleType(UNICODE_LOCALE_EXTENSION_NU))
+                .build();
+        return allLocales.remove(toFullLocale(filteredLocale));
     }
 
     /**
@@ -468,7 +628,7 @@ public class SettingsHelper {
 
         try {
             IActivityManager am = ActivityManager.getService();
-            Configuration config = am.getConfiguration();
+            final Configuration config = new Configuration();
             config.setLocales(merged);
             // indicate this isn't some passing default - the user wants this remembered
             config.userSetLocale = true;

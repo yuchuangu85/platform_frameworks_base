@@ -33,6 +33,7 @@ import static android.appwidget.AppWidgetManager.OPTION_APPWIDGET_SIZES;
 import static android.util.TypedValue.COMPLEX_UNIT_DIP;
 import static android.util.TypedValue.COMPLEX_UNIT_PX;
 
+import static com.android.launcher3.icons.FastBitmapDrawable.getDisabledColorFilter;
 import static com.android.systemui.people.PeopleSpaceUtils.STARRED_CONTACT;
 import static com.android.systemui.people.PeopleSpaceUtils.VALID_CONTACT;
 import static com.android.systemui.people.PeopleSpaceUtils.convertDrawableToBitmap;
@@ -45,8 +46,6 @@ import android.app.people.PeopleSpaceTile;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.graphics.ColorMatrix;
-import android.graphics.ColorMatrixColorFilter;
 import android.graphics.ImageDecoder;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
@@ -75,8 +74,8 @@ import androidx.core.graphics.drawable.RoundedBitmapDrawableFactory;
 import androidx.core.math.MathUtils;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.launcher3.icons.FastBitmapDrawable;
 import com.android.systemui.R;
+import com.android.systemui.people.data.model.PeopleTileModel;
 import com.android.systemui.people.widget.LaunchConversationActivity;
 import com.android.systemui.people.widget.PeopleSpaceWidgetProvider;
 import com.android.systemui.people.widget.PeopleTileKey;
@@ -166,6 +165,9 @@ public class PeopleTileViewHelper {
                     + "\\p{Emoji}(\\p{EMod}|\\x{FE0F}\\x{20E3}?|[\\x{E0020}-\\x{E007E}]+\\x{E007F})"
                     + "?)*";
 
+    // Not all JDKs support emoji patterns, including the one errorprone runs under, which
+    // makes it think that this is an invalid pattern.
+    @SuppressWarnings("InvalidPatternSyntax")
     private static final Pattern EMOJI_PATTERN = Pattern.compile(UNICODE_EMOJI_REGEX);
 
     public static final String EMPTY_STRING = "";
@@ -301,7 +303,8 @@ public class PeopleTileViewHelper {
         return createLastInteractionRemoteViews();
     }
 
-    private static boolean isDndBlockingTileData(@Nullable PeopleSpaceTile tile) {
+    /** Whether the conversation associated with {@code tile} can bypass DND. */
+    public static boolean isDndBlockingTileData(@Nullable PeopleSpaceTile tile) {
         if (tile == null) return false;
 
         int notificationPolicyState = tile.getNotificationPolicyState();
@@ -339,8 +342,9 @@ public class PeopleTileViewHelper {
             views = new RemoteViews(mContext.getPackageName(),
                     R.layout.people_tile_suppressed_layout);
         }
-        Drawable appIcon = mContext.getDrawable(R.drawable.ic_conversation_icon);
-        Bitmap disabledBitmap = convertDrawableToDisabledBitmap(appIcon);
+        Drawable appIcon = mContext.getDrawable(R.drawable.ic_conversation_icon).mutate();
+        appIcon.setColorFilter(getDisabledColorFilter());
+        Bitmap disabledBitmap = convertDrawableToBitmap(appIcon);
         views.setImageViewBitmap(R.id.icon, disabledBitmap);
         return views;
     }
@@ -537,7 +541,8 @@ public class PeopleTileViewHelper {
         return views;
     }
 
-    private static boolean getHasNewStory(PeopleSpaceTile tile) {
+    /** Whether {@code tile} has a new story. */
+    public static boolean getHasNewStory(PeopleSpaceTile tile) {
         return tile.getStatuses() != null && tile.getStatuses().stream().anyMatch(
                 c -> c.getActivity() == ACTIVITY_NEW_STORY);
     }
@@ -707,7 +712,7 @@ public class PeopleTileViewHelper {
                 Drawable drawable = resolveImage(imageUri, mContext);
                 Bitmap bitmap = convertDrawableToBitmap(drawable);
                 views.setImageViewBitmap(R.id.image, bitmap);
-            } catch (IOException e) {
+            } catch (IOException | SecurityException e) {
                 Log.e(TAG, "Could not decode image: " + e);
                 // If we couldn't load the image, show text that we have a new image.
                 views.setTextViewText(R.id.text_content, newImageDescription);
@@ -755,7 +760,7 @@ public class PeopleTileViewHelper {
         return views;
     }
 
-    private Drawable resolveImage(Uri uri, Context context) throws IOException {
+     Drawable resolveImage(Uri uri, Context context) throws IOException {
         final ImageDecoder.Source source =
                 ImageDecoder.createSource(context.getContentResolver(), uri);
         final Drawable drawable =
@@ -1094,7 +1099,7 @@ public class PeopleTileViewHelper {
             Pair<Integer, Integer> first = emojiIndices.get(i - 1);
 
             // Check if second emoji starts right after first starts
-            if (second.first == first.second) {
+            if (Objects.equals(second.first, first.second)) {
                 // Check if emojis in sequence are the same
                 if (Objects.equals(emojiTexts.get(i), emojiTexts.get(i - 1))) {
                     if (DEBUG) {
@@ -1251,19 +1256,28 @@ public class PeopleTileViewHelper {
     }
 
     /** Returns a bitmap with the user icon and package icon. */
-    public static Bitmap getPersonIconBitmap(Context context, PeopleSpaceTile tile,
+    public static Bitmap getPersonIconBitmap(Context context, PeopleTileModel tile,
             int maxAvatarSize) {
-        boolean hasNewStory = getHasNewStory(tile);
-        return getPersonIconBitmap(context, tile, maxAvatarSize, hasNewStory);
+        return getPersonIconBitmap(context, maxAvatarSize, tile.getHasNewStory(),
+                tile.getUserIcon(), tile.getKey().getPackageName(), tile.getKey().getUserId(),
+                tile.isImportant(),  tile.isDndBlocking());
     }
 
     /** Returns a bitmap with the user icon and package icon. */
     private static Bitmap getPersonIconBitmap(
             Context context, PeopleSpaceTile tile, int maxAvatarSize, boolean hasNewStory) {
-        Icon icon = tile.getUserIcon();
+        return getPersonIconBitmap(context, maxAvatarSize, hasNewStory, tile.getUserIcon(),
+                tile.getPackageName(), getUserId(tile),
+                tile.isImportantConversation(), isDndBlockingTileData(tile));
+    }
+
+    private static Bitmap getPersonIconBitmap(
+            Context context, int maxAvatarSize, boolean hasNewStory, Icon icon, String packageName,
+            int userId, boolean importantConversation, boolean dndBlockingTileData) {
         if (icon == null) {
-            Drawable placeholder = context.getDrawable(R.drawable.ic_avatar_with_badge);
-            return convertDrawableToDisabledBitmap(placeholder);
+            Drawable placeholder = context.getDrawable(R.drawable.ic_avatar_with_badge).mutate();
+            placeholder.setColorFilter(getDisabledColorFilter());
+            return convertDrawableToBitmap(placeholder);
         }
         PeopleStoryIconFactory storyIcon = new PeopleStoryIconFactory(context,
                 context.getPackageManager(),
@@ -1272,14 +1286,11 @@ public class PeopleTileViewHelper {
         RoundedBitmapDrawable roundedDrawable = RoundedBitmapDrawableFactory.create(
                 context.getResources(), icon.getBitmap());
         Drawable personDrawable = storyIcon.getPeopleTileDrawable(roundedDrawable,
-                tile.getPackageName(), getUserId(tile), tile.isImportantConversation(),
+                packageName, userId, importantConversation,
                 hasNewStory);
 
-        if (isDndBlockingTileData(tile)) {
-            // If DND is blocking the conversation, then display the icon in grayscale.
-            ColorMatrix colorMatrix = new ColorMatrix();
-            colorMatrix.setSaturation(0);
-            personDrawable.setColorFilter(new ColorMatrixColorFilter(colorMatrix));
+        if (dndBlockingTileData) {
+            personDrawable.setColorFilter(getDisabledColorFilter());
         }
 
         return convertDrawableToBitmap(personDrawable);
@@ -1374,12 +1385,5 @@ public class PeopleTileViewHelper {
             mRemoteViews = remoteViews;
             mAvatarSize = avatarSize;
         }
-    }
-
-    private static Bitmap convertDrawableToDisabledBitmap(Drawable icon) {
-        Bitmap appIconAsBitmap = convertDrawableToBitmap(icon);
-        FastBitmapDrawable drawable = new FastBitmapDrawable(appIconAsBitmap);
-        drawable.setIsDisabled(true);
-        return convertDrawableToBitmap(drawable);
     }
 }

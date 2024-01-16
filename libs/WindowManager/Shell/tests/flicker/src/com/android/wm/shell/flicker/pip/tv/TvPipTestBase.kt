@@ -20,24 +20,25 @@ import android.app.ActivityManager
 import android.app.IActivityManager
 import android.app.IProcessObserver
 import android.os.SystemClock
+import android.tools.device.helpers.wakeUpAndGoToHomeScreen
+import android.tools.device.traces.parsers.WindowManagerStateHelper
 import android.view.Surface.ROTATION_0
 import android.view.Surface.rotationToString
-import com.android.server.wm.flicker.helpers.wakeUpAndGoToHomeScreen
-import com.android.wm.shell.flicker.SYSTEM_UI_PACKAGE_NAME
-import com.android.wm.shell.flicker.pip.PipTestBase
+import com.android.wm.shell.flicker.utils.SYSTEM_UI_PACKAGE_NAME
 import org.junit.After
 import org.junit.Assert.assertFalse
-import org.junit.Assume
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 
 abstract class TvPipTestBase : PipTestBase(rotationToString(ROTATION_0), ROTATION_0) {
 
     private val systemUiProcessObserver = SystemUiProcessObserver()
+    protected val wmHelper = WindowManagerStateHelper()
 
     @Before
     final override fun televisionSetUp() {
         // Should run only on TVs.
-        Assume.assumeTrue(isTelevision)
+        assumeTrue(isTelevision)
 
         systemUiProcessObserver.start()
 
@@ -67,7 +68,8 @@ abstract class TvPipTestBase : PipTestBase(rotationToString(ROTATION_0), ROTATIO
         fun start() {
             hasDied = false
             uiAutomation.adoptShellPermissionIdentity(
-                    android.Manifest.permission.SET_ACTIVITY_WATCHER)
+                android.Manifest.permission.SET_ACTIVITY_WATCHER
+            )
             activityManager.registerProcessObserver(this)
         }
 

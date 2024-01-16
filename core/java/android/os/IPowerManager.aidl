@@ -21,15 +21,16 @@ import android.os.BatterySaverPolicyConfig;
 import android.os.ParcelDuration;
 import android.os.PowerSaveState;
 import android.os.WorkSource;
+import android.os.IWakeLockCallback;
 
 /** @hide */
 
 interface IPowerManager
 {
     void acquireWakeLock(IBinder lock, int flags, String tag, String packageName, in WorkSource ws,
-            String historyTag, int displayId);
+            String historyTag, int displayId, IWakeLockCallback callback);
     void acquireWakeLockWithUid(IBinder lock, int flags, String tag, String packageName,
-            int uidtoblame, int displayId);
+            int uidtoblame, int displayId, IWakeLockCallback callback);
     @UnsupportedAppUsage
     void releaseWakeLock(IBinder lock, int flags);
     void updateWakeLockUids(IBinder lock, in int[] uids);
@@ -40,17 +41,22 @@ interface IPowerManager
     boolean setPowerModeChecked(int mode, boolean enabled);
 
     void updateWakeLockWorkSource(IBinder lock, in WorkSource ws, String historyTag);
+    void updateWakeLockCallback(IBinder lock, IWakeLockCallback callback);
     boolean isWakeLockLevelSupported(int level);
 
     void userActivity(int displayId, long time, int event, int flags);
     void wakeUp(long time, int reason, String details, String opPackageName);
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     void goToSleep(long time, int reason, int flags);
+    @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
+    void goToSleepWithDisplayId(int displayId, long time, int reason, int flags);
     @UnsupportedAppUsage(maxTargetSdk = 28)
     void nap(long time);
     float getBrightnessConstraint(int constraint);
     @UnsupportedAppUsage
     boolean isInteractive();
+    boolean isDisplayInteractive(int displayId);
+    boolean areAutoPowerSaveModesEnabled();
     boolean isPowerSaveMode();
     PowerSaveState getPowerSaveState(int serviceType);
     boolean setPowerSaveModeEnabled(boolean mode);
@@ -65,6 +71,42 @@ interface IPowerManager
     boolean isBatteryDischargePredictionPersonalized();
     boolean isDeviceIdleMode();
     boolean isLightDeviceIdleMode();
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    boolean isLowPowerStandbySupported();
+    boolean isLowPowerStandbyEnabled();
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    void setLowPowerStandbyEnabled(boolean enabled);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    void setLowPowerStandbyActiveDuringMaintenance(boolean activeDuringMaintenance);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    void forceLowPowerStandbyActive(boolean active);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    void setLowPowerStandbyPolicy(in @nullable LowPowerStandbyPolicy policy);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    LowPowerStandbyPolicy getLowPowerStandbyPolicy();
+    boolean isExemptFromLowPowerStandby();
+    boolean isReasonAllowedInLowPowerStandby(int reason);
+    boolean isFeatureAllowedInLowPowerStandby(String feature);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.SET_LOW_POWER_STANDBY_PORTS)")
+    void acquireLowPowerStandbyPorts(in IBinder token, in List<LowPowerStandbyPortDescription> ports);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.SET_LOW_POWER_STANDBY_PORTS)")
+    void releaseLowPowerStandbyPorts(in IBinder token);
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = { android.Manifest.permission.MANAGE_LOW_POWER_STANDBY, android.Manifest.permission.DEVICE_POWER })")
+    List<LowPowerStandbyPortDescription> getActiveLowPowerStandbyPorts();
+
+    parcelable LowPowerStandbyPolicy {
+        String identifier;
+        List<String> exemptPackages;
+        int allowedReasons;
+        List<String> allowedFeatures;
+    }
+
+    parcelable LowPowerStandbyPortDescription {
+        int protocol;
+        int portMatcher;
+        int portNumber;
+        @nullable byte[] localAddress;
+    }
 
     @UnsupportedAppUsage
     void reboot(boolean confirm, String reason, boolean wait);

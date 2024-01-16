@@ -3,6 +3,9 @@
         coreApp="true"
         android:sharedUserId="android.uid.system">
 
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
     <application android:allowClearUserData="false"
                  android:label="@string/app_label"
                  android:process="system"

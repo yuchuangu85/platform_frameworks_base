@@ -25,6 +25,7 @@ import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.ipsec.ike.exceptions.IkeProtocolException.ERROR_TYPE_AUTHENTICATION_FAILED;
 import static android.net.ipsec.ike.exceptions.IkeProtocolException.ERROR_TYPE_TEMPORARY_FAILURE;
+import static android.net.vcn.VcnGatewayConnectionConfigTest.MIN_UDP_PORT_4500_NAT_TIMEOUT;
 import static android.net.vcn.VcnManager.VCN_ERROR_CODE_CONFIG_ERROR;
 import static android.net.vcn.VcnManager.VCN_ERROR_CODE_INTERNAL_ERROR;
 import static android.net.vcn.VcnManager.VCN_ERROR_CODE_NETWORK_ERROR;
@@ -41,6 +42,7 @@ import static org.mockito.Matchers.anyInt;
 import static org.mockito.Matchers.argThat;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -50,22 +52,33 @@ import static org.mockito.Mockito.when;
 
 import static java.util.Collections.singletonList;
 
+import android.net.ConnectivityDiagnosticsManager.DataStallReport;
 import android.net.ConnectivityManager;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
+import android.net.Network;
 import android.net.NetworkAgent;
 import android.net.NetworkCapabilities;
 import android.net.ipsec.ike.ChildSaProposal;
+import android.net.ipsec.ike.IkeSessionConnectionInfo;
+import android.net.ipsec.ike.TunnelModeChildSessionParams;
 import android.net.ipsec.ike.exceptions.IkeException;
 import android.net.ipsec.ike.exceptions.IkeInternalException;
 import android.net.ipsec.ike.exceptions.IkeProtocolException;
 import android.net.vcn.VcnGatewayConnectionConfig;
 import android.net.vcn.VcnGatewayConnectionConfigTest;
 import android.net.vcn.VcnManager.VcnErrorCode;
+import android.net.vcn.VcnTransportInfo;
+import android.os.PersistableBundle;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.server.vcn.VcnGatewayConnection.VcnChildSessionCallback;
+import com.android.server.vcn.VcnGatewayConnection.VcnChildSessionConfiguration;
+import com.android.server.vcn.VcnGatewayConnection.VcnIkeSession;
+import com.android.server.vcn.VcnGatewayConnection.VcnNetworkAgent;
+import com.android.server.vcn.routeselection.UnderlyingNetworkRecord;
 import com.android.server.vcn.util.MtuUtils;
 
 import org.junit.Before;
@@ -85,8 +98,11 @@ import java.util.function.Consumer;
 @RunWith(AndroidJUnit4.class)
 @SmallTest
 public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnectionTestBase {
+    private static final int PARALLEL_SA_COUNT = 4;
+
     private VcnIkeSession mIkeSession;
     private VcnNetworkAgent mNetworkAgent;
+    private Network mVcnNetwork;
 
     @Before
     public void setUp() throws Exception {
@@ -96,6 +112,9 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
         doReturn(mNetworkAgent)
                 .when(mDeps)
                 .newNetworkAgent(any(), any(), any(), any(), any(), any(), any(), any(), any());
+
+        mVcnNetwork = mock(Network.class);
+        doReturn(mVcnNetwork).when(mNetworkAgent).getNetwork();
 
         mGatewayConnection.setUnderlyingNetwork(TEST_UNDERLYING_NETWORK_RECORD_1);
 
@@ -165,19 +184,82 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
         assertEquals(mGatewayConnection.mConnectedState, mGatewayConnection.getCurrentState());
     }
 
+    private void verifyDataStallTriggersMigration(
+            UnderlyingNetworkRecord networkRecord,
+            Network networkWithDataStall,
+            boolean expectMobilityUpdate)
+            throws Exception {
+        mGatewayConnection.setUnderlyingNetwork(networkRecord);
+        triggerChildOpened();
+        mTestLooper.dispatchAll();
+
+        final DataStallReport report =
+                new DataStallReport(
+                        networkWithDataStall,
+                        1234 /* reportTimestamp */,
+                        1 /* detectionMethod */,
+                        new LinkProperties(),
+                        new NetworkCapabilities(),
+                        new PersistableBundle());
+
+        mGatewayConnection.getConnectivityDiagnosticsCallback().onDataStallSuspected(report);
+        mTestLooper.dispatchAll();
+
+        assertEquals(mGatewayConnection.mConnectedState, mGatewayConnection.getCurrentState());
+
+        if (expectMobilityUpdate) {
+            verify(mIkeSession).setNetwork(networkRecord.network);
+        } else {
+            verify(mIkeSession, never()).setNetwork(any(Network.class));
+        }
+    }
+
+    @Test
+    public void testDataStallTriggersMigration() throws Exception {
+        verifyDataStallTriggersMigration(
+                TEST_UNDERLYING_NETWORK_RECORD_1, mVcnNetwork, true /* expectMobilityUpdate */);
+    }
+
+    @Test
+    public void testDataStallWontTriggerMigrationWhenOnOtherNetwork() throws Exception {
+        verifyDataStallTriggersMigration(
+                TEST_UNDERLYING_NETWORK_RECORD_1,
+                mock(Network.class),
+                false /* expectMobilityUpdate */);
+    }
+
+    @Test
+    public void testDataStallWontTriggerMigrationWhenUnderlyingNetworkLost() throws Exception {
+        verifyDataStallTriggersMigration(
+                null /* networkRecord */, mock(Network.class), false /* expectMobilityUpdate */);
+    }
+
     private void verifyVcnTransformsApplied(
             VcnGatewayConnection vcnGatewayConnection, boolean expectForwardTransform)
             throws Exception {
+        verifyVcnTransformsApplied(
+                vcnGatewayConnection,
+                expectForwardTransform,
+                Collections.singletonList(getChildSessionCallback()));
+    }
+
+    private void verifyVcnTransformsApplied(
+            VcnGatewayConnection vcnGatewayConnection,
+            boolean expectForwardTransform,
+            List<VcnChildSessionCallback> callbacks)
+            throws Exception {
         for (int direction : new int[] {DIRECTION_IN, DIRECTION_OUT}) {
-            getChildSessionCallback().onIpSecTransformCreated(makeDummyIpSecTransform(), direction);
+            for (VcnChildSessionCallback cb : callbacks) {
+                cb.onIpSecTransformCreated(makeDummyIpSecTransform(), direction);
+            }
             mTestLooper.dispatchAll();
 
-            verify(mIpSecSvc)
+            verify(mIpSecSvc, times(callbacks.size()))
                     .applyTunnelModeTransform(
                             eq(TEST_IPSEC_TUNNEL_RESOURCE_ID), eq(direction), anyInt(), any());
         }
 
-        verify(mIpSecSvc, expectForwardTransform ? times(1) : never())
+        verify(mIpSecSvc, expectForwardTransform ? times(callbacks.size()) : never())
                 .applyTunnelModeTransform(
                         eq(TEST_IPSEC_TUNNEL_RESOURCE_ID), eq(DIRECTION_FWD), anyInt(), any());
 
@@ -187,6 +269,7 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
     @Test
     public void testCreatedTransformsAreApplied() throws Exception {
         verifyVcnTransformsApplied(mGatewayConnection, false /* expectForwardTransform */);
+        verify(mUnderlyingNetworkController).updateInboundTransform(any(), any());
     }
 
     @Test
@@ -216,13 +299,22 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
     @Test
     public void testMigration() throws Exception {
         triggerChildOpened();
+        mTestLooper.dispatchAll();
+        assertEquals(mIkeConnectionInfo, mGatewayConnection.getIkeConnectionInfo());
 
         mGatewayConnection
                 .getUnderlyingNetworkControllerCallback()
                 .onSelectedUnderlyingNetworkChanged(TEST_UNDERLYING_NETWORK_RECORD_2);
+
+        final IkeSessionConnectionInfo newIkeConnectionInfo =
+                new IkeSessionConnectionInfo(
+                        TEST_ADDR_V4, TEST_ADDR_V4_2, TEST_UNDERLYING_NETWORK_RECORD_2.network);
+        getIkeSessionCallback().onIkeSessionConnectionInfoChanged(newIkeConnectionInfo);
         getChildSessionCallback()
                 .onIpSecTransformsMigrated(makeDummyIpSecTransform(), makeDummyIpSecTransform());
         mTestLooper.dispatchAll();
+
+        assertEquals(newIkeConnectionInfo, mGatewayConnection.getIkeConnectionInfo());
 
         verify(mIpSecSvc, times(2))
                 .setNetworkForTunnelInterface(
@@ -236,6 +328,8 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
                             eq(TEST_IPSEC_TUNNEL_RESOURCE_ID), eq(direction), anyInt(), any());
         }
 
+        verify(mUnderlyingNetworkController).updateInboundTransform(any(), any());
+
         assertEquals(mGatewayConnection.mConnectedState, mGatewayConnection.getCurrentState());
 
         final List<ChildSaProposal> saProposals =
@@ -246,12 +340,43 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
                 MtuUtils.getMtu(
                         saProposals,
                         mConfig.getMaxMtu(),
-                        TEST_UNDERLYING_NETWORK_RECORD_2.linkProperties.getMtu());
+                        TEST_UNDERLYING_NETWORK_RECORD_2.linkProperties.getMtu(),
+                        true /* isIpv4 */);
         verify(mNetworkAgent).sendLinkProperties(
                 argThat(lp -> expectedMtu == lp.getMtu()
                         && TEST_TCP_BUFFER_SIZES_2.equals(lp.getTcpBufferSizes())));
         verify(mNetworkAgent)
                 .setUnderlyingNetworks(eq(singletonList(TEST_UNDERLYING_NETWORK_RECORD_2.network)));
+
+        // Verify revalidation is triggered on VCN network
+        verify(mConnMgr).reportNetworkConnectivity(eq(mNetworkAgent.getNetwork()), eq(false));
+    }
+
+    @Test
+    public void testMigrationHandleFailure() throws Exception {
+        triggerChildOpened();
+        mTestLooper.dispatchAll();
+        assertEquals(mIkeConnectionInfo, mGatewayConnection.getIkeConnectionInfo());
+
+        mGatewayConnection
+                .getUnderlyingNetworkControllerCallback()
+                .onSelectedUnderlyingNetworkChanged(TEST_UNDERLYING_NETWORK_RECORD_2);
+
+        final IkeSessionConnectionInfo newIkeConnectionInfo =
+                new IkeSessionConnectionInfo(
+                        TEST_ADDR_V4, TEST_ADDR_V4_2, TEST_UNDERLYING_NETWORK_RECORD_2.network);
+        getIkeSessionCallback().onIkeSessionConnectionInfoChanged(newIkeConnectionInfo);
+        getChildSessionCallback()
+                .onIpSecTransformsMigrated(makeDummyIpSecTransform(), makeDummyIpSecTransform());
+
+        doThrow(new IllegalArgumentException("testMigrationHandleFailure"))
+                .when(mIpSecSvc)
+                .setNetworkForTunnelInterface(anyInt(), any(), any());
+
+        mTestLooper.dispatchAll();
+
+        assertEquals(mGatewayConnection.mDisconnectingState, mGatewayConnection.getCurrentState());
+        verify(mIkeSession).close();
     }
 
     private void triggerChildOpened() {
@@ -266,6 +391,7 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
                 .when(mMockChildSessionConfig)
                 .getInternalDnsServers();
 
+        getIkeSessionCallback().onOpened(mIkeSessionConfiguration);
         getChildSessionCallback().onOpened(mMockChildSessionConfig);
     }
 
@@ -295,6 +421,7 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
         mTestLooper.dispatchAll();
 
         assertEquals(mGatewayConnection.mConnectedState, mGatewayConnection.getCurrentState());
+        assertEquals(mIkeConnectionInfo, mGatewayConnection.getIkeConnectionInfo());
 
         final ArgumentCaptor<LinkProperties> lpCaptor =
                 ArgumentCaptor.forClass(LinkProperties.class);
@@ -334,12 +461,101 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
             assertTrue(nc.hasCapability(cap));
         }
 
+        assertTrue(nc.getTransportInfo() instanceof VcnTransportInfo);
+        final VcnTransportInfo vcnTransportInfo = (VcnTransportInfo) nc.getTransportInfo();
+        assertEquals(
+                MIN_UDP_PORT_4500_NAT_TIMEOUT,
+                vcnTransportInfo.getMinUdpPort4500NatTimeoutSeconds());
+
         // Now that Vcn Network is up, notify it as validated and verify the SafeMode alarm is
         // canceled
         triggerValidation(NetworkAgent.VALIDATION_STATUS_VALID);
         verify(mSafeModeTimeoutAlarm).cancel();
         assertFalse(mGatewayConnection.isInSafeMode());
         verifySafeModeStateAndCallbackFired(1 /* invocationCount */, false /* isInSafeMode */);
+    }
+
+    private List<VcnChildSessionCallback> openChildAndVerifyParallelSasRequested()
+            throws Exception {
+        doReturn(PARALLEL_SA_COUNT)
+                .when(mDeps)
+                .getParallelTunnelCount(eq(TEST_SUBSCRIPTION_SNAPSHOT), eq(TEST_SUB_GRP));
+
+        // Verify scheduled but not canceled when entering ConnectedState
+        verifySafeModeTimeoutAlarmAndGetCallback(false /* expectCanceled */);
+        triggerChildOpened();
+        mTestLooper.dispatchAll();
+
+        // Verify new child sessions requested
+        final ArgumentCaptor<VcnChildSessionCallback> captor =
+                ArgumentCaptor.forClass(VcnChildSessionCallback.class);
+        verify(mIkeSession, times(PARALLEL_SA_COUNT - 1))
+                .openChildSession(any(TunnelModeChildSessionParams.class), captor.capture());
+
+        return captor.getAllValues();
+    }
+
+    private List<VcnChildSessionCallback> verifyChildOpenedRequestsAndAppliesParallelSas()
+            throws Exception {
+        List<VcnChildSessionCallback> callbacks = openChildAndVerifyParallelSasRequested();
+
+        verifyVcnTransformsApplied(mGatewayConnection, false, callbacks);
+
+        // Mock IKE calling of onOpened()
+        for (VcnChildSessionCallback cb : callbacks) {
+            cb.onOpened(mock(VcnChildSessionConfiguration.class));
+        }
+        mTestLooper.dispatchAll();
+
+        assertEquals(mGatewayConnection.mConnectedState, mGatewayConnection.getCurrentState());
+        return callbacks;
+    }
+
+    @Test
+    public void testChildOpenedWithParallelSas() throws Exception {
+        verifyChildOpenedRequestsAndAppliesParallelSas();
+    }
+
+    @Test
+    public void testOpportunisticSa_ignoresPreOpenFailures() throws Exception {
+        List<VcnChildSessionCallback> callbacks = openChildAndVerifyParallelSasRequested();
+
+        for (VcnChildSessionCallback cb : callbacks) {
+            cb.onClosed();
+            cb.onClosedExceptionally(mock(IkeException.class));
+        }
+        mTestLooper.dispatchAll();
+
+        assertEquals(mGatewayConnection.mConnectedState, mGatewayConnection.getCurrentState());
+        assertEquals(mIkeConnectionInfo, mGatewayConnection.getIkeConnectionInfo());
+    }
+
+    private void verifyPostOpenFailuresCloseSession(boolean shouldCloseWithException)
+            throws Exception {
+        List<VcnChildSessionCallback> callbacks = verifyChildOpenedRequestsAndAppliesParallelSas();
+
+        for (VcnChildSessionCallback cb : callbacks) {
+            if (shouldCloseWithException) {
+                cb.onClosed();
+            } else {
+                cb.onClosedExceptionally(mock(IkeException.class));
+            }
+        }
+        mTestLooper.dispatchAll();
+
+        assertEquals(mGatewayConnection.mDisconnectingState, mGatewayConnection.getCurrentState());
+        verify(mIkeSession).close();
+    }
+
+    @Test
+    public void testOpportunisticSa_handlesPostOpenFailures_onClosed() throws Exception {
+        verifyPostOpenFailuresCloseSession(false /* shouldCloseWithException */);
+    }
+
+    @Test
+    public void testOpportunisticSa_handlesPostOpenFailures_onClosedExceptionally()
+            throws Exception {
+        verifyPostOpenFailuresCloseSession(true /* shouldCloseWithException */);
     }
 
     @Test
@@ -425,6 +641,9 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
         triggerValidation(NetworkAgent.VALIDATION_STATUS_NOT_VALID);
         mTestLooper.dispatchAll();
 
+        verify(mConnMgr)
+                .reportNetworkConnectivity(eq(TEST_UNDERLYING_NETWORK_RECORD_1.network), eq(false));
+
         final ArgumentCaptor<Runnable> runnableCaptor = ArgumentCaptor.forClass(Runnable.class);
         verify(mDeps, times(2))
                 .newWakeupMessage(
@@ -436,6 +655,74 @@ public class VcnGatewayConnectionConnectedStateTest extends VcnGatewayConnection
         mTestLooper.dispatchAll();
 
         verifySafeModeStateAndCallbackFired(2 /* invocationCount */, true /* isInSafeMode */);
+    }
+
+    private void verifySetSafeModeAlarm(
+            boolean safeModeEnabledByCaller,
+            boolean safeModeConfigFlagEnabled,
+            boolean expectingSafeModeEnabled)
+            throws Exception {
+        final VcnGatewayConnectionConfig config =
+                VcnGatewayConnectionConfigTest.newTestBuilderMinimal()
+                        .setSafeModeEnabled(safeModeEnabledByCaller)
+                        .build();
+        final VcnGatewayConnection.Dependencies deps =
+                mock(VcnGatewayConnection.Dependencies.class);
+        setUpWakeupMessage(
+                mSafeModeTimeoutAlarm, VcnGatewayConnection.SAFEMODE_TIMEOUT_ALARM, deps);
+        doReturn(safeModeConfigFlagEnabled).when(mFeatureFlags).safeModeConfig();
+
+        final VcnGatewayConnection connection =
+                new VcnGatewayConnection(
+                        mVcnContext,
+                        TEST_SUB_GRP,
+                        TEST_SUBSCRIPTION_SNAPSHOT,
+                        config,
+                        mGatewayStatusCallback,
+                        true /* isMobileDataEnabled */,
+                        deps);
+
+        connection.setSafeModeAlarm();
+
+        final int expectedCallCnt = expectingSafeModeEnabled ? 1 : 0;
+        verify(deps, times(expectedCallCnt))
+                .newWakeupMessage(
+                        eq(mVcnContext),
+                        any(),
+                        eq(VcnGatewayConnection.SAFEMODE_TIMEOUT_ALARM),
+                        any());
+    }
+
+    @Test
+    public void testSafeModeEnabled_configFlagEnabled() throws Exception {
+        verifySetSafeModeAlarm(
+                true /* safeModeEnabledByCaller */,
+                true /* safeModeConfigFlagEnabled */,
+                true /* expectingSafeModeEnabled */);
+    }
+
+    @Test
+    public void testSafeModeEnabled_configFlagDisabled() throws Exception {
+        verifySetSafeModeAlarm(
+                true /* safeModeEnabledByCaller */,
+                false /* safeModeConfigFlagEnabled */,
+                true /* expectingSafeModeEnabled */);
+    }
+
+    @Test
+    public void testSafeModeDisabled_configFlagEnabled() throws Exception {
+        verifySetSafeModeAlarm(
+                false /* safeModeEnabledByCaller */,
+                true /* safeModeConfigFlagEnabled */,
+                false /* expectingSafeModeEnabled */);
+    }
+
+    @Test
+    public void testSafeModeDisabled_configFlagDisabled() throws Exception {
+        verifySetSafeModeAlarm(
+                false /* safeModeEnabledByCaller */,
+                false /* safeModeConfigFlagEnabled */,
+                true /* expectingSafeModeEnabled */);
     }
 
     private Consumer<VcnNetworkAgent> setupNetworkAndGetUnwantedCallback() {

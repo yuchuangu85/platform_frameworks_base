@@ -38,6 +38,7 @@ import com.android.systemui.statusbar.policy.DeviceControlsControllerImpl.Compan
 import com.android.systemui.statusbar.policy.DeviceControlsControllerImpl.Companion.PREFS_CONTROLS_SEEDING_COMPLETED
 import com.android.systemui.statusbar.policy.DeviceControlsControllerImpl.Companion.QS_DEFAULT_POSITION
 import com.android.systemui.statusbar.policy.DeviceControlsControllerImpl.Companion.QS_PRIORITY_POSITION
+import com.android.systemui.util.mockito.mock
 import com.android.systemui.util.settings.SecureSettings
 
 import java.util.Optional
@@ -53,7 +54,6 @@ import org.mockito.Mock
 import org.mockito.Mockito
 import org.mockito.MockitoAnnotations
 import org.mockito.Mockito.never
-import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import org.mockito.ArgumentMatchers.anyInt
@@ -102,6 +102,8 @@ class DeviceControlsControllerImplTest : SysuiTestCase() {
                 .thenReturn(Optional.of(controlsController))
         `when`(controlsComponent.getControlsListingController())
                 .thenReturn(Optional.of(controlsListingController))
+
+        `when`(controlsComponent.isEnabled()).thenReturn(true)
 
         controller = DeviceControlsControllerImpl(
             mContext,
@@ -168,5 +170,16 @@ class DeviceControlsControllerImplTest : SysuiTestCase() {
         )
         seedCallback.value.accept(SeedResponse(TEST_PKG, true))
         verify(callback).onControlsUpdate(QS_DEFAULT_POSITION)
+    }
+
+    @Test
+    fun testControlsDisabledRemoveFromAutoTracker() {
+        `when`(controlsComponent.isEnabled()).thenReturn(false)
+        val callback: DeviceControlsController.Callback = mock()
+
+        controller.setCallback(callback)
+
+        verify(callback).removeControlsAutoTracker()
+        verify(callback, never()).onControlsUpdate(anyInt())
     }
 }

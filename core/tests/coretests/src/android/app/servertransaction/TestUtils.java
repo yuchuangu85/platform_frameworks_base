@@ -23,13 +23,11 @@ import android.app.ProfilerInfo;
 import android.app.ResultInfo;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
-import android.content.res.CompatibilityInfo;
 import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.PersistableBundle;
 import android.util.MergedConfiguration;
-import android.view.DisplayAdjustments.FixedRotationAdjustments;
 
 import com.android.internal.app.IVoiceInteractor;
 import com.android.internal.content.ReferrerIntent;
@@ -97,7 +95,7 @@ class TestUtils {
         private ActivityInfo mInfo;
         private Configuration mCurConfig;
         private Configuration mOverrideConfig;
-        private CompatibilityInfo mCompatInfo;
+        private int mDeviceId;
         private String mReferrer;
         private IVoiceInteractor mVoiceInteractor;
         private int mProcState;
@@ -110,8 +108,8 @@ class TestUtils {
         private ProfilerInfo mProfilerInfo;
         private IBinder mAssistToken;
         private IBinder mShareableActivityToken;
-        private FixedRotationAdjustments mFixedRotationAdjustments;
         private boolean mLaunchedFromBubble;
+        private IBinder mTaskFragmentToken;
 
         LaunchActivityItemBuilder setIntent(Intent intent) {
             mIntent = intent;
@@ -138,8 +136,8 @@ class TestUtils {
             return this;
         }
 
-        LaunchActivityItemBuilder setCompatInfo(CompatibilityInfo compatInfo) {
-            mCompatInfo = compatInfo;
+        LaunchActivityItemBuilder setDeviceId(int deviceId) {
+            mDeviceId = deviceId;
             return this;
         }
 
@@ -203,23 +201,23 @@ class TestUtils {
             return this;
         }
 
-        LaunchActivityItemBuilder setFixedRotationAdjustments(FixedRotationAdjustments fra) {
-            mFixedRotationAdjustments = fra;
-            return this;
-        }
-
         LaunchActivityItemBuilder setLaunchedFromBubble(boolean launchedFromBubble) {
             mLaunchedFromBubble = launchedFromBubble;
             return this;
         }
 
+        LaunchActivityItemBuilder setTaskFragmentToken(IBinder taskFragmentToken) {
+            mTaskFragmentToken = taskFragmentToken;
+            return this;
+        }
+
         LaunchActivityItem build() {
             return LaunchActivityItem.obtain(mIntent, mIdent, mInfo,
-                    mCurConfig, mOverrideConfig, mCompatInfo, mReferrer, mVoiceInteractor,
+                    mCurConfig, mOverrideConfig, mDeviceId, mReferrer, mVoiceInteractor,
                     mProcState, mState, mPersistentState, mPendingResults, mPendingNewIntents,
                     mActivityOptions, mIsForward, mProfilerInfo, mAssistToken,
-                    null /* activityClientController */, mFixedRotationAdjustments,
-                    mShareableActivityToken, mLaunchedFromBubble);
+                    null /* activityClientController */, mShareableActivityToken,
+                    mLaunchedFromBubble, mTaskFragmentToken);
         }
     }
 }

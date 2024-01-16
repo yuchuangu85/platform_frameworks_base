@@ -39,6 +39,7 @@ import static com.android.server.biometrics.PreAuthInfo.CREDENTIAL_NOT_ENROLLED;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
+import android.app.ActivityTaskManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManager;
@@ -53,6 +54,7 @@ import android.hardware.biometrics.SensorProperties;
 import android.hardware.biometrics.SensorPropertiesInternal;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.UserHandle;
@@ -85,6 +87,13 @@ public class Utils {
             return false;
         }
         return true;
+    }
+
+    /** If virtualized biometrics are supported (requires debug build). */
+    public static boolean isVirtualEnabled(@NonNull Context context) {
+        return Build.isDebuggable()
+                && Settings.Secure.getIntForUser(context.getContentResolver(),
+                Settings.Secure.BIOMETRIC_VIRTUAL_ENABLED, 0, UserHandle.USER_CURRENT) == 1;
     }
 
     /**
@@ -374,6 +383,15 @@ public class Utils {
         return false;
     }
 
+    /** Same as checkPermission but also allows shell. */
+    public static void checkPermissionOrShell(Context context, String permission) {
+        if (Binder.getCallingUid() == Process.SHELL_UID) {
+            return;
+        }
+        checkPermission(context, permission);
+    }
+
+
     public static void checkPermission(Context context, String permission) {
         context.enforceCallingOrSelfPermission(permission,
                 "Must have " + permission + " permission.");
@@ -543,5 +561,38 @@ public class Utils {
             default:
                 throw new IllegalArgumentException("Unknown strength: " + strength);
         }
+    }
+
+    /**
+     * Checks if a client package is running in the background.
+     *
+     * @param clientPackage The name of the package to be checked.
+     * @return Whether the client package is running in background
+     */
+    public static boolean isBackground(String clientPackage) {
+        Slog.v(TAG, "Checking if the authenticating is in background,"
+                + " clientPackage:" + clientPackage);
+        final List<ActivityManager.RunningTaskInfo> tasks =
+                ActivityTaskManager.getInstance().getTasks(Integer.MAX_VALUE);
+
+        if (tasks == null || tasks.isEmpty()) {
+            Slog.d(TAG, "No running tasks reported");
+            return true;
+        }
+
+        for (ActivityManager.RunningTaskInfo taskInfo : tasks) {
+            final ComponentName topActivity = taskInfo.topActivity;
+            if (topActivity != null) {
+                final String topPackage = topActivity.getPackageName();
+                if (topPackage.contentEquals(clientPackage) && taskInfo.isVisible()) {
+                    return false;
+                } else {
+                    Slog.i(TAG, "Running task, top: " + topPackage
+                            + ", isVisible: " + taskInfo.isVisible());
+                }
+            }
+        }
+
+        return true;
     }
 }

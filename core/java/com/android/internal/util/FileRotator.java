@@ -16,8 +16,12 @@
 
 package com.android.internal.util;
 
+import android.annotation.NonNull;
 import android.os.FileUtils;
 import android.util.Log;
+import android.util.Pair;
+
+import libcore.io.IoUtils;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
@@ -27,11 +31,11 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Comparator;
 import java.util.Objects;
+import java.util.TreeSet;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
-
-import libcore.io.IoUtils;
 
 /**
  * Utility that rotates files over time, similar to {@code logrotate}. There is
@@ -282,21 +286,42 @@ public class FileRotator {
     }
 
     /**
+     * Process a single file atomically, with the given start and end timestamps.
+     * If a file with these exact start and end timestamps does not exist, a new
+     * empty file will be written.
+     */
+    public void rewriteSingle(@NonNull Rewriter rewriter, long startTimeMillis, long endTimeMillis)
+            throws IOException {
+        final FileInfo info = new FileInfo(mPrefix);
+
+        info.startMillis = startTimeMillis;
+        info.endMillis = endTimeMillis;
+        rewriteSingle(rewriter, info.build());
+    }
+
+    /**
      * Read any rotated data that overlap the requested time range.
      */
     public void readMatching(Reader reader, long matchStartMillis, long matchEndMillis)
             throws IOException {
         final FileInfo info = new FileInfo(mPrefix);
+        final TreeSet<Pair<Long, String>> readSet = new TreeSet<>(
+                Comparator.comparingLong(o -> o.first));
         for (String name : mBasePath.list()) {
             if (!info.parse(name)) continue;
 
-            // read file when it overlaps
+            // Add file to set when it overlaps.
             if (info.startMillis <= matchEndMillis && matchStartMillis <= info.endMillis) {
-                if (LOGD) Log.d(TAG, "reading matching " + name);
-
-                final File file = new File(mBasePath, name);
-                readFile(file, reader);
+                readSet.add(new Pair(info.startMillis, name));
             }
+        }
+
+        // Read files in ascending order of start timestamp.
+        for (Pair<Long, String> pair : readSet) {
+            final String name = pair.second;
+            if (LOGD) Log.d(TAG, "reading matching " + name);
+            final File file = new File(mBasePath, name);
+            readFile(file, reader);
         }
     }
 

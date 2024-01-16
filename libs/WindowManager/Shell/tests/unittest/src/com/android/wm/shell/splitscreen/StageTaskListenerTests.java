@@ -25,7 +25,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeFalse;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
@@ -44,6 +43,7 @@ import com.android.wm.shell.ShellTaskOrganizer;
 import com.android.wm.shell.ShellTestCase;
 import com.android.wm.shell.TestRunningTaskInfoBuilder;
 import com.android.wm.shell.common.SyncTransactionQueue;
+import com.android.wm.shell.windowdecor.WindowDecorViewModel;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -52,6 +52,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+
+import java.util.Optional;
 
 /**
  * Tests for {@link StageTaskListener}
@@ -62,7 +64,7 @@ import org.mockito.MockitoAnnotations;
 @RunWith(AndroidJUnit4.class)
 public final class StageTaskListenerTests extends ShellTestCase {
     private static final boolean ENABLE_SHELL_TRANSITIONS =
-            SystemProperties.getBoolean("persist.debug.shell_transit", false);
+            SystemProperties.getBoolean("persist.wm.debug.shell_transit", true);
 
     @Mock
     private ShellTaskOrganizer mTaskOrganizer;
@@ -73,7 +75,7 @@ public final class StageTaskListenerTests extends ShellTestCase {
     @Mock
     private IconProvider mIconProvider;
     @Mock
-    private StageTaskUnfoldController mStageTaskUnfoldController;
+    private WindowDecorViewModel mWindowDecorViewModel;
     @Captor
     private ArgumentCaptor<SyncTransactionQueue.TransactionRunnable> mRunnableCaptor;
     private SurfaceSession mSurfaceSession = new SurfaceSession();
@@ -93,7 +95,7 @@ public final class StageTaskListenerTests extends ShellTestCase {
                 mSyncQueue,
                 mSurfaceSession,
                 mIconProvider,
-                mStageTaskUnfoldController);
+                Optional.of(mWindowDecorViewModel));
         mRootTask = new TestRunningTaskInfoBuilder().build();
         mRootTask.parentTaskId = INVALID_TASK_ID;
         mSurfaceControl = new SurfaceControl.Builder(mSurfaceSession).setName("test").build();
@@ -130,28 +132,6 @@ public final class StageTaskListenerTests extends ShellTestCase {
         verify(mCallbacks).onStatusChanged(eq(mRootTask.isVisible), eq(true));
     }
 
-    @Test
-    public void testTaskAppeared_notifiesUnfoldListener() {
-        final ActivityManager.RunningTaskInfo task =
-                new TestRunningTaskInfoBuilder().setParentTaskId(mRootTask.taskId).build();
-
-        mStageTaskListener.onTaskAppeared(task, mSurfaceControl);
-
-        verify(mStageTaskUnfoldController).onTaskAppeared(eq(task), eq(mSurfaceControl));
-    }
-
-    @Test
-    public void testTaskVanished_notifiesUnfoldListener() {
-        final ActivityManager.RunningTaskInfo task =
-                new TestRunningTaskInfoBuilder().setParentTaskId(mRootTask.taskId).build();
-        mStageTaskListener.onTaskAppeared(task, mSurfaceControl);
-        clearInvocations(mStageTaskUnfoldController);
-
-        mStageTaskListener.onTaskVanished(task);
-
-        verify(mStageTaskUnfoldController).onTaskVanished(eq(task));
-    }
-
     @Test(expected = IllegalArgumentException.class)
     public void testUnknownTaskVanished() {
         final ActivityManager.RunningTaskInfo task = new TestRunningTaskInfoBuilder().build();
@@ -181,7 +161,7 @@ public final class StageTaskListenerTests extends ShellTestCase {
         childTask.supportsMultiWindow = false;
 
         mStageTaskListener.onTaskInfoChanged(childTask);
-        verify(mCallbacks).onNoLongerSupportMultiWindow();
+        verify(mCallbacks).onNoLongerSupportMultiWindow(childTask);
     }
 
     @Test

@@ -21,6 +21,7 @@ import static android.app.Notification.CATEGORY_CALL;
 import static android.app.Notification.CATEGORY_EVENT;
 import static android.app.Notification.CATEGORY_MESSAGE;
 import static android.app.Notification.CATEGORY_REMINDER;
+import static android.app.Notification.FLAG_FSI_REQUESTED_BUT_DENIED;
 import static android.app.NotificationManager.Policy.SUPPRESSED_EFFECT_AMBIENT;
 
 import static com.android.systemui.statusbar.NotificationEntryHelper.modifyRanking;
@@ -29,6 +30,7 @@ import static com.android.systemui.statusbar.NotificationEntryHelper.modifySbn;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 
 import android.app.ActivityManager;
@@ -57,6 +59,7 @@ import com.android.systemui.util.time.FakeSystemClock;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mockito;
 
 import java.util.ArrayList;
 
@@ -72,6 +75,7 @@ public class NotificationEntryTest extends SysuiTestCase {
     private int mId;
 
     private NotificationEntry mEntry;
+    private NotificationChannel mChannel = Mockito.mock(NotificationChannel.class);
     private final FakeSystemClock mClock = new FakeSystemClock();
 
     @Before
@@ -85,10 +89,13 @@ public class NotificationEntryTest extends SysuiTestCase {
                 .setPkg(TEST_PACKAGE_NAME)
                 .setOpPkg(TEST_PACKAGE_NAME)
                 .setUid(TEST_UID)
+                .setChannel(mChannel)
                 .setId(mId++)
                 .setNotification(n.build())
                 .setUser(new UserHandle(ActivityManager.getCurrentUser()))
                 .build();
+
+        doReturn(false).when(mChannel).isBlockable();
     }
 
     @Test
@@ -97,6 +104,47 @@ public class NotificationEntryTest extends SysuiTestCase {
 
         assertTrue(mEntry.isExemptFromDndVisualSuppression());
         assertFalse(mEntry.shouldSuppressAmbient());
+    }
+
+    @Test
+    public void testBlockableEntryWhenCritical() {
+        doReturn(true).when(mChannel).isBlockable();
+        mEntry.setRanking(mEntry.getRanking());
+
+        assertTrue(mEntry.isBlockable());
+    }
+
+
+    @Test
+    public void testBlockableEntryWhenCriticalAndChannelNotBlockable() {
+        doReturn(true).when(mChannel).isBlockable();
+        doReturn(true).when(mChannel).isImportanceLockedByCriticalDeviceFunction();
+        mEntry.setRanking(mEntry.getRanking());
+
+        assertTrue(mEntry.isBlockable());
+    }
+
+    @Test
+    public void testNonBlockableEntryWhenCriticalAndChannelNotBlockable() {
+        doReturn(false).when(mChannel).isBlockable();
+        doReturn(true).when(mChannel).isImportanceLockedByCriticalDeviceFunction();
+        mEntry.setRanking(mEntry.getRanking());
+
+        assertFalse(mEntry.isBlockable());
+    }
+
+    @Test
+    public void testBlockableWhenEntryHasNoChannel() {
+        StatusBarNotification sbn = new SbnBuilder().build();
+        Ranking ranking = new RankingBuilder()
+                .setChannel(null)
+                .setKey(sbn.getKey())
+                .build();
+
+        NotificationEntry entry =
+                new NotificationEntry(sbn, ranking, mClock.uptimeMillis());
+
+        assertFalse(entry.isBlockable());
     }
 
     @Test
@@ -117,8 +165,12 @@ public class NotificationEntryTest extends SysuiTestCase {
 
     @Test
     public void testIsExemptFromDndVisualSuppression_system() {
-        mEntry.mIsSystemNotification = true;
+        doReturn(true).when(mChannel).isImportanceLockedByCriticalDeviceFunction();
+        doReturn(false).when(mChannel).isBlockable();
 
+        mEntry.setRanking(mEntry.getRanking());
+
+        assertFalse(mEntry.isBlockable());
         assertTrue(mEntry.isExemptFromDndVisualSuppression());
         assertFalse(mEntry.shouldSuppressAmbient());
     }
@@ -128,7 +180,7 @@ public class NotificationEntryTest extends SysuiTestCase {
         NotificationEntry entry = new NotificationEntryBuilder()
                 .setUid(UID_NORMAL)
                 .build();
-        entry.mIsSystemNotification = true;
+        doReturn(true).when(mChannel).isImportanceLockedByCriticalDeviceFunction();
         modifyRanking(entry).setSuppressedVisualEffects(SUPPRESSED_EFFECT_AMBIENT).build();
 
         modifySbn(entry)
@@ -198,6 +250,36 @@ public class NotificationEntryTest extends SysuiTestCase {
     }
 
     @Test
+    public void testIsStickyAndNotDemoted_noFlagAndDemoted_returnFalse() {
+        mEntry.getSbn().getNotification().flags &= ~FLAG_FSI_REQUESTED_BUT_DENIED;
+        assertFalse(mEntry.isStickyAndNotDemoted());
+    }
+
+    @Test
+    public void testIsStickyAndNotDemoted_noFlagAndNotDemoted_demoteAndReturnFalse() {
+        mEntry.getSbn().getNotification().flags &= ~FLAG_FSI_REQUESTED_BUT_DENIED;
+
+        assertFalse(mEntry.isStickyAndNotDemoted());
+        assertTrue(mEntry.isDemoted());
+    }
+
+    @Test
+    public void testIsStickyAndNotDemoted_hasFlagButAlreadyDemoted_returnFalse() {
+        mEntry.getSbn().getNotification().flags |= FLAG_FSI_REQUESTED_BUT_DENIED;
+        mEntry.demoteStickyHun();
+
+        assertFalse(mEntry.isStickyAndNotDemoted());
+    }
+
+    @Test
+    public void testIsStickyAndNotDemoted_hasFlagAndNotDemoted_returnTrue() {
+        mEntry.getSbn().getNotification().flags |= FLAG_FSI_REQUESTED_BUT_DENIED;
+
+        assertFalse(mEntry.isDemoted());
+        assertTrue(mEntry.isStickyAndNotDemoted());
+    }
+
+    @Test
     public void notificationDataEntry_testIsLastMessageFromReply() {
         Person.Builder person = new Person.Builder()
                 .setName("name")
@@ -228,6 +310,41 @@ public class NotificationEntryTest extends SysuiTestCase {
 
         assertTrue(entry.isLastMessageFromReply());
     }
+
+    @Test
+    public void notificationDataEntry_testIsLastMessageFromReply_invalidPerson_noCrash() {
+        Person.Builder person = new Person.Builder()
+                .setName("name")
+                .setKey("abc")
+                .setUri("uri")
+                .setBot(true);
+
+        Bundle bundle = new Bundle();
+        // should be Person.class
+        bundle.putParcelable(Notification.EXTRA_MESSAGING_PERSON, new Bundle());
+        Bundle[] messagesBundle = new Bundle[]{new Notification.MessagingStyle.Message(
+                "text", 0, person.build()).toBundle()};
+        bundle.putParcelableArray(Notification.EXTRA_MESSAGES, messagesBundle);
+
+        Notification notification = new Notification.Builder(mContext, "test")
+                .addExtras(bundle)
+                .build();
+
+        NotificationEntry entry = new NotificationEntryBuilder()
+                .setPkg("pkg")
+                .setOpPkg("pkg")
+                .setTag("tag")
+                .setNotification(notification)
+                .setUser(mContext.getUser())
+                .setOverrideGroupKey("")
+                .build();
+        entry.setHasSentReply();
+
+        entry.isLastMessageFromReply();
+
+        // no crash, good
+    }
+
 
     private Notification.Action createContextualAction(String title) {
         return new Notification.Action.Builder(

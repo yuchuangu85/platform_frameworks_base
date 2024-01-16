@@ -59,15 +59,19 @@ class WindowMagnificationConnectionWrapper {
     }
 
     boolean enableWindowMagnification(int displayId, float scale, float centerX, float centerY,
+            float magnificationFrameOffsetRatioX, float magnificationFrameOffsetRatioY,
             @Nullable MagnificationAnimationCallback callback) {
         if (mTrace.isA11yTracingEnabledForTypes(FLAGS_WINDOW_MAGNIFICATION_CONNECTION)) {
             mTrace.logTrace(TAG + ".enableWindowMagnification",
                     FLAGS_WINDOW_MAGNIFICATION_CONNECTION,
                     "displayId=" + displayId + ";scale=" + scale + ";centerX=" + centerX
-                    + ";centerY=" + centerY + ";callback=" + callback);
+                            + ";centerY=" + centerY + ";magnificationFrameOffsetRatioX="
+                            + magnificationFrameOffsetRatioX + ";magnificationFrameOffsetRatioY="
+                            + magnificationFrameOffsetRatioY + ";callback=" + callback);
         }
         try {
             mConnection.enableWindowMagnification(displayId, scale, centerX, centerY,
+                    magnificationFrameOffsetRatioX, magnificationFrameOffsetRatioY,
                     transformToRemoteCallback(callback, mTrace));
         } catch (RemoteException e) {
             if (DBG) {
@@ -129,6 +133,25 @@ class WindowMagnificationConnectionWrapper {
         return true;
     }
 
+    boolean moveWindowMagnifierToPosition(int displayId, float positionX, float positionY,
+            @Nullable MagnificationAnimationCallback callback) {
+        if (mTrace.isA11yTracingEnabledForTypes(FLAGS_WINDOW_MAGNIFICATION_CONNECTION)) {
+            mTrace.logTrace(TAG + ".moveWindowMagnifierToPosition",
+                    FLAGS_WINDOW_MAGNIFICATION_CONNECTION, "displayId=" + displayId
+                            + ";positionX=" + positionX + ";positionY=" + positionY);
+        }
+        try {
+            mConnection.moveWindowMagnifierToPosition(displayId, positionX, positionY,
+                    transformToRemoteCallback(callback, mTrace));
+        } catch (RemoteException e) {
+            if (DBG) {
+                Slog.e(TAG, "Error calling moveWindowMagnifierToPosition()", e);
+            }
+            return false;
+        }
+        return true;
+    }
+
     boolean showMagnificationButton(int displayId, int magnificationMode) {
         if (mTrace.isA11yTracingEnabledForTypes(FLAGS_WINDOW_MAGNIFICATION_CONNECTION)) {
             mTrace.logTrace(TAG + ".showMagnificationButton",
@@ -156,6 +179,38 @@ class WindowMagnificationConnectionWrapper {
         } catch (RemoteException e) {
             if (DBG) {
                 Slog.e(TAG, "Error calling removeMagnificationButton()", e);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    boolean removeMagnificationSettingsPanel(int displayId) {
+        if (mTrace.isA11yTracingEnabledForTypes(FLAGS_WINDOW_MAGNIFICATION_CONNECTION)) {
+            mTrace.logTrace(TAG + ".removeMagnificationSettingsPanel",
+                    FLAGS_WINDOW_MAGNIFICATION_CONNECTION, "displayId=" + displayId);
+        }
+        try {
+            mConnection.removeMagnificationSettingsPanel(displayId);
+        } catch (RemoteException e) {
+            if (DBG) {
+                Slog.e(TAG, "Error calling removeMagnificationSettingsPanel()", e);
+            }
+            return false;
+        }
+        return true;
+    }
+
+    boolean onUserMagnificationScaleChanged(int userId, int displayId, float scale) {
+        if (mTrace.isA11yTracingEnabledForTypes(FLAGS_WINDOW_MAGNIFICATION_CONNECTION)) {
+            mTrace.logTrace(TAG + ".onMagnificationScaleUpdated",
+                    FLAGS_WINDOW_MAGNIFICATION_CONNECTION, "displayId=" + displayId);
+        }
+        try {
+            mConnection.onUserMagnificationScaleChanged(userId, displayId, scale);
+        } catch (RemoteException e) {
+            if (DBG) {
+                Slog.e(TAG, "Error calling onMagnificationScaleUpdated()", e);
             }
             return false;
         }

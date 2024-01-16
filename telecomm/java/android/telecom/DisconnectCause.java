@@ -43,8 +43,8 @@ public final class DisconnectCause implements Parcelable {
     /** Disconnected because of a local user-initiated action, such as hanging up. */
     public static final int LOCAL = TelecomProtoEnums.LOCAL; // = 2
     /**
-     * Disconnected because of a remote user-initiated action, such as the other party hanging up
-     * up.
+     * Disconnected because the remote party hung up an ongoing call, or because an outgoing call
+     * was not answered by the remote party.
      */
     public static final int REMOTE = TelecomProtoEnums.REMOTE; // = 3
     /** Disconnected because it has been canceled. */
@@ -88,8 +88,8 @@ public final class DisconnectCause implements Parcelable {
     public static final String REASON_WIFI_ON_BUT_WFC_OFF = "REASON_WIFI_ON_BUT_WFC_OFF";
 
     /**
-     * Reason code (returned via {@link #getReason()}), which indicates that the video telephony
-     * call was disconnected because IMS access is blocked.
+     * Reason code (returned via {@link #getReason()}), which indicates that the call was
+     * disconnected because IMS access is blocked.
      */
     public static final String REASON_IMS_ACCESS_BLOCKED = "REASON_IMS_ACCESS_BLOCKED";
 
@@ -287,7 +287,7 @@ public final class DisconnectCause implements Parcelable {
             int tone = source.readInt();
             int telephonyDisconnectCause = source.readInt();
             int telephonyPreciseDisconnectCause = source.readInt();
-            ImsReasonInfo imsReasonInfo = source.readParcelable(null);
+            ImsReasonInfo imsReasonInfo = source.readParcelable(null, android.telephony.ims.ImsReasonInfo.class);
             return new DisconnectCause(code, label, description, reason, tone,
                     telephonyDisconnectCause, telephonyPreciseDisconnectCause, imsReasonInfo);
         }

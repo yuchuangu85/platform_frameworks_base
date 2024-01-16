@@ -25,14 +25,19 @@ import android.provider.DeviceConfig;
 import android.util.ArrayMap;
 
 import com.android.internal.annotations.GuardedBy;
-import com.android.server.timezonedetector.ConfigurationChangeListener;
 import com.android.server.timezonedetector.ServiceConfigAccessor;
+import com.android.server.timezonedetector.StateChangeListener;
 
+import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.lang.annotation.Target;
 import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -53,16 +58,22 @@ public final class ServerFlags {
      */
     @StringDef(prefix = "KEY_", value = {
             KEY_LOCATION_TIME_ZONE_DETECTION_FEATURE_SUPPORTED,
-            KEY_PRIMARY_LOCATION_TIME_ZONE_PROVIDER_MODE_OVERRIDE,
-            KEY_SECONDARY_LOCATION_TIME_ZONE_PROVIDER_MODE_OVERRIDE,
-            KEY_LOCATION_TIME_ZONE_PROVIDER_INITIALIZATION_TIMEOUT_FUZZ_MILLIS,
-            KEY_LOCATION_TIME_ZONE_PROVIDER_INITIALIZATION_TIMEOUT_MILLIS,
+            KEY_LOCATION_TIME_ZONE_DETECTION_RUN_IN_BACKGROUND_ENABLED,
+            KEY_PRIMARY_LTZP_MODE_OVERRIDE,
+            KEY_SECONDARY_LTZP_MODE_OVERRIDE,
+            KEY_LTZP_INITIALIZATION_TIMEOUT_FUZZ_MILLIS,
+            KEY_LTZP_INITIALIZATION_TIMEOUT_MILLIS,
+            KEY_LTZP_EVENT_FILTERING_AGE_THRESHOLD_MILLIS,
             KEY_LOCATION_TIME_ZONE_DETECTION_UNCERTAINTY_DELAY_MILLIS,
             KEY_LOCATION_TIME_ZONE_DETECTION_SETTING_ENABLED_OVERRIDE,
             KEY_LOCATION_TIME_ZONE_DETECTION_SETTING_ENABLED_DEFAULT,
             KEY_TIME_DETECTOR_LOWER_BOUND_MILLIS_OVERRIDE,
             KEY_TIME_DETECTOR_ORIGIN_PRIORITIES_OVERRIDE,
+            KEY_TIME_ZONE_DETECTOR_AUTO_DETECTION_ENABLED_DEFAULT,
+            KEY_TIME_ZONE_DETECTOR_TELEPHONY_FALLBACK_SUPPORTED,
+            KEY_ENHANCED_METRICS_COLLECTION_ENABLED,
     })
+    @Target({ ElementType.TYPE_USE, ElementType.TYPE_PARAMETER })
     @Retention(RetentionPolicy.SOURCE)
     @interface DeviceConfigKey {}
 
@@ -72,50 +83,58 @@ public final class ServerFlags {
      * {@link ServiceConfigAccessor#isGeoTimeZoneDetectionFeatureSupportedInConfig()} and {@link
      * ServiceConfigAccessor#isGeoTimeZoneDetectionFeatureSupported()}.
      */
-    @DeviceConfigKey
-    public static final String KEY_LOCATION_TIME_ZONE_DETECTION_FEATURE_SUPPORTED =
+    public static final @DeviceConfigKey String KEY_LOCATION_TIME_ZONE_DETECTION_FEATURE_SUPPORTED =
             "location_time_zone_detection_feature_supported";
+
+    /**
+     * Controls whether location time zone detection should run all the time on supported devices,
+     * even when the user has not enabled it explicitly in settings. Enabled for internal testing
+     * only.
+     */
+    public static final @DeviceConfigKey String
+            KEY_LOCATION_TIME_ZONE_DETECTION_RUN_IN_BACKGROUND_ENABLED =
+            "location_time_zone_detection_run_in_background_enabled";
 
     /**
      * The key for the server flag that can override the device config for whether the primary
      * location time zone provider is enabled, disabled, or (for testing) in simulation mode.
      */
-    @DeviceConfigKey
-    public static final String KEY_PRIMARY_LOCATION_TIME_ZONE_PROVIDER_MODE_OVERRIDE =
+    public static final @DeviceConfigKey String KEY_PRIMARY_LTZP_MODE_OVERRIDE =
             "primary_location_time_zone_provider_mode_override";
 
     /**
      * The key for the server flag that can override the device config for whether the secondary
      * location time zone provider is enabled or disabled, or (for testing) in simulation mode.
      */
-    @DeviceConfigKey
-    public static final String KEY_SECONDARY_LOCATION_TIME_ZONE_PROVIDER_MODE_OVERRIDE =
+    public static final @DeviceConfigKey String KEY_SECONDARY_LTZP_MODE_OVERRIDE =
             "secondary_location_time_zone_provider_mode_override";
 
     /**
      * The key for the minimum delay after location time zone detection has been enabled before the
      * location time zone manager can report it is uncertain about the time zone.
      */
-    @DeviceConfigKey
-    public static final String KEY_LOCATION_TIME_ZONE_DETECTION_UNCERTAINTY_DELAY_MILLIS =
+    public static final @DeviceConfigKey String
+            KEY_LOCATION_TIME_ZONE_DETECTION_UNCERTAINTY_DELAY_MILLIS =
             "location_time_zone_detection_uncertainty_delay_millis";
 
     /**
      * The key for the timeout passed to a location time zone provider that tells it how long it has
      * to provide an explicit first suggestion without being declared uncertain.
      */
-    @DeviceConfigKey
-    public static final String KEY_LOCATION_TIME_ZONE_PROVIDER_INITIALIZATION_TIMEOUT_MILLIS =
-            "ltpz_init_timeout_millis";
+    public static final @DeviceConfigKey String KEY_LTZP_INITIALIZATION_TIMEOUT_MILLIS =
+            "ltzp_init_timeout_millis";
 
     /**
      * The key for the extra time added to {@link
-     * #KEY_LOCATION_TIME_ZONE_PROVIDER_INITIALIZATION_TIMEOUT_MILLIS} by the location time zone
+     * #KEY_LTZP_INITIALIZATION_TIMEOUT_MILLIS} by the location time zone
      * manager before the location time zone provider will actually be declared uncertain.
      */
-    @DeviceConfigKey
-    public static final String KEY_LOCATION_TIME_ZONE_PROVIDER_INITIALIZATION_TIMEOUT_FUZZ_MILLIS =
-            "ltpz_init_timeout_fuzz_millis";
+    public static final @DeviceConfigKey String KEY_LTZP_INITIALIZATION_TIMEOUT_FUZZ_MILLIS =
+            "ltzp_init_timeout_fuzz_millis";
+
+    /** The key for the setting that controls rate limiting of provider events. */
+    public static final @DeviceConfigKey String KEY_LTZP_EVENT_FILTERING_AGE_THRESHOLD_MILLIS =
+            "ltzp_event_filtering_age_threshold_millis";
 
     /**
      * The key for the server flag that can override location time zone detection being enabled for
@@ -123,37 +142,61 @@ public final class ServerFlags {
      * disable the feature by turning off the master location switch, or by disabling automatic time
      * zone detection.
      */
-    @DeviceConfigKey
-    public static final String KEY_LOCATION_TIME_ZONE_DETECTION_SETTING_ENABLED_OVERRIDE =
+    public static final @DeviceConfigKey String
+            KEY_LOCATION_TIME_ZONE_DETECTION_SETTING_ENABLED_OVERRIDE =
             "location_time_zone_detection_setting_enabled_override";
 
     /**
      * The key for the default value used to determine whether location time zone detection is
      * enabled when the user hasn't explicitly set it yet.
      */
-    @DeviceConfigKey
-    public static final String KEY_LOCATION_TIME_ZONE_DETECTION_SETTING_ENABLED_DEFAULT =
+    public static final @DeviceConfigKey String
+            KEY_LOCATION_TIME_ZONE_DETECTION_SETTING_ENABLED_DEFAULT =
             "location_time_zone_detection_setting_enabled_default";
+
+    /**
+     * The key to alter a device's "automatic time zone detection enabled" setting default value.
+     * This flag is only intended for internal testing.
+     */
+    public static final @DeviceConfigKey String
+            KEY_TIME_ZONE_DETECTOR_AUTO_DETECTION_ENABLED_DEFAULT =
+            "time_zone_detector_auto_detection_enabled_default";
+
+    /**
+     * The key to control support for time zone detection falling back to telephony detection under
+     * certain circumstances.
+     */
+    public static final @DeviceConfigKey String
+            KEY_TIME_ZONE_DETECTOR_TELEPHONY_FALLBACK_SUPPORTED =
+            "time_zone_detector_telephony_fallback_supported";
 
     /**
      * The key to override the time detector origin priorities configuration. A comma-separated list
      * of strings that will be passed to {@link TimeDetectorStrategy#stringToOrigin(String)}.
      * All values must be recognized or the override value will be ignored.
      */
-    @DeviceConfigKey
-    public static final String KEY_TIME_DETECTOR_ORIGIN_PRIORITIES_OVERRIDE =
+    public static final @DeviceConfigKey String KEY_TIME_DETECTOR_ORIGIN_PRIORITIES_OVERRIDE =
             "time_detector_origin_priorities_override";
 
     /**
-     * The key to override the time detector lower bound configuration. The values is the number of
+     * The key to override the time detector lower bound configuration. The value is the number of
      * milliseconds since the beginning of the Unix epoch.
      */
-    @DeviceConfigKey
-    public static final String KEY_TIME_DETECTOR_LOWER_BOUND_MILLIS_OVERRIDE =
+    public static final @DeviceConfigKey String KEY_TIME_DETECTOR_LOWER_BOUND_MILLIS_OVERRIDE =
             "time_detector_lower_bound_millis_override";
 
+    /**
+     * The key to allow extra metrics / telemetry information to be collected from internal testers.
+     */
+    public static final @DeviceConfigKey String KEY_ENHANCED_METRICS_COLLECTION_ENABLED =
+            "enhanced_metrics_collection_enabled";
+
+    /**
+     * The registered listeners and the keys to trigger on. The value is explicitly a HashSet to
+     * ensure O(1) lookup performance when working out whether a listener should trigger.
+     */
     @GuardedBy("mListeners")
-    private final ArrayMap<ConfigurationChangeListener, Set<String>> mListeners = new ArrayMap<>();
+    private final ArrayMap<StateChangeListener, HashSet<String>> mListeners = new ArrayMap<>();
 
     private static final Object SLOCK = new Object();
 
@@ -179,19 +222,38 @@ public final class ServerFlags {
     }
 
     private void handlePropertiesChanged(@NonNull DeviceConfig.Properties properties) {
+        // Copy the listeners to notify under the "mListeners" lock but don't hold the lock while
+        // delivering the notifications to avoid deadlocks.
+        List<StateChangeListener> listenersToNotify;
         synchronized (mListeners) {
-            for (Map.Entry<ConfigurationChangeListener, Set<String>> listenerEntry
+            listenersToNotify = new ArrayList<>(mListeners.size());
+            for (Map.Entry<StateChangeListener, HashSet<String>> listenerEntry
                     : mListeners.entrySet()) {
-                if (intersects(listenerEntry.getValue(), properties.getKeyset())) {
-                    listenerEntry.getKey().onChange();
+                // It's unclear which set of the following two Sets is going to be larger in the
+                // average case: monitoredKeys will be a subset of the set of possible keys, but
+                // only changed keys are reported. Because we guarantee the type / lookup behavior
+                // of the monitoredKeys by making that a HashSet, that is used as the haystack Set,
+                // while the changed keys is treated as the needles Iterable. At the time of
+                // writing, properties.getKeyset() actually returns a HashSet, so iteration isn't
+                // super efficient and the use of HashSet for monitoredKeys may be redundant, but
+                // neither set will be enormous.
+                HashSet<String> monitoredKeys = listenerEntry.getValue();
+                Iterable<String> modifiedKeys = properties.getKeyset();
+                if (containsAny(monitoredKeys, modifiedKeys)) {
+                    listenersToNotify.add(listenerEntry.getKey());
                 }
             }
         }
+
+        for (StateChangeListener listener : listenersToNotify) {
+            listener.onChange();
+        }
     }
 
-    private static boolean intersects(@NonNull Set<String> one, @NonNull Set<String> two) {
-        for (String toFind : one) {
-            if (two.contains(toFind)) {
+    private static boolean containsAny(
+            @NonNull Set<String> haystack, @NonNull Iterable<String> needles) {
+        for (String needle : needles) {
+            if (haystack.contains(needle)) {
                 return true;
             }
         }
@@ -205,13 +267,16 @@ public final class ServerFlags {
      * <p>Note: Only for use by long-lived objects like other singletons. There is deliberately no
      * associated remove method.
      */
-    public void addListener(@NonNull ConfigurationChangeListener listener,
+    public void addListener(@NonNull StateChangeListener listener,
             @NonNull Set<String> keys) {
         Objects.requireNonNull(listener);
         Objects.requireNonNull(keys);
 
+        // Make a defensive copy and use a well-defined Set implementation to provide predictable
+        // performance on the lookup.
+        HashSet<String> keysCopy = new HashSet<>(keys);
         synchronized (mListeners) {
-            mListeners.put(listener, keys);
+            mListeners.put(listener, keysCopy);
         }
     }
 
@@ -231,16 +296,24 @@ public final class ServerFlags {
      */
     @NonNull
     public Optional<String[]> getOptionalStringArray(@DeviceConfigKey String key) {
-        Optional<String> string = getOptionalString(key);
-        if (!string.isPresent()) {
+        Optional<String> optionalString = getOptionalString(key);
+        if (!optionalString.isPresent()) {
             return Optional.empty();
         }
-        return Optional.of(string.get().split(","));
+
+        // DeviceConfig appears to have no way to specify an empty string, so we use "_[]_" as a
+        // special value to mean a zero-length array.
+        String value = optionalString.get();
+        if ("_[]_".equals(value)) {
+            return Optional.of(new String[0]);
+        }
+
+        return Optional.of(value.split(","));
     }
 
     /**
      * Returns an {@link Instant} from {@link DeviceConfig} from the system_time
-     * namespace, returns the {@code defaultValue} if the value is missing or invalid.
+     * namespace, returns {@link Optional#empty()} if there is no explicit value set.
      */
     @NonNull
     public Optional<Instant> getOptionalInstant(@DeviceConfigKey String key) {
@@ -277,16 +350,17 @@ public final class ServerFlags {
     }
 
     /**
-     * Returns a boolean value from {@link DeviceConfig} from the system_time
-     * namespace, or {@code defaultValue} if there is no explicit value set.
+     * Returns a boolean value from {@link DeviceConfig} from the system_time namespace, or
+     * {@code defaultValue} if there is no explicit value set.
      */
     public boolean getBoolean(@DeviceConfigKey String key, boolean defaultValue) {
         return DeviceConfig.getBoolean(NAMESPACE_SYSTEM_TIME, key, defaultValue);
     }
 
     /**
-     * Returns a positive duration from {@link DeviceConfig} from the system_time
-     * namespace, or {@code defaultValue} if there is no explicit value set.
+     * Returns a positive duration from {@link DeviceConfig} from the system_time namespace,
+     * or {@code defaultValue} if there is no explicit value set or if the value is not a number or
+     * is negative.
      */
     @Nullable
     public Duration getDurationFromMillis(

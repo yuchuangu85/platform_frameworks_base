@@ -21,23 +21,25 @@ import android.annotation.Nullable;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.content.pm.PackageParser.PackageParserException;
 import android.content.pm.SharedLibraryInfo;
 import android.content.pm.VersionedPackage;
 import android.content.pm.dex.DexMetadataHelper;
-import android.content.pm.parsing.ParsingPackageRead;
-import android.content.pm.parsing.ParsingPackageUtils;
-import android.content.pm.parsing.component.ParsedActivity;
-import android.content.pm.parsing.component.ParsedInstrumentation;
-import android.content.pm.parsing.component.ParsedProvider;
-import android.content.pm.parsing.component.ParsedService;
+import android.content.pm.parsing.result.ParseResult;
+import android.content.pm.parsing.result.ParseTypeImpl;
 import android.os.incremental.IncrementalManager;
-import android.text.TextUtils;
 
 import com.android.internal.content.NativeLibraryHelper;
 import com.android.internal.util.ArrayUtils;
 import com.android.server.SystemConfig;
-import com.android.server.pm.PackageSetting;
+import com.android.server.pm.PackageManagerException;
+import com.android.server.pm.pkg.AndroidPackage;
+import com.android.server.pm.pkg.PackageState;
+import com.android.server.pm.pkg.PackageStateInternal;
+import com.android.server.pm.pkg.component.ParsedActivity;
+import com.android.server.pm.pkg.component.ParsedInstrumentation;
+import com.android.server.pm.pkg.component.ParsedProvider;
+import com.android.server.pm.pkg.component.ParsedService;
+import com.android.server.pm.pkg.parsing.ParsingPackageHidden;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -57,7 +59,7 @@ public class AndroidPackageUtils {
             AndroidPackage aPkg) {
         PackageImpl pkg = (PackageImpl) aPkg;
         ArrayList<String> paths = new ArrayList<>();
-        if (pkg.isHasCode()) {
+        if (pkg.isDeclaredHavingCode()) {
             paths.add(pkg.getBaseApkPath());
         }
         String[] splitCodePaths = pkg.getSplitCodePaths();
@@ -86,11 +88,22 @@ public class AndroidPackageUtils {
         return paths;
     }
 
+    public static SharedLibraryInfo createSharedLibraryForSdk(AndroidPackage pkg) {
+        return new SharedLibraryInfo(null, pkg.getPackageName(),
+                AndroidPackageUtils.getAllCodePaths(pkg),
+                pkg.getSdkLibraryName(),
+                pkg.getSdkLibVersionMajor(),
+                SharedLibraryInfo.TYPE_SDK_PACKAGE,
+                new VersionedPackage(pkg.getManifestPackageName(),
+                        pkg.getLongVersionCode()),
+                null, null, false /* isNative */);
+    }
+
     public static SharedLibraryInfo createSharedLibraryForStatic(AndroidPackage pkg) {
         return new SharedLibraryInfo(null, pkg.getPackageName(),
                 AndroidPackageUtils.getAllCodePaths(pkg),
-                pkg.getStaticSharedLibName(),
-                pkg.getStaticSharedLibVersion(),
+                pkg.getStaticSharedLibraryName(),
+                pkg.getStaticSharedLibraryVersion(),
                 SharedLibraryInfo.TYPE_STATIC,
                 new VersionedPackage(pkg.getManifestPackageName(),
                         pkg.getLongVersionCode()),
@@ -120,15 +133,21 @@ public class AndroidPackageUtils {
     /**
      * Validate the dex metadata files installed for the given package.
      *
-     * @throws PackageParserException in case of errors.
+     * @throws PackageManagerException in case of errors.
      */
     public static void validatePackageDexMetadata(AndroidPackage pkg)
-            throws PackageParserException {
+            throws PackageManagerException {
         Collection<String> apkToDexMetadataList = getPackageDexMetadata(pkg).values();
         String packageName = pkg.getPackageName();
-        long versionCode = pkg.toAppInfoWithoutState().longVersionCode;
+        long versionCode = pkg.getLongVersionCode();
+        final ParseTypeImpl input = ParseTypeImpl.forDefaultParsing();
         for (String dexMetadata : apkToDexMetadataList) {
-            DexMetadataHelper.validateDexMetadataFile(dexMetadata, packageName, versionCode);
+            final ParseResult result = DexMetadataHelper.validateDexMetadataFile(
+                    input.reset(), dexMetadata, packageName, versionCode);
+            if (result.isError()) {
+                throw new PackageManagerException(
+                        result.getErrorCode(), result.getErrorMessage(), result.getException());
+            }
         }
     }
 
@@ -137,16 +156,17 @@ public class AndroidPackageUtils {
         return NativeLibraryHelper.Handle.create(
                 AndroidPackageUtils.getAllCodePaths(pkg),
                 pkg.isMultiArch(),
-                pkg.isExtractNativeLibs(),
+                pkg.isExtractNativeLibrariesRequested(),
                 pkg.isDebuggable()
         );
     }
 
-    public static boolean canHaveOatDir(AndroidPackage pkg, boolean isUpdatedSystemApp) {
+    public static boolean canHaveOatDir(@NonNull PackageState packageState,
+            @NonNull AndroidPackage pkg) {
         // The following app types CANNOT have oat directory
         // - non-updated system apps,
         // - incrementally installed apps.
-        if (pkg.isSystem() && !isUpdatedSystemApp) {
+        if (packageState.isSystem() && !packageState.isUpdatedSystemApp()) {
             return false;
         }
         if (IncrementalManager.isIncrementalPath(pkg.getPath())) {
@@ -196,6 +216,12 @@ public class AndroidPackageUtils {
             }
         }
 
+        if (pkg.getBackupAgentName() != null) {
+            if (Objects.equals(className, pkg.getBackupAgentName())) {
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -205,16 +231,19 @@ public class AndroidPackageUtils {
 
     public static boolean isLibrary(AndroidPackage pkg) {
         // TODO(b/135203078): Can parsing just enforce these always match?
-        return pkg.getStaticSharedLibName() != null || !pkg.getLibraryNames().isEmpty();
+        return pkg.getSdkLibraryName() != null || pkg.getStaticSharedLibraryName() != null
+                || !pkg.getLibraryNames().isEmpty();
     }
 
-    public static int getHiddenApiEnforcementPolicy(AndroidPackage pkg,
-            @NonNull PackageSetting pkgSetting) {
+    public static int getHiddenApiEnforcementPolicy(@NonNull AndroidPackage pkg,
+            @NonNull PackageStateInternal packageState) {
         boolean isAllowedToUseHiddenApis;
-        if (pkg.isSignedWithPlatformKey()) {
+        if (pkg == null) {
+            isAllowedToUseHiddenApis = false;
+        } else if (pkg.isSignedWithPlatformKey()) {
             isAllowedToUseHiddenApis = true;
-        } else if (pkg.isSystem() || pkgSetting.getPkgState().isUpdatedSystemApp()) {
-            isAllowedToUseHiddenApis = pkg.isUsesNonSdkApi()
+        } else if (packageState.isSystem()) {
+            isAllowedToUseHiddenApis = pkg.isNonSdkApiRequested()
                     || SystemConfig.getInstance().getHiddenApiWhitelistedApps().contains(
                     pkg.getPackageName());
         } else {
@@ -234,72 +263,110 @@ public class AndroidPackageUtils {
         return ApplicationInfo.HIDDEN_API_ENFORCEMENT_ENABLED;
     }
 
-    public static int getIcon(ParsingPackageRead pkg) {
-        return (ParsingPackageUtils.sUseRoundIcon && pkg.getRoundIconRes() != 0)
-                ? pkg.getRoundIconRes() : pkg.getIconRes();
-    }
-
-    public static long getLongVersionCode(AndroidPackage pkg) {
-        return PackageInfo.composeLongVersionCode(pkg.getVersionCodeMajor(), pkg.getVersionCode());
-    }
-
     /**
      * Returns false iff the provided flags include the {@link PackageManager#MATCH_SYSTEM_ONLY}
      * flag and the provided package is not a system package. Otherwise returns {@code true}.
      */
-    public static boolean isMatchForSystemOnly(AndroidPackage pkg, int flags) {
+    public static boolean isMatchForSystemOnly(@NonNull PackageState packageState, long flags) {
         if ((flags & PackageManager.MATCH_SYSTEM_ONLY) != 0) {
-            return pkg.isSystem();
+            return packageState.isSystem();
         }
         return true;
     }
 
-    public static String getPrimaryCpuAbi(AndroidPackage pkg, @Nullable PackageSetting pkgSetting) {
-        if (pkgSetting == null || TextUtils.isEmpty(pkgSetting.primaryCpuAbiString)) {
-            return pkg.getPrimaryCpuAbi();
-        }
-
-        return pkgSetting.primaryCpuAbiString;
-    }
-
-    public static String getSecondaryCpuAbi(AndroidPackage pkg,
-            @Nullable PackageSetting pkgSetting) {
-        if (pkgSetting == null || TextUtils.isEmpty(pkgSetting.secondaryCpuAbiString)) {
-            return pkg.getSecondaryCpuAbi();
-        }
-
-        return pkgSetting.secondaryCpuAbiString;
-    }
-
     /**
      * Returns the primary ABI as parsed from the package. Used only during parsing and derivation.
-     * Otherwise prefer {@link #getPrimaryCpuAbi(AndroidPackage, PackageSetting)}.
-     *
-     * TODO(b/135203078): Actually hide the method
-     * Placed in the utility to hide the method on the interface.
+     * Otherwise prefer {@link PackageState#getPrimaryCpuAbi()}.
      */
     public static String getRawPrimaryCpuAbi(AndroidPackage pkg) {
-        return pkg.getPrimaryCpuAbi();
+        return ((AndroidPackageHidden) pkg).getPrimaryCpuAbi();
     }
 
     /**
      * Returns the secondary ABI as parsed from the package. Used only during parsing and
-     * derivation. Otherwise prefer {@link #getSecondaryCpuAbi(AndroidPackage, PackageSetting)}.
-     *
-     * TODO(b/135203078): Actually hide the method
-     * Placed in the utility to hide the method on the interface.
+     * derivation. Otherwise prefer {@link PackageState#getSecondaryCpuAbi()}.
      */
-    public static String getRawSecondaryCpuAbi(AndroidPackage pkg) {
-        return pkg.getSecondaryCpuAbi();
+    public static String getRawSecondaryCpuAbi(@NonNull AndroidPackage pkg) {
+        return ((AndroidPackageHidden) pkg).getSecondaryCpuAbi();
     }
 
-    public static String getSeInfo(AndroidPackage pkg, @Nullable PackageSetting pkgSetting) {
-        if (pkgSetting != null) {
-            String overrideSeInfo = pkgSetting.getPkgState().getOverrideSeInfo();
-            if (!TextUtils.isEmpty(overrideSeInfo)) {
-                return overrideSeInfo;
-            }
+    @Deprecated
+    @NonNull
+    public static ApplicationInfo generateAppInfoWithoutState(AndroidPackage pkg) {
+        return ((AndroidPackageHidden) pkg).toAppInfoWithoutState();
+    }
+
+    /**
+     * Replacement of unnecessary legacy getRealPackage. Only returns a value if the package was
+     * actually renamed.
+     */
+    @Nullable
+    public static String getRealPackageOrNull(@NonNull AndroidPackage pkg, boolean isSystem) {
+        if (pkg.getOriginalPackages().isEmpty() || !isSystem) {
+            return null;
         }
-        return pkg.getSeInfo();
+
+        return pkg.getManifestPackageName();
+    }
+
+    public static void fillVersionCodes(@NonNull AndroidPackage pkg, @NonNull PackageInfo info) {
+        info.versionCode = ((ParsingPackageHidden) pkg).getVersionCode();
+        info.versionCodeMajor = ((ParsingPackageHidden) pkg).getVersionCodeMajor();
+    }
+
+    /**
+     * @deprecated Use {@link PackageState#isSystem}
+     */
+    @Deprecated
+    public static boolean isSystem(@NonNull AndroidPackage pkg) {
+        return ((AndroidPackageHidden) pkg).isSystem();
+    }
+
+    /**
+     * @deprecated Use {@link PackageState#isSystemExt}
+     */
+    @Deprecated
+    public static boolean isSystemExt(@NonNull AndroidPackage pkg) {
+        return ((AndroidPackageHidden) pkg).isSystemExt();
+    }
+
+    /**
+     * @deprecated Use {@link PackageState#isPrivileged}
+     */
+    @Deprecated
+    public static boolean isPrivileged(@NonNull AndroidPackage pkg) {
+        return ((AndroidPackageHidden) pkg).isPrivileged();
+    }
+
+    /**
+     * @deprecated Use {@link PackageState#isOem}
+     */
+    @Deprecated
+    public static boolean isOem(@NonNull AndroidPackage pkg) {
+        return ((AndroidPackageHidden) pkg).isOem();
+    }
+
+    /**
+     * @deprecated Use {@link PackageState#isVendor}
+     */
+    @Deprecated
+    public static boolean isVendor(@NonNull AndroidPackage pkg) {
+        return ((AndroidPackageHidden) pkg).isVendor();
+    }
+
+    /**
+     * @deprecated Use {@link PackageState#isProduct}
+     */
+    @Deprecated
+    public static boolean isProduct(@NonNull AndroidPackage pkg) {
+        return ((AndroidPackageHidden) pkg).isProduct();
+    }
+
+    /**
+     * @deprecated Use {@link PackageState#isOdm}
+     */
+    @Deprecated
+    public static boolean isOdm(@NonNull AndroidPackage pkg) {
+        return ((AndroidPackageHidden) pkg).isOdm();
     }
 }

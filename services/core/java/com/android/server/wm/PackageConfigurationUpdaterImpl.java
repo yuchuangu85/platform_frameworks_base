@@ -17,6 +17,7 @@
 package com.android.server.wm;
 
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.os.Binder;
 import android.os.LocaleList;
 import android.util.ArraySet;
@@ -33,6 +34,8 @@ final class PackageConfigurationUpdaterImpl implements
     private final Optional<Integer> mPid;
     private Integer mNightMode;
     private LocaleList mLocales;
+    private @Configuration.GrammaticalGender
+    int mGrammaticalGender;
     private String mPackageName;
     private int mUserId;
     private ActivityTaskManagerService mAtm;
@@ -68,7 +71,16 @@ final class PackageConfigurationUpdaterImpl implements
     }
 
     @Override
-    public void commit() {
+    public ActivityTaskManagerInternal.PackageConfigurationUpdater setGrammaticalGender(
+            @Configuration.GrammaticalGender int gender) {
+        synchronized (this) {
+            mGrammaticalGender = gender;
+        }
+        return this;
+    }
+
+    @Override
+    public boolean commit() {
         synchronized (this) {
             synchronized (mAtm.mGlobalLock) {
                 final long ident = Binder.clearCallingIdentity();
@@ -79,7 +91,7 @@ final class PackageConfigurationUpdaterImpl implements
                         if (wpc == null) {
                             Slog.w(TAG, "commit: Override application configuration failed: "
                                     + "cannot find pid " + mPid);
-                            return;
+                            return false;
                         }
                         uid = wpc.mUid;
                         mUserId = wpc.mUserId;
@@ -90,11 +102,12 @@ final class PackageConfigurationUpdaterImpl implements
                         if (uid < 0) {
                             Slog.w(TAG, "commit: update of application configuration failed: "
                                     + "userId or packageName not valid " + mUserId);
-                            return;
+                            return false;
                         }
                     }
                     updateConfig(uid, mPackageName);
-                    mAtm.mPackageConfigPersister.updateFromImpl(mPackageName, mUserId, this);
+                    return mAtm.mPackageConfigPersister
+                            .updateFromImpl(mPackageName, mUserId, this);
 
                 } finally {
                     Binder.restoreCallingIdentity(ident);
@@ -105,14 +118,18 @@ final class PackageConfigurationUpdaterImpl implements
 
     private void updateConfig(int uid, String packageName) {
         final ArraySet<WindowProcessController> processes = mAtm.mProcessMap.getProcesses(uid);
-        if (processes == null) return;
+        if (processes == null || processes.isEmpty()) return;
+        LocaleList localesOverride = LocaleOverlayHelper.combineLocalesIfOverlayExists(
+                mLocales, mAtm.getGlobalConfiguration().getLocales());
         for (int i = processes.size() - 1; i >= 0; i--) {
             final WindowProcessController wpc = processes.valueAt(i);
-            if (!wpc.mInfo.packageName.equals(packageName)) continue;
-            LocaleList localesOverride = LocaleOverlayHelper.combineLocalesIfOverlayExists(
-                    mLocales, mAtm.getGlobalConfiguration().getLocales());
-            wpc.applyAppSpecificConfig(mNightMode, localesOverride);
-            wpc.updateAppSpecificSettingsForAllActivities(mNightMode, localesOverride);
+            if (wpc.mInfo.packageName.equals(packageName)) {
+                wpc.applyAppSpecificConfig(mNightMode, localesOverride, mGrammaticalGender);
+            }
+            // Always inform individual activities about the update, since activities from other
+            // packages may be sharing this process
+            wpc.updateAppSpecificSettingsForAllActivitiesInPackage(packageName, mNightMode,
+                    localesOverride, mGrammaticalGender);
         }
     }
 
@@ -122,5 +139,10 @@ final class PackageConfigurationUpdaterImpl implements
 
     LocaleList getLocales() {
         return mLocales;
+    }
+
+    @Configuration.GrammaticalGender
+    Integer getGrammaticalGender() {
+        return mGrammaticalGender;
     }
 }

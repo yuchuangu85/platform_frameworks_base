@@ -41,8 +41,8 @@ import javax.inject.Inject;
  * Filters out NotificationEntries based on its Ranking and dozing state.
  * Assigns alerting / silent section based on the importance of the notification entry.
  * We check the NotificationEntry's Ranking for:
- *  - whether the notification's app is suspended or hiding its notifications
- *  - whether DND settings are hiding notifications from ambient display or the notification list
+ * - whether the notification's app is suspended or hiding its notifications
+ * - whether DND settings are hiding notifications from ambient display or the notification list
  */
 @CoordinatorScope
 public class RankingCoordinator implements Coordinator {
@@ -52,6 +52,8 @@ public class RankingCoordinator implements Coordinator {
     private final NodeController mSilentNodeController;
     private final SectionHeaderController mSilentHeaderController;
     private final NodeController mAlertingHeaderController;
+    private boolean mHasSilentEntries;
+    private boolean mHasMinimizedEntries;
 
     @Inject
     public RankingCoordinator(
@@ -83,6 +85,10 @@ public class RankingCoordinator implements Coordinator {
         return mSilentNotifSectioner;
     }
 
+    public NotifSectioner getMinimizedSectioner() {
+        return mMinimizedNotifSectioner;
+    }
+
     private final NotifSectioner mAlertingNotifSectioner = new NotifSectioner("Alerting",
             NotificationPriorityBucketKt.BUCKET_ALERTING) {
         @Override
@@ -105,7 +111,8 @@ public class RankingCoordinator implements Coordinator {
             NotificationPriorityBucketKt.BUCKET_SILENT) {
         @Override
         public boolean isInSection(ListEntry entry) {
-            return !mHighPriorityProvider.isHighPriority(entry);
+            return !mHighPriorityProvider.isHighPriority(entry)
+                    && !entry.getRepresentativeEntry().isAmbient();
         }
 
         @Nullable
@@ -117,13 +124,44 @@ public class RankingCoordinator implements Coordinator {
         @Nullable
         @Override
         public void onEntriesUpdated(@NonNull List<ListEntry> entries) {
+            mHasSilentEntries = false;
             for (int i = 0; i < entries.size(); i++) {
                 if (entries.get(i).getRepresentativeEntry().getSbn().isClearable()) {
-                    mSilentHeaderController.setClearSectionEnabled(true);
-                    return;
+                    mHasSilentEntries = true;
+                    break;
                 }
             }
-            mSilentHeaderController.setClearSectionEnabled(false);
+            mSilentHeaderController.setClearSectionEnabled(
+                    mHasSilentEntries | mHasMinimizedEntries);
+        }
+    };
+
+    private final NotifSectioner mMinimizedNotifSectioner = new NotifSectioner("Minimized",
+            NotificationPriorityBucketKt.BUCKET_SILENT) {
+        @Override
+        public boolean isInSection(ListEntry entry) {
+            return !mHighPriorityProvider.isHighPriority(entry)
+                    && entry.getRepresentativeEntry().isAmbient();
+        }
+
+        @Nullable
+        @Override
+        public NodeController getHeaderNodeController() {
+            return mSilentNodeController;
+        }
+
+        @Nullable
+        @Override
+        public void onEntriesUpdated(@NonNull List<ListEntry> entries) {
+            mHasMinimizedEntries = false;
+            for (int i = 0; i < entries.size(); i++) {
+                if (entries.get(i).getRepresentativeEntry().getSbn().isClearable()) {
+                    mHasMinimizedEntries = true;
+                    break;
+                }
+            }
+            mSilentHeaderController.setClearSectionEnabled(
+                    mHasSilentEntries | mHasMinimizedEntries);
         }
     };
 
@@ -143,7 +181,9 @@ public class RankingCoordinator implements Coordinator {
             "DndSuppressingVisualEffects") {
         @Override
         public boolean shouldFilterOut(NotificationEntry entry, long now) {
-            if (mStatusBarStateController.isDozing() && entry.shouldSuppressAmbient()) {
+            if ((mStatusBarStateController.isDozing()
+                    || mStatusBarStateController.getDozeAmount() == 1f)
+                    && entry.shouldSuppressAmbient()) {
                 return true;
             }
 
@@ -153,9 +193,23 @@ public class RankingCoordinator implements Coordinator {
 
     private final StatusBarStateController.StateListener mStatusBarStateCallback =
             new StatusBarStateController.StateListener() {
+                private boolean mPrevDozeAmountIsOne = false;
+
+                @Override
+                public void onDozeAmountChanged(float linear, float eased) {
+                    StatusBarStateController.StateListener.super.onDozeAmountChanged(linear, eased);
+
+                    boolean dozeAmountIsOne = linear == 1f;
+                    if (mPrevDozeAmountIsOne != dozeAmountIsOne) {
+                        mDndVisualEffectsFilter.invalidateList("dozeAmount changed to "
+                                + (dozeAmountIsOne ? "one" : "not one"));
+                        mPrevDozeAmountIsOne = dozeAmountIsOne;
+                    }
+                }
+
                 @Override
                 public void onDozingChanged(boolean isDozing) {
-                    mDndVisualEffectsFilter.invalidateList();
+                    mDndVisualEffectsFilter.invalidateList("onDozingChanged to " + isDozing);
                 }
             };
 }

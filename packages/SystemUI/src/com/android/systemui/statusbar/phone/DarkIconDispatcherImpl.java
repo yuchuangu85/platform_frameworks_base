@@ -23,15 +23,18 @@ import android.graphics.Rect;
 import android.util.ArrayMap;
 import android.widget.ImageView;
 
-import com.android.systemui.R;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dump.DumpManager;
-import com.android.systemui.statusbar.CommandQueue;
 
-import java.io.FileDescriptor;
 import java.io.PrintWriter;
+import java.util.ArrayList;
 
 import javax.inject.Inject;
+
+import kotlinx.coroutines.flow.FlowKt;
+import kotlinx.coroutines.flow.MutableStateFlow;
+import kotlinx.coroutines.flow.StateFlow;
+import kotlinx.coroutines.flow.StateFlowKt;
 
 /**
  */
@@ -40,7 +43,7 @@ public class DarkIconDispatcherImpl implements SysuiDarkIconDispatcher,
         LightBarTransitionsController.DarkIntensityApplier {
 
     private final LightBarTransitionsController mTransitionsController;
-    private final Rect mTintArea = new Rect();
+    private final ArrayList<Rect> mTintAreas = new ArrayList<>();
     private final ArrayMap<Object, DarkReceiver> mReceivers = new ArrayMap<>();
 
     private int mIconTint = DEFAULT_ICON_TINT;
@@ -48,17 +51,22 @@ public class DarkIconDispatcherImpl implements SysuiDarkIconDispatcher,
     private int mDarkModeIconColorSingleTone;
     private int mLightModeIconColorSingleTone;
 
+    private final MutableStateFlow<DarkChange> mDarkChangeFlow = StateFlowKt.MutableStateFlow(
+            DarkChange.EMPTY);
+
     /**
      */
     @Inject
     public DarkIconDispatcherImpl(
             Context context,
-            CommandQueue commandQueue,
+            LightBarTransitionsController.Factory lightBarTransitionsControllerFactory,
             DumpManager dumpManager) {
-        mDarkModeIconColorSingleTone = context.getColor(R.color.dark_mode_icon_color_single_tone);
-        mLightModeIconColorSingleTone = context.getColor(R.color.light_mode_icon_color_single_tone);
+        mDarkModeIconColorSingleTone = context.getColor(
+                com.android.settingslib.R.color.dark_mode_icon_color_single_tone);
+        mLightModeIconColorSingleTone = context.getColor(
+                com.android.settingslib.R.color.light_mode_icon_color_single_tone);
 
-        mTransitionsController = new LightBarTransitionsController(context, this, commandQueue);
+        mTransitionsController = lightBarTransitionsControllerFactory.create(this);
 
         dumpManager.registerDumpable(getClass().getSimpleName(), this);
     }
@@ -67,16 +75,21 @@ public class DarkIconDispatcherImpl implements SysuiDarkIconDispatcher,
         return mTransitionsController;
     }
 
+    @Override
+    public StateFlow<DarkChange> darkChangeFlow() {
+        return FlowKt.asStateFlow(mDarkChangeFlow);
+    }
+
     public void addDarkReceiver(DarkReceiver receiver) {
         mReceivers.put(receiver, receiver);
-        receiver.onDarkChanged(mTintArea, mDarkIntensity, mIconTint);
+        receiver.onDarkChanged(mTintAreas, mDarkIntensity, mIconTint);
     }
 
     public void addDarkReceiver(ImageView imageView) {
         DarkReceiver receiver = (area, darkIntensity, tint) -> imageView.setImageTintList(
-                ColorStateList.valueOf(getTint(mTintArea, imageView, mIconTint)));
+                ColorStateList.valueOf(getTint(mTintAreas, imageView, mIconTint)));
         mReceivers.put(imageView, receiver);
-        receiver.onDarkChanged(mTintArea, mDarkIntensity, mIconTint);
+        receiver.onDarkChanged(mTintAreas, mDarkIntensity, mIconTint);
     }
 
     public void removeDarkReceiver(DarkReceiver object) {
@@ -88,23 +101,23 @@ public class DarkIconDispatcherImpl implements SysuiDarkIconDispatcher,
     }
 
     public void applyDark(DarkReceiver object) {
-        mReceivers.get(object).onDarkChanged(mTintArea, mDarkIntensity, mIconTint);
+        mReceivers.get(object).onDarkChanged(mTintAreas, mDarkIntensity, mIconTint);
     }
 
     /**
      * Sets the dark area so {@link #applyDark} only affects the icons in the specified area.
      *
-     * @param darkArea the area in which icons should change it's tint, in logical screen
-     *                 coordinates
+     * @param darkAreas the areas in which icons should change it's tint, in logical screen
+     *                  coordinates
      */
-    public void setIconsDarkArea(Rect darkArea) {
-        if (darkArea == null && mTintArea.isEmpty()) {
+    public void setIconsDarkArea(ArrayList<Rect> darkAreas) {
+        if (darkAreas == null && mTintAreas.isEmpty()) {
             return;
         }
-        if (darkArea == null) {
-            mTintArea.setEmpty();
-        } else {
-            mTintArea.set(darkArea);
+
+        mTintAreas.clear();
+        if (darkAreas != null) {
+            mTintAreas.addAll(darkAreas);
         }
         applyIconTint();
     }
@@ -123,16 +136,17 @@ public class DarkIconDispatcherImpl implements SysuiDarkIconDispatcher,
     }
 
     private void applyIconTint() {
+        mDarkChangeFlow.setValue(new DarkChange(mTintAreas, mDarkIntensity, mIconTint));
         for (int i = 0; i < mReceivers.size(); i++) {
-            mReceivers.valueAt(i).onDarkChanged(mTintArea, mDarkIntensity, mIconTint);
+            mReceivers.valueAt(i).onDarkChanged(mTintAreas, mDarkIntensity, mIconTint);
         }
     }
 
     @Override
-    public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
+    public void dump(PrintWriter pw, String[] args) {
         pw.println("DarkIconDispatcher: ");
         pw.println("  mIconTint: 0x" + Integer.toHexString(mIconTint));
         pw.println("  mDarkIntensity: " + mDarkIntensity + "f");
-        pw.println("  mTintArea: " + mTintArea);
+        pw.println("  mTintAreas: " + mTintAreas);
     }
 }

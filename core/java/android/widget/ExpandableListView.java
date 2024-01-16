@@ -31,6 +31,7 @@ import android.view.ContextMenu;
 import android.view.ContextMenu.ContextMenuInfo;
 import android.view.SoundEffectConstants;
 import android.view.View;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.ExpandableListConnector.PositionMetadata;
 
 import com.android.internal.R;
@@ -1144,6 +1145,24 @@ public class ExpandableListView extends ListView {
         return new ExpandableListContextMenuInfo(view, packedPosition, id);
     }
 
+    /** @hide */
+    @Override
+    public void onInitializeAccessibilityNodeInfoForItem(
+            View view, int position, AccessibilityNodeInfo info) {
+        super.onInitializeAccessibilityNodeInfoForItem(view, position, info);
+
+        final PositionMetadata metadata = mConnector.getUnflattenedPos(position);
+        if (metadata.position.type == ExpandableListPosition.GROUP) {
+            if (isGroupExpanded(metadata.position.groupPos)) {
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_COLLAPSE);
+            } else {
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_EXPAND);
+            }
+        }
+
+        metadata.recycle();
+    }
+
     /**
      * Gets the ID of the group or child at the given <code>position</code>.
      * This is useful since there is no ListAdapter ID -> ExpandableListAdapter
@@ -1309,7 +1328,7 @@ public class ExpandableListView extends ListView {
         private SavedState(Parcel in) {
             super(in);
             expandedGroupMetadataList = new ArrayList<ExpandableListConnector.GroupMetadata>();
-            in.readList(expandedGroupMetadataList, ExpandableListConnector.class.getClassLoader());
+            in.readList(expandedGroupMetadataList, ExpandableListConnector.class.getClassLoader(), android.widget.ExpandableListConnector.GroupMetadata.class);
         }
 
         @Override

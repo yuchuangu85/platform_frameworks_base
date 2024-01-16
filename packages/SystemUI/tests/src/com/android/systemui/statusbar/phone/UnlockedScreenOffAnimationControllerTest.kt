@@ -16,34 +16,35 @@
 
 package com.android.systemui.statusbar.phone
 
-import android.animation.Animator
 import android.os.Handler
 import android.os.PowerManager
 import android.testing.AndroidTestingRunner
 import android.testing.TestableLooper.RunWithLooper
-import android.view.View
+import android.view.Display
 import androidx.test.filters.SmallTest
+import com.android.internal.jank.InteractionJankMonitor
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.keyguard.KeyguardViewMediator
 import com.android.systemui.keyguard.WakefulnessLifecycle
+import com.android.systemui.shade.ShadeViewController
 import com.android.systemui.statusbar.LightRevealScrim
+import com.android.systemui.statusbar.NotificationShadeWindowController
 import com.android.systemui.statusbar.StatusBarStateControllerImpl
 import com.android.systemui.statusbar.policy.KeyguardStateController
+import com.android.systemui.util.mockito.eq
 import com.android.systemui.util.settings.GlobalSettings
+import junit.framework.Assert.assertFalse
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.ArgumentCaptor
 import org.mockito.Mock
-import org.mockito.Mockito
-import org.mockito.Mockito.`when`
 import org.mockito.Mockito.anyLong
-import org.mockito.Mockito.mockingDetails
 import org.mockito.Mockito.never
-import org.mockito.Mockito.spy
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
+import org.mockito.Mockito.`when`
 import org.mockito.MockitoAnnotations
 
 @SmallTest
@@ -61,15 +62,19 @@ class UnlockedScreenOffAnimationControllerTest : SysuiTestCase() {
     @Mock
     private lateinit var globalSettings: GlobalSettings
     @Mock
-    private lateinit var statusBar: StatusBar
+    private lateinit var centralSurfaces: CentralSurfaces
     @Mock
-    private lateinit var notificationPanelViewController: NotificationPanelViewController
+    private lateinit var shadeViewController: ShadeViewController
+    @Mock
+    private lateinit var notifShadeWindowController: NotificationShadeWindowController
     @Mock
     private lateinit var lightRevealScrim: LightRevealScrim
     @Mock
     private lateinit var wakefulnessLifecycle: WakefulnessLifecycle
     @Mock
     private lateinit var statusBarStateController: StatusBarStateControllerImpl
+    @Mock
+    private lateinit var interactionJankMonitor: InteractionJankMonitor
     @Mock
     private lateinit var powerManager: PowerManager
     @Mock
@@ -87,16 +92,16 @@ class UnlockedScreenOffAnimationControllerTest : SysuiTestCase() {
                 keyguardStateController,
                 dagger.Lazy<DozeParameters> { dozeParameters },
                 globalSettings,
+                dagger.Lazy<NotificationShadeWindowController> { notifShadeWindowController },
+                interactionJankMonitor,
                 powerManager,
                 handler = handler
         )
-        controller.initialize(statusBar, lightRevealScrim)
-        `when`(statusBar.notificationPanelViewController).thenReturn(
-            notificationPanelViewController)
+        controller.initialize(centralSurfaces, shadeViewController, lightRevealScrim)
 
         // Screen off does not run if the panel is expanded, so we should say it's collapsed to test
         // screen off.
-        `when`(notificationPanelViewController.isFullyCollapsed).thenReturn(true)
+        `when`(shadeViewController.isFullyCollapsed).thenReturn(true)
     }
 
     @After
@@ -104,20 +109,6 @@ class UnlockedScreenOffAnimationControllerTest : SysuiTestCase() {
         // Tell the screen off controller to cancel the animations and clean up its state, or
         // subsequent tests will act unpredictably as the animator continues running.
         controller.onStartedWakingUp()
-    }
-
-    @Test
-    fun testAnimClearsEndListener() {
-        val keyguardView = View(context)
-        val animator = spy(keyguardView.animate())
-        val keyguardSpy = spy(keyguardView)
-        Mockito.`when`(keyguardSpy.animate()).thenReturn(animator)
-        val listener = ArgumentCaptor.forClass(Animator.AnimatorListener::class.java)
-        controller.animateInKeyguard(keyguardSpy, Runnable {})
-        Mockito.verify(animator).setListener(listener.capture())
-        // Verify that the listener is cleared when it ends
-        listener.value.onAnimationEnd(null)
-        Mockito.verify(animator).setListener(null)
     }
 
     /**
@@ -130,17 +121,33 @@ class UnlockedScreenOffAnimationControllerTest : SysuiTestCase() {
      */
     @Test
     fun testAodUiShownIfNotInteractive() {
-        `when`(dozeParameters.shouldControlUnlockedScreenOff()).thenReturn(true)
+        `when`(dozeParameters.canControlUnlockedScreenOff()).thenReturn(true)
         `when`(powerManager.isInteractive).thenReturn(false)
 
         val callbackCaptor = ArgumentCaptor.forClass(Runnable::class.java)
-        controller.onStartedGoingToSleep()
+        controller.startAnimation()
 
         verify(handler).postDelayed(callbackCaptor.capture(), anyLong())
 
         callbackCaptor.value.run()
 
-        verify(notificationPanelViewController, times(1)).showAodUi()
+        verify(shadeViewController, times(1)).showAodUi()
+    }
+
+    @Test
+    fun testAodUiShowNotInvokedIfWakingUp() {
+        `when`(dozeParameters.canControlUnlockedScreenOff()).thenReturn(true)
+        `when`(powerManager.isInteractive).thenReturn(false)
+
+        val callbackCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        controller.startAnimation()
+        controller.onStartedWakingUp()
+
+        verify(handler).postDelayed(callbackCaptor.capture(), anyLong())
+
+        callbackCaptor.value.run()
+
+        verify(shadeViewController, never()).showAodUi()
     }
 
     /**
@@ -153,17 +160,39 @@ class UnlockedScreenOffAnimationControllerTest : SysuiTestCase() {
      */
     @Test
     fun testAodUiNotShownIfInteractive() {
-        `when`(dozeParameters.shouldControlUnlockedScreenOff()).thenReturn(true)
-        `when`(powerManager.isInteractive).thenReturn(true)
+        `when`(dozeParameters.canControlUnlockedScreenOff()).thenReturn(true)
+        `when`(powerManager.isInteractive(eq(Display.DEFAULT_DISPLAY))).thenReturn(true)
 
         val callbackCaptor = ArgumentCaptor.forClass(Runnable::class.java)
-        controller.onStartedGoingToSleep()
-
-        mockingDetails(handler).printInvocations()
+        controller.startAnimation()
 
         verify(handler).postDelayed(callbackCaptor.capture(), anyLong())
         callbackCaptor.value.run()
 
-        verify(notificationPanelViewController, never()).showAodUi()
+        verify(shadeViewController, never()).showAodUi()
+    }
+
+    @Test
+    fun testAodUiShownIfGloballyInteractiveButDefaultDisplayNotInteractive() {
+        `when`(dozeParameters.canControlUnlockedScreenOff()).thenReturn(true)
+        `when`(powerManager.isInteractive()).thenReturn(false)
+        `when`(powerManager.isInteractive(eq(Display.DEFAULT_DISPLAY))).thenReturn(false)
+
+        val callbackCaptor = ArgumentCaptor.forClass(Runnable::class.java)
+        controller.startAnimation()
+
+        verify(handler).postDelayed(callbackCaptor.capture(), anyLong())
+        callbackCaptor.value.run()
+
+        verify(shadeViewController).showAodUi()
+    }
+
+    @Test
+    fun testNoAnimationPlaying_dozeParamsCanNotControlScreenOff() {
+        `when`(dozeParameters.canControlUnlockedScreenOff()).thenReturn(false)
+
+        assertFalse(controller.shouldPlayUnlockedScreenOffAnimation())
+        controller.startAnimation()
+        assertFalse(controller.isAnimationPlaying())
     }
 }

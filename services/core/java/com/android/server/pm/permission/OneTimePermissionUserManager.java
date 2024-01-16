@@ -16,23 +16,28 @@
 
 package com.android.server.pm.permission;
 
-import static android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED;
-
 import android.annotation.NonNull;
 import android.app.ActivityManager;
+import android.app.ActivityManagerInternal;
 import android.app.AlarmManager;
+import android.app.IActivityManager;
+import android.app.IUidObserver;
+import android.app.UidObserver;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.os.Handler;
+import android.os.RemoteException;
 import android.permission.PermissionControllerManager;
 import android.provider.DeviceConfig;
 import android.util.Log;
 import android.util.SparseArray;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.server.LocalServices;
+import com.android.server.PermissionThread;
 
 /**
  * Class that handles one-time permissions for a user
@@ -47,7 +52,8 @@ public class OneTimePermissionUserManager {
             "one_time_permissions_killed_delay_millis";
 
     private final @NonNull Context mContext;
-    private final @NonNull ActivityManager mActivityManager;
+    private final @NonNull IActivityManager mIActivityManager;
+    private final @NonNull ActivityManagerInternal mActivityManagerInternal;
     private final @NonNull AlarmManager mAlarmManager;
     private final @NonNull PermissionControllerManager mPermissionControllerManager;
 
@@ -77,45 +83,16 @@ public class OneTimePermissionUserManager {
 
     OneTimePermissionUserManager(@NonNull Context context) {
         mContext = context;
-        mActivityManager = context.getSystemService(ActivityManager.class);
+        mIActivityManager = ActivityManager.getService();
+        mActivityManagerInternal = LocalServices.getService(ActivityManagerInternal.class);
         mAlarmManager = context.getSystemService(AlarmManager.class);
-        mPermissionControllerManager = context.getSystemService(PermissionControllerManager.class);
+        mPermissionControllerManager = new PermissionControllerManager(
+                mContext, PermissionThread.getHandler());
         mHandler = context.getMainThreadHandler();
     }
 
-    /**
-     * Starts a one-time permission session for a given package. A one-time permission session is
-     * ended if app becomes inactive. Inactivity is defined as the package's uid importance level
-     * staying > importanceToResetTimer for timeoutMillis milliseconds. If the package's uid
-     * importance level goes <= importanceToResetTimer then the timer is reset and doesn't start
-     * until going > importanceToResetTimer.
-     * <p>
-     * When this timeoutMillis is reached if the importance level is <= importanceToKeepSessionAlive
-     * then the session is extended until either the importance goes above
-     * importanceToKeepSessionAlive which will end the session or <= importanceToResetTimer which
-     * will continue the session and reset the timer.
-     * </p>
-     * <p>
-     * Importance levels are defined in {@link android.app.ActivityManager.RunningAppProcessInfo}.
-     * </p>
-     * <p>
-     * Once the session ends PermissionControllerService#onNotifyOneTimePermissionSessionTimeout
-     * is invoked.
-     * </p>
-     * <p>
-     * Note that if there is currently an active session for a package a new one isn't created and
-     * the existing one isn't changed.
-     * </p>
-     * @param packageName The package to start a one-time permission session for
-     * @param timeoutMillis Number of milliseconds for an app to be in an inactive state
-     * @param importanceToResetTimer The least important level to uid must be to reset the timer
-     * @param importanceToKeepSessionAlive The least important level the uid must be to keep the
-     *                                    session alive
-     *
-     * @hide
-     */
     void startPackageOneTimeSession(@NonNull String packageName, long timeoutMillis,
-            int importanceToResetTimer, int importanceToKeepSessionAlive) {
+            long revokeAfterKilledDelayMillis) {
         int uid;
         try {
             uid = mContext.getPackageManager().getPackageUid(packageName, 0);
@@ -126,11 +103,13 @@ public class OneTimePermissionUserManager {
 
         synchronized (mLock) {
             PackageInactivityListener listener = mListeners.get(uid);
-            if (listener == null) {
-                listener = new PackageInactivityListener(uid, packageName, timeoutMillis,
-                        importanceToResetTimer, importanceToKeepSessionAlive);
-                mListeners.put(uid, listener);
+            if (listener != null) {
+                listener.updateSessionParameters(timeoutMillis, revokeAfterKilledDelayMillis);
+                return;
             }
+            listener = new PackageInactivityListener(uid, packageName, timeoutMillis,
+                    revokeAfterKilledDelayMillis);
+            mListeners.put(uid, listener);
         }
     }
 
@@ -159,15 +138,6 @@ public class OneTimePermissionUserManager {
     }
 
     /**
-     * The delay to wait before revoking on the event an app is terminated. Recommended to be long
-     * enough so that apps don't lose permission on an immediate restart
-     */
-    private static long getKilledDelayMillis() {
-        return DeviceConfig.getLong(DeviceConfig.NAMESPACE_PERMISSIONS,
-                PROPERTY_KILLED_DELAY_CONFIG_KEY, DEFAULT_KILLED_DELAY_MILLIS);
-    }
-
-    /**
      * Register to listen for Uids being uninstalled. This must be done outside of the
      * PermissionManagerService lock.
      */
@@ -183,95 +153,152 @@ public class OneTimePermissionUserManager {
 
         private static final long TIMER_INACTIVE = -1;
 
+        private static final int STATE_GONE = 0;
+        private static final int STATE_TIMER = 1;
+        private static final int STATE_ACTIVE = 2;
+
         private final int mUid;
         private final @NonNull String mPackageName;
-        private final long mTimeout;
-        private final int mImportanceToResetTimer;
-        private final int mImportanceToKeepSessionAlive;
+        private long mTimeout;
+        private long mRevokeAfterKilledDelay;
 
         private boolean mIsAlarmSet;
         private boolean mIsFinished;
 
         private long mTimerStart = TIMER_INACTIVE;
 
-        private final ActivityManager.OnUidImportanceListener mStartTimerListener;
-        private final ActivityManager.OnUidImportanceListener mSessionKillableListener;
-        private final ActivityManager.OnUidImportanceListener mGoneListener;
-
         private final Object mInnerLock = new Object();
         private final Object mToken = new Object();
+        private final IUidObserver mObserver = new UidObserver() {
+            @Override
+            public void onUidGone(int uid, boolean disabled) {
+                if (uid == mUid) {
+                    PackageInactivityListener.this.updateUidState(STATE_GONE);
+                }
+            }
+
+            @Override
+            public void onUidStateChanged(int uid, int procState, long procStateSeq,
+                    int capability) {
+                if (uid == mUid) {
+                    if (procState > ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE
+                            && procState != ActivityManager.PROCESS_STATE_NONEXISTENT) {
+                        PackageInactivityListener.this.updateUidState(STATE_TIMER);
+                    } else {
+                        PackageInactivityListener.this.updateUidState(STATE_ACTIVE);
+                    }
+                }
+            }
+        };
 
         private PackageInactivityListener(int uid, @NonNull String packageName, long timeout,
-                int importanceToResetTimer, int importanceToKeepSessionAlive) {
-
+                long revokeAfterkilledDelay) {
             Log.i(LOG_TAG,
                     "Start tracking " + packageName + ". uid=" + uid + " timeout=" + timeout
-                            + " importanceToResetTimer=" + importanceToResetTimer
-                            + " importanceToKeepSessionAlive=" + importanceToKeepSessionAlive);
+                            + " killedDelay=" + revokeAfterkilledDelay);
 
             mUid = uid;
             mPackageName = packageName;
             mTimeout = timeout;
-            mImportanceToResetTimer = importanceToResetTimer;
-            mImportanceToKeepSessionAlive = importanceToKeepSessionAlive;
+            mRevokeAfterKilledDelay = revokeAfterkilledDelay == -1
+                    ? DeviceConfig.getLong(
+                            DeviceConfig.NAMESPACE_PERMISSIONS, PROPERTY_KILLED_DELAY_CONFIG_KEY,
+                            DEFAULT_KILLED_DELAY_MILLIS)
+                    : revokeAfterkilledDelay;
 
-            mStartTimerListener =
-                    (changingUid, importance) -> onImportanceChanged(changingUid, importance);
-            mSessionKillableListener =
-                    (changingUid, importance) -> onImportanceChanged(changingUid, importance);
-            mGoneListener =
-                    (changingUid, importance) -> onImportanceChanged(changingUid, importance);
-
-            mActivityManager.addOnUidImportanceListener(mStartTimerListener,
-                    importanceToResetTimer);
-            mActivityManager.addOnUidImportanceListener(mSessionKillableListener,
-                    importanceToKeepSessionAlive);
-            mActivityManager.addOnUidImportanceListener(mGoneListener, IMPORTANCE_CACHED);
-
-            onImportanceChanged(mUid, mActivityManager.getPackageImportance(packageName));
-        }
-
-        private void onImportanceChanged(int uid, int importance) {
-            if (uid != mUid) {
-                return;
+            try {
+                mIActivityManager.registerUidObserver(mObserver,
+                        ActivityManager.UID_OBSERVER_GONE | ActivityManager.UID_OBSERVER_PROCSTATE,
+                        ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE,
+                        null);
+            } catch (RemoteException e) {
+                Log.e(LOG_TAG, "Couldn't check uid proc state", e);
+                // Can't register uid observer, just revoke immediately
+                synchronized (mInnerLock) {
+                    onPackageInactiveLocked();
+                }
             }
 
-            Log.v(LOG_TAG, "Importance changed for " + mPackageName + " (" + mUid + ")."
-                    + " importance=" + importance);
+            updateUidState();
+        }
+
+        public void updateSessionParameters(long timeoutMillis, long revokeAfterKilledDelayMillis) {
+            synchronized (mInnerLock) {
+                mTimeout = Math.min(mTimeout, timeoutMillis);
+                mRevokeAfterKilledDelay = Math.min(mRevokeAfterKilledDelay,
+                        revokeAfterKilledDelayMillis == -1
+                                ? DeviceConfig.getLong(
+                                DeviceConfig.NAMESPACE_PERMISSIONS,
+                                PROPERTY_KILLED_DELAY_CONFIG_KEY, DEFAULT_KILLED_DELAY_MILLIS)
+                                : revokeAfterKilledDelayMillis);
+                Log.v(LOG_TAG,
+                        "Updated params for " + mPackageName + ". timeout=" + mTimeout
+                                + " killedDelay=" + mRevokeAfterKilledDelay);
+                updateUidState();
+            }
+        }
+
+        private int getCurrentState() {
+            return getStateFromProcState(mActivityManagerInternal.getUidProcessState(mUid));
+        }
+
+        private int getStateFromProcState(int procState) {
+            if (procState == ActivityManager.PROCESS_STATE_NONEXISTENT) {
+                return STATE_GONE;
+            } else {
+                if (procState > ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE) {
+                    return STATE_TIMER;
+                } else {
+                    return STATE_ACTIVE;
+                }
+            }
+        }
+
+        private void updateUidState() {
+            updateUidState(getCurrentState());
+        }
+
+        private void updateUidState(int state) {
+            Log.v(LOG_TAG, "Updating state for " + mPackageName + " (" + mUid + ")."
+                    + " state=" + state);
             synchronized (mInnerLock) {
                 // Remove any pending inactivity callback
                 mHandler.removeCallbacksAndMessages(mToken);
 
-                if (importance > IMPORTANCE_CACHED) {
+                if (state == STATE_GONE) {
+                    if (mRevokeAfterKilledDelay == 0) {
+                        onPackageInactiveLocked();
+                        return;
+                    }
                     // Delay revocation in case app is restarting
                     mHandler.postDelayed(() -> {
-                        int imp = mActivityManager.getUidImportance(mUid);
-                        if (imp > IMPORTANCE_CACHED) {
-                            onPackageInactiveLocked();
-                        } else {
-                            if (DEBUG) {
-                                Log.d(LOG_TAG, "No longer gone after delayed revocation. "
-                                        + "Rechecking for " + mPackageName + " (" + mUid + ").");
+                        int currentState;
+                        synchronized (mInnerLock) {
+                            currentState = getCurrentState();
+                            if (currentState == STATE_GONE) {
+                                onPackageInactiveLocked();
+                                return;
                             }
-                            onImportanceChanged(mUid, imp);
                         }
-                    }, mToken, getKilledDelayMillis());
+                        if (DEBUG) {
+                            Log.d(LOG_TAG, "No longer gone after delayed revocation. "
+                                    + "Rechecking for " + mPackageName + " (" + mUid
+                                    + ").");
+                        }
+                        updateUidState(currentState);
+                    }, mToken, mRevokeAfterKilledDelay);
                     return;
-                }
-                if (importance > mImportanceToResetTimer) {
+                } else if (state == STATE_TIMER) {
                     if (mTimerStart == TIMER_INACTIVE) {
                         if (DEBUG) {
                             Log.d(LOG_TAG, "Start the timer for "
                                     + mPackageName + " (" + mUid + ").");
                         }
                         mTimerStart = System.currentTimeMillis();
+                        setAlarmLocked();
                     }
-                } else {
+                } else if (state == STATE_ACTIVE) {
                     mTimerStart = TIMER_INACTIVE;
-                }
-                if (importance > mImportanceToKeepSessionAlive) {
-                    setAlarmLocked();
-                } else {
                     cancelAlarmLocked();
                 }
             }
@@ -284,9 +311,11 @@ public class OneTimePermissionUserManager {
             synchronized (mInnerLock) {
                 mIsFinished = true;
                 cancelAlarmLocked();
-                mActivityManager.removeOnUidImportanceListener(mStartTimerListener);
-                mActivityManager.removeOnUidImportanceListener(mSessionKillableListener);
-                mActivityManager.removeOnUidImportanceListener(mGoneListener);
+                try {
+                    mIActivityManager.unregisterUidObserver(mObserver);
+                } catch (RemoteException e) {
+                    Log.e(LOG_TAG, "Unable to unregister uid observer.", e);
+                }
             }
         }
 
@@ -349,9 +378,11 @@ public class OneTimePermissionUserManager {
                         mPermissionControllerManager.notifyOneTimePermissionSessionTimeout(
                                 mPackageName);
                     });
-            mActivityManager.removeOnUidImportanceListener(mStartTimerListener);
-            mActivityManager.removeOnUidImportanceListener(mSessionKillableListener);
-            mActivityManager.removeOnUidImportanceListener(mGoneListener);
+            try {
+                mIActivityManager.unregisterUidObserver(mObserver);
+            } catch (RemoteException e) {
+                Log.e(LOG_TAG, "Unable to unregister uid observer.", e);
+            }
             synchronized (mLock) {
                 mListeners.remove(mUid);
             }

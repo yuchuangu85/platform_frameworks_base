@@ -21,11 +21,10 @@
 #include <string>
 #include <vector>
 
-#include "androidfw/StringPiece.h"
-
-#include "Diagnostics.h"
 #include "Resource.h"
 #include "ResourceValues.h"
+#include "androidfw/IDiagnostics.h"
+#include "androidfw/StringPiece.h"
 #include "io/Io.h"
 #include "util/Util.h"
 #include "xml/XmlUtil.h"
@@ -65,12 +64,12 @@ struct NamespaceDecl {
 };
 
 struct AaptAttribute {
-  explicit AaptAttribute(const ::aapt::Attribute& attr, const Maybe<ResourceId>& resid = {})
+  explicit AaptAttribute(const ::aapt::Attribute& attr, const std::optional<ResourceId>& resid = {})
       : attribute(attr), id(resid) {
   }
 
   aapt::Attribute attribute;
-  Maybe<ResourceId> id;
+  std::optional<ResourceId> id;
 };
 
 // An XML attribute.
@@ -79,7 +78,7 @@ struct Attribute {
   std::string name;
   std::string value;
 
-  Maybe<AaptAttribute> compiled_attribute;
+  std::optional<AaptAttribute> compiled_attribute;
   std::unique_ptr<Item> compiled_value;
 };
 
@@ -97,27 +96,22 @@ class Element : public Node {
   void AppendChild(std::unique_ptr<Node> child);
   void InsertChild(size_t index, std::unique_ptr<Node> child);
 
-  Attribute* FindAttribute(const android::StringPiece& ns, const android::StringPiece& name);
-  const Attribute* FindAttribute(const android::StringPiece& ns,
-                                 const android::StringPiece& name) const;
-  Attribute* FindOrCreateAttribute(const android::StringPiece& ns,
-                                   const android::StringPiece& name);
-  void RemoveAttribute(const android::StringPiece& ns,
-                       const android::StringPiece& name);
+  Attribute* FindAttribute(android::StringPiece ns, android::StringPiece name);
+  const Attribute* FindAttribute(android::StringPiece ns, android::StringPiece name) const;
+  Attribute* FindOrCreateAttribute(android::StringPiece ns, android::StringPiece name);
+  void RemoveAttribute(android::StringPiece ns, android::StringPiece name);
 
-  Element* FindChild(const android::StringPiece& ns, const android::StringPiece& name);
-  const Element* FindChild(const android::StringPiece& ns, const android::StringPiece& name) const;
+  Element* FindChild(android::StringPiece ns, android::StringPiece name);
+  const Element* FindChild(android::StringPiece ns, android::StringPiece name) const;
 
-  Element* FindChildWithAttribute(const android::StringPiece& ns, const android::StringPiece& name,
-                                  const android::StringPiece& attr_ns,
-                                  const android::StringPiece& attr_name,
-                                  const android::StringPiece& attr_value);
+  Element* FindChildWithAttribute(android::StringPiece ns, android::StringPiece name,
+                                  android::StringPiece attr_ns, android::StringPiece attr_name,
+                                  android::StringPiece attr_value);
 
-  const Element* FindChildWithAttribute(const android::StringPiece& ns,
-                                        const android::StringPiece& name,
-                                        const android::StringPiece& attr_ns,
-                                        const android::StringPiece& attr_name,
-                                        const android::StringPiece& attr_value) const;
+  const Element* FindChildWithAttribute(android::StringPiece ns, android::StringPiece name,
+                                        android::StringPiece attr_ns,
+                                        android::StringPiece attr_name,
+                                        android::StringPiece attr_value) const;
 
   std::vector<Element*> GetChildElements();
 
@@ -150,7 +144,7 @@ class XmlResource {
   // StringPool must come before the xml::Node. Destructors are called in reverse order, and
   // the xml::Node may have StringPool references that need to be destroyed before the StringPool
   // is destroyed.
-  StringPool string_pool;
+  android::StringPool string_pool;
 
   std::unique_ptr<xml::Element> root;
 
@@ -158,7 +152,8 @@ class XmlResource {
 };
 
 // Inflates an XML DOM from an InputStream, logging errors to the logger.
-std::unique_ptr<XmlResource> Inflate(io::InputStream* in, IDiagnostics* diag, const Source& source);
+std::unique_ptr<XmlResource> Inflate(io::InputStream* in, android::IDiagnostics* diag,
+                                     const android::Source& source);
 
 // Inflates an XML DOM from a binary ResXMLTree.
 std::unique_ptr<XmlResource> Inflate(const void* data, size_t len,
@@ -235,7 +230,7 @@ class PackageAwareVisitor : public Visitor, public IPackageDeclStack {
  public:
   using Visitor::Visit;
 
-  Maybe<ExtractedPackage> TransformPackageAlias(const android::StringPiece& alias) const override;
+  std::optional<ExtractedPackage> TransformPackageAlias(android::StringPiece alias) const override;
 
  protected:
   PackageAwareVisitor() = default;

@@ -16,6 +16,8 @@
 
 package com.android.server.biometrics.sensors.fingerprint.aidl;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -33,17 +35,19 @@ import android.hardware.biometrics.fingerprint.ISession;
 import android.hardware.biometrics.fingerprint.SensorLocation;
 import android.hardware.biometrics.fingerprint.SensorProps;
 import android.os.RemoteException;
+import android.os.UserHandle;
 import android.os.UserManager;
 import android.platform.test.annotations.Presubmit;
 
-import androidx.annotation.NonNull;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
+import com.android.server.biometrics.log.BiometricContext;
+import com.android.server.biometrics.sensors.BaseClientMonitor;
 import com.android.server.biometrics.sensors.BiometricScheduler;
+import com.android.server.biometrics.sensors.BiometricStateCallback;
 import com.android.server.biometrics.sensors.HalClientMonitor;
 import com.android.server.biometrics.sensors.LockoutResetDispatcher;
-import com.android.server.biometrics.sensors.fingerprint.FingerprintStateCallback;
 import com.android.server.biometrics.sensors.fingerprint.GestureAvailabilityDispatcher;
 
 import org.junit.Before;
@@ -70,11 +74,13 @@ public class FingerprintProviderTest {
     @Mock
     private GestureAvailabilityDispatcher mGestureAvailabilityDispatcher;
     @Mock
-    private FingerprintStateCallback mFingerprintStateCallback;
+    private BiometricStateCallback mBiometricStateCallback;
+    @Mock
+    private BiometricContext mBiometricContext;
 
     private SensorProps[] mSensorProps;
     private LockoutResetDispatcher mLockoutResetDispatcher;
-    private TestableFingerprintProvider mFingerprintProvider;
+    private FingerprintProvider mFingerprintProvider;
 
     private static void waitForIdle() {
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
@@ -103,21 +109,40 @@ public class FingerprintProviderTest {
 
         mLockoutResetDispatcher = new LockoutResetDispatcher(mContext);
 
-        mFingerprintProvider = new TestableFingerprintProvider(mDaemon, mContext,
-                mFingerprintStateCallback, mSensorProps, TAG, mLockoutResetDispatcher,
-                mGestureAvailabilityDispatcher);
+        mFingerprintProvider = new FingerprintProvider(mContext,
+                mBiometricStateCallback, mSensorProps, TAG, mLockoutResetDispatcher,
+                mGestureAvailabilityDispatcher, mBiometricContext, mDaemon);
+    }
+
+    @Test
+    public void testAddingSensors() {
+        waitForIdle();
+
+        for (SensorProps prop : mSensorProps) {
+            final BiometricScheduler scheduler =
+                    mFingerprintProvider.mFingerprintSensors.get(prop.commonProps.sensorId)
+                            .getScheduler();
+            BaseClientMonitor currentClient = scheduler.getCurrentClient();
+
+            assertThat(currentClient).isInstanceOf(FingerprintInternalCleanupClient.class);
+            assertThat(currentClient.getSensorId()).isEqualTo(prop.commonProps.sensorId);
+            assertThat(currentClient.getTargetUserId()).isEqualTo(UserHandle.USER_SYSTEM);
+        }
     }
 
     @SuppressWarnings("rawtypes")
     @Test
     public void halServiceDied_resetsAllSchedulers() {
+        waitForIdle();
         assertEquals(mSensorProps.length, mFingerprintProvider.getSensorProperties().size());
 
         // Schedule N operations on each sensor
         final int numFakeOperations = 10;
         for (SensorProps prop : mSensorProps) {
             final BiometricScheduler scheduler =
-                    mFingerprintProvider.mSensors.get(prop.commonProps.sensorId).getScheduler();
+                    mFingerprintProvider.mFingerprintSensors.get(prop.commonProps.sensorId)
+                            .getScheduler();
+            scheduler.reset();
             for (int i = 0; i < numFakeOperations; i++) {
                 final HalClientMonitor testMonitor = mock(HalClientMonitor.class);
                 when(testMonitor.getFreshDaemon()).thenReturn(new Object());
@@ -129,7 +154,8 @@ public class FingerprintProviderTest {
         // The right amount of pending and current operations are scheduled
         for (SensorProps prop : mSensorProps) {
             final BiometricScheduler scheduler =
-                    mFingerprintProvider.mSensors.get(prop.commonProps.sensorId).getScheduler();
+                    mFingerprintProvider.mFingerprintSensors.get(prop.commonProps.sensorId)
+                            .getScheduler();
             assertEquals(numFakeOperations - 1, scheduler.getCurrentPendingCount());
             assertNotNull(scheduler.getCurrentClient());
         }
@@ -142,30 +168,10 @@ public class FingerprintProviderTest {
         // No pending operations, no current operation.
         for (SensorProps prop : mSensorProps) {
             final BiometricScheduler scheduler =
-                    mFingerprintProvider.mSensors.get(prop.commonProps.sensorId).getScheduler();
+                    mFingerprintProvider.mFingerprintSensors.get(prop.commonProps.sensorId)
+                            .getScheduler();
             assertNull(scheduler.getCurrentClient());
             assertEquals(0, scheduler.getCurrentPendingCount());
-        }
-    }
-
-    private static class TestableFingerprintProvider extends FingerprintProvider {
-        private final IFingerprint mDaemon;
-
-        TestableFingerprintProvider(@NonNull IFingerprint daemon,
-                @NonNull Context context,
-                @NonNull FingerprintStateCallback fingerprintStateCallback,
-                @NonNull SensorProps[] props,
-                @NonNull String halInstanceName,
-                @NonNull LockoutResetDispatcher lockoutResetDispatcher,
-                @NonNull GestureAvailabilityDispatcher gestureAvailabilityDispatcher) {
-            super(context, fingerprintStateCallback, props, halInstanceName, lockoutResetDispatcher,
-                    gestureAvailabilityDispatcher);
-            mDaemon = daemon;
-        }
-
-        @Override
-        synchronized IFingerprint getHalInstance() {
-            return mDaemon;
         }
     }
 }

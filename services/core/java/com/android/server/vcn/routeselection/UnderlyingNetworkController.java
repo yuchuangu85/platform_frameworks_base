@@ -16,38 +16,45 @@
 
 package com.android.server.vcn.routeselection;
 
+import static android.net.vcn.VcnUnderlyingNetworkTemplate.MATCH_ANY;
+import static android.net.vcn.VcnUnderlyingNetworkTemplate.MATCH_FORBIDDEN;
+import static android.net.vcn.VcnUnderlyingNetworkTemplate.MATCH_REQUIRED;
 import static android.telephony.TelephonyCallback.ActiveDataSubscriptionIdListener;
 
 import static com.android.server.VcnManagementService.LOCAL_LOG;
 import static com.android.server.vcn.routeselection.NetworkPriorityClassifier.getWifiEntryRssiThreshold;
 import static com.android.server.vcn.routeselection.NetworkPriorityClassifier.getWifiExitRssiThreshold;
-import static com.android.server.vcn.routeselection.NetworkPriorityClassifier.isOpportunistic;
+import static com.android.server.vcn.util.PersistableBundleUtils.PersistableBundleWrapper;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.net.ConnectivityManager;
 import android.net.ConnectivityManager.NetworkCallback;
+import android.net.IpSecTransform;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.TelephonyNetworkSpecifier;
+import android.net.vcn.VcnCellUnderlyingNetworkTemplate;
 import android.net.vcn.VcnGatewayConnectionConfig;
 import android.net.vcn.VcnUnderlyingNetworkTemplate;
 import android.os.Handler;
 import android.os.HandlerExecutor;
 import android.os.ParcelUuid;
-import android.os.PersistableBundle;
-import android.telephony.CarrierConfigManager;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
 import android.util.ArrayMap;
+import android.util.ArraySet;
 import android.util.Slog;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.annotations.VisibleForTesting.Visibility;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.vcn.TelephonySubscriptionTracker.TelephonySubscriptionSnapshot;
 import com.android.server.vcn.VcnContext;
+import com.android.server.vcn.routeselection.UnderlyingNetworkEvaluator.NetworkEvaluatorCallback;
+import com.android.server.vcn.util.LogUtils;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -79,6 +86,9 @@ public class UnderlyingNetworkController {
     @NonNull private final TelephonyCallback mActiveDataSubIdListener =
             new VcnActiveDataSubscriptionIdListener();
 
+    private final Map<Network, UnderlyingNetworkEvaluator> mUnderlyingNetworkRecords =
+            new ArrayMap<>();
+
     @NonNull private final List<NetworkCallback> mCellBringupCallbacks = new ArrayList<>();
     @Nullable private NetworkCallback mWifiBringupCallback;
     @Nullable private NetworkCallback mWifiEntryRssiThresholdCallback;
@@ -86,7 +96,7 @@ public class UnderlyingNetworkController {
     @Nullable private UnderlyingNetworkListener mRouteSelectionCallback;
 
     @NonNull private TelephonySubscriptionSnapshot mLastSnapshot;
-    @Nullable private PersistableBundle mCarrierConfig;
+    @Nullable private PersistableBundleWrapper mCarrierConfig;
     private boolean mIsQuitting = false;
 
     @Nullable private UnderlyingNetworkRecord mCurrentRecord;
@@ -101,7 +111,8 @@ public class UnderlyingNetworkController {
         this(vcnContext, connectionConfig, subscriptionGroup, snapshot, cb, new Dependencies());
     }
 
-    private UnderlyingNetworkController(
+    @VisibleForTesting(visibility = Visibility.PRIVATE)
+    UnderlyingNetworkController(
             @NonNull VcnContext vcnContext,
             @NonNull VcnGatewayConnectionConfig connectionConfig,
             @NonNull ParcelUuid subscriptionGroup,
@@ -123,27 +134,66 @@ public class UnderlyingNetworkController {
                 .getSystemService(TelephonyManager.class)
                 .registerTelephonyCallback(new HandlerExecutor(mHandler), mActiveDataSubIdListener);
 
-        // TODO: Listen for changes in carrier config that affect this.
-        for (int subId : mLastSnapshot.getAllSubIdsInGroup(mSubscriptionGroup)) {
-            PersistableBundle config =
-                    mVcnContext
-                            .getContext()
-                            .getSystemService(CarrierConfigManager.class)
-                            .getConfigForSubId(subId);
+        mCarrierConfig = mLastSnapshot.getCarrierConfigForSubGrp(mSubscriptionGroup);
 
-            if (config != null) {
-                mCarrierConfig = config;
+        registerOrUpdateNetworkRequests();
+    }
 
-                // Attempt to use (any) non-opportunistic subscription. If this subscription is
-                // opportunistic, continue and try to find a non-opportunistic subscription, using
-                // the opportunistic ones as a last resort.
-                if (!isOpportunistic(mLastSnapshot, Collections.singleton(subId))) {
-                    break;
+    private static class CapabilityMatchCriteria {
+        public final int capability;
+        public final int matchCriteria;
+
+        CapabilityMatchCriteria(int capability, int matchCriteria) {
+            this.capability = capability;
+            this.matchCriteria = matchCriteria;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(capability, matchCriteria);
+        }
+
+        @Override
+        public boolean equals(@Nullable Object other) {
+            if (!(other instanceof CapabilityMatchCriteria)) {
+                return false;
+            }
+
+            final CapabilityMatchCriteria rhs = (CapabilityMatchCriteria) other;
+            return capability == rhs.capability && matchCriteria == rhs.matchCriteria;
+        }
+    }
+
+    private static Set<Set<CapabilityMatchCriteria>> dedupAndGetCapRequirementsForCell(
+            VcnGatewayConnectionConfig connectionConfig) {
+        final Set<Set<CapabilityMatchCriteria>> dedupedCapsMatchSets = new ArraySet<>();
+
+        for (VcnUnderlyingNetworkTemplate template :
+                connectionConfig.getVcnUnderlyingNetworkPriorities()) {
+            if (template instanceof VcnCellUnderlyingNetworkTemplate) {
+                final Set<CapabilityMatchCriteria> capsMatchSet = new ArraySet<>();
+
+                for (Map.Entry<Integer, Integer> entry :
+                        ((VcnCellUnderlyingNetworkTemplate) template)
+                                .getCapabilitiesMatchCriteria()
+                                .entrySet()) {
+
+                    final int capability = entry.getKey();
+                    final int matchCriteria = entry.getValue();
+                    if (matchCriteria != MATCH_ANY) {
+                        capsMatchSet.add(new CapabilityMatchCriteria(capability, matchCriteria));
+                    }
                 }
+
+                dedupedCapsMatchSets.add(capsMatchSet);
             }
         }
 
-        registerOrUpdateNetworkRequests();
+        dedupedCapsMatchSets.add(
+                Collections.singleton(
+                        new CapabilityMatchCriteria(
+                                NetworkCapabilities.NET_CAPABILITY_INTERNET, MATCH_REQUIRED)));
+        return dedupedCapsMatchSets;
     }
 
     private void registerOrUpdateNetworkRequests() {
@@ -153,6 +203,15 @@ public class UnderlyingNetworkController {
         NetworkCallback oldWifiExitRssiThresholdCallback = mWifiExitRssiThresholdCallback;
         List<NetworkCallback> oldCellCallbacks = new ArrayList<>(mCellBringupCallbacks);
         mCellBringupCallbacks.clear();
+
+        if (mVcnContext.isFlagNetworkMetricMonitorEnabled()
+                && mVcnContext.isFlagIpSecTransformStateEnabled()) {
+            for (UnderlyingNetworkEvaluator evaluator : mUnderlyingNetworkRecords.values()) {
+                evaluator.close();
+            }
+        }
+
+        mUnderlyingNetworkRecords.clear();
 
         // Register new callbacks. Make-before-break; always register new callbacks before removal
         // of old callbacks
@@ -178,11 +237,14 @@ public class UnderlyingNetworkController {
                     getWifiNetworkRequest(), mWifiBringupCallback, mHandler);
 
             for (final int subId : mLastSnapshot.getAllSubIdsInGroup(mSubscriptionGroup)) {
-                final NetworkBringupCallback cb = new NetworkBringupCallback();
-                mCellBringupCallbacks.add(cb);
+                for (Set<CapabilityMatchCriteria> capsMatchCriteria :
+                        dedupAndGetCapRequirementsForCell(mConnectionConfig)) {
+                    final NetworkBringupCallback cb = new NetworkBringupCallback();
+                    mCellBringupCallbacks.add(cb);
 
-                mConnectivityManager.requestBackgroundNetwork(
-                        getCellNetworkRequestForSubId(subId), cb, mHandler);
+                    mConnectivityManager.requestBackgroundNetwork(
+                            getCellNetworkRequestForSubId(subId, capsMatchCriteria), cb, mHandler);
+                }
             }
         } else {
             mRouteSelectionCallback = null;
@@ -234,6 +296,13 @@ public class UnderlyingNetworkController {
                 .build();
     }
 
+    private NetworkRequest.Builder getBaseWifiNetworkRequestBuilder() {
+        return getBaseNetworkRequestBuilder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .setSubscriptionIds(mLastSnapshot.getAllSubIdsInGroup(mSubscriptionGroup));
+    }
+
     /**
      * Builds the WiFi bringup request
      *
@@ -244,10 +313,7 @@ public class UnderlyingNetworkController {
      * but will NEVER bring up a Carrier WiFi network itself.
      */
     private NetworkRequest getWifiNetworkRequest() {
-        return getBaseNetworkRequestBuilder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .setSubscriptionIds(mLastSnapshot.getAllSubIdsInGroup(mSubscriptionGroup))
-                .build();
+        return getBaseWifiNetworkRequestBuilder().build();
     }
 
     /**
@@ -258,9 +324,7 @@ public class UnderlyingNetworkController {
      * pace to effectively select a short-lived WiFi offload network.
      */
     private NetworkRequest getWifiEntryRssiThresholdNetworkRequest() {
-        return getBaseNetworkRequestBuilder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .setSubscriptionIds(mLastSnapshot.getAllSubIdsInGroup(mSubscriptionGroup))
+        return getBaseWifiNetworkRequestBuilder()
                 // Ensure wifi updates signal strengths when crossing this threshold.
                 .setSignalStrength(getWifiEntryRssiThreshold(mCarrierConfig))
                 .build();
@@ -274,9 +338,7 @@ public class UnderlyingNetworkController {
      * pace to effectively select away from a failing WiFi network.
      */
     private NetworkRequest getWifiExitRssiThresholdNetworkRequest() {
-        return getBaseNetworkRequestBuilder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .setSubscriptionIds(mLastSnapshot.getAllSubIdsInGroup(mSubscriptionGroup))
+        return getBaseWifiNetworkRequestBuilder()
                 // Ensure wifi updates signal strengths when crossing this threshold.
                 .setSignalStrength(getWifiExitRssiThreshold(mCarrierConfig))
                 .build();
@@ -293,11 +355,25 @@ public class UnderlyingNetworkController {
      * <p>Since this request MUST make it to the TelephonyNetworkFactory, subIds are not specified
      * in the NetworkCapabilities, but rather in the TelephonyNetworkSpecifier.
      */
-    private NetworkRequest getCellNetworkRequestForSubId(int subId) {
-        return getBaseNetworkRequestBuilder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
-                .setNetworkSpecifier(new TelephonyNetworkSpecifier(subId))
-                .build();
+    private NetworkRequest getCellNetworkRequestForSubId(
+            int subId, Set<CapabilityMatchCriteria> capsMatchCriteria) {
+        final NetworkRequest.Builder nrBuilder =
+                getBaseNetworkRequestBuilder()
+                        .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                        .setNetworkSpecifier(new TelephonyNetworkSpecifier(subId));
+
+        for (CapabilityMatchCriteria capMatchCriteria : capsMatchCriteria) {
+            final int cap = capMatchCriteria.capability;
+            final int matchCriteria = capMatchCriteria.matchCriteria;
+
+            if (matchCriteria == MATCH_REQUIRED) {
+                nrBuilder.addCapability(cap);
+            } else if (matchCriteria == MATCH_FORBIDDEN) {
+                nrBuilder.addForbiddenCapability(cap);
+            }
+        }
+
+        return nrBuilder.build();
     }
 
     /**
@@ -305,7 +381,6 @@ public class UnderlyingNetworkController {
      */
     private NetworkRequest.Builder getBaseNetworkRequestBuilder() {
         return new NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED);
@@ -333,13 +408,59 @@ public class UnderlyingNetworkController {
         final TelephonySubscriptionSnapshot oldSnapshot = mLastSnapshot;
         mLastSnapshot = newSnapshot;
 
+        // Update carrier config
+        mCarrierConfig = mLastSnapshot.getCarrierConfigForSubGrp(mSubscriptionGroup);
+
+        // Make sure all evaluators use the same updated TelephonySubscriptionSnapshot and carrier
+        // config to calculate their cached priority classes. For simplicity, the
+        // UnderlyingNetworkController does not listen for changes in VCN-related carrier config
+        // keys, and changes are applied at restart of the VcnGatewayConnection
+        for (UnderlyingNetworkEvaluator evaluator : mUnderlyingNetworkRecords.values()) {
+            evaluator.reevaluate(
+                    mConnectionConfig.getVcnUnderlyingNetworkPriorities(),
+                    mSubscriptionGroup,
+                    mLastSnapshot,
+                    mCarrierConfig);
+        }
+
         // Only trigger re-registration if subIds in this group have changed
         if (oldSnapshot
                 .getAllSubIdsInGroup(mSubscriptionGroup)
                 .equals(newSnapshot.getAllSubIdsInGroup(mSubscriptionGroup))) {
+
+            if (mVcnContext.isFlagNetworkMetricMonitorEnabled()
+                    && mVcnContext.isFlagIpSecTransformStateEnabled()) {
+                reevaluateNetworks();
+            }
             return;
         }
         registerOrUpdateNetworkRequests();
+    }
+
+    /**
+     * Pass the IpSecTransform of the VCN to UnderlyingNetworkController for metric monitoring
+     *
+     * <p>Caller MUST call it when IpSecTransforms have been created for VCN creation or migration
+     */
+    public void updateInboundTransform(
+            @NonNull UnderlyingNetworkRecord currentNetwork, @NonNull IpSecTransform transform) {
+        if (!mVcnContext.isFlagNetworkMetricMonitorEnabled()
+                || !mVcnContext.isFlagIpSecTransformStateEnabled()) {
+            logWtf("#updateInboundTransform: unexpected call; flags missing");
+            return;
+        }
+
+        Objects.requireNonNull(currentNetwork, "currentNetwork is null");
+        Objects.requireNonNull(transform, "transform is null");
+
+        if (mCurrentRecord == null
+                || mRouteSelectionCallback == null
+                || !Objects.equals(currentNetwork.network, mCurrentRecord.network)) {
+            // The caller (VcnGatewayConnection) is out-of-dated. Ignore this call.
+            return;
+        }
+
+        mUnderlyingNetworkRecords.get(mCurrentRecord.network).setInboundTransform(transform);
     }
 
     /** Tears down this Tracker, and releases all underlying network requests. */
@@ -356,20 +477,62 @@ public class UnderlyingNetworkController {
                 .unregisterTelephonyCallback(mActiveDataSubIdListener);
     }
 
+    private TreeSet<UnderlyingNetworkEvaluator> getSortedUnderlyingNetworks() {
+        TreeSet<UnderlyingNetworkEvaluator> sorted =
+                new TreeSet<>(UnderlyingNetworkEvaluator.getComparator(mVcnContext));
+
+        for (UnderlyingNetworkEvaluator evaluator : mUnderlyingNetworkRecords.values()) {
+            if (evaluator.getPriorityClass() != NetworkPriorityClassifier.PRIORITY_INVALID) {
+                sorted.add(evaluator);
+            }
+        }
+
+        return sorted;
+    }
+
     private void reevaluateNetworks() {
         if (mIsQuitting || mRouteSelectionCallback == null) {
             return; // UnderlyingNetworkController has quit.
         }
 
-        TreeSet<UnderlyingNetworkRecord> sorted =
-                mRouteSelectionCallback.getSortedUnderlyingNetworks();
-        UnderlyingNetworkRecord candidate = sorted.isEmpty() ? null : sorted.first();
+        TreeSet<UnderlyingNetworkEvaluator> sorted = getSortedUnderlyingNetworks();
+
+        UnderlyingNetworkEvaluator candidateEvaluator = sorted.isEmpty() ? null : sorted.first();
+        UnderlyingNetworkRecord candidate =
+                candidateEvaluator == null ? null : candidateEvaluator.getNetworkRecord();
         if (Objects.equals(mCurrentRecord, candidate)) {
             return;
         }
 
+        String allNetworkPriorities = "";
+        for (UnderlyingNetworkEvaluator recordEvaluator : sorted) {
+            if (!allNetworkPriorities.isEmpty()) {
+                allNetworkPriorities += ", ";
+            }
+            allNetworkPriorities +=
+                    recordEvaluator.getNetwork() + ": " + recordEvaluator.getPriorityClass();
+        }
+
+        if (!UnderlyingNetworkRecord.isSameNetwork(mCurrentRecord, candidate)) {
+            logInfo(
+                    "Selected network changed to "
+                            + (candidate == null ? null : candidate.network)
+                            + ", selected from list: "
+                            + allNetworkPriorities);
+        }
+
         mCurrentRecord = candidate;
         mCb.onSelectedUnderlyingNetworkChanged(mCurrentRecord);
+
+        // Need to update all evaluators to ensure the previously selected one is unselected
+        for (UnderlyingNetworkEvaluator evaluator : mUnderlyingNetworkRecords.values()) {
+            evaluator.setIsSelected(
+                    candidateEvaluator == evaluator,
+                    mConnectionConfig.getVcnUnderlyingNetworkPriorities(),
+                    mSubscriptionGroup,
+                    mLastSnapshot,
+                    mCarrierConfig);
+        }
     }
 
     /**
@@ -389,43 +552,32 @@ public class UnderlyingNetworkController {
      */
     @VisibleForTesting
     class UnderlyingNetworkListener extends NetworkCallback {
-        private final Map<Network, UnderlyingNetworkRecord.Builder>
-                mUnderlyingNetworkRecordBuilders = new ArrayMap<>();
-
         UnderlyingNetworkListener() {
             super(NetworkCallback.FLAG_INCLUDE_LOCATION_INFO);
         }
 
-        private TreeSet<UnderlyingNetworkRecord> getSortedUnderlyingNetworks() {
-            TreeSet<UnderlyingNetworkRecord> sorted =
-                    new TreeSet<>(
-                            UnderlyingNetworkRecord.getComparator(
-                                    mVcnContext,
-                                    mConnectionConfig.getVcnUnderlyingNetworkPriorities(),
-                                    mSubscriptionGroup,
-                                    mLastSnapshot,
-                                    mCurrentRecord,
-                                    mCarrierConfig));
-
-            for (UnderlyingNetworkRecord.Builder builder :
-                    mUnderlyingNetworkRecordBuilders.values()) {
-                if (builder.isValid()) {
-                    sorted.add(builder.build());
-                }
-            }
-
-            return sorted;
-        }
-
         @Override
         public void onAvailable(@NonNull Network network) {
-            mUnderlyingNetworkRecordBuilders.put(
-                    network, new UnderlyingNetworkRecord.Builder(network));
+            mUnderlyingNetworkRecords.put(
+                    network,
+                    mDeps.newUnderlyingNetworkEvaluator(
+                            mVcnContext,
+                            network,
+                            mConnectionConfig.getVcnUnderlyingNetworkPriorities(),
+                            mSubscriptionGroup,
+                            mLastSnapshot,
+                            mCarrierConfig,
+                            new NetworkEvaluatorCallbackImpl()));
         }
 
         @Override
         public void onLost(@NonNull Network network) {
-            mUnderlyingNetworkRecordBuilders.remove(network);
+            if (mVcnContext.isFlagNetworkMetricMonitorEnabled()
+                    && mVcnContext.isFlagIpSecTransformStateEnabled()) {
+                mUnderlyingNetworkRecords.get(network).close();
+            }
+
+            mUnderlyingNetworkRecords.remove(network);
 
             reevaluateNetworks();
         }
@@ -433,15 +585,20 @@ public class UnderlyingNetworkController {
         @Override
         public void onCapabilitiesChanged(
                 @NonNull Network network, @NonNull NetworkCapabilities networkCapabilities) {
-            final UnderlyingNetworkRecord.Builder builder =
-                    mUnderlyingNetworkRecordBuilders.get(network);
-            if (builder == null) {
+            final UnderlyingNetworkEvaluator evaluator = mUnderlyingNetworkRecords.get(network);
+            if (evaluator == null) {
                 logWtf("Got capabilities change for unknown key: " + network);
                 return;
             }
 
-            builder.setNetworkCapabilities(networkCapabilities);
-            if (builder.isValid()) {
+            evaluator.setNetworkCapabilities(
+                    networkCapabilities,
+                    mConnectionConfig.getVcnUnderlyingNetworkPriorities(),
+                    mSubscriptionGroup,
+                    mLastSnapshot,
+                    mCarrierConfig);
+
+            if (evaluator.isValid()) {
                 reevaluateNetworks();
             }
         }
@@ -449,43 +606,92 @@ public class UnderlyingNetworkController {
         @Override
         public void onLinkPropertiesChanged(
                 @NonNull Network network, @NonNull LinkProperties linkProperties) {
-            final UnderlyingNetworkRecord.Builder builder =
-                    mUnderlyingNetworkRecordBuilders.get(network);
-            if (builder == null) {
+            final UnderlyingNetworkEvaluator evaluator = mUnderlyingNetworkRecords.get(network);
+            if (evaluator == null) {
                 logWtf("Got link properties change for unknown key: " + network);
                 return;
             }
 
-            builder.setLinkProperties(linkProperties);
-            if (builder.isValid()) {
+            evaluator.setLinkProperties(
+                    linkProperties,
+                    mConnectionConfig.getVcnUnderlyingNetworkPriorities(),
+                    mSubscriptionGroup,
+                    mLastSnapshot,
+                    mCarrierConfig);
+
+            if (evaluator.isValid()) {
                 reevaluateNetworks();
             }
         }
 
         @Override
         public void onBlockedStatusChanged(@NonNull Network network, boolean isBlocked) {
-            final UnderlyingNetworkRecord.Builder builder =
-                    mUnderlyingNetworkRecordBuilders.get(network);
-            if (builder == null) {
+            final UnderlyingNetworkEvaluator evaluator = mUnderlyingNetworkRecords.get(network);
+            if (evaluator == null) {
                 logWtf("Got blocked status change for unknown key: " + network);
                 return;
             }
 
-            builder.setIsBlocked(isBlocked);
-            if (builder.isValid()) {
+            evaluator.setIsBlocked(
+                    isBlocked,
+                    mConnectionConfig.getVcnUnderlyingNetworkPriorities(),
+                    mSubscriptionGroup,
+                    mLastSnapshot,
+                    mCarrierConfig);
+
+            if (evaluator.isValid()) {
                 reevaluateNetworks();
             }
         }
     }
 
-    private static void logWtf(String msg) {
-        Slog.wtf(TAG, msg);
-        LOCAL_LOG.log(TAG + " WTF: " + msg);
+    @VisibleForTesting
+    class NetworkEvaluatorCallbackImpl implements NetworkEvaluatorCallback {
+        @Override
+        public void onEvaluationResultChanged() {
+            if (!mVcnContext.isFlagNetworkMetricMonitorEnabled()
+                    || !mVcnContext.isFlagIpSecTransformStateEnabled()) {
+                logWtf("#onEvaluationResultChanged: unexpected call; flags missing");
+                return;
+            }
+
+            mVcnContext.ensureRunningOnLooperThread();
+            reevaluateNetworks();
+        }
     }
 
-    private static void logWtf(String msg, Throwable tr) {
+    private String getLogPrefix() {
+        return "("
+                + LogUtils.getHashedSubscriptionGroup(mSubscriptionGroup)
+                + "-"
+                + mConnectionConfig.getGatewayConnectionName()
+                + "-"
+                + System.identityHashCode(this)
+                + ") ";
+    }
+
+    private String getTagLogPrefix() {
+        return "[ " + TAG + " " + getLogPrefix() + "]";
+    }
+
+    private void logInfo(String msg) {
+        Slog.i(TAG, getLogPrefix() + msg);
+        LOCAL_LOG.log("[INFO] " + getTagLogPrefix() + msg);
+    }
+
+    private void logInfo(String msg, Throwable tr) {
+        Slog.i(TAG, getLogPrefix() + msg, tr);
+        LOCAL_LOG.log("[INFO] " + getTagLogPrefix() + msg + tr);
+    }
+
+    private void logWtf(String msg) {
+        Slog.wtf(TAG, msg);
+        LOCAL_LOG.log(TAG + "[WTF ] " + getTagLogPrefix() + msg);
+    }
+
+    private void logWtf(String msg, Throwable tr) {
         Slog.wtf(TAG, msg, tr);
-        LOCAL_LOG.log(TAG + " WTF: " + msg + tr);
+        LOCAL_LOG.log(TAG + "[WTF ] " + getTagLogPrefix() + msg + tr);
     }
 
     /** Dumps the state of this record for logging and debugging purposes. */
@@ -513,16 +719,8 @@ public class UnderlyingNetworkController {
         pw.println("Underlying networks:");
         pw.increaseIndent();
         if (mRouteSelectionCallback != null) {
-            for (UnderlyingNetworkRecord record :
-                    mRouteSelectionCallback.getSortedUnderlyingNetworks()) {
-                record.dump(
-                        mVcnContext,
-                        pw,
-                        mConnectionConfig.getVcnUnderlyingNetworkPriorities(),
-                        mSubscriptionGroup,
-                        mLastSnapshot,
-                        mCurrentRecord,
-                        mCarrierConfig);
+            for (UnderlyingNetworkEvaluator recordEvaluator : getSortedUnderlyingNetworks()) {
+                recordEvaluator.dump(pw);
             }
         }
         pw.decreaseIndent();
@@ -552,5 +750,24 @@ public class UnderlyingNetworkController {
                 @Nullable UnderlyingNetworkRecord underlyingNetworkRecord);
     }
 
-    private static class Dependencies {}
+    @VisibleForTesting(visibility = Visibility.PRIVATE)
+    public static class Dependencies {
+        public UnderlyingNetworkEvaluator newUnderlyingNetworkEvaluator(
+                @NonNull VcnContext vcnContext,
+                @NonNull Network network,
+                @NonNull List<VcnUnderlyingNetworkTemplate> underlyingNetworkTemplates,
+                @NonNull ParcelUuid subscriptionGroup,
+                @NonNull TelephonySubscriptionSnapshot lastSnapshot,
+                @Nullable PersistableBundleWrapper carrierConfig,
+                @NonNull NetworkEvaluatorCallback evaluatorCallback) {
+            return new UnderlyingNetworkEvaluator(
+                    vcnContext,
+                    network,
+                    underlyingNetworkTemplates,
+                    subscriptionGroup,
+                    lastSnapshot,
+                    carrierConfig,
+                    evaluatorCallback);
+        }
+    }
 }

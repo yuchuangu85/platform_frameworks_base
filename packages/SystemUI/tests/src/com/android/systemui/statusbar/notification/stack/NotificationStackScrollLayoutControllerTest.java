@@ -16,13 +16,16 @@
 
 package com.android.systemui.statusbar.notification.stack;
 
+import static com.android.systemui.dump.LogBufferHelperKt.logcatLogBuffer;
 import static com.android.systemui.statusbar.StatusBarState.KEYGUARD;
 import static com.android.systemui.statusbar.StatusBarState.SHADE;
 import static com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayout.ROWS_ALL;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
@@ -31,26 +34,38 @@ import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import static kotlinx.coroutines.flow.FlowKt.emptyFlow;
+
 import android.content.res.Resources;
 import android.metrics.LogMaker;
 import android.testing.AndroidTestingRunner;
-import android.view.LayoutInflater;
+import android.testing.TestableLooper;
+import android.view.View;
+import android.view.ViewTreeObserver;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.internal.jank.InteractionJankMonitor;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.UiEventLogger;
 import com.android.internal.logging.nano.MetricsProto;
-import com.android.internal.statusbar.IStatusBarService;
 import com.android.systemui.SysuiTestCase;
+import com.android.systemui.bouncer.domain.interactor.PrimaryBouncerInteractor;
 import com.android.systemui.classifier.FalsingCollectorFake;
 import com.android.systemui.classifier.FalsingManagerFake;
-import com.android.systemui.colorextraction.SysuiColorExtractor;
-import com.android.systemui.flags.FeatureFlags;
-import com.android.systemui.media.KeyguardMediaController;
+import com.android.systemui.dump.DumpManager;
+import com.android.systemui.flags.FakeFeatureFlags;
+import com.android.systemui.flags.Flags;
+import com.android.systemui.keyguard.data.repository.KeyguardTransitionRepository;
+import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor;
+import com.android.systemui.keyguard.shared.model.KeyguardState;
+import com.android.systemui.keyguard.shared.model.TransitionStep;
+import com.android.systemui.media.controls.ui.KeyguardMediaController;
+import com.android.systemui.plugins.ActivityStarter;
 import com.android.systemui.plugins.statusbar.NotificationMenuRowPlugin;
 import com.android.systemui.plugins.statusbar.NotificationMenuRowPlugin.OnMenuEventListener;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
+import com.android.systemui.shade.ShadeController;
 import com.android.systemui.statusbar.LockscreenShadeTransitionController;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager.UserChangedListener;
@@ -58,26 +73,31 @@ import com.android.systemui.statusbar.NotificationRemoteInputManager;
 import com.android.systemui.statusbar.RemoteInputController;
 import com.android.systemui.statusbar.SysuiStatusBarStateController;
 import com.android.systemui.statusbar.notification.DynamicPrivacyController;
-import com.android.systemui.statusbar.notification.ForegroundServiceDismissalFeatureController;
-import com.android.systemui.statusbar.notification.NotificationEntryManager;
+import com.android.systemui.statusbar.notification.NotifPipelineFlags;
 import com.android.systemui.statusbar.notification.collection.NotifCollection;
 import com.android.systemui.statusbar.notification.collection.NotifPipeline;
-import com.android.systemui.statusbar.notification.collection.legacy.NotificationGroupManagerLegacy;
-import com.android.systemui.statusbar.notification.collection.legacy.VisualStabilityManager;
+import com.android.systemui.statusbar.notification.collection.provider.NotificationDismissibilityProvider;
+import com.android.systemui.statusbar.notification.collection.provider.SeenNotificationsProviderImpl;
+import com.android.systemui.statusbar.notification.collection.provider.VisibilityLocationProviderDelegator;
+import com.android.systemui.statusbar.notification.collection.render.GroupExpansionManager;
+import com.android.systemui.statusbar.notification.collection.render.NotifStats;
+import com.android.systemui.statusbar.notification.collection.render.NotificationVisibilityProvider;
 import com.android.systemui.statusbar.notification.collection.render.SectionHeaderController;
+import com.android.systemui.statusbar.notification.init.NotificationsController;
 import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow;
-import com.android.systemui.statusbar.notification.row.ForegroundServiceDungeonView;
 import com.android.systemui.statusbar.notification.row.NotificationGutsManager;
 import com.android.systemui.statusbar.notification.stack.NotificationStackScrollLayoutController.NotificationPanelEvent;
+import com.android.systemui.statusbar.notification.stack.NotificationSwipeHelper.NotificationCallback;
+import com.android.systemui.statusbar.notification.stack.ui.viewmodel.NotificationListViewModel;
 import com.android.systemui.statusbar.phone.HeadsUpManagerPhone;
 import com.android.systemui.statusbar.phone.KeyguardBypassController;
+import com.android.systemui.statusbar.phone.NotificationIconAreaController;
 import com.android.systemui.statusbar.phone.ScrimController;
-import com.android.systemui.statusbar.phone.ShadeController;
-import com.android.systemui.statusbar.phone.StatusBar;
 import com.android.systemui.statusbar.policy.ConfigurationController;
 import com.android.systemui.statusbar.policy.DeviceProvisionedController;
 import com.android.systemui.statusbar.policy.ZenModeController;
 import com.android.systemui.tuner.TunerService;
+import com.android.systemui.util.settings.SecureSettings;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -89,14 +109,20 @@ import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.util.Optional;
+
 /**
  * Tests for {@link NotificationStackScrollLayoutController}.
  */
 @SmallTest
+@TestableLooper.RunWithLooper(setAsMainLooper = true)
 @RunWith(AndroidTestingRunner.class)
 public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
 
+    private final FakeFeatureFlags mFeatureFlags = new FakeFeatureFlags();
     @Mock private NotificationGutsManager mNotificationGutsManager;
+    @Mock private NotificationsController mNotificationsController;
+    @Mock private NotificationVisibilityProvider mVisibilityProvider;
     @Mock private HeadsUpManagerPhone mHeadsUpManager;
     @Mock private NotificationRoundnessManager mNotificationRoundnessManager;
     @Mock private TunerService mTunerService;
@@ -108,102 +134,67 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
     @Mock private KeyguardMediaController mKeyguardMediaController;
     @Mock private SysuiStatusBarStateController mSysuiStatusBarStateController;
     @Mock private KeyguardBypassController mKeyguardBypassController;
-    @Mock private SysuiColorExtractor mColorExtractor;
+    @Mock private KeyguardInteractor mKeyguardInteractor;
+    @Mock private PrimaryBouncerInteractor mPrimaryBouncerInteractor;
     @Mock private NotificationLockscreenUserManager mNotificationLockscreenUserManager;
     @Mock private MetricsLogger mMetricsLogger;
+    @Mock private DumpManager mDumpManager;
     @Mock private Resources mResources;
     @Mock(answer = Answers.RETURNS_SELF)
     private NotificationSwipeHelper.Builder mNotificationSwipeHelperBuilder;
     @Mock private NotificationSwipeHelper mNotificationSwipeHelper;
-    @Mock private StatusBar mStatusBar;
     @Mock private ScrimController mScrimController;
-    @Mock private NotificationGroupManagerLegacy mLegacyGroupManager;
+    @Mock private GroupExpansionManager mGroupExpansionManager;
     @Mock private SectionHeaderController mSilentHeaderController;
-    @Mock private FeatureFlags mFeatureFlags;
     @Mock private NotifPipeline mNotifPipeline;
+    @Mock private NotifPipelineFlags mNotifPipelineFlags;
     @Mock private NotifCollection mNotifCollection;
-    @Mock private NotificationEntryManager mEntryManager;
-    @Mock private IStatusBarService mIStatusBarService;
     @Mock private UiEventLogger mUiEventLogger;
     @Mock private LockscreenShadeTransitionController mLockscreenShadeTransitionController;
-    @Mock private ForegroundServiceDismissalFeatureController mFgFeatureController;
-    @Mock private ForegroundServiceSectionController mFgServicesSectionController;
-    @Mock private ForegroundServiceDungeonView mForegroundServiceDungeonView;
-    @Mock private LayoutInflater mLayoutInflater;
     @Mock private NotificationRemoteInputManager mRemoteInputManager;
-    @Mock private VisualStabilityManager mVisualStabilityManager;
+    @Mock private VisibilityLocationProviderDelegator mVisibilityLocationProviderDelegator;
     @Mock private ShadeController mShadeController;
+    @Mock private InteractionJankMonitor mJankMonitor;
+    private final StackStateLogger mStackLogger = new StackStateLogger(logcatLogBuffer(),
+            logcatLogBuffer());
+    private final NotificationStackScrollLogger mLogger = new NotificationStackScrollLogger(
+            logcatLogBuffer(), logcatLogBuffer(), logcatLogBuffer());
+    @Mock private NotificationStackSizeCalculator mNotificationStackSizeCalculator;
+    @Mock private NotificationTargetsHelper mNotificationTargetsHelper;
+    @Mock private SecureSettings mSecureSettings;
+    @Mock private NotificationIconAreaController mIconAreaController;
+    @Mock private ActivityStarter mActivityStarter;
+    @Mock private KeyguardTransitionRepository mKeyguardTransitionRepo;
 
     @Captor
     private ArgumentCaptor<StatusBarStateController.StateListener> mStateListenerArgumentCaptor;
+
+    private final SeenNotificationsProviderImpl mSeenNotificationsProvider =
+            new SeenNotificationsProviderImpl();
 
     private NotificationStackScrollLayoutController mController;
 
     @Before
     public void setUp() {
+        allowTestableLooperAsMainThread();
         MockitoAnnotations.initMocks(this);
 
+        mFeatureFlags.set(Flags.USE_REPOS_FOR_BOUNCER_SHOWING, false);
+
         when(mNotificationSwipeHelperBuilder.build()).thenReturn(mNotificationSwipeHelper);
-        when(mFeatureFlags.isNewNotifPipelineRenderingEnabled()).thenReturn(false);
-        when(mFgServicesSectionController.createView(mLayoutInflater))
-                .thenReturn(mForegroundServiceDungeonView);
-
-        mController = new NotificationStackScrollLayoutController(
-                true,
-                mNotificationGutsManager,
-                mHeadsUpManager,
-                mNotificationRoundnessManager,
-                mTunerService,
-                mDeviceProvisionedController,
-                mDynamicPrivacyController,
-                mConfigurationController,
-                mSysuiStatusBarStateController,
-                mKeyguardMediaController,
-                mKeyguardBypassController,
-                mZenModeController,
-                mColorExtractor,
-                mNotificationLockscreenUserManager,
-                mMetricsLogger,
-                new FalsingCollectorFake(),
-                new FalsingManagerFake(),
-                mResources,
-                mNotificationSwipeHelperBuilder,
-                mStatusBar,
-                mScrimController,
-                mLegacyGroupManager,
-                mLegacyGroupManager,
-                mSilentHeaderController,
-                mFeatureFlags,
-                mNotifPipeline,
-                mNotifCollection,
-                mEntryManager,
-                mLockscreenShadeTransitionController,
-                mIStatusBarService,
-                mUiEventLogger,
-                mFgFeatureController,
-                mFgServicesSectionController,
-                mLayoutInflater,
-                mRemoteInputManager,
-                mVisualStabilityManager,
-                mShadeController
-        );
-
-        when(mNotificationStackScrollLayout.isAttachedToWindow()).thenReturn(true);
+        when(mKeyguardTransitionRepo.getTransitions()).thenReturn(emptyFlow());
     }
 
     @Test
     public void testAttach_viewAlreadyAttached() {
-        mController.attach(mNotificationStackScrollLayout);
+        initController(/* viewIsAttached= */ true);
 
         verify(mConfigurationController).addCallback(
                 any(ConfigurationController.ConfigurationListener.class));
     }
     @Test
     public void testAttach_viewAttachedAfterInit() {
-        when(mNotificationStackScrollLayout.isAttachedToWindow()).thenReturn(false);
-
-        mController.attach(mNotificationStackScrollLayout);
-
+        initController(/* viewIsAttached= */ false);
         verify(mConfigurationController, never()).addCallback(
                 any(ConfigurationController.ConfigurationListener.class));
 
@@ -216,7 +207,8 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
 
     @Test
     public void testOnDensityOrFontScaleChanged_reInflatesFooterViews() {
-        mController.attach(mNotificationStackScrollLayout);
+        initController(/* viewIsAttached= */ true);
+
         mController.mConfigurationListener.onDensityOrFontScaleChanged();
         verify(mNotificationStackScrollLayout).reinflateViews();
     }
@@ -224,20 +216,16 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
     @Test
     public void testUpdateEmptyShadeView_notificationsVisible_zenHiding() {
         when(mZenModeController.areNotificationsHiddenInShade()).thenReturn(true);
-        mController.attach(mNotificationStackScrollLayout);
-        verify(mSysuiStatusBarStateController).addCallback(
-                mStateListenerArgumentCaptor.capture(), anyInt());
-        StatusBarStateController.StateListener stateListener =
-                mStateListenerArgumentCaptor.getValue();
+        initController(/* viewIsAttached= */ true);
 
-        setupShowEmptyShadeViewState(stateListener, true);
+        setupShowEmptyShadeViewState(true);
         reset(mNotificationStackScrollLayout);
         mController.updateShowEmptyShadeView();
         verify(mNotificationStackScrollLayout).updateEmptyShadeView(
                 /* visible= */ true,
                 /* notifVisibleInShade= */ true);
 
-        setupShowEmptyShadeViewState(stateListener, false);
+        setupShowEmptyShadeViewState(false);
         reset(mNotificationStackScrollLayout);
         mController.updateShowEmptyShadeView();
         verify(mNotificationStackScrollLayout).updateEmptyShadeView(
@@ -248,20 +236,16 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
     @Test
     public void testUpdateEmptyShadeView_notificationsHidden_zenNotHiding() {
         when(mZenModeController.areNotificationsHiddenInShade()).thenReturn(false);
-        mController.attach(mNotificationStackScrollLayout);
-        verify(mSysuiStatusBarStateController).addCallback(
-                mStateListenerArgumentCaptor.capture(), anyInt());
-        StatusBarStateController.StateListener stateListener =
-                mStateListenerArgumentCaptor.getValue();
+        initController(/* viewIsAttached= */ true);
 
-        setupShowEmptyShadeViewState(stateListener, true);
+        setupShowEmptyShadeViewState(true);
         reset(mNotificationStackScrollLayout);
         mController.updateShowEmptyShadeView();
         verify(mNotificationStackScrollLayout).updateEmptyShadeView(
                 /* visible= */ true,
                 /* notifVisibleInShade= */ false);
 
-        setupShowEmptyShadeViewState(stateListener, false);
+        setupShowEmptyShadeViewState(false);
         reset(mNotificationStackScrollLayout);
         mController.updateShowEmptyShadeView();
         verify(mNotificationStackScrollLayout).updateEmptyShadeView(
@@ -272,23 +256,23 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
     @Test
     public void testUpdateEmptyShadeView_splitShadeMode_alwaysShowEmptyView() {
         when(mZenModeController.areNotificationsHiddenInShade()).thenReturn(false);
-        mController.attach(mNotificationStackScrollLayout);
+        initController(/* viewIsAttached= */ true);
+
         verify(mSysuiStatusBarStateController).addCallback(
                 mStateListenerArgumentCaptor.capture(), anyInt());
         StatusBarStateController.StateListener stateListener =
                 mStateListenerArgumentCaptor.getValue();
-        when(mNotificationStackScrollLayout.isUsingSplitNotificationShade()).thenReturn(true);
         stateListener.onStateChanged(SHADE);
         mController.getView().removeAllViews();
 
-        mController.setQsExpanded(false);
+        mController.setQsFullScreen(false);
         reset(mNotificationStackScrollLayout);
         mController.updateShowEmptyShadeView();
         verify(mNotificationStackScrollLayout).updateEmptyShadeView(
                 /* visible= */ true,
                 /* notifVisibleInShade= */ false);
 
-        mController.setQsExpanded(true);
+        mController.setQsFullScreen(true);
         reset(mNotificationStackScrollLayout);
         mController.updateShowEmptyShadeView();
         verify(mNotificationStackScrollLayout).updateEmptyShadeView(
@@ -297,13 +281,97 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
     }
 
     @Test
+    public void testUpdateEmptyShadeView_bouncerShowing_flagOff_hideEmptyView() {
+        when(mZenModeController.areNotificationsHiddenInShade()).thenReturn(false);
+        initController(/* viewIsAttached= */ true);
+
+        // WHEN the flag is off and *only* CentralSurfaces has bouncer as showing
+        mFeatureFlags.set(Flags.USE_REPOS_FOR_BOUNCER_SHOWING, false);
+        mController.setBouncerShowingFromCentralSurfaces(true);
+        when(mPrimaryBouncerInteractor.isBouncerShowing()).thenReturn(false);
+
+        setupShowEmptyShadeViewState(true);
+        reset(mNotificationStackScrollLayout);
+        mController.updateShowEmptyShadeView();
+
+        // THEN the CentralSurfaces value is used. Since the bouncer is showing, we hide the empty
+        // view.
+        verify(mNotificationStackScrollLayout).updateEmptyShadeView(
+                /* visible= */ false,
+                /* areNotificationsHiddenInShade= */ false);
+    }
+
+    @Test
+    public void testUpdateEmptyShadeView_bouncerShowing_flagOn_hideEmptyView() {
+        when(mZenModeController.areNotificationsHiddenInShade()).thenReturn(false);
+        initController(/* viewIsAttached= */ true);
+
+        // WHEN the flag is on and *only* PrimaryBouncerInteractor has bouncer as showing
+        mFeatureFlags.set(Flags.USE_REPOS_FOR_BOUNCER_SHOWING, true);
+        when(mPrimaryBouncerInteractor.isBouncerShowing()).thenReturn(true);
+        mController.setBouncerShowingFromCentralSurfaces(false);
+
+        setupShowEmptyShadeViewState(true);
+        reset(mNotificationStackScrollLayout);
+        mController.updateShowEmptyShadeView();
+
+        // THEN the PrimaryBouncerInteractor value is used. Since the bouncer is showing, we
+        // hide the empty view.
+        verify(mNotificationStackScrollLayout).updateEmptyShadeView(
+                /* visible= */ false,
+                /* areNotificationsHiddenInShade= */ false);
+    }
+
+    @Test
+    public void testUpdateEmptyShadeView_bouncerNotShowing_flagOff_showEmptyView() {
+        when(mZenModeController.areNotificationsHiddenInShade()).thenReturn(false);
+        initController(/* viewIsAttached= */ true);
+
+        // WHEN the flag is off and *only* CentralSurfaces has bouncer as not showing
+        mFeatureFlags.set(Flags.USE_REPOS_FOR_BOUNCER_SHOWING, false);
+        mController.setBouncerShowingFromCentralSurfaces(false);
+        when(mPrimaryBouncerInteractor.isBouncerShowing()).thenReturn(true);
+
+        setupShowEmptyShadeViewState(true);
+        reset(mNotificationStackScrollLayout);
+        mController.updateShowEmptyShadeView();
+
+        // THEN the CentralSurfaces value is used. Since the bouncer isn't showing, we can show the
+        // empty view.
+        verify(mNotificationStackScrollLayout).updateEmptyShadeView(
+                /* visible= */ true,
+                /* areNotificationsHiddenInShade= */ false);
+    }
+
+    @Test
+    public void testUpdateEmptyShadeView_bouncerNotShowing_flagOn_showEmptyView() {
+        when(mZenModeController.areNotificationsHiddenInShade()).thenReturn(false);
+        initController(/* viewIsAttached= */ true);
+
+        // WHEN the flag is on and *only* PrimaryBouncerInteractor has bouncer as not showing
+        mFeatureFlags.set(Flags.USE_REPOS_FOR_BOUNCER_SHOWING, true);
+        when(mPrimaryBouncerInteractor.isBouncerShowing()).thenReturn(false);
+        mController.setBouncerShowingFromCentralSurfaces(true);
+
+        setupShowEmptyShadeViewState(true);
+        reset(mNotificationStackScrollLayout);
+        mController.updateShowEmptyShadeView();
+
+        // THEN the PrimaryBouncerInteractor value is used. Since the bouncer isn't showing, we
+        // can show the empty view.
+        verify(mNotificationStackScrollLayout).updateEmptyShadeView(
+                /* visible= */ true,
+                /* areNotificationsHiddenInShade= */ false);
+    }
+
+    @Test
     public void testOnUserChange_verifySensitiveProfile() {
         when(mNotificationLockscreenUserManager.isAnyProfilePublicMode()).thenReturn(true);
+        initController(/* viewIsAttached= */ true);
 
         ArgumentCaptor<UserChangedListener> userChangedCaptor = ArgumentCaptor
                 .forClass(UserChangedListener.class);
 
-        mController.attach(mNotificationStackScrollLayout);
         verify(mNotificationLockscreenUserManager)
                 .addUserChangedListener(userChangedCaptor.capture());
         reset(mNotificationStackScrollLayout);
@@ -317,7 +385,7 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
     public void testOnStatePostChange_verifyIfProfileIsPublic() {
         when(mNotificationLockscreenUserManager.isAnyProfilePublicMode()).thenReturn(true);
 
-        mController.attach(mNotificationStackScrollLayout);
+        initController(/* viewIsAttached= */ true);
         verify(mSysuiStatusBarStateController).addCallback(
                 mStateListenerArgumentCaptor.capture(), anyInt());
 
@@ -337,7 +405,7 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
         ArgumentCaptor<OnMenuEventListener> onMenuEventListenerArgumentCaptor =
                 ArgumentCaptor.forClass(OnMenuEventListener.class);
 
-        mController.attach(mNotificationStackScrollLayout);
+        initController(/* viewIsAttached= */ true);
         verify(mNotificationSwipeHelperBuilder).setOnMenuEventListener(
                 onMenuEventListenerArgumentCaptor.capture());
 
@@ -350,6 +418,36 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
     }
 
     @Test
+    public void callSwipeCallbacksDuringClearAll() {
+        initController(/* viewIsAttached= */ true);
+        ExpandableNotificationRow row = mock(ExpandableNotificationRow.class);
+        NotificationCallback notificationCallback = mController.mNotificationCallback;
+
+        when(mNotificationStackScrollLayout.getClearAllInProgress()).thenReturn(true);
+
+        notificationCallback.onBeginDrag(row);
+        verify(mNotificationStackScrollLayout).onSwipeBegin(row);
+
+        notificationCallback.handleChildViewDismissed(row);
+        verify(mNotificationStackScrollLayout).onSwipeEnd();
+    }
+
+    @Test
+    public void callSwipeCallbacksDuringClearNotification() {
+        initController(/* viewIsAttached= */ true);
+        ExpandableNotificationRow row = mock(ExpandableNotificationRow.class);
+        NotificationCallback notificationCallback = mController.mNotificationCallback;
+
+        when(mNotificationStackScrollLayout.getClearAllInProgress()).thenReturn(false);
+
+        notificationCallback.onBeginDrag(row);
+        verify(mNotificationStackScrollLayout).onSwipeBegin(row);
+
+        notificationCallback.handleChildViewDismissed(row);
+        verify(mNotificationStackScrollLayout).onSwipeEnd();
+    }
+
+    @Test
     public void testOnMenuClickedLogging() {
         ExpandableNotificationRow row = mock(ExpandableNotificationRow.class, RETURNS_DEEP_STUBS);
         when(row.getEntry().getSbn().getLogMaker()).thenReturn(new LogMaker(
@@ -358,7 +456,7 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
         ArgumentCaptor<OnMenuEventListener> onMenuEventListenerArgumentCaptor =
                 ArgumentCaptor.forClass(OnMenuEventListener.class);
 
-        mController.attach(mNotificationStackScrollLayout);
+        initController(/* viewIsAttached= */ true);
         verify(mNotificationSwipeHelperBuilder).setOnMenuEventListener(
                 onMenuEventListenerArgumentCaptor.capture());
 
@@ -373,35 +471,19 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
 
     @Test
     public void testDismissListener() {
-        ArgumentCaptor<NotificationStackScrollLayout.DismissListener>
+        ArgumentCaptor<NotificationStackScrollLayout.ClearAllListener>
                 dismissListenerArgumentCaptor = ArgumentCaptor.forClass(
-                NotificationStackScrollLayout.DismissListener.class);
+                NotificationStackScrollLayout.ClearAllListener.class);
 
-        mController.attach(mNotificationStackScrollLayout);
+        initController(/* viewIsAttached= */ true);
 
-        verify(mNotificationStackScrollLayout).setDismissListener(
+        verify(mNotificationStackScrollLayout).setClearAllListener(
                 dismissListenerArgumentCaptor.capture());
-        NotificationStackScrollLayout.DismissListener dismissListener =
+        NotificationStackScrollLayout.ClearAllListener dismissListener =
                 dismissListenerArgumentCaptor.getValue();
 
-        dismissListener.onDismiss(ROWS_ALL);
+        dismissListener.onClearAll(ROWS_ALL);
         verify(mUiEventLogger).log(NotificationPanelEvent.fromSelection(ROWS_ALL));
-    }
-
-    @Test
-    public void testForegroundDismissEnabled() {
-        when(mFgFeatureController.isForegroundServiceDismissalEnabled()).thenReturn(true);
-        mController.attach(mNotificationStackScrollLayout);
-        verify(mNotificationStackScrollLayout).initializeForegroundServiceSection(
-                mForegroundServiceDungeonView);
-    }
-
-    @Test
-    public void testForegroundDismissaDisabled() {
-        when(mFgFeatureController.isForegroundServiceDismissalEnabled()).thenReturn(false);
-        mController.attach(mNotificationStackScrollLayout);
-        verify(mNotificationStackScrollLayout, never()).initializeForegroundServiceSection(
-                any(ForegroundServiceDungeonView.class));
     }
 
     @Test
@@ -410,29 +492,229 @@ public class NotificationStackScrollLayoutControllerTest extends SysuiTestCase {
                 ArgumentCaptor.forClass(RemoteInputController.Callback.class);
         doNothing().when(mRemoteInputManager).addControllerCallback(callbackCaptor.capture());
         when(mRemoteInputManager.isRemoteInputActive()).thenReturn(false);
-        mController.attach(mNotificationStackScrollLayout);
+        initController(/* viewIsAttached= */ true);
         verify(mNotificationStackScrollLayout).setIsRemoteInputActive(false);
         RemoteInputController.Callback callback = callbackCaptor.getValue();
         callback.onRemoteInputActive(true);
         verify(mNotificationStackScrollLayout).setIsRemoteInputActive(true);
     }
 
+    @Test
+    public void testSetNotifStats_updatesHasFilteredOutSeenNotifications() {
+        initController(/* viewIsAttached= */ true);
+        mSeenNotificationsProvider.setHasFilteredOutSeenNotifications(true);
+        mController.getNotifStackController().setNotifStats(NotifStats.getEmpty());
+        verify(mNotificationStackScrollLayout).setHasFilteredOutSeenNotifications(true);
+        verify(mNotificationStackScrollLayout).updateFooter();
+        verify(mNotificationStackScrollLayout).updateEmptyShadeView(anyBoolean(), anyBoolean());
+    }
+
+    @Test
+    public void testAttach_updatesViewStatusBarState() {
+        // GIVEN: Controller is attached
+        initController(/* viewIsAttached= */ true);
+        ArgumentCaptor<StatusBarStateController.StateListener> captor =
+                ArgumentCaptor.forClass(StatusBarStateController.StateListener.class);
+        verify(mSysuiStatusBarStateController).addCallback(captor.capture(), anyInt());
+        StatusBarStateController.StateListener stateListener = captor.getValue();
+
+        // WHEN: StatusBarState changes to SHADE
+        when(mSysuiStatusBarStateController.getState()).thenReturn(SHADE);
+        stateListener.onStateChanged(SHADE);
+
+        // THEN: NSSL is updated with the current state
+        verify(mNotificationStackScrollLayout).setStatusBarState(SHADE);
+
+        // WHEN: Controller is detached
+        mController.mOnAttachStateChangeListener
+                .onViewDetachedFromWindow(mNotificationStackScrollLayout);
+
+        // WHEN: StatusBarState changes to KEYGUARD
+        when(mSysuiStatusBarStateController.getState()).thenReturn(KEYGUARD);
+
+        // WHEN: Controller is re-attached
+        mController.mOnAttachStateChangeListener
+                .onViewAttachedToWindow(mNotificationStackScrollLayout);
+
+        // THEN: NSSL is updated with the current state
+        verify(mNotificationStackScrollLayout).setStatusBarState(KEYGUARD);
+    }
+
+    @Test
+    public void updateImportantForAccessibility_noChild_onKeyGuard_notImportantForA11y() {
+        // GIVEN: Controller is attached, active notifications is empty,
+        // and mNotificationStackScrollLayout.onKeyguard() is true
+        initController(/* viewIsAttached= */ true);
+        when(mNotificationStackScrollLayout.onKeyguard()).thenReturn(true);
+        mController.getNotifStackController().setNotifStats(NotifStats.getEmpty());
+
+        // WHEN: call updateImportantForAccessibility
+        mController.updateImportantForAccessibility();
+
+        // THEN: mNotificationStackScrollLayout should not be important for A11y
+        verify(mNotificationStackScrollLayout)
+                .setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+    }
+
+    @Test
+    public void updateImportantForAccessibility_hasChild_onKeyGuard_importantForA11y() {
+        // GIVEN: Controller is attached, active notifications is not empty,
+        // and mNotificationStackScrollLayout.onKeyguard() is true
+        initController(/* viewIsAttached= */ true);
+        when(mNotificationStackScrollLayout.onKeyguard()).thenReturn(true);
+        mController.getNotifStackController().setNotifStats(
+                new NotifStats(
+                        /* numActiveNotifs = */ 1,
+                        /* hasNonClearableAlertingNotifs = */ false,
+                        /* hasClearableAlertingNotifs = */ false,
+                        /* hasNonClearableSilentNotifs = */ false,
+                        /* hasClearableSilentNotifs = */ false)
+        );
+
+        // WHEN: call updateImportantForAccessibility
+        mController.updateImportantForAccessibility();
+
+        // THEN: mNotificationStackScrollLayout should be important for A11y
+        verify(mNotificationStackScrollLayout)
+                .setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    }
+
+    @Test
+    public void updateImportantForAccessibility_hasChild_notOnKeyGuard_importantForA11y() {
+        // GIVEN: Controller is attached, active notifications is not empty,
+        // and mNotificationStackScrollLayout.onKeyguard() is false
+        initController(/* viewIsAttached= */ true);
+        when(mNotificationStackScrollLayout.onKeyguard()).thenReturn(false);
+        mController.getNotifStackController().setNotifStats(
+                new NotifStats(
+                        /* numActiveNotifs = */ 1,
+                        /* hasNonClearableAlertingNotifs = */ false,
+                        /* hasClearableAlertingNotifs = */ false,
+                        /* hasNonClearableSilentNotifs = */ false,
+                        /* hasClearableSilentNotifs = */ false)
+        );
+
+        // WHEN: call updateImportantForAccessibility
+        mController.updateImportantForAccessibility();
+
+        // THEN: mNotificationStackScrollLayout should be important for A11y
+        verify(mNotificationStackScrollLayout)
+                .setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    }
+
+    @Test
+    public void updateImportantForAccessibility_noChild_notOnKeyGuard_importantForA11y() {
+        // GIVEN: Controller is attached, active notifications is empty,
+        // and mNotificationStackScrollLayout.onKeyguard() is false
+        initController(/* viewIsAttached= */ true);
+        when(mNotificationStackScrollLayout.onKeyguard()).thenReturn(false);
+        mController.getNotifStackController().setNotifStats(NotifStats.getEmpty());
+
+        // WHEN: call updateImportantForAccessibility
+        mController.updateImportantForAccessibility();
+
+        // THEN: mNotificationStackScrollLayout should be important for A11y
+        verify(mNotificationStackScrollLayout)
+                .setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
+    }
+
+    @Test
+    public void updateEmptyShadeView_onKeyguardTransitionToAod_hidesView() {
+        initController(/* viewIsAttached= */ true);
+        mController.onKeyguardTransitionChanged(
+                new TransitionStep(
+                        /* from= */ KeyguardState.GONE,
+                        /* to= */ KeyguardState.AOD));
+        verify(mNotificationStackScrollLayout).updateEmptyShadeView(eq(false), anyBoolean());
+    }
+
+    @Test
+    public void updateEmptyShadeView_onKeyguardOccludedTransitionToAod_hidesView() {
+        initController(/* viewIsAttached= */ true);
+        mController.onKeyguardTransitionChanged(
+                new TransitionStep(
+                        /* from= */ KeyguardState.OCCLUDED,
+                        /* to= */ KeyguardState.AOD));
+        verify(mNotificationStackScrollLayout).updateEmptyShadeView(eq(false), anyBoolean());
+    }
+
     private LogMaker logMatcher(int category, int type) {
         return argThat(new LogMatcher(category, type));
     }
 
-    private void setupShowEmptyShadeViewState(
-            StatusBarStateController.StateListener statusBarStateListener,
-            boolean toShow) {
+    private void setupShowEmptyShadeViewState(boolean toShow) {
         if (toShow) {
-            statusBarStateListener.onStateChanged(SHADE);
-            mController.setQsExpanded(false);
+            mController.onKeyguardTransitionChanged(
+                    new TransitionStep(
+                            /* from= */ KeyguardState.LOCKSCREEN,
+                            /* to= */ KeyguardState.GONE));
+            mController.setQsFullScreen(false);
             mController.getView().removeAllViews();
         } else {
-            statusBarStateListener.onStateChanged(KEYGUARD);
-            mController.setQsExpanded(true);
+            mController.onKeyguardTransitionChanged(
+                    new TransitionStep(
+                            /* from= */ KeyguardState.GONE,
+                            /* to= */ KeyguardState.AOD));
+            mController.setQsFullScreen(true);
             mController.getView().addContainerView(mock(ExpandableNotificationRow.class));
         }
+    }
+
+    private void initController(boolean viewIsAttached) {
+        when(mNotificationStackScrollLayout.isAttachedToWindow()).thenReturn(viewIsAttached);
+        ViewTreeObserver viewTreeObserver = mock(ViewTreeObserver.class);
+        when(mNotificationStackScrollLayout.getViewTreeObserver())
+                .thenReturn(viewTreeObserver);
+        mController = new NotificationStackScrollLayoutController(
+                mNotificationStackScrollLayout,
+                true,
+                mNotificationGutsManager,
+                mNotificationsController,
+                mVisibilityProvider,
+                mHeadsUpManager,
+                mNotificationRoundnessManager,
+                mTunerService,
+                mDeviceProvisionedController,
+                mDynamicPrivacyController,
+                mConfigurationController,
+                mSysuiStatusBarStateController,
+                mKeyguardMediaController,
+                mKeyguardBypassController,
+                mKeyguardInteractor,
+                mPrimaryBouncerInteractor,
+                mKeyguardTransitionRepo,
+                mZenModeController,
+                mNotificationLockscreenUserManager,
+                Optional.<NotificationListViewModel>empty(),
+                mMetricsLogger,
+                mDumpManager,
+                new FalsingCollectorFake(),
+                new FalsingManagerFake(),
+                mResources,
+                mNotificationSwipeHelperBuilder,
+                mScrimController,
+                mGroupExpansionManager,
+                mSilentHeaderController,
+                mNotifPipeline,
+                mNotifPipelineFlags,
+                mNotifCollection,
+                mLockscreenShadeTransitionController,
+                mUiEventLogger,
+                mRemoteInputManager,
+                mVisibilityLocationProviderDelegator,
+                mSeenNotificationsProvider,
+                mShadeController,
+                mJankMonitor,
+                mStackLogger,
+                mLogger,
+                mNotificationStackSizeCalculator,
+                mIconAreaController,
+                mFeatureFlags,
+                mNotificationTargetsHelper,
+                mSecureSettings,
+                mock(NotificationDismissibilityProvider.class),
+                mActivityStarter
+        );
     }
 
     static class LogMatcher implements ArgumentMatcher<LogMaker> {

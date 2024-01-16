@@ -16,9 +16,14 @@
 
 #include "tests/common/TestUtils.h"
 
+#include <SkBitmap.h>
+#include <SkBlendMode.h>
+#include <SkColor.h>
 #include <SkColorMatrixFilter.h>
 #include <SkColorSpace.h>
-#include <SkImagePriv.h>
+#include <SkImageInfo.h>
+#include <SkPaint.h>
+#include <SkPath.h>
 #include <SkPathOps.h>
 #include <SkShader.h>
 #include <gtest/gtest.h>
@@ -61,11 +66,11 @@ TEST(SkiaBehavior, lightingColorFilter_simplify) {
 TEST(SkiaBehavior, porterDuffCreateIsCached) {
     SkPaint paint;
     paint.setBlendMode(SkBlendMode::kOverlay);
-    auto expected = paint.getBlendMode();
+    auto expected = paint.asBlendMode();
     paint.setBlendMode(SkBlendMode::kClear);
-    ASSERT_NE(expected, paint.getBlendMode());
+    ASSERT_NE(expected, paint.asBlendMode());
     paint.setBlendMode(SkBlendMode::kOverlay);
-    ASSERT_EQ(expected, paint.getBlendMode());
+    ASSERT_EQ(expected, paint.asBlendMode());
 }
 
 TEST(SkiaBehavior, pathIntersection) {

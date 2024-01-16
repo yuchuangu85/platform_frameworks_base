@@ -69,6 +69,7 @@ public final class ParcelableCall implements Parcelable {
         private int mCallerNumberVerificationStatus;
         private String mContactDisplayName;
         private String mActiveChildCallId;
+        private Uri mContactPhotoUri;
 
         public ParcelableCallBuilder setId(String id) {
             mId = id;
@@ -224,6 +225,11 @@ public final class ParcelableCall implements Parcelable {
             return this;
         }
 
+        public ParcelableCallBuilder setContactPhotoUri(Uri contactPhotoUri) {
+            mContactPhotoUri = contactPhotoUri;
+            return this;
+        }
+
         public ParcelableCall createParcelableCall() {
             return new ParcelableCall(
                     mId,
@@ -255,7 +261,8 @@ public final class ParcelableCall implements Parcelable {
                     mCallDirection,
                     mCallerNumberVerificationStatus,
                     mContactDisplayName,
-                    mActiveChildCallId);
+                    mActiveChildCallId,
+                    mContactPhotoUri);
         }
 
         public static ParcelableCallBuilder fromParcelableCall(ParcelableCall parcelableCall) {
@@ -292,6 +299,7 @@ public final class ParcelableCall implements Parcelable {
                     parcelableCall.mCallerNumberVerificationStatus;
             newBuilder.mContactDisplayName = parcelableCall.mContactDisplayName;
             newBuilder.mActiveChildCallId = parcelableCall.mActiveChildCallId;
+            newBuilder.mContactPhotoUri = parcelableCall.mContactPhotoUri;
             return newBuilder;
         }
     }
@@ -327,6 +335,7 @@ public final class ParcelableCall implements Parcelable {
     private final int mCallerNumberVerificationStatus;
     private final String mContactDisplayName;
     private final String mActiveChildCallId; // Only valid for CDMA conferences
+    private final Uri mContactPhotoUri;
 
     public ParcelableCall(
             String id,
@@ -358,7 +367,8 @@ public final class ParcelableCall implements Parcelable {
             int callDirection,
             int callerNumberVerificationStatus,
             String contactDisplayName,
-            String activeChildCallId
+            String activeChildCallId,
+            Uri contactPhotoUri
     ) {
         mId = id;
         mState = state;
@@ -390,6 +400,7 @@ public final class ParcelableCall implements Parcelable {
         mCallerNumberVerificationStatus = callerNumberVerificationStatus;
         mContactDisplayName = contactDisplayName;
         mActiveChildCallId = activeChildCallId;
+        mContactPhotoUri = contactPhotoUri;
     }
 
     /** The unique ID of the call. */
@@ -607,6 +618,14 @@ public final class ParcelableCall implements Parcelable {
     }
 
     /**
+     * @return the caller photo URI.
+     */
+    public @Nullable Uri getContactPhotoUri() {
+        return mContactPhotoUri;
+    }
+
+
+    /**
      * @return On a CDMA conference with two participants, returns the ID of the child call that's
      *         currently active.
      */
@@ -623,9 +642,9 @@ public final class ParcelableCall implements Parcelable {
             ClassLoader classLoader = ParcelableCall.class.getClassLoader();
             String id = source.readString();
             int state = source.readInt();
-            DisconnectCause disconnectCause = source.readParcelable(classLoader);
+            DisconnectCause disconnectCause = source.readParcelable(classLoader, android.telecom.DisconnectCause.class);
             List<String> cannedSmsResponses = new ArrayList<>();
-            source.readList(cannedSmsResponses, classLoader);
+            source.readList(cannedSmsResponses, classLoader, java.lang.String.class);
             int capabilities = source.readInt();
             int properties = source.readInt();
             long connectTimeMillis = source.readLong();
@@ -633,28 +652,29 @@ public final class ParcelableCall implements Parcelable {
             int handlePresentation = source.readInt();
             String callerDisplayName = source.readString();
             int callerDisplayNamePresentation = source.readInt();
-            GatewayInfo gatewayInfo = source.readParcelable(classLoader);
-            PhoneAccountHandle accountHandle = source.readParcelable(classLoader);
+            GatewayInfo gatewayInfo = source.readParcelable(classLoader, android.telecom.GatewayInfo.class);
+            PhoneAccountHandle accountHandle = source.readParcelable(classLoader, android.telecom.PhoneAccountHandle.class);
             boolean isVideoCallProviderChanged = source.readByte() == 1;
             IVideoProvider videoCallProvider =
                     IVideoProvider.Stub.asInterface(source.readStrongBinder());
             String parentCallId = source.readString();
             List<String> childCallIds = new ArrayList<>();
-            source.readList(childCallIds, classLoader);
-            StatusHints statusHints = source.readParcelable(classLoader);
+            source.readList(childCallIds, classLoader, java.lang.String.class);
+            StatusHints statusHints = source.readParcelable(classLoader, android.telecom.StatusHints.class);
             int videoState = source.readInt();
             List<String> conferenceableCallIds = new ArrayList<>();
-            source.readList(conferenceableCallIds, classLoader);
+            source.readList(conferenceableCallIds, classLoader, java.lang.String.class);
             Bundle intentExtras = source.readBundle(classLoader);
             Bundle extras = source.readBundle(classLoader);
             int supportedAudioRoutes = source.readInt();
             boolean isRttCallChanged = source.readByte() == 1;
-            ParcelableRttCall rttCall = source.readParcelable(classLoader);
+            ParcelableRttCall rttCall = source.readParcelable(classLoader, android.telecom.ParcelableRttCall.class);
             long creationTimeMillis = source.readLong();
             int callDirection = source.readInt();
             int callerNumberVerificationStatus = source.readInt();
             String contactDisplayName = source.readString();
             String activeChildCallId = source.readString();
+            Uri contactPhotoUri = source.readParcelable(classLoader, Uri.class);
             return new ParcelableCallBuilder()
                     .setId(id)
                     .setState(state)
@@ -686,6 +706,7 @@ public final class ParcelableCall implements Parcelable {
                     .setCallerNumberVerificationStatus(callerNumberVerificationStatus)
                     .setContactDisplayName(contactDisplayName)
                     .setActiveChildCallId(activeChildCallId)
+                    .setContactPhotoUri(contactPhotoUri)
                     .createParcelableCall();
         }
 
@@ -735,6 +756,7 @@ public final class ParcelableCall implements Parcelable {
         destination.writeInt(mCallerNumberVerificationStatus);
         destination.writeString(mContactDisplayName);
         destination.writeString(mActiveChildCallId);
+        destination.writeParcelable(mContactPhotoUri, 0);
     }
 
     @Override

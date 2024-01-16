@@ -19,6 +19,7 @@
 
 #include <PointerControllerInterface.h>
 #include <gui/DisplayEventReceiver.h>
+#include <gui/WindowInfosUpdate.h>
 #include <input/DisplayViewport.h>
 #include <input/Input.h>
 #include <utils/BitSet.h>
@@ -27,6 +28,7 @@
 
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "MouseCursorController.h"
@@ -47,36 +49,56 @@ public:
             const sp<PointerControllerPolicyInterface>& policy, const sp<Looper>& looper,
             const sp<SpriteController>& spriteController);
 
-    virtual ~PointerController() = default;
+    ~PointerController() override;
 
-    virtual bool getBounds(float* outMinX, float* outMinY, float* outMaxX, float* outMaxY) const;
-    virtual void move(float deltaX, float deltaY);
-    virtual void setButtonState(int32_t buttonState);
-    virtual int32_t getButtonState() const;
-    virtual void setPosition(float x, float y);
-    virtual void getPosition(float* outX, float* outY) const;
-    virtual int32_t getDisplayId() const;
-    virtual void fade(Transition transition);
-    virtual void unfade(Transition transition);
-    virtual void setDisplayViewport(const DisplayViewport& viewport);
+    std::optional<FloatRect> getBounds() const override;
+    void move(float deltaX, float deltaY) override;
+    void setPosition(float x, float y) override;
+    FloatPoint getPosition() const override;
+    int32_t getDisplayId() const override;
+    void fade(Transition transition) override;
+    void unfade(Transition transition) override;
+    void setDisplayViewport(const DisplayViewport& viewport) override;
 
-    virtual void setPresentation(Presentation presentation);
-    virtual void setSpots(const PointerCoords* spotCoords, const uint32_t* spotIdToIndex,
-                          BitSet32 spotIdBits, int32_t displayId);
-    virtual void clearSpots();
+    void setPresentation(Presentation presentation) override;
+    void setSpots(const PointerCoords* spotCoords, const uint32_t* spotIdToIndex,
+                  BitSet32 spotIdBits, int32_t displayId) override;
+    void clearSpots() override;
 
-    void updatePointerIcon(int32_t iconId);
+    void updatePointerIcon(PointerIconStyle iconId);
     void setCustomPointerIcon(const SpriteIcon& icon);
     void setInactivityTimeout(InactivityTimeout inactivityTimeout);
     void doInactivityTimeout();
     void reloadPointerResources();
     void onDisplayViewportsUpdated(std::vector<DisplayViewport>& viewports);
 
+    void onDisplayInfosChangedLocked(const std::vector<gui::DisplayInfo>& displayInfos)
+            REQUIRES(getLock());
+
+    void dump(std::string& dump);
+
+protected:
+    using WindowListenerConsumer =
+            std::function<void(const sp<android::gui::WindowInfosListener>&)>;
+
+    // Constructor used to test WindowInfosListener registration.
+    PointerController(const sp<PointerControllerPolicyInterface>& policy, const sp<Looper>& looper,
+                      const sp<SpriteController>& spriteController,
+                      WindowListenerConsumer registerListener,
+                      WindowListenerConsumer unregisterListener);
+
 private:
+    PointerController(const sp<PointerControllerPolicyInterface>& policy, const sp<Looper>& looper,
+                      const sp<SpriteController>& spriteController);
+
     friend PointerControllerContext::LooperCallback;
     friend PointerControllerContext::MessageHandler;
 
-    mutable std::mutex mLock;
+    // PointerController's DisplayInfoListener can outlive the PointerController because when the
+    // listener is registered, a strong pointer to the listener (which can extend its lifecycle)
+    // is given away. To avoid the small overhead of using two separate locks in these two objects,
+    // we use the DisplayInfoListener's lock in PointerController.
+    std::mutex& getLock() const;
 
     PointerControllerContext mContext;
 
@@ -84,13 +106,31 @@ private:
 
     struct Locked {
         Presentation presentation;
+        int32_t pointerDisplayId = ADISPLAY_ID_NONE;
 
+        std::vector<gui::DisplayInfo> mDisplayInfos;
         std::unordered_map<int32_t /* displayId */, TouchSpotController> spotControllers;
-    } mLocked GUARDED_BY(mLock);
+    } mLocked GUARDED_BY(getLock());
 
-    PointerController(const sp<PointerControllerPolicyInterface>& policy, const sp<Looper>& looper,
-                      const sp<SpriteController>& spriteController);
-    void clearSpotsLocked();
+    class DisplayInfoListener : public gui::WindowInfosListener {
+    public:
+        explicit DisplayInfoListener(PointerController* pc) : mPointerController(pc){};
+        void onWindowInfosChanged(const gui::WindowInfosUpdate&) override;
+        void onPointerControllerDestroyed();
+
+        // This lock is also used by PointerController. See PointerController::getLock().
+        std::mutex mLock;
+
+    private:
+        PointerController* mPointerController GUARDED_BY(mLock);
+    };
+
+    sp<DisplayInfoListener> mDisplayInfoListener;
+    const WindowListenerConsumer mUnregisterWindowInfosListener;
+
+    const ui::Transform& getTransformForDisplayLocked(int displayId) const REQUIRES(getLock());
+
+    void clearSpotsLocked() REQUIRES(getLock());
 };
 
 } // namespace android

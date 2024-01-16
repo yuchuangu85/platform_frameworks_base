@@ -19,8 +19,9 @@ package com.android.server.timezonedetector.location;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 
-import com.android.server.timezonedetector.GeolocationTimeZoneSuggestion;
+import com.android.server.timezonedetector.LocationAlgorithmEvent;
 import com.android.server.timezonedetector.location.LocationTimeZoneProvider.ProviderState;
+import com.android.server.timezonedetector.location.LocationTimeZoneProviderController.State;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -30,19 +31,32 @@ import java.util.Objects;
 /** A snapshot of the location time zone manager service's state for tests. */
 final class LocationTimeZoneManagerServiceState {
 
-    @Nullable private final GeolocationTimeZoneSuggestion mLastSuggestion;
+    private final @State String mControllerState;
+    @Nullable private final LocationAlgorithmEvent mLastEvent;
+    @NonNull private final List<@State String> mControllerStates;
     @NonNull private final List<ProviderState> mPrimaryProviderStates;
     @NonNull private final List<ProviderState> mSecondaryProviderStates;
 
     LocationTimeZoneManagerServiceState(@NonNull Builder builder) {
-        mLastSuggestion = builder.mLastSuggestion;
+        mControllerState = builder.mControllerState;
+        mLastEvent = builder.mLastEvent;
+        mControllerStates = Objects.requireNonNull(builder.mControllerStates);
         mPrimaryProviderStates = Objects.requireNonNull(builder.mPrimaryProviderStates);
         mSecondaryProviderStates = Objects.requireNonNull(builder.mSecondaryProviderStates);
     }
 
+    public @State String getControllerState() {
+        return mControllerState;
+    }
+
     @Nullable
-    public GeolocationTimeZoneSuggestion getLastSuggestion() {
-        return mLastSuggestion;
+    public LocationAlgorithmEvent getLastEvent() {
+        return mLastEvent;
+    }
+
+    @NonNull
+    public List<@State String> getControllerStates() {
+        return mControllerStates;
     }
 
     @NonNull
@@ -58,7 +72,9 @@ final class LocationTimeZoneManagerServiceState {
     @Override
     public String toString() {
         return "LocationTimeZoneManagerServiceState{"
-                + "mLastSuggestion=" + mLastSuggestion
+                + "mControllerState=" + mControllerState
+                + ", mLastEvent=" + mLastEvent
+                + ", mControllerStates=" + mControllerStates
                 + ", mPrimaryProviderStates=" + mPrimaryProviderStates
                 + ", mSecondaryProviderStates=" + mSecondaryProviderStates
                 + '}';
@@ -66,13 +82,27 @@ final class LocationTimeZoneManagerServiceState {
 
     static final class Builder {
 
-        private GeolocationTimeZoneSuggestion mLastSuggestion;
+        private @State String mControllerState;
+        private LocationAlgorithmEvent mLastEvent;
+        private List<@State String> mControllerStates;
         private List<ProviderState> mPrimaryProviderStates;
         private List<ProviderState> mSecondaryProviderStates;
 
         @NonNull
-        Builder setLastSuggestion(@NonNull GeolocationTimeZoneSuggestion lastSuggestion) {
-            mLastSuggestion = Objects.requireNonNull(lastSuggestion);
+        public Builder setControllerState(@State String stateEnum) {
+            mControllerState = stateEnum;
+            return this;
+        }
+
+        @NonNull
+        Builder setLastEvent(@NonNull LocationAlgorithmEvent lastEvent) {
+            mLastEvent = Objects.requireNonNull(lastEvent);
+            return this;
+        }
+
+        @NonNull
+        public Builder setStateChanges(@NonNull List<@State String> states) {
+            mControllerStates = new ArrayList<>(states);
             return this;
         }
 

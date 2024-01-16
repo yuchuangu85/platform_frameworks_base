@@ -31,15 +31,6 @@
       ]
     },
     {
-      "file_patterns": ["Environment\\.java"],
-      "name": "FrameworksServicesTests",
-      "options": [
-        {
-          "include-filter": "com.android.server.pm.parsing.PackageInfoUserFieldsTest"
-        }
-      ]
-    },
-    {
       "file_patterns": [
         "BatteryStats[^/]*\\.java",
         "BatteryUsageStats[^/]*\\.java",
@@ -61,9 +52,32 @@
       ],
       "name": "FrameworksServicesTests",
       "options": [
-        { "include-filter": "com.android.server.am.BatteryStatsServiceTest" },
-        { "include-filter": "com.android.server.am.MeasuredEnergySnapshotTest" },
-        { "include-filter": "com.android.server.am.BatteryExternalStatsWorkerTest" }
+        { "include-filter": "com.android.server.am.BatteryStatsServiceTest" }
+      ]
+    },
+    {
+      "file_patterns": [
+        "BatteryStats[^/]*\\.java",
+        "BatteryUsageStats[^/]*\\.java",
+        "PowerComponents\\.java",
+        "[^/]*BatteryConsumer[^/]*\\.java"
+      ],
+      "name": "FrameworksServicesTests",
+      "options": [
+        { "include-filter": "com.android.server.power.stats" },
+        { "exclude-filter": "com.android.server.power.stats.BatteryStatsTests" }
+      ]
+    },
+    {
+      "file_patterns": [
+        "Parcel\\.java",
+        "[^/]*Bundle[^/]*\\.java"
+      ],
+      "name": "FrameworksMockingCoreTests",
+      "options": [
+        { "include-filter":  "android.os.BundleRecyclingTest"},
+        { "exclude-annotation": "androidx.test.filters.FlakyTest" },
+        { "exclude-annotation": "org.junit.Ignore" }
       ]
     },
     {
@@ -80,6 +94,15 @@
       "options": [
         {
           "include-filter": "android.os.cts.SharedMemoryTest"
+        }
+      ]
+    },
+    {
+      "file_patterns": ["Environment[^/]*\\.java"],
+      "name": "FrameworksCoreTests",
+      "options": [
+        {
+          "include-filter": "android.os.EnvironmentTest"
         }
       ]
     }

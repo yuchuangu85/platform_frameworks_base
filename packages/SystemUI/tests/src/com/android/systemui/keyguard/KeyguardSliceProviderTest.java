@@ -19,6 +19,7 @@ package com.android.systemui.keyguard;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
@@ -31,6 +32,7 @@ import android.content.ContentResolver;
 import android.media.MediaMetadata;
 import android.media.session.PlaybackState;
 import android.net.Uri;
+import android.os.Handler;
 import android.provider.Settings;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
@@ -45,8 +47,10 @@ import androidx.slice.core.SliceQuery;
 import androidx.test.filters.SmallTest;
 
 import com.android.keyguard.KeyguardUpdateMonitor;
+import com.android.systemui.SystemUIInitializerImpl;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
+import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.NotificationMediaManager;
 import com.android.systemui.statusbar.StatusBarState;
 import com.android.systemui.statusbar.phone.DozeParameters;
@@ -90,20 +94,23 @@ public class KeyguardSliceProviderTest extends SysuiTestCase {
     private DozeParameters mDozeParameters;
     @Mock
     private NextAlarmController mNextAlarmController;
+    @Mock
     private KeyguardUpdateMonitor mKeyguardUpdateMonitor;
+    @Mock
+    private UserTracker mUserTracker;
     private TestableKeyguardSliceProvider mProvider;
     private boolean mIsZenMode;
 
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
-        mKeyguardUpdateMonitor = mDependency.injectMockDependency(KeyguardUpdateMonitor.class);
         mIsZenMode = false;
         mProvider = new TestableKeyguardSliceProvider();
-        mProvider.setContextAvailableCallback(context -> { });
+        mProvider.setContextAvailableCallback(context -> new SystemUIInitializerImpl(mContext));
         mProvider.attachInfo(getContext(), null);
         reset(mContentResolver);
         SliceProvider.setSpecs(new HashSet<>(Arrays.asList(SliceSpecs.LIST)));
+        when(mUserTracker.getUserId()).thenReturn(100);
     }
 
     @After
@@ -161,6 +168,7 @@ public class KeyguardSliceProviderTest extends SysuiTestCase {
 
     @Test
     public void updatesClock() {
+        clearInvocations(mContentResolver);
         mProvider.mKeyguardUpdateMonitorCallback.onTimeChanged();
         TestableLooper.get(this).processAllMessages();
         verify(mContentResolver).notifyChange(eq(mProvider.getUri()), eq(null));
@@ -212,11 +220,13 @@ public class KeyguardSliceProviderTest extends SysuiTestCase {
         reset(mContentResolver);
         mProvider.onPrimaryMetadataOrStateChanged(mock(MediaMetadata.class),
                 PlaybackState.STATE_PLAYING);
+        TestableLooper.get(this).processAllMessages();
         verify(mContentResolver).notifyChange(eq(mProvider.getUri()), eq(null));
 
         // Hides after waking up
         reset(mContentResolver);
         mProvider.onDozingChanged(false);
+        TestableLooper.get(this).processAllMessages();
         verify(mContentResolver).notifyChange(eq(mProvider.getUri()), eq(null));
     }
 
@@ -226,6 +236,7 @@ public class KeyguardSliceProviderTest extends SysuiTestCase {
         mProvider.onPrimaryMetadataOrStateChanged(mock(MediaMetadata.class),
                 PlaybackState.STATE_PLAYING);
         reset(mContentResolver);
+        TestableLooper.get(this).processAllMessages();
         // Show media when dozing
         mProvider.onDozingChanged(true);
         verify(mContentResolver).notifyChange(eq(mProvider.getUri()), eq(null));
@@ -265,6 +276,10 @@ public class KeyguardSliceProviderTest extends SysuiTestCase {
             mStatusBarStateController = KeyguardSliceProviderTest.this.mStatusBarStateController;
             mKeyguardBypassController = KeyguardSliceProviderTest.this.mKeyguardBypassController;
             mMediaManager = KeyguardSliceProviderTest.this.mNotificationMediaManager;
+            mKeyguardUpdateMonitor = KeyguardSliceProviderTest.this.mKeyguardUpdateMonitor;
+            mUserTracker = KeyguardSliceProviderTest.this.mUserTracker;
+            mBgHandler =
+                    new Handler(TestableLooper.get(KeyguardSliceProviderTest.this).getLooper());
         }
 
         @Override

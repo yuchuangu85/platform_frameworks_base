@@ -1,12 +1,4 @@
 // Signature format: 2.0
-package android {
-
-  public static final class Manifest.permission {
-    field public static final String MANAGE_DEVICE_ADMINS = "android.permission.MANAGE_DEVICE_ADMINS";
-  }
-
-}
-
 package android.app {
 
   public class AppOpsManager {
@@ -144,6 +136,17 @@ package android.media.tv {
 
   public static final class TvInputManager.Hardware {
     method public boolean dispatchKeyEventToHdmi(android.view.KeyEvent);
+  }
+
+}
+
+package android.nfc {
+
+  public final class NfcAdapter {
+    method @RequiresPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) public boolean disableNdefPush();
+    method @RequiresPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) public boolean enableNdefPush();
+    method public void setNdefPushMessage(android.nfc.NdefMessage, android.app.Activity, int);
+    field public static final int FLAG_NDEF_PUSH_NO_CONFIRM = 1; // 0x1
   }
 
 }

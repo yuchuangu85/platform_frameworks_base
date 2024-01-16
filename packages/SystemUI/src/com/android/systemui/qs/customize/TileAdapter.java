@@ -17,6 +17,7 @@ package com.android.systemui.qs.customize;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.res.Resources;
+import android.content.res.TypedArray;
 import android.graphics.Canvas;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
@@ -42,9 +43,11 @@ import androidx.recyclerview.widget.RecyclerView.State;
 import androidx.recyclerview.widget.RecyclerView.ViewHolder;
 
 import com.android.internal.logging.UiEventLogger;
+import com.android.systemui.FontSizeUtils;
 import com.android.systemui.R;
 import com.android.systemui.qs.QSEditEvent;
-import com.android.systemui.qs.QSTileHost;
+import com.android.systemui.qs.QSHost;
+import com.android.systemui.qs.TileLayout;
 import com.android.systemui.qs.customize.TileAdapter.Holder;
 import com.android.systemui.qs.customize.TileQueryHelper.TileInfo;
 import com.android.systemui.qs.customize.TileQueryHelper.TileStateListener;
@@ -56,6 +59,7 @@ import com.android.systemui.qs.tileimpl.QSTileViewImpl;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 import javax.inject.Inject;
 
@@ -89,28 +93,36 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
     private ItemDecoration mDecoration;
     private final MarginTileDecoration mMarginDecoration;
     private final int mMinNumTiles;
-    private final QSTileHost mHost;
+    private final QSHost mHost;
     private int mEditIndex;
     private int mTileDividerIndex;
     private int mFocusIndex;
 
     private boolean mNeedsFocus;
+    @Nullable
     private List<String> mCurrentSpecs;
+    @Nullable
     private List<TileInfo> mOtherTiles;
+    @Nullable
     private List<TileInfo> mAllTiles;
 
+    @Nullable
     private Holder mCurrentDrag;
     private int mAccessibilityAction = ACTION_NONE;
     private int mAccessibilityFromIndex;
     private final UiEventLogger mUiEventLogger;
     private final AccessibilityDelegateCompat mAccessibilityDelegate;
+    @Nullable
     private RecyclerView mRecyclerView;
     private int mNumColumns;
+
+    private TextView mTempTextView;
+    private int mMinTileViewHeight;
 
     @Inject
     public TileAdapter(
             @QSThemedContext Context context,
-            QSTileHost qsHost,
+            QSHost qsHost,
             UiEventLogger uiEventLogger) {
         mContext = context;
         mHost = qsHost;
@@ -122,6 +134,8 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
         mNumColumns = context.getResources().getInteger(NUM_COLUMNS_ID);
         mAccessibilityDelegate = new TileAdapterDelegate();
         mSizeLookup.setSpanIndexCacheEnabled(true);
+        mTempTextView = new TextView(context);
+        mMinTileViewHeight = context.getResources().getDimensionPixelSize(R.dimen.qs_tile_height);
     }
 
     @Override
@@ -169,17 +183,18 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
         mMarginDecoration.setHalfMargin(halfMargin);
     }
 
-    public void saveSpecs(QSTileHost host) {
+    public void saveSpecs(QSHost host) {
         List<String> newSpecs = new ArrayList<>();
         clearAccessibilityState();
         for (int i = 1; i < mTiles.size() && mTiles.get(i) != null; i++) {
             newSpecs.add(mTiles.get(i).spec);
         }
-        host.changeTiles(mCurrentSpecs, newSpecs);
+        host.changeTilesByUser(mCurrentSpecs, newSpecs);
         mCurrentSpecs = newSpecs;
     }
 
     private void clearAccessibilityState() {
+        mNeedsFocus = false;
         if (mAccessibilityAction == ACTION_ADD) {
             // Remove blank tile from last spot
             mTiles.remove(--mEditIndex);
@@ -192,7 +207,7 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
     /** */
     public void resetTileSpecs(List<String> specs) {
         // Notify the host so the tiles get removed callbacks.
-        mHost.changeTiles(mCurrentSpecs, specs);
+        mHost.changeTilesByUser(mCurrentSpecs, specs);
         setTileSpecs(specs);
     }
 
@@ -238,6 +253,7 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
         notifyDataSetChanged();
     }
 
+    @Nullable
     private TileInfo getAndRemoveOther(String s) {
         for (int i = 0; i < mOtherTiles.size(); i++) {
             if (mOtherTiles.get(i).spec.equals(s)) {
@@ -269,7 +285,9 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
         final Context context = parent.getContext();
         LayoutInflater inflater = LayoutInflater.from(context);
         if (viewType == TYPE_HEADER) {
-            return new Holder(inflater.inflate(R.layout.qs_customize_header, parent, false));
+            View v = inflater.inflate(R.layout.qs_customize_header, parent, false);
+            v.setMinimumHeight(calculateHeaderMinHeight(context));
+            return new Holder(v);
         }
         if (viewType == TYPE_DIVIDER) {
             return new Holder(inflater.inflate(R.layout.qs_customize_tile_divider, parent, false));
@@ -307,6 +325,10 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
 
     @Override
     public void onBindViewHolder(final Holder holder, int position) {
+        if (holder.mTileView != null) {
+            holder.mTileView.setMinimumHeight(mMinTileViewHeight);
+        }
+
         if (holder.getItemViewType() == TYPE_HEADER) {
             setSelectableForHeaders(holder.itemView);
             return;
@@ -364,11 +386,13 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
         }
         info.state.expandedAccessibilityClassName = "";
 
-        // The holder has a tileView, therefore this call is not null
-        holder.getTileAsCustomizeView().changeState(info.state);
-        holder.getTileAsCustomizeView().setShowAppLabel(position > mEditIndex && !info.isSystem);
+        CustomizeTileView tileView =
+                Objects.requireNonNull(
+                        holder.getTileAsCustomizeView(), "The holder must have a tileView");
+        tileView.changeState(info.state);
+        tileView.setShowAppLabel(position > mEditIndex && !info.isSystem);
         // Don't show the side view for third party tiles, as we don't have the actual state.
-        holder.getTileAsCustomizeView().setShowSideView(position < mEditIndex || info.isSystem);
+        tileView.setShowSideView(position < mEditIndex || info.isSystem);
         holder.mTileView.setSelected(true);
         holder.mTileView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         holder.mTileView.setClickable(true);
@@ -411,10 +435,7 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
                 public void onLayoutChange(View v, int left, int top, int right, int bottom,
                         int oldLeft, int oldTop, int oldRight, int oldBottom) {
                     holder.mTileView.removeOnLayoutChangeListener(this);
-                    holder.mTileView.requestFocus();
-                    if (mAccessibilityAction == ACTION_NONE) {
-                        holder.mTileView.clearFocus();
-                    }
+                    holder.mTileView.requestAccessibilityFocus();
                 }
             });
             mNeedsFocus = false;
@@ -446,9 +467,15 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
         // Update the tile divider position
         mTileDividerIndex++;
         mFocusIndex = mEditIndex - 1;
+        final int focus = mFocusIndex;
         mNeedsFocus = true;
         if (mRecyclerView != null) {
-            mRecyclerView.post(() -> mRecyclerView.smoothScrollToPosition(mFocusIndex));
+            mRecyclerView.post(() -> {
+                final RecyclerView recyclerView = mRecyclerView;
+                if (recyclerView != null) {
+                    recyclerView.smoothScrollToPosition(focus);
+                }
+            });
         }
         notifyDataSetChanged();
     }
@@ -548,7 +575,7 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
     }
 
     public class Holder extends ViewHolder {
-        private QSTileViewImpl mTileView;
+        @Nullable private QSTileViewImpl mTileView;
 
         public Holder(View itemView) {
             super(itemView);
@@ -822,4 +849,41 @@ public class TileAdapter extends RecyclerView.Adapter<Holder> implements TileSta
             super.clearView(recyclerView, viewHolder);
         }
     };
+
+    private static int calculateHeaderMinHeight(Context context) {
+        Resources res = context.getResources();
+        // style used in qs_customize_header.xml for the Toolbar
+        TypedArray toolbarStyle = context.obtainStyledAttributes(
+                R.style.QSCustomizeToolbar, com.android.internal.R.styleable.Toolbar);
+        int buttonStyle = toolbarStyle.getResourceId(
+                com.android.internal.R.styleable.Toolbar_navigationButtonStyle, 0);
+        toolbarStyle.recycle();
+        int buttonMinWidth = 0;
+        if (buttonStyle != 0) {
+            TypedArray t = context.obtainStyledAttributes(buttonStyle, android.R.styleable.View);
+            buttonMinWidth = t.getDimensionPixelSize(android.R.styleable.View_minWidth, 0);
+            t.recycle();
+        }
+        return res.getDimensionPixelSize(R.dimen.qs_panel_padding_top)
+                + res.getDimensionPixelSize(R.dimen.brightness_mirror_height)
+                + res.getDimensionPixelSize(R.dimen.qs_brightness_margin_top)
+                + res.getDimensionPixelSize(R.dimen.qs_brightness_margin_bottom)
+                - buttonMinWidth
+                - res.getDimensionPixelSize(R.dimen.qs_tile_margin_top_bottom);
+    }
+
+    /**
+     * Re-estimate the tile view height based under current font scaling. Like
+     * {@link TileLayout#estimateCellHeight()}, the tile view height would be estimated with 2
+     * labels as general case.
+     */
+    public void reloadTileHeight() {
+        final int minHeight = mContext.getResources().getDimensionPixelSize(R.dimen.qs_tile_height);
+        FontSizeUtils.updateFontSize(mTempTextView, R.dimen.qs_tile_text_size);
+        int unspecifiedSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
+        mTempTextView.measure(unspecifiedSpec, unspecifiedSpec);
+        int padding = mContext.getResources().getDimensionPixelSize(R.dimen.qs_tile_padding);
+        int estimatedTileViewHeight = mTempTextView.getMeasuredHeight() * 2 + padding * 2;
+        mMinTileViewHeight = Math.max(minHeight, estimatedTileViewHeight);
+    }
 }

@@ -17,11 +17,11 @@
 #ifndef RENDERTHREAD_H_
 #define RENDERTHREAD_H_
 
-#include <surface_control_private.h>
 #include <GrDirectContext.h>
 #include <SkBitmap.h>
 #include <cutils/compiler.h>
 #include <private/android/choreographer.h>
+#include <surface_control_private.h>
 #include <thread/ThreadBase.h>
 #include <utils/Looper.h>
 #include <utils/Thread.h>
@@ -31,6 +31,7 @@
 #include <set>
 
 #include "CacheManager.h"
+#include "MemoryPolicy.h"
 #include "ProfileDataContainer.h"
 #include "RenderTask.h"
 #include "TimeLord.h"
@@ -83,8 +84,9 @@ typedef ASurfaceControl* (*ASC_create)(ASurfaceControl* parent, const char* debu
 typedef void (*ASC_acquire)(ASurfaceControl* control);
 typedef void (*ASC_release)(ASurfaceControl* control);
 
-typedef void (*ASC_registerSurfaceStatsListener)(ASurfaceControl* control, void* context,
-        ASurfaceControl_SurfaceStatsListener func);
+typedef void (*ASC_registerSurfaceStatsListener)(ASurfaceControl* control, int32_t id,
+                                                 void* context,
+                                                 ASurfaceControl_SurfaceStatsListener func);
 typedef void (*ASC_unregisterSurfaceStatsListener)(void* context,
                                                    ASurfaceControl_SurfaceStatsListener func);
 
@@ -171,6 +173,9 @@ public:
         return mASurfaceControlFunctions;
     }
 
+    void trimMemory(TrimLevel level);
+    void trimCaches(CacheTrimLevel level);
+
     /**
      * isCurrent provides a way to query, if the caller is running on
      * the render thread.
@@ -210,7 +215,9 @@ private:
     // corresponding callbacks for each display event type
     static int choreographerCallback(int fd, int events, void* data);
     // Callback that will be run on vsync ticks.
-    static void frameCallback(int64_t frameTimeNanos, void* data);
+    static void extendedFrameCallback(const AChoreographerFrameCallbackData* cbData, void* data);
+    void frameCallback(int64_t vsyncId, int64_t frameDeadline, int64_t frameTimeNanos,
+                       int64_t frameInterval);
     // Callback that will be run whenver there is a refresh rate change.
     static void refreshRateCallback(int64_t vsyncPeriod, void* data);
     void drainDisplayEventQueue();
@@ -229,7 +236,6 @@ private:
     bool mFrameCallbackTaskPending;
 
     TimeLord mTimeLord;
-    nsecs_t mDispatchFrameDelay = 4_ms;
     RenderState* mRenderState;
     EglManager* mEglManager;
     WebViewFunctorManager& mFunctorManager;

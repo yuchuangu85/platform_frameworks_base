@@ -75,7 +75,7 @@ bool AutoVersioner::Consume(IAaptContext* context, ResourceTable* table) {
   CloningValueTransformer cloner(&table->string_pool);
   for (auto& package : table->packages) {
     for (auto& type : package->types) {
-      if (type->type != ResourceType::kStyle) {
+      if (type->named_type.type != ResourceType::kStyle) {
         continue;
       }
 
@@ -90,7 +90,7 @@ bool AutoVersioner::Consume(IAaptContext* context, ResourceTable* table) {
           }
 
           if (Style* style = ValueCast<Style>(config_value->value.get())) {
-            Maybe<ApiVersion> min_sdk_stripped;
+            std::optional<ApiVersion> min_sdk_stripped;
             std::vector<Style::Entry> stripped;
 
             auto iter = style->entries.begin();

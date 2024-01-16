@@ -31,6 +31,8 @@ interface IMidiManager
 {
     MidiDeviceInfo[] getDevices();
 
+    MidiDeviceInfo[] getDevicesForTransport(int transport);
+
     // for device creation & removal notifications
     void registerListener(IBinder clientToken, in IMidiDeviceListener listener);
     void unregisterListener(IBinder clientToken, in IMidiDeviceListener listener);
@@ -43,7 +45,7 @@ interface IMidiManager
     // for registering built-in MIDI devices
     MidiDeviceInfo registerDeviceServer(in IMidiDeviceServer server, int numInputPorts,
             int numOutputPorts, in String[] inputPortNames, in String[] outputPortNames,
-            in Bundle properties, int type);
+            in Bundle properties, int type, int defaultProtocol);
 
     // for unregistering built-in MIDI devices
     void unregisterDeviceServer(in IMidiDeviceServer server);
@@ -58,4 +60,7 @@ interface IMidiManager
     // used by MIDI devices to report their status
     // the token is used by MidiService for death notification
     void setDeviceStatus(in IMidiDeviceServer server, in MidiDeviceStatus status);
+
+    // Updates the number of bytes sent and received
+    void updateTotalBytes(in IMidiDeviceServer server, int inputBytes, int outputBytes);
 }

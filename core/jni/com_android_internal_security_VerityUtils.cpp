@@ -16,41 +16,31 @@
 
 #define LOG_TAG "VerityUtils"
 
-#include <nativehelper/JNIHelp.h>
-#include <nativehelper/ScopedPrimitiveArray.h>
-#include <nativehelper/ScopedUtfChars.h>
-#include <utils/Log.h>
-#include "jni.h"
-
+#include <android-base/unique_fd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/fs.h>
 #include <linux/fsverity.h>
 #include <linux/stat.h>
+#include <nativehelper/JNIHelp.h>
+#include <nativehelper/ScopedUtfChars.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-
-#include <android-base/unique_fd.h>
+#include <utils/Log.h>
 
 #include <type_traits>
+
+#include "jni.h"
 
 namespace android {
 
 namespace {
 
-int enableFsverity(JNIEnv *env, jobject /* clazz */, jstring filePath, jbyteArray signature) {
-    ScopedUtfChars path(env, filePath);
-    if (path.c_str() == nullptr) {
-        return EINVAL;
-    }
-    ::android::base::unique_fd rfd(open(path.c_str(), O_RDONLY | O_CLOEXEC));
-    if (rfd.get() < 0) {
+int enableFsverityForFd(JNIEnv *env, jobject clazz, jint fd) {
+    if (fd < 0) {
         return errno;
-    }
-    ScopedByteArrayRO signature_bytes(env, signature);
-    if (signature_bytes.get() == nullptr) {
-        return EINVAL;
     }
 
     fsverity_enable_arg arg = {};
@@ -59,13 +49,20 @@ int enableFsverity(JNIEnv *env, jobject /* clazz */, jstring filePath, jbyteArra
     arg.block_size = 4096;
     arg.salt_size = 0;
     arg.salt_ptr = reinterpret_cast<uintptr_t>(nullptr);
-    arg.sig_size = signature_bytes.size();
-    arg.sig_ptr = reinterpret_cast<uintptr_t>(signature_bytes.get());
 
-    if (ioctl(rfd.get(), FS_IOC_ENABLE_VERITY, &arg) < 0) {
+    if (ioctl(fd, FS_IOC_ENABLE_VERITY, &arg) < 0) {
         return errno;
     }
     return 0;
+}
+
+int enableFsverity(JNIEnv *env, jobject clazz, jstring filePath) {
+    ScopedUtfChars path(env, filePath);
+    if (path.c_str() == nullptr) {
+        return EINVAL;
+    }
+    ::android::base::unique_fd rfd(open(path.c_str(), O_RDONLY | O_CLOEXEC));
+    return enableFsverityForFd(env, clazz, rfd.get());
 }
 
 // Returns whether the file has fs-verity enabled.
@@ -73,18 +70,44 @@ int enableFsverity(JNIEnv *env, jobject /* clazz */, jstring filePath, jbyteArra
 int statxForFsverity(JNIEnv *env, jobject /* clazz */, jstring filePath) {
     ScopedUtfChars path(env, filePath);
 
+    // There are two ways to check whether a file has fs-verity enabled: statx() and FS_IOC_GETFLAGS
+    // (See https://www.kernel.org/doc/html/latest/filesystems/fsverity.html#statx and
+    // https://www.kernel.org/doc/html/latest/filesystems/fsverity.html#fs-ioc-getflags.)
+    // We try statx() first, since it doesn't require opening the file.
+
     struct statx out = {};
     if (statx(AT_FDCWD, path.c_str(), 0 /* flags */, STATX_ALL, &out) != 0) {
         return -errno;
     }
 
-    // Validity check.
-    if ((out.stx_attributes_mask & STATX_ATTR_VERITY) == 0) {
-        ALOGE("Unexpected, STATX_ATTR_VERITY not supported by kernel");
-        return -ENOSYS;
+    if (out.stx_attributes_mask & STATX_ATTR_VERITY) {
+        return (out.stx_attributes & STATX_ATTR_VERITY) != 0;
     }
 
-    return (out.stx_attributes & STATX_ATTR_VERITY) != 0;
+    // The filesystem doesn't support STATX_ATTR_VERITY.  This normally means that it doesn't
+    // support fs-verity, in which case we should simply return 0.  Unfortunately, virtio-fs is an
+    // exception, since it doesn't support STATX_ATTR_VERITY but does support querying FS_VERITY_FL
+    // via FS_IOC_GETFLAGS.  So we have to fall back to FS_IOC_GETFLAGS.  Note: despite being an
+    // ioctl, FS_IOC_GETFLAGS doesn't require the "ioctl" SELinux permission but rather "getattr".
+
+    ::android::base::unique_fd rfd(open(path.c_str(), O_RDONLY | O_CLOEXEC));
+    if (rfd.get() < 0) {
+        ALOGE("open failed at %s", path.c_str());
+        return -errno;
+    }
+
+    unsigned int flags;
+    if (ioctl(rfd.get(), FS_IOC_GETFLAGS, &flags) < 0) {
+        if (errno == ENOTTY) {
+            // If the filesystem supports neither STATX_ATTR_VERITY nor FS_IOC_GETFLAGS, then assume
+            // that it doesn't support fs-verity.
+            return 0;
+        }
+        ALOGE("ioctl(FS_IOC_GETFLAGS) failed at %s", path.c_str());
+        return -errno;
+    }
+
+    return (flags & FS_VERITY_FL) != 0;
 }
 
 int measureFsverity(JNIEnv *env, jobject /* clazz */, jstring filePath, jbyteArray digest) {
@@ -98,10 +121,10 @@ int measureFsverity(JNIEnv *env, jobject /* clazz */, jstring filePath, jbyteArr
     ScopedUtfChars path(env, filePath);
     ::android::base::unique_fd rfd(open(path.c_str(), O_RDONLY | O_CLOEXEC));
     if (rfd.get() < 0) {
-        return rfd.get();
+        return -errno;
     }
-    if (auto err = ioctl(rfd.get(), FS_IOC_MEASURE_VERITY, data); err < 0) {
-        return err;
+    if (::ioctl(rfd.get(), FS_IOC_MEASURE_VERITY, data) < 0) {
+        return -errno;
     }
 
     if (data->digest_algorithm != FS_VERITY_HASH_ALG_SHA256) {
@@ -119,7 +142,8 @@ int measureFsverity(JNIEnv *env, jobject /* clazz */, jstring filePath, jbyteArr
     return 0;
 }
 const JNINativeMethod sMethods[] = {
-        {"enableFsverityNative", "(Ljava/lang/String;[B)I", (void *)enableFsverity},
+        {"enableFsverityNative", "(Ljava/lang/String;)I", (void *)enableFsverity},
+        {"enableFsverityForFdNative", "(I)I", (void *)enableFsverityForFd},
         {"statxForFsverityNative", "(Ljava/lang/String;)I", (void *)statxForFsverity},
         {"measureFsverityNative", "(Ljava/lang/String;[B)I", (void *)measureFsverity},
 };

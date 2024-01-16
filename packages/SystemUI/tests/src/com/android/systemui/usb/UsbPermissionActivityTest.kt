@@ -21,11 +21,16 @@ import android.hardware.usb.IUsbSerialReader
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.testing.AndroidTestingRunner
+import android.testing.TestableLooper
 import android.view.WindowManager.LayoutParams.SYSTEM_FLAG_HIDE_NON_SYSTEM_OVERLAY_WINDOWS
 import androidx.test.filters.SmallTest
 import androidx.test.rule.ActivityTestRule
 import com.android.systemui.SysuiTestCase
+import com.android.systemui.activity.SingleActivityFactory
 import com.google.common.truth.Truth.assertThat
+
+import javax.inject.Inject
+
 import org.junit.After
 import org.junit.Before
 import org.junit.Rule
@@ -37,14 +42,24 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidTestingRunner::class)
 @SmallTest
+@TestableLooper.RunWithLooper
 class UsbPermissionActivityTest : SysuiTestCase() {
 
-    class UsbPermissionActivityTestable : UsbPermissionActivity()
+    private var mMessage: UsbAudioWarningDialogMessage = UsbAudioWarningDialogMessage()
+
+    open class UsbPermissionActivityTestable @Inject constructor (
+        val message: UsbAudioWarningDialogMessage
+    ) : UsbPermissionActivity(UsbAudioWarningDialogMessage())
 
     @Rule
     @JvmField
-    var activityRule = ActivityTestRule<UsbPermissionActivityTestable>(
-            UsbPermissionActivityTestable::class.java, false, false)
+    var activityRule = ActivityTestRule(
+            /* activityFactory= */ SingleActivityFactory {
+                UsbPermissionActivityTestable(mMessage)
+            },
+            /* initialTouchMode= */ false,
+            /* launchActivity= */ false,
+    )
 
     private val activityIntent = Intent(mContext, UsbPermissionActivityTestable::class.java)
             .apply {
@@ -72,6 +87,7 @@ class UsbPermissionActivityTest : SysuiTestCase() {
 
     @Before
     fun setUp() {
+        UsbPermissionActivityTestable(mMessage)
         activityRule.launchActivity(activityIntent)
     }
 

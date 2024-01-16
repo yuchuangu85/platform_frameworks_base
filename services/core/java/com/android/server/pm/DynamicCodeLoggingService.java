@@ -22,17 +22,22 @@ import android.app.job.JobScheduler;
 import android.app.job.JobService;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.pm.PackageManagerInternal;
 import android.os.Process;
-import android.os.ServiceManager;
 import android.util.EventLog;
 import android.util.Log;
 
+import com.android.server.LocalManagerRegistry;
+import com.android.server.LocalServices;
+import com.android.server.art.DexUseManagerLocal;
+import com.android.server.art.model.DexContainerFileUseInfo;
 import com.android.server.pm.dex.DynamicCodeLogger;
 
 import libcore.util.HexEncoding;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -60,7 +65,7 @@ public class DynamicCodeLoggingService extends JobService {
     private static final String AVC_PREFIX = "type=" + AUDIT_AVC + " ";
 
     private static final Pattern EXECUTE_NATIVE_AUDIT_PATTERN =
-            Pattern.compile(".*\\bavc: granted \\{ execute(?:_no_trans|) \\} .*"
+            Pattern.compile(".*\\bavc: +granted +\\{ execute(?:_no_trans|) \\} .*"
                     + "\\bpath=(?:\"([^\" ]*)\"|([0-9A-F]+)) .*"
                     + "\\bscontext=u:r:untrusted_app(?:_25|_27)?:.*"
                     + "\\btcontext=u:object_r:app_data_file:.*"
@@ -133,8 +138,29 @@ public class DynamicCodeLoggingService extends JobService {
     }
 
     private static DynamicCodeLogger getDynamicCodeLogger() {
-        PackageManagerService pm = (PackageManagerService) ServiceManager.getService("package");
-        return pm.getDexManager().getDynamicCodeLogger();
+        return LocalServices.getService(PackageManagerInternal.class).getDynamicCodeLogger();
+    }
+
+    private static void syncDataFromArtService(DynamicCodeLogger dynamicCodeLogger) {
+        DexUseManagerLocal dexUseManagerLocal = DexOptHelper.getDexUseManagerLocal();
+        if (dexUseManagerLocal == null) {
+            // ART Service is not enabled.
+            return;
+        }
+        PackageManagerLocal packageManagerLocal =
+                Objects.requireNonNull(LocalManagerRegistry.getManager(PackageManagerLocal.class));
+        try (PackageManagerLocal.UnfilteredSnapshot snapshot =
+                        packageManagerLocal.withUnfilteredSnapshot()) {
+            for (String owningPackageName : snapshot.getPackageStates().keySet()) {
+                for (DexContainerFileUseInfo info :
+                        dexUseManagerLocal.getSecondaryDexContainerFileUseInfo(owningPackageName)) {
+                    for (String loadingPackageName : info.getLoadingPackages()) {
+                        dynamicCodeLogger.recordDex(info.getUserHandle().getIdentifier(),
+                                info.getDexContainerFile(), owningPackageName, loadingPackageName);
+                    }
+                }
+            }
+        }
     }
 
     private class IdleLoggingThread extends Thread {
@@ -152,6 +178,7 @@ public class DynamicCodeLoggingService extends JobService {
             }
 
             DynamicCodeLogger dynamicCodeLogger = getDynamicCodeLogger();
+            syncDataFromArtService(dynamicCodeLogger);
             for (String packageName : dynamicCodeLogger.getAllPackagesWithDynamicCodeLoading()) {
                 if (mIdleLoggingStopRequested) {
                     Log.w(TAG, "Stopping IdleLoggingJob run at scheduler request");

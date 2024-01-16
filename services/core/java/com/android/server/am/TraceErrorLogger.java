@@ -16,7 +16,6 @@
 
 package com.android.server.am;
 
-import android.os.Build;
 import android.os.Trace;
 
 import java.util.UUID;
@@ -31,7 +30,7 @@ public class TraceErrorLogger {
     private static final int PLACEHOLDER_VALUE = 1;
 
     public boolean isAddErrorIdEnabled() {
-        return Build.IS_DEBUGGABLE;
+        return true;
     }
 
     /**
@@ -46,12 +45,26 @@ public class TraceErrorLogger {
      * can be uniquely identified. We also add the same id to the dropbox entry of the error, so
      * that we can join the trace and the error server-side.
      *
-     * @param processName The process name to include in the error id.
+     * @param processName The name of the ANRing process.
+     * @param pid         The pid of the ANRing process.
      * @param errorId     The unique id with which to tag the trace.
      */
-    public void addErrorIdToTrace(String processName, UUID errorId) {
+    public void addProcessInfoAndErrorIdToTrace(String processName, int pid, UUID errorId) {
         Trace.traceCounter(Trace.TRACE_TAG_ACTIVITY_MANAGER,
-                COUNTER_PREFIX + processName + "#" + errorId.toString(),
+                COUNTER_PREFIX + processName + " " + pid + "#" + errorId.toString(),
+                PLACEHOLDER_VALUE);
+    }
+
+    /**
+     * Pushes a counter containing an ANR/Watchdog subject and a unique id so that the subject
+     * can be uniquely identified.
+     *
+     * @param subject The subject to include in the trace.
+     * @param errorId The unique id with which to tag the trace.
+     */
+    public void addSubjectToTrace(String subject, UUID errorId) {
+        Trace.traceCounter(Trace.TRACE_TAG_ACTIVITY_MANAGER,
+                String.format("Subject(for ErrorId %s):%s", errorId.toString(), subject),
                 PLACEHOLDER_VALUE);
     }
 }

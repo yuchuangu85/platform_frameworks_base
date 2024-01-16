@@ -20,7 +20,7 @@ import static android.app.NotificationManager.IMPORTANCE_DEFAULT;
 import static android.app.NotificationManager.IMPORTANCE_LOW;
 import static android.app.NotificationManager.IMPORTANCE_UNSPECIFIED;
 
-import static com.android.systemui.animation.Interpolators.FAST_OUT_SLOW_IN;
+import static com.android.app.animation.Interpolators.FAST_OUT_SLOW_IN;
 
 import static java.lang.annotation.RetentionPolicy.SOURCE;
 
@@ -124,6 +124,7 @@ public class NotificationInfo extends LinearLayout implements NotificationGuts.G
     private NotificationEntry mEntry;
     private StatusBarNotification mSbn;
     private boolean mIsDeviceProvisioned;
+    private boolean mIsSystemRegisteredCall;
 
     private OnSettingsClickListener mOnSettingsClickListener;
     private OnAppSettingsClickListener mAppSettingsClickListener;
@@ -157,7 +158,7 @@ public class NotificationInfo extends LinearLayout implements NotificationGuts.G
     // used by standard ui
     private OnClickListener mOnDismissSettings = v -> {
         mPressedApply = true;
-        mGutsContainer.closeControls(v, true);
+        mGutsContainer.closeControls(v, /* save= */ true);
     };
 
     public NotificationInfo(Context context, AttributeSet attrs) {
@@ -203,10 +204,11 @@ public class NotificationInfo extends LinearLayout implements NotificationGuts.G
             boolean isDeviceProvisioned,
             boolean isNonblockable,
             boolean wasShownHighPriority,
-            AssistantFeedbackController assistantFeedbackController)
+            AssistantFeedbackController assistantFeedbackController,
+            MetricsLogger metricsLogger)
             throws RemoteException {
         mINotificationManager = iNotificationManager;
-        mMetricsLogger = Dependency.get(MetricsLogger.class);
+        mMetricsLogger = metricsLogger;
         mOnUserInteractionCallback = onUserInteractionCallback;
         mChannelEditorDialogController = channelEditorDialogController;
         mAssistantFeedbackController = assistantFeedbackController;
@@ -228,6 +230,9 @@ public class NotificationInfo extends LinearLayout implements NotificationGuts.G
         mIsDeviceProvisioned = isDeviceProvisioned;
         mShowAutomaticSetting = mAssistantFeedbackController.isFeedbackEnabled();
         mUiEventLogger = uiEventLogger;
+
+        mIsSystemRegisteredCall = mSbn.getNotification().isStyle(Notification.CallStyle.class)
+                && mINotificationManager.isInCall(mSbn.getPackageName(), mSbn.getUid());
 
         int numTotalChannels = mINotificationManager.getNumNotificationChannelsForPackage(
                 pkg, mAppUid, false /* includeDeleted */);
@@ -252,17 +257,27 @@ public class NotificationInfo extends LinearLayout implements NotificationGuts.G
     }
 
     private void bindInlineControls() {
-        if (mIsNonblockable) {
+        if (mIsSystemRegisteredCall) {
+            findViewById(R.id.non_configurable_call_text).setVisibility(VISIBLE);
+            findViewById(R.id.non_configurable_text).setVisibility(GONE);
+            findViewById(R.id.non_configurable_multichannel_text).setVisibility(GONE);
+            findViewById(R.id.interruptiveness_settings).setVisibility(GONE);
+            ((TextView) findViewById(R.id.done)).setText(R.string.inline_done_button);
+            findViewById(R.id.turn_off_notifications).setVisibility(GONE);
+        } else if (mIsNonblockable) {
             findViewById(R.id.non_configurable_text).setVisibility(VISIBLE);
+            findViewById(R.id.non_configurable_call_text).setVisibility(GONE);
             findViewById(R.id.non_configurable_multichannel_text).setVisibility(GONE);
             findViewById(R.id.interruptiveness_settings).setVisibility(GONE);
             ((TextView) findViewById(R.id.done)).setText(R.string.inline_done_button);
             findViewById(R.id.turn_off_notifications).setVisibility(GONE);
         } else if (mNumUniqueChannelsInRow > 1) {
+            findViewById(R.id.non_configurable_call_text).setVisibility(GONE);
             findViewById(R.id.non_configurable_text).setVisibility(GONE);
             findViewById(R.id.interruptiveness_settings).setVisibility(GONE);
             findViewById(R.id.non_configurable_multichannel_text).setVisibility(VISIBLE);
         } else {
+            findViewById(R.id.non_configurable_call_text).setVisibility(GONE);
             findViewById(R.id.non_configurable_text).setVisibility(GONE);
             findViewById(R.id.non_configurable_multichannel_text).setVisibility(GONE);
             findViewById(R.id.interruptiveness_settings).setVisibility(VISIBLE);
@@ -527,10 +542,6 @@ public class NotificationInfo extends LinearLayout implements NotificationGuts.G
 
     @Override
     public void onFinishedClosing() {
-        if (mChosenImportance != null) {
-            mStartingChannelImportance = mChosenImportance;
-        }
-
         bindInlineControls();
 
         logUiEvent(NotificationControlsEvent.NOTIFICATION_CONTROLS_CLOSE);
@@ -590,7 +601,7 @@ public class NotificationInfo extends LinearLayout implements NotificationGuts.G
     }
 
     @Override
-    public boolean shouldBeSaved() {
+    public boolean shouldBeSavedOnClose() {
         return mPressedApply;
     }
 
@@ -613,6 +624,12 @@ public class NotificationInfo extends LinearLayout implements NotificationGuts.G
         if (save) {
             saveImportance();
         }
+
+        // Clear the selected importance when closing, so when when we open again,
+        // we starts from a clean state.
+        mChosenImportance = null;
+        mPressedApply = false;
+
         return false;
     }
 

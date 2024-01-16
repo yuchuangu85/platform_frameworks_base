@@ -78,6 +78,34 @@ oneway interface IRecognitionListener {
     void onPartialResults(in Bundle results);
 
     /**
+     * Called for each ready segment of a recognition request. To request segmented speech results
+     * use {@link RecognizerIntent#EXTRA_SEGMENTED_SESSION}. The callback might be called
+     * any number of times between {@link #onBeginningOfSpeech()} and
+     * {@link #onEndOfSegmentedSession()}.
+     *
+     * @param segmentResults the returned results. To retrieve the results in
+     *        ArrayList&lt;String&gt; format use {@link Bundle#getStringArrayList(String)} with
+     *        {@link SpeechRecognizer#RESULTS_RECOGNITION} as a parameter
+    */
+    void onSegmentResults(in Bundle results);
+
+    /**
+     * Called at the end of a segmented recognition request. To request segmented speech results
+     * use {@link RecognizerIntent#EXTRA_SEGMENTED_SESSION}.
+     */
+    void onEndOfSegmentedSession();
+
+    /**
+     * Called when the language detection (and switching) results are available.
+     *
+     * @param results a Bundle containing the identifiers of the most confidently detected language,
+     * the confidence level of the detection,
+     * the alternative locales for the most confidently detected language,
+     * and the results of the language switching.
+     */
+    void onLanguageDetection(in Bundle results);
+
+    /**
      * Reserved for adding future events.
      *
      * @param eventType the type of the occurred event

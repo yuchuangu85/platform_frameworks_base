@@ -20,6 +20,7 @@ import android.Manifest;
 import android.annotation.CallbackExecutor;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresFeature;
 import android.annotation.RequiresPermission;
 import android.annotation.SdkConstant;
 import android.annotation.StringDef;
@@ -37,7 +38,6 @@ import android.telephony.ims.aidl.IFeatureProvisioningCallback;
 import android.telephony.ims.aidl.IImsConfigCallback;
 import android.telephony.ims.aidl.IRcsConfigCallback;
 import android.telephony.ims.feature.MmTelFeature;
-import android.telephony.ims.feature.RcsFeature;
 import android.telephony.ims.stub.ImsConfigImplBase;
 import android.telephony.ims.stub.ImsRegistrationImplBase;
 
@@ -54,7 +54,11 @@ import java.util.concurrent.Executor;
  * IMS provisioning keys are defined per carrier or OEM using OMA-DM or other provisioning
  * applications and may vary. It is up to the carrier and OEM applications to ensure that the
  * correct provisioning keys are being used when integrating with a vendor's ImsService.
+ *
+ * Use {@link android.telephony.ims.ImsManager#getProvisioningManager(int)} to get an instance of
+ * this manager.
  */
+@RequiresFeature(PackageManager.FEATURE_TELEPHONY_IMS)
 public class ProvisioningManager {
 
     private static final String TAG = "ProvisioningManager";
@@ -968,7 +972,7 @@ public class ProvisioningManager {
     /**
      * Callback for IMS provisioning feature changes.
      */
-    public static class FeatureProvisioningCallback {
+    public abstract static class FeatureProvisioningCallback {
 
         private static class CallbackBinder extends IFeatureProvisioningCallback.Stub {
 
@@ -1022,12 +1026,10 @@ public class ProvisioningManager {
          * specified, or {@code false} if the capability is not provisioned for the technology
          * specified.
          */
-        public void onFeatureProvisioningChanged(
+        public abstract void onFeatureProvisioningChanged(
                 @MmTelFeature.MmTelCapabilities.MmTelCapability int capability,
                 @ImsRegistrationImplBase.ImsRegistrationTech int tech,
-                boolean isProvisioned) {
-            // Base Implementation
-        }
+                boolean isProvisioned);
 
         /**
          * The IMS RCS provisioning has changed for a specific capability and IMS
@@ -1039,12 +1041,10 @@ public class ProvisioningManager {
          * specified, or {@code false} if the capability is not provisioned for the technology
          * specified.
          */
-        public void onRcsFeatureProvisioningChanged(
-                @RcsFeature.RcsImsCapabilities.RcsImsCapabilityFlag int capability,
+        public abstract void onRcsFeatureProvisioningChanged(
+                @ImsRcsManager.RcsImsCapabilityFlag int capability,
                 @ImsRegistrationImplBase.ImsRegistrationTech int tech,
-                boolean isProvisioned) {
-            // Base Implementation
-        }
+                boolean isProvisioned);
 
         /**@hide*/
         public final IFeatureProvisioningCallback getBinder() {
@@ -1503,8 +1503,8 @@ public class ProvisioningManager {
      * Get the provisioning status for the IMS RCS capability specified.
      *
      * If provisioning is not required for the queried
-     * {@link RcsFeature.RcsImsCapabilities.RcsImsCapabilityFlag} this method will always return
-     * {@code true}.
+     * {@link ImsRcsManager.RcsImsCapabilityFlag} or if the device does not support IMS
+     * this method will always return {@code true}.
      *
      * @see CarrierConfigManager.Ims#KEY_CARRIER_RCS_PROVISIONING_REQUIRED_BOOL
      * @return true if the device is provisioned for the capability or does not require
@@ -1520,7 +1520,7 @@ public class ProvisioningManager {
     @WorkerThread
     @RequiresPermission(Manifest.permission.READ_PRIVILEGED_PHONE_STATE)
     public boolean getRcsProvisioningStatusForCapability(
-            @RcsFeature.RcsImsCapabilities.RcsImsCapabilityFlag int capability) {
+            @ImsRcsManager.RcsImsCapabilityFlag int capability) {
         try {
             return getITelephony().getRcsProvisioningStatusForCapability(mSubId, capability,
             ImsRegistrationImplBase.REGISTRATION_TECH_LTE);
@@ -1533,8 +1533,8 @@ public class ProvisioningManager {
      * Get the provisioning status for the IMS RCS capability specified.
      *
      * If provisioning is not required for the queried
-     * {@link RcsFeature.RcsImsCapabilities.RcsImsCapabilityFlag} this method
-     * will always return {@code true}.
+     * {@link ImsRcsManager.RcsImsCapabilityFlag} or if the device does not support IMS
+     * this method will always return {@code true}.
      *
      * <p> Requires Permission:
      * <ul>
@@ -1551,7 +1551,7 @@ public class ProvisioningManager {
     @WorkerThread
     @RequiresPermission(Manifest.permission.READ_PRECISE_PHONE_STATE)
     public boolean getRcsProvisioningStatusForCapability(
-            @RcsFeature.RcsImsCapabilities.RcsImsCapabilityFlag int capability,
+            @ImsRcsManager.RcsImsCapabilityFlag int capability,
             @ImsRegistrationImplBase.ImsRegistrationTech int tech) {
         try {
             return getITelephony().getRcsProvisioningStatusForCapability(mSubId, capability, tech);
@@ -1588,7 +1588,7 @@ public class ProvisioningManager {
     @WorkerThread
     @RequiresPermission(Manifest.permission.MODIFY_PHONE_STATE)
     public void setRcsProvisioningStatusForCapability(
-            @RcsFeature.RcsImsCapabilities.RcsImsCapabilityFlag int capability,
+            @ImsRcsManager.RcsImsCapabilityFlag int capability,
             boolean isProvisioned) {
         try {
             getITelephony().setRcsProvisioningStatusForCapability(mSubId, capability,
@@ -1620,7 +1620,7 @@ public class ProvisioningManager {
     @WorkerThread
     @RequiresPermission(Manifest.permission.MODIFY_PHONE_STATE)
     public void setRcsProvisioningStatusForCapability(
-            @RcsFeature.RcsImsCapabilities.RcsImsCapabilityFlag int capability,
+            @ImsRcsManager.RcsImsCapabilityFlag int capability,
             @ImsRegistrationImplBase.ImsRegistrationTech int tech, boolean isProvisioned) {
         try {
             getITelephony().setRcsProvisioningStatusForCapability(mSubId, capability,
@@ -1643,7 +1643,8 @@ public class ProvisioningManager {
      * </ul>
      *
      * @return true if provisioning is required for the MMTEL capability and IMS
-     * registration technology specified, false if it is not required.
+     * registration technology specified, false if it is not required or if the device does not
+     * support IMS.
      */
     @RequiresPermission(Manifest.permission.READ_PRECISE_PHONE_STATE)
     public boolean isProvisioningRequiredForCapability(
@@ -1670,11 +1671,12 @@ public class ProvisioningManager {
      * </ul>
      *
      * @return true if provisioning is required for the RCS capability and IMS
-     * registration technology specified, false if it is not required.
+     * registration technology specified, false if it is not required or if the device does not
+     * support IMS.
      */
     @RequiresPermission(Manifest.permission.READ_PRECISE_PHONE_STATE)
     public boolean isRcsProvisioningRequiredForCapability(
-            @RcsFeature.RcsImsCapabilities.RcsImsCapabilityFlag int capability,
+            @ImsRcsManager.RcsImsCapabilityFlag int capability,
             @ImsRegistrationImplBase.ImsRegistrationTech int tech) {
         try {
             return getITelephony().isRcsProvisioningRequiredForCapability(mSubId, capability, tech);
@@ -1686,7 +1688,8 @@ public class ProvisioningManager {
 
     /**
      * Notify the framework that an RCS autoconfiguration XML file has been received for
-     * provisioning.
+     * provisioning. This API is only valid if the device supports IMS, which can be checked using
+     * {@link PackageManager#hasSystemFeature}.
      *
      * <p>Requires Permission:
      * <ul>
@@ -1829,6 +1832,8 @@ public class ProvisioningManager {
             return getITelephony().isRcsVolteSingleRegistrationCapable(mSubId);
         } catch (RemoteException | IllegalStateException e) {
             throw new ImsException(e.getMessage(), ImsException.CODE_ERROR_SERVICE_UNAVAILABLE);
+        } catch (ServiceSpecificException e) {
+            throw new ImsException(e.getMessage(), e.errorCode);
         }
     }
 
@@ -1922,7 +1927,8 @@ public class ProvisioningManager {
 
     /**
      * Reconfiguration triggered by the RCS application. Most likely cause
-     * is the 403 forbidden to a HTTP request.
+     * is the 403 forbidden to a HTTP request. This API is only valid if the device supports IMS,
+     * which can be checked using {@link PackageManager#hasSystemFeature}
      *
      * <p>When this api is called, the RCS configuration for the associated
      * subscription will be removed, and the application which has registered

@@ -17,15 +17,14 @@
 #ifndef AAPT2_CONFIGURATION_H
 #define AAPT2_CONFIGURATION_H
 
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "androidfw/ConfigDescription.h"
-
-#include "Diagnostics.h"
-#include "util/Maybe.h"
+#include "androidfw/IDiagnostics.h"
 
 namespace aapt {
 
@@ -44,7 +43,7 @@ enum class Abi {
 };
 
 /** Helper method to convert an ABI to a string representing the path within the APK. */
-const android::StringPiece& AbiToString(Abi abi);
+android::StringPiece AbiToString(Abi abi);
 
 /**
  * Represents an individual locale. When a locale is included, it must be
@@ -55,9 +54,9 @@ const android::StringPiece& AbiToString(Abi abi);
  */
 struct Locale {
   /** The ISO<?> standard locale language code. */
-  Maybe<std::string> lang;
+  std::optional<std::string> lang;
   /** The ISO<?> standard locale region code. */
-  Maybe<std::string> region;
+  std::optional<std::string> region;
 
   inline friend bool operator==(const Locale& lhs, const Locale& rhs) {
     return lhs.lang == rhs.lang && lhs.region == rhs.region;
@@ -74,9 +73,9 @@ struct AndroidManifest {
 struct AndroidSdk {
   std::string label;
   int min_sdk_version;  // min_sdk_version is mandatory if splitting by SDK.
-  Maybe<int> target_sdk_version;
-  Maybe<int> max_sdk_version;
-  Maybe<AndroidManifest> manifest;
+  std::optional<int> target_sdk_version;
+  std::optional<int> max_sdk_version;
+  std::optional<AndroidManifest> manifest;
 
   static AndroidSdk ForMinSdk(int min_sdk) {
     AndroidSdk sdk;
@@ -112,7 +111,7 @@ struct OutputArtifact {
   std::vector<Abi> abis;
   std::vector<android::ConfigDescription> screen_densities;
   std::vector<android::ConfigDescription> locales;
-  Maybe<AndroidSdk> android_sdk;
+  std::optional<AndroidSdk> android_sdk;
   std::vector<DeviceFeature> features;
   std::vector<GlTexture> textures;
 
@@ -126,9 +125,6 @@ struct OutputArtifact {
 
 }  // namespace configuration
 
-// Forward declaration of classes used in the API.
-struct IDiagnostics;
-
 /**
  * XML configuration file parser for the split and optimize commands.
  */
@@ -136,7 +132,7 @@ class ConfigurationParser {
  public:
 
   /** Returns a ConfigurationParser for the file located at the provided path. */
-  static Maybe<ConfigurationParser> ForPath(const std::string& path);
+  static std::optional<ConfigurationParser> ForPath(const std::string& path);
 
   /** Returns a ConfigurationParser for the configuration in the provided file contents. */
   static ConfigurationParser ForContents(const std::string& contents, const std::string& path) {
@@ -145,7 +141,7 @@ class ConfigurationParser {
   }
 
   /** Sets the diagnostics context to use when parsing. */
-  ConfigurationParser& WithDiagnostics(IDiagnostics* diagnostics) {
+  ConfigurationParser& WithDiagnostics(android::IDiagnostics* diagnostics) {
     diag_ = diagnostics;
     return *this;
   }
@@ -154,7 +150,7 @@ class ConfigurationParser {
    * Parses the configuration file and returns the results. If the configuration could not be parsed
    * the result is empty and any errors will be displayed with the provided diagnostics context.
    */
-  Maybe<std::vector<configuration::OutputArtifact>> Parse(const android::StringPiece& apk_path);
+  std::optional<std::vector<configuration::OutputArtifact>> Parse(android::StringPiece apk_path);
 
  protected:
   /**
@@ -165,7 +161,7 @@ class ConfigurationParser {
   ConfigurationParser(std::string contents, const std::string& config_path);
 
   /** Returns the current diagnostics context to any subclasses. */
-  IDiagnostics* diagnostics() {
+  android::IDiagnostics* diagnostics() {
     return diag_;
   }
 
@@ -175,7 +171,7 @@ class ConfigurationParser {
   /** Path to the input configuration. */
   const std::string config_path_;
   /** The diagnostics context to send messages to. */
-  IDiagnostics* diag_;
+  android::IDiagnostics* diag_;
 };
 
 }  // namespace aapt

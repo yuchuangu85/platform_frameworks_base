@@ -34,6 +34,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
+import java.util.Collections;
+
 /** Tests for {@link DetectTvSystemAudioModeSupportAction} class. */
 @SmallTest
 @Presubmit
@@ -51,9 +53,14 @@ public class DetectTvSystemAudioModeSupportActionTest {
 
     @Before
     public void SetUp() {
-        mDeviceInfoForTests = new HdmiDeviceInfo(1001, 1234);
+        mDeviceInfoForTests = HdmiDeviceInfo.hardwarePort(1001, 1234);
+
+        FakeAudioFramework audioFramework = new FakeAudioFramework();
+
         HdmiControlService hdmiControlService =
-                new HdmiControlService(InstrumentationRegistry.getTargetContext()) {
+                new HdmiControlService(InstrumentationRegistry.getTargetContext(),
+                        Collections.emptyList(), audioFramework.getAudioManager(),
+                        audioFramework.getAudioDeviceVolumeManager()) {
 
                     @Override
                     void sendCecCommand(
@@ -70,7 +77,9 @@ public class DetectTvSystemAudioModeSupportActionTest {
                                     mHdmiCecLocalDeviceAudioSystem.dispatchMessage(
                                             HdmiCecMessageBuilder.buildFeatureAbortCommand(
                                                     Constants.ADDR_TV,
-                                                    mHdmiCecLocalDeviceAudioSystem.mAddress,
+                                                    mHdmiCecLocalDeviceAudioSystem
+                                                            .getDeviceInfo()
+                                                            .getLogicalAddress(),
                                                     Constants.MESSAGE_SET_SYSTEM_AUDIO_MODE,
                                                     Constants.ABORT_UNRECOGNIZED_OPCODE));
                                 }
@@ -103,6 +112,7 @@ public class DetectTvSystemAudioModeSupportActionTest {
                     }
                 };
         mHdmiCecLocalDeviceAudioSystem.init();
+        mHdmiCecLocalDeviceAudioSystem.setDeviceInfo(mDeviceInfoForTests);
         Looper looper = mTestLooper.getLooper();
         hdmiControlService.setIoLooper(looper);
 

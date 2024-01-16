@@ -18,6 +18,7 @@ package android.telephony.ims.stub;
 
 import android.annotation.IntDef;
 import android.annotation.IntRange;
+import android.annotation.NonNull;
 import android.annotation.SystemApi;
 import android.os.RemoteException;
 import android.telephony.SmsManager;
@@ -27,6 +28,7 @@ import android.util.Log;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.concurrent.Executor;
 
 /**
  * Base implementation for SMS over IMS.
@@ -128,6 +130,22 @@ public class ImsSmsImplBase {
     // Lock for feature synchronization
     private final Object mLock = new Object();
     private IImsSmsListener mListener;
+    private Executor mExecutor;
+
+    /**
+     * Create a new ImsSmsImplBase using the Executor set in MmTelFeature
+     */
+    public ImsSmsImplBase() {
+    }
+
+    /**
+     * Create a new ImsSmsImplBase with specified executor.
+     * <p>
+     * @param executor Default executor for ImsSmsImplBase
+     */
+    public ImsSmsImplBase(@NonNull Executor executor) {
+        mExecutor = executor;
+    }
 
     /**
      * Registers a listener responsible for handling tasks like delivering messages.
@@ -170,9 +188,28 @@ public class ImsSmsImplBase {
     }
 
     /**
+     * This method will be triggered by the platform when memory becomes available to receive SMS
+     * after a memory full event. This method should be implemented by IMS providers to
+     * send RP-SMMA notification from SMS Relay Layer to server over IMS as per section 7.3.2 of
+     * TS 124.11. Once the RP-SMMA Notification is sent to the network. The network will deliver all
+     * the pending messages which failed due to Unavailability of Memory.
+     *
+     * @param token unique token generated in {@link ImsSmsDispatcher#onMemoryAvailable(void)} that
+     *  should be used when triggering callbacks for this specific message.
+     *
+     * @hide
+     */
+    public void onMemoryAvailable(int token) {
+        // Base Implementation - Should be overridden
+    }
+
+    /**
      * This method will be triggered by the platform after
      * {@link #onSmsReceived(int, String, byte[])} has been called to deliver the result to the IMS
      * provider.
+     *
+     * If the framework needs to provide the PDU used to acknowledge the SMS,
+     * {@link #acknowledgeSms(int, int, int, byte[])} will be called.
      *
      * @param token token provided in {@link #onSmsReceived(int, String, byte[])}
      * @param messageRef the message reference, which may be 1 byte if it is in
@@ -183,6 +220,27 @@ public class ImsSmsImplBase {
     public void acknowledgeSms(int token, @IntRange(from = 0, to = 65535)  int messageRef,
             @DeliverStatusResult int result) {
         Log.e(LOG_TAG, "acknowledgeSms() not implemented.");
+    }
+
+    /**
+     * This method will be called by the platform after
+     * {@link #onSmsReceived(int, String, byte[])} has been called to acknowledge an incoming SMS.
+     *
+     * This method is only called in cases where the framework needs to provide the PDU such as the
+     * case where we provide the Short Message Transfer Layer PDU (see 3GPP TS 23.040). Otherwise,
+     * {@link #acknowledgeSms(int, int, int)} will be used.
+     *
+     * @param token token provided in {@link #onSmsReceived(int, String, byte[])}
+     * @param messageRef the message reference, which may be 1 byte if it is in
+     *     {@link SmsMessage#FORMAT_3GPP} format (see TS.123.040) or 2 bytes if it is in
+     *     {@link SmsMessage#FORMAT_3GPP2} format (see 3GPP2 C.S0015-B).
+     * @param result result of delivering the message.
+     * @param pdu PDU representing the contents of the message.
+     */
+    public void acknowledgeSms(int token, @IntRange(from = 0, to = 65535)  int messageRef,
+            @DeliverStatusResult int result, @NonNull byte[] pdu) {
+        Log.e(LOG_TAG, "acknowledgeSms() not implemented. acknowledgeSms(int, int, int) called.");
+        acknowledgeSms(token, messageRef, result);
     }
 
     /**
@@ -219,22 +277,25 @@ public class ImsSmsImplBase {
      */
     public final void onSmsReceived(int token, @SmsMessage.Format String format, byte[] pdu)
             throws RuntimeException {
+        IImsSmsListener listener = null;
         synchronized (mLock) {
-            if (mListener == null) {
-                throw new RuntimeException("Feature not ready.");
-            }
-            try {
-                mListener.onSmsReceived(token, format, pdu);
-            } catch (RemoteException e) {
-                Log.e(LOG_TAG, "Can not deliver sms: " + e.getMessage());
-                SmsMessage message = SmsMessage.createFromPdu(pdu, format);
-                if (message != null && message.mWrappedSmsMessage != null) {
-                    acknowledgeSms(token, message.mWrappedSmsMessage.mMessageRef,
-                            DELIVER_STATUS_ERROR_GENERIC);
-                } else {
-                    Log.w(LOG_TAG, "onSmsReceived: Invalid pdu entered.");
-                    acknowledgeSms(token, 0, DELIVER_STATUS_ERROR_GENERIC);
-                }
+            listener = mListener;
+        }
+
+        if (listener == null) {
+            throw new RuntimeException("Feature not ready.");
+        }
+        try {
+            listener.onSmsReceived(token, format, pdu);
+        } catch (RemoteException e) {
+            Log.e(LOG_TAG, "Can not deliver sms: " + e.getMessage());
+            SmsMessage message = SmsMessage.createFromPdu(pdu, format);
+            if (message != null && message.mWrappedSmsMessage != null) {
+                acknowledgeSms(token, message.mWrappedSmsMessage.mMessageRef,
+                        DELIVER_STATUS_ERROR_GENERIC);
+            } else {
+                Log.w(LOG_TAG, "onSmsReceived: Invalid pdu entered.");
+                acknowledgeSms(token, 0, DELIVER_STATUS_ERROR_GENERIC);
             }
         }
     }
@@ -254,16 +315,19 @@ public class ImsSmsImplBase {
      */
     public final void onSendSmsResultSuccess(int token,
             @IntRange(from = 0, to = 65535) int messageRef) throws RuntimeException {
+        IImsSmsListener listener = null;
         synchronized (mLock) {
-            if (mListener == null) {
-                throw new RuntimeException("Feature not ready.");
-            }
-            try {
-                mListener.onSendSmsResult(token, messageRef, SEND_STATUS_OK,
-                        SmsManager.RESULT_ERROR_NONE, RESULT_NO_NETWORK_ERROR);
-            } catch (RemoteException e) {
-                e.rethrowFromSystemServer();
-            }
+            listener = mListener;
+        }
+
+        if (listener == null) {
+            throw new RuntimeException("Feature not ready.");
+        }
+        try {
+            listener.onSendSmsResult(token, messageRef, SEND_STATUS_OK,
+                    SmsManager.RESULT_ERROR_NONE, RESULT_NO_NETWORK_ERROR);
+        } catch (RemoteException e) {
+            e.rethrowFromSystemServer();
         }
     }
 
@@ -288,16 +352,19 @@ public class ImsSmsImplBase {
     @Deprecated
     public final void onSendSmsResult(int token, @IntRange(from = 0, to = 65535) int messageRef,
             @SendStatusResult int status, @SmsManager.Result int reason) throws RuntimeException {
+        IImsSmsListener listener = null;
         synchronized (mLock) {
-            if (mListener == null) {
-                throw new RuntimeException("Feature not ready.");
-            }
-            try {
-                mListener.onSendSmsResult(token, messageRef, status, reason,
-                        RESULT_NO_NETWORK_ERROR);
-            } catch (RemoteException e) {
-                e.rethrowFromSystemServer();
-            }
+            listener = mListener;
+        }
+
+        if (listener == null) {
+            throw new RuntimeException("Feature not ready.");
+        }
+        try {
+            listener.onSendSmsResult(token, messageRef, status, reason,
+                    RESULT_NO_NETWORK_ERROR);
+        } catch (RemoteException e) {
+            e.rethrowFromSystemServer();
         }
     }
 
@@ -322,15 +389,50 @@ public class ImsSmsImplBase {
     public final void onSendSmsResultError(int token,
             @IntRange(from = 0, to = 65535) int messageRef, @SendStatusResult int status,
             @SmsManager.Result int reason, int networkErrorCode) throws RuntimeException {
+        IImsSmsListener listener = null;
         synchronized (mLock) {
-            if (mListener == null) {
-                throw new RuntimeException("Feature not ready.");
-            }
-            try {
-                mListener.onSendSmsResult(token, messageRef, status, reason, networkErrorCode);
-            } catch (RemoteException e) {
-                e.rethrowFromSystemServer();
-            }
+            listener = mListener;
+        }
+
+        if (listener == null) {
+            throw new RuntimeException("Feature not ready.");
+        }
+        try {
+            listener.onSendSmsResult(token, messageRef, status, reason, networkErrorCode);
+        } catch (RemoteException e) {
+            e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * This API is used to report the result of sending
+     * RP-SMMA to framework based on received network responses(RP-ACK,
+     * RP-ERROR or SIP error).
+     *
+     * @param token provided in {@link #onMemoryAvailable()}.
+     * @param result based on RP-ACK or RP_ERROR
+     * @param networkErrorCode the error code reported by the carrier
+     * network if sending this SMS has resulted in an error or
+     * {@link #RESULT_NO_NETWORK_ERROR} if no network error was generated. See
+     * 3GPP TS 24.011 Section 7.3.4 for valid error codes and more
+     * information.
+     *
+     * @hide
+     */
+    public final void onMemoryAvailableResult(int token, @SendStatusResult int result,
+            int networkErrorCode) throws RuntimeException {
+        IImsSmsListener listener = null;
+        synchronized (mLock) {
+            listener = mListener;
+        }
+
+        if (listener == null) {
+            throw new RuntimeException("Feature not ready.");
+        }
+        try {
+            listener.onMemoryAvailableResult(token, result, networkErrorCode);
+        } catch (RemoteException e) {
+            e.rethrowFromSystemServer();
         }
     }
 
@@ -357,16 +459,19 @@ public class ImsSmsImplBase {
     public final void onSmsStatusReportReceived(int token,
             @IntRange(from = 0, to = 65535) int messageRef, @SmsMessage.Format String format,
             byte[] pdu) throws RuntimeException {
+        IImsSmsListener listener = null;
         synchronized (mLock) {
-            if (mListener == null) {
-                throw new RuntimeException("Feature not ready.");
-            }
-            try {
-                mListener.onSmsStatusReportReceived(token, format, pdu);
-            } catch (RemoteException e) {
-                Log.e(LOG_TAG, "Can not process sms status report: " + e.getMessage());
-                acknowledgeSmsReport(token, messageRef, STATUS_REPORT_STATUS_ERROR);
-            }
+            listener = mListener;
+        }
+
+        if (listener == null) {
+            throw new RuntimeException("Feature not ready.");
+        }
+        try {
+            listener.onSmsStatusReportReceived(token, format, pdu);
+        } catch (RemoteException e) {
+            Log.e(LOG_TAG, "Can not process sms status report: " + e.getMessage());
+            acknowledgeSmsReport(token, messageRef, STATUS_REPORT_STATUS_ERROR);
         }
     }
 
@@ -386,24 +491,27 @@ public class ImsSmsImplBase {
      */
     public final void onSmsStatusReportReceived(int token, @SmsMessage.Format String format,
             byte[] pdu) throws RuntimeException {
+        IImsSmsListener listener = null;
         synchronized (mLock) {
-            if (mListener == null) {
-                throw new RuntimeException("Feature not ready.");
-            }
-            try {
-                mListener.onSmsStatusReportReceived(token, format, pdu);
-            } catch (RemoteException e) {
-                Log.e(LOG_TAG, "Can not process sms status report: " + e.getMessage());
-                SmsMessage message = SmsMessage.createFromPdu(pdu, format);
-                if (message != null && message.mWrappedSmsMessage != null) {
-                    acknowledgeSmsReport(
-                            token,
-                            message.mWrappedSmsMessage.mMessageRef,
-                            STATUS_REPORT_STATUS_ERROR);
-                } else {
-                    Log.w(LOG_TAG, "onSmsStatusReportReceived: Invalid pdu entered.");
-                    acknowledgeSmsReport(token, 0, STATUS_REPORT_STATUS_ERROR);
-                }
+            listener = mListener;
+        }
+
+        if (listener == null) {
+            throw new RuntimeException("Feature not ready.");
+        }
+        try {
+            listener.onSmsStatusReportReceived(token, format, pdu);
+        } catch (RemoteException e) {
+            Log.e(LOG_TAG, "Can not process sms status report: " + e.getMessage());
+            SmsMessage message = SmsMessage.createFromPdu(pdu, format);
+            if (message != null && message.mWrappedSmsMessage != null) {
+                acknowledgeSmsReport(
+                        token,
+                        message.mWrappedSmsMessage.mMessageRef,
+                        STATUS_REPORT_STATUS_ERROR);
+            } else {
+                Log.w(LOG_TAG, "onSmsStatusReportReceived: Invalid pdu entered.");
+                acknowledgeSmsReport(token, 0, STATUS_REPORT_STATUS_ERROR);
             }
         }
     }
@@ -424,5 +532,30 @@ public class ImsSmsImplBase {
      */
     public void onReady() {
         // Base Implementation - Should be overridden
+    }
+
+    /**
+     * Set default Executor for ImsSmsImplBase.
+     *
+     * @param executor The default executor for the framework to use when executing the methods
+     * overridden by the implementation of ImsSms.
+     * @hide
+     */
+    public final void setDefaultExecutor(@NonNull Executor executor) {
+        if (mExecutor == null) {
+            mExecutor = executor;
+        }
+    }
+
+    /**
+     * Get Executor from ImsSmsImplBase.
+     * If there is no settings for the executor, all ImsSmsImplBase method calls will use
+     * Runnable::run as default
+     *
+     * @return an Executor used to execute methods in ImsSms called remotely by the framework.
+     * @hide
+     */
+    public @NonNull Executor getExecutor() {
+        return mExecutor != null ? mExecutor : Runnable::run;
     }
 }

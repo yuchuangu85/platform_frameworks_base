@@ -30,9 +30,11 @@ import android.hardware.biometrics.BiometricsProtoEnums;
 import android.hardware.biometrics.IInvalidationCallback;
 import android.hardware.biometrics.ITestSession;
 import android.hardware.biometrics.ITestSessionCallback;
+import android.hardware.biometrics.fingerprint.PointerContext;
 import android.hardware.biometrics.fingerprint.V2_1.IBiometricsFingerprint;
 import android.hardware.biometrics.fingerprint.V2_2.IBiometricsFingerprintClientCallback;
 import android.hardware.fingerprint.Fingerprint;
+import android.hardware.fingerprint.FingerprintAuthenticateOptions;
 import android.hardware.fingerprint.FingerprintManager;
 import android.hardware.fingerprint.FingerprintSensorProperties;
 import android.hardware.fingerprint.FingerprintSensorPropertiesInternal;
@@ -42,7 +44,6 @@ import android.hardware.fingerprint.IUdfpsOverlayController;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.IHwBinder;
-import android.os.Looper;
 import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
@@ -51,6 +52,7 @@ import android.util.proto.ProtoOutputStream;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.FrameworkStatsLog;
+import com.android.server.biometrics.AuthenticationStatsCollector;
 import com.android.server.biometrics.SensorServiceStateProto;
 import com.android.server.biometrics.SensorStateProto;
 import com.android.server.biometrics.UserStateProto;
@@ -58,20 +60,24 @@ import com.android.server.biometrics.Utils;
 import com.android.server.biometrics.fingerprint.FingerprintServiceDumpProto;
 import com.android.server.biometrics.fingerprint.FingerprintUserStatsProto;
 import com.android.server.biometrics.fingerprint.PerformanceStatsProto;
+import com.android.server.biometrics.log.BiometricContext;
+import com.android.server.biometrics.log.BiometricLogger;
 import com.android.server.biometrics.sensors.AcquisitionClient;
 import com.android.server.biometrics.sensors.AuthenticationClient;
 import com.android.server.biometrics.sensors.AuthenticationConsumer;
 import com.android.server.biometrics.sensors.BaseClientMonitor;
+import com.android.server.biometrics.sensors.BiometricNotificationImpl;
 import com.android.server.biometrics.sensors.BiometricScheduler;
+import com.android.server.biometrics.sensors.BiometricStateCallback;
+import com.android.server.biometrics.sensors.ClientMonitorCallback;
 import com.android.server.biometrics.sensors.ClientMonitorCallbackConverter;
+import com.android.server.biometrics.sensors.ClientMonitorCompositeCallback;
 import com.android.server.biometrics.sensors.EnumerateConsumer;
 import com.android.server.biometrics.sensors.ErrorConsumer;
-import com.android.server.biometrics.sensors.HalClientMonitor;
 import com.android.server.biometrics.sensors.LockoutResetDispatcher;
 import com.android.server.biometrics.sensors.LockoutTracker;
 import com.android.server.biometrics.sensors.PerformanceTracker;
 import com.android.server.biometrics.sensors.RemovalConsumer;
-import com.android.server.biometrics.sensors.fingerprint.FingerprintStateCallback;
 import com.android.server.biometrics.sensors.fingerprint.FingerprintUtils;
 import com.android.server.biometrics.sensors.fingerprint.GestureAvailabilityDispatcher;
 import com.android.server.biometrics.sensors.fingerprint.ServiceProvider;
@@ -89,6 +95,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 /**
  * Supports a single instance of the {@link android.hardware.biometrics.fingerprint.V2_1} or
@@ -102,7 +109,7 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
     private boolean mTestHalEnabled;
 
     final Context mContext;
-    @NonNull private final FingerprintStateCallback mFingerprintStateCallback;
+    @NonNull private final BiometricStateCallback mBiometricStateCallback;
     private final ActivityTaskManager mActivityTaskManager;
     @NonNull private final FingerprintSensorPropertiesInternal mSensorProperties;
     private final BiometricScheduler mScheduler;
@@ -110,13 +117,15 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
     private final LockoutResetDispatcher mLockoutResetDispatcher;
     private final LockoutFrameworkImpl mLockoutTracker;
     private final BiometricTaskStackListener mTaskStackListener;
-    private final HalClientMonitor.LazyDaemon<IBiometricsFingerprint> mLazyDaemon;
+    private final Supplier<IBiometricsFingerprint> mLazyDaemon;
     private final Map<Integer, Long> mAuthenticatorIds;
 
     @Nullable private IBiometricsFingerprint mDaemon;
     @NonNull private final HalResultController mHalResultController;
     @Nullable private IUdfpsOverlayController mUdfpsOverlayController;
     @Nullable private ISidefpsController mSidefpsController;
+    @NonNull private final BiometricContext mBiometricContext;
+    @NonNull private final AuthenticationStatsCollector mAuthenticationStatsCollector;
     // for requests that do not use biometric prompt
     @NonNull private final AtomicLong mRequestCounter = new AtomicLong(0);
     private int mCurrentUserId = UserHandle.USER_NULL;
@@ -138,17 +147,12 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
                     return; // Keyguard is always allowed
                 }
 
-                final List<ActivityManager.RunningTaskInfo> runningTasks =
-                        mActivityTaskManager.getTasks(1);
-                if (!runningTasks.isEmpty()) {
-                    final String topPackage = runningTasks.get(0).topActivity.getPackageName();
-                    if (!topPackage.contentEquals(client.getOwnerString())
-                            && !client.isAlreadyDone()) {
-                        Slog.e(TAG, "Stopping background authentication, top: "
-                                + topPackage + " currentClient: " + client);
-                        mScheduler.cancelAuthenticationOrDetection(
-                                client.getToken(), client.getRequestId());
-                    }
+                if (Utils.isBackground(client.getOwnerString())
+                        && !client.isAlreadyDone()) {
+                    Slog.e(TAG, "Stopping background authentication,"
+                            + " currentClient: " + client);
+                    mScheduler.cancelAuthenticationOrDetection(
+                            client.getToken(), client.getRequestId());
                 }
             });
         }
@@ -317,14 +321,18 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
         }
     }
 
+    @VisibleForTesting
     Fingerprint21(@NonNull Context context,
-            @NonNull FingerprintStateCallback fingerprintStateCallback,
+            @NonNull BiometricStateCallback biometricStateCallback,
             @NonNull FingerprintSensorPropertiesInternal sensorProps,
-            @NonNull BiometricScheduler scheduler, @NonNull Handler handler,
+            @NonNull BiometricScheduler scheduler,
+            @NonNull Handler handler,
             @NonNull LockoutResetDispatcher lockoutResetDispatcher,
-            @NonNull HalResultController controller) {
+            @NonNull HalResultController controller,
+            @NonNull BiometricContext biometricContext) {
         mContext = context;
-        mFingerprintStateCallback = fingerprintStateCallback;
+        mBiometricStateCallback = biometricStateCallback;
+        mBiometricContext = biometricContext;
 
         mSensorProperties = sensorProps;
         mSensorId = sensorProps.sensorId;
@@ -346,6 +354,9 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
             mCurrentUserId = UserHandle.USER_NULL;
         });
 
+        mAuthenticationStatsCollector = new AuthenticationStatsCollector(mContext,
+                BiometricsProtoEnums.MODALITY_FINGERPRINT, new BiometricNotificationImpl());
+
         try {
             ActivityManager.getService().registerUserSwitchObserver(mUserSwitchObserver, TAG);
         } catch (RemoteException e) {
@@ -354,20 +365,19 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
     }
 
     public static Fingerprint21 newInstance(@NonNull Context context,
-            @NonNull FingerprintStateCallback fingerprintStateCallback,
+            @NonNull BiometricStateCallback biometricStateCallback,
             @NonNull FingerprintSensorPropertiesInternal sensorProps,
+            @NonNull Handler handler,
             @NonNull LockoutResetDispatcher lockoutResetDispatcher,
             @NonNull GestureAvailabilityDispatcher gestureAvailabilityDispatcher) {
-        final Handler handler = new Handler(Looper.getMainLooper());
         final BiometricScheduler scheduler =
                 new BiometricScheduler(TAG,
                         BiometricScheduler.sensorTypeFromFingerprintProperties(sensorProps),
                         gestureAvailabilityDispatcher);
         final HalResultController controller = new HalResultController(sensorProps.sensorId,
-                context, handler,
-                scheduler);
-        return new Fingerprint21(context, fingerprintStateCallback, sensorProps, scheduler, handler,
-                lockoutResetDispatcher, controller);
+                context, handler, scheduler);
+        return new Fingerprint21(context, biometricStateCallback, sensorProps, scheduler, handler,
+                lockoutResetDispatcher, controller, BiometricContext.getInstance(context));
     }
 
     @Override
@@ -491,17 +501,27 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
                 !getEnrolledFingerprints(mSensorProperties.sensorId, targetUserId).isEmpty();
         final FingerprintUpdateActiveUserClient client =
                 new FingerprintUpdateActiveUserClient(mContext, mLazyDaemon, targetUserId,
-                        mContext.getOpPackageName(), mSensorProperties.sensorId, mCurrentUserId,
-                        hasEnrolled, mAuthenticatorIds, force);
-        mScheduler.scheduleClientMonitor(client, new BaseClientMonitor.Callback() {
+                        mContext.getOpPackageName(), mSensorProperties.sensorId,
+                        createLogger(BiometricsProtoEnums.ACTION_UNKNOWN,
+                                BiometricsProtoEnums.CLIENT_UNKNOWN,
+                                mAuthenticationStatsCollector),
+                        mBiometricContext,
+                        this::getCurrentUser, hasEnrolled, mAuthenticatorIds, force);
+        mScheduler.scheduleClientMonitor(client, new ClientMonitorCallback() {
             @Override
             public void onClientFinished(@NonNull BaseClientMonitor clientMonitor,
                     boolean success) {
                 if (success) {
                     mCurrentUserId = targetUserId;
+                } else {
+                    Slog.w(TAG, "Failed to change user, still: " + mCurrentUserId);
                 }
             }
         });
+    }
+
+    private int getCurrentUser() {
+        return mCurrentUserId;
     }
 
     @Override
@@ -529,7 +549,11 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
         // thread.
         mHandler.post(() -> {
             final FingerprintResetLockoutClient client = new FingerprintResetLockoutClient(mContext,
-                    userId, mContext.getOpPackageName(), sensorId, mLockoutTracker);
+                    userId, mContext.getOpPackageName(), sensorId,
+                    createLogger(BiometricsProtoEnums.ACTION_UNKNOWN,
+                            BiometricsProtoEnums.CLIENT_UNKNOWN,
+                            mAuthenticationStatsCollector),
+                    mBiometricContext, mLockoutTracker);
             mScheduler.scheduleClientMonitor(client);
         });
     }
@@ -541,7 +565,11 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
             final FingerprintGenerateChallengeClient client =
                     new FingerprintGenerateChallengeClient(mContext, mLazyDaemon, token,
                             new ClientMonitorCallbackConverter(receiver), userId, opPackageName,
-                            mSensorProperties.sensorId);
+                            mSensorProperties.sensorId,
+                            createLogger(BiometricsProtoEnums.ACTION_UNKNOWN,
+                                    BiometricsProtoEnums.CLIENT_UNKNOWN,
+                                    mAuthenticationStatsCollector),
+                            mBiometricContext);
             mScheduler.scheduleClientMonitor(client);
         });
     }
@@ -552,34 +580,47 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
         mHandler.post(() -> {
             final FingerprintRevokeChallengeClient client = new FingerprintRevokeChallengeClient(
                     mContext, mLazyDaemon, token, userId, opPackageName,
-                    mSensorProperties.sensorId);
+                    mSensorProperties.sensorId,
+                    createLogger(BiometricsProtoEnums.ACTION_UNKNOWN,
+                            BiometricsProtoEnums.CLIENT_UNKNOWN,
+                            mAuthenticationStatsCollector),
+                    mBiometricContext);
             mScheduler.scheduleClientMonitor(client);
         });
     }
 
     @Override
-    public void scheduleEnroll(int sensorId, @NonNull IBinder token,
+    public long scheduleEnroll(int sensorId, @NonNull IBinder token,
             @NonNull byte[] hardwareAuthToken, int userId,
             @NonNull IFingerprintServiceReceiver receiver, @NonNull String opPackageName,
             @FingerprintManager.EnrollReason int enrollReason) {
+        final long id = mRequestCounter.incrementAndGet();
         mHandler.post(() -> {
             scheduleUpdateActiveUserWithoutHandler(userId);
 
             final FingerprintEnrollClient client = new FingerprintEnrollClient(mContext,
-                    mLazyDaemon, token, new ClientMonitorCallbackConverter(receiver), userId,
-                    hardwareAuthToken, opPackageName, FingerprintUtils.getLegacyInstance(mSensorId),
-                    ENROLL_TIMEOUT_SEC, mSensorProperties.sensorId, mUdfpsOverlayController,
-                    mSidefpsController, enrollReason);
-            mScheduler.scheduleClientMonitor(client, new BaseClientMonitor.Callback() {
+                    mLazyDaemon, token, id, new ClientMonitorCallbackConverter(receiver),
+                    userId, hardwareAuthToken, opPackageName,
+                    FingerprintUtils.getLegacyInstance(mSensorId), ENROLL_TIMEOUT_SEC,
+                    mSensorProperties.sensorId,
+                    createLogger(BiometricsProtoEnums.ACTION_ENROLL,
+                            BiometricsProtoEnums.CLIENT_UNKNOWN, mAuthenticationStatsCollector),
+                    mBiometricContext, mUdfpsOverlayController, mSidefpsController, enrollReason);
+            mScheduler.scheduleClientMonitor(client, new ClientMonitorCallback() {
                 @Override
                 public void onClientStarted(@NonNull BaseClientMonitor clientMonitor) {
-                    mFingerprintStateCallback.onClientStarted(clientMonitor);
+                    mBiometricStateCallback.onClientStarted(clientMonitor);
+                }
+
+                @Override
+                public void onBiometricAction(int action) {
+                    mBiometricStateCallback.onBiometricAction(action);
                 }
 
                 @Override
                 public void onClientFinished(@NonNull BaseClientMonitor clientMonitor,
                         boolean success) {
-                    mFingerprintStateCallback.onClientFinished(clientMonitor, success);
+                    mBiometricStateCallback.onClientFinished(clientMonitor, success);
                     if (success) {
                         // Update authenticatorIds
                         scheduleUpdateActiveUserWithoutHandler(clientMonitor.getTargetUserId(),
@@ -588,63 +629,68 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
                 }
             });
         });
+        return id;
     }
 
     @Override
-    public void cancelEnrollment(int sensorId, @NonNull IBinder token) {
-        mHandler.post(() -> {
-            mScheduler.cancelEnrollment(token);
-        });
+    public void cancelEnrollment(int sensorId, @NonNull IBinder token, long requestId) {
+        mHandler.post(() -> mScheduler.cancelEnrollment(token, requestId));
     }
 
     @Override
-    public long scheduleFingerDetect(int sensorId, @NonNull IBinder token, int userId,
-            @NonNull ClientMonitorCallbackConverter listener, @NonNull String opPackageName,
+    public long scheduleFingerDetect(@NonNull IBinder token,
+            @NonNull ClientMonitorCallbackConverter listener,
+            @NonNull FingerprintAuthenticateOptions options,
             int statsClient) {
         final long id = mRequestCounter.incrementAndGet();
         mHandler.post(() -> {
-            scheduleUpdateActiveUserWithoutHandler(userId);
+            scheduleUpdateActiveUserWithoutHandler(options.getUserId());
 
             final boolean isStrongBiometric = Utils.isStrongBiometric(mSensorProperties.sensorId);
             final FingerprintDetectClient client = new FingerprintDetectClient(mContext,
-                    mLazyDaemon, token, id, listener, userId, opPackageName,
-                    mSensorProperties.sensorId, mUdfpsOverlayController, isStrongBiometric,
-                    statsClient);
-            mScheduler.scheduleClientMonitor(client, mFingerprintStateCallback);
+                    mLazyDaemon, token, id, listener, options,
+                    createLogger(BiometricsProtoEnums.ACTION_AUTHENTICATE, statsClient,
+                            mAuthenticationStatsCollector),
+                    mBiometricContext, mUdfpsOverlayController, isStrongBiometric);
+            mScheduler.scheduleClientMonitor(client, mBiometricStateCallback);
         });
 
         return id;
     }
 
     @Override
-    public void scheduleAuthenticate(int sensorId, @NonNull IBinder token, long operationId,
-            int userId, int cookie, @NonNull ClientMonitorCallbackConverter listener,
-            @NonNull String opPackageName, long requestId, boolean restricted, int statsClient,
+    public void scheduleAuthenticate(@NonNull IBinder token, long operationId,
+            int cookie, @NonNull ClientMonitorCallbackConverter listener,
+            @NonNull FingerprintAuthenticateOptions options,
+            long requestId, boolean restricted, int statsClient,
             boolean allowBackgroundAuthentication) {
         mHandler.post(() -> {
-            scheduleUpdateActiveUserWithoutHandler(userId);
+            scheduleUpdateActiveUserWithoutHandler(options.getUserId());
 
             final boolean isStrongBiometric = Utils.isStrongBiometric(mSensorProperties.sensorId);
             final FingerprintAuthenticationClient client = new FingerprintAuthenticationClient(
-                    mContext, mLazyDaemon, token, requestId, listener, userId, operationId,
-                    restricted, opPackageName, cookie, false /* requireConfirmation */,
-                    mSensorProperties.sensorId, isStrongBiometric, statsClient,
+                    mContext, mLazyDaemon, token, requestId, listener, operationId,
+                    restricted, options, cookie, false /* requireConfirmation */,
+                    createLogger(BiometricsProtoEnums.ACTION_AUTHENTICATE, statsClient,
+                            mAuthenticationStatsCollector),
+                    mBiometricContext, isStrongBiometric,
                     mTaskStackListener, mLockoutTracker,
                     mUdfpsOverlayController, mSidefpsController,
-                    allowBackgroundAuthentication, mSensorProperties);
-            mScheduler.scheduleClientMonitor(client, mFingerprintStateCallback);
+                    allowBackgroundAuthentication, mSensorProperties,
+                    Utils.getCurrentStrength(mSensorId));
+            mScheduler.scheduleClientMonitor(client, mBiometricStateCallback);
         });
     }
 
     @Override
-    public long scheduleAuthenticate(int sensorId, @NonNull IBinder token, long operationId,
-            int userId, int cookie, @NonNull ClientMonitorCallbackConverter listener,
-            @NonNull String opPackageName, boolean restricted, int statsClient,
+    public long scheduleAuthenticate(@NonNull IBinder token, long operationId,
+            int cookie, @NonNull ClientMonitorCallbackConverter listener,
+            @NonNull FingerprintAuthenticateOptions options, boolean restricted, int statsClient,
             boolean allowBackgroundAuthentication) {
         final long id = mRequestCounter.incrementAndGet();
 
-        scheduleAuthenticate(sensorId, token, operationId, userId, cookie, listener,
-                opPackageName, id, restricted, statsClient, allowBackgroundAuthentication);
+        scheduleAuthenticate(token, operationId, cookie, listener,
+                options, id, restricted, statsClient, allowBackgroundAuthentication);
 
         return id;
     }
@@ -670,8 +716,11 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
             final FingerprintRemovalClient client = new FingerprintRemovalClient(mContext,
                     mLazyDaemon, token, new ClientMonitorCallbackConverter(receiver), fingerId,
                     userId, opPackageName, FingerprintUtils.getLegacyInstance(mSensorId),
-                    mSensorProperties.sensorId, mAuthenticatorIds);
-            mScheduler.scheduleClientMonitor(client, mFingerprintStateCallback);
+                    mSensorProperties.sensorId,
+                    createLogger(BiometricsProtoEnums.ACTION_REMOVE,
+                            BiometricsProtoEnums.CLIENT_UNKNOWN, mAuthenticationStatsCollector),
+                    mBiometricContext, mAuthenticatorIds);
+            mScheduler.scheduleClientMonitor(client, mBiometricStateCallback);
         });
     }
 
@@ -687,21 +736,25 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
                     mLazyDaemon, token, new ClientMonitorCallbackConverter(receiver),
                     0 /* fingerprintId */, userId, opPackageName,
                     FingerprintUtils.getLegacyInstance(mSensorId),
-                    mSensorProperties.sensorId, mAuthenticatorIds);
-            mScheduler.scheduleClientMonitor(client, mFingerprintStateCallback);
+                    mSensorProperties.sensorId,
+                    createLogger(BiometricsProtoEnums.ACTION_REMOVE,
+                            BiometricsProtoEnums.CLIENT_UNKNOWN, mAuthenticationStatsCollector),
+                    mBiometricContext, mAuthenticatorIds);
+            mScheduler.scheduleClientMonitor(client, mBiometricStateCallback);
         });
     }
 
     private void scheduleInternalCleanup(int userId,
-            @Nullable BaseClientMonitor.Callback callback) {
+            @Nullable ClientMonitorCallback callback) {
         mHandler.post(() -> {
             scheduleUpdateActiveUserWithoutHandler(userId);
 
-            final List<Fingerprint> enrolledList = getEnrolledFingerprints(
-                    mSensorProperties.sensorId, userId);
             final FingerprintInternalCleanupClient client = new FingerprintInternalCleanupClient(
                     mContext, mLazyDaemon, userId, mContext.getOpPackageName(),
-                    mSensorProperties.sensorId, enrolledList,
+                    mSensorProperties.sensorId,
+                    createLogger(BiometricsProtoEnums.ACTION_ENUMERATE,
+                            BiometricsProtoEnums.CLIENT_UNKNOWN, mAuthenticationStatsCollector),
+                    mBiometricContext,
                     FingerprintUtils.getLegacyInstance(mSensorId), mAuthenticatorIds);
             mScheduler.scheduleClientMonitor(client, callback);
         });
@@ -709,9 +762,22 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
 
     @Override
     public void scheduleInternalCleanup(int sensorId, int userId,
-            @Nullable BaseClientMonitor.Callback callback) {
-        scheduleInternalCleanup(userId, new BaseClientMonitor.CompositeCallback(callback,
-                mFingerprintStateCallback));
+            @Nullable ClientMonitorCallback callback) {
+        scheduleInternalCleanup(userId, new ClientMonitorCompositeCallback(callback,
+                mBiometricStateCallback));
+    }
+
+    @Override
+    public void scheduleInternalCleanup(int sensorId, int userId,
+            @Nullable ClientMonitorCallback callback, boolean favorHalEnrollments) {
+        scheduleInternalCleanup(userId, new ClientMonitorCompositeCallback(callback,
+                mBiometricStateCallback));
+    }
+
+    private BiometricLogger createLogger(int statsAction, int statsClient,
+            AuthenticationStatsCollector authenticationStatsCollector) {
+        return new BiometricLogger(mContext, BiometricsProtoEnums.MODALITY_FINGERPRINT,
+                statsAction, statsClient, authenticationStatsCollector);
     }
 
     @Override
@@ -734,6 +800,11 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
     }
 
     @Override
+    public boolean hasEnrollments(int sensorId, int userId) {
+        return !getEnrolledFingerprints(sensorId, userId).isEmpty();
+    }
+
+    @Override
     @LockoutTracker.LockoutMode public int getLockoutModeForUser(int sensorId, int userId) {
         return mLockoutTracker.getLockoutModeForUser(userId);
     }
@@ -744,36 +815,42 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
     }
 
     @Override
-    public void onPointerDown(int sensorId, int x, int y, float minor, float major) {
-        final BaseClientMonitor client = mScheduler.getCurrentClient();
-        if (!(client instanceof Udfps)) {
-            Slog.w(TAG, "onFingerDown received during client: " + client);
-            return;
-        }
-        final Udfps udfps = (Udfps) client;
-        udfps.onPointerDown(x, y, minor, major);
+    public void onPointerDown(long requestId, int sensorId, PointerContext pc) {
+        mScheduler.getCurrentClientIfMatches(requestId, (client) -> {
+            if (!(client instanceof Udfps)) {
+                Slog.w(TAG, "onFingerDown received during client: " + client);
+                return;
+            }
+            ((Udfps) client).onPointerDown(pc);
+        });
     }
 
     @Override
-    public void onPointerUp(int sensorId) {
-        final BaseClientMonitor client = mScheduler.getCurrentClient();
-        if (!(client instanceof Udfps)) {
-            Slog.w(TAG, "onFingerDown received during client: " + client);
-            return;
-        }
-        final Udfps udfps = (Udfps) client;
-        udfps.onPointerUp();
+    public void onPointerUp(long requestId, int sensorId, PointerContext pc) {
+        mScheduler.getCurrentClientIfMatches(requestId, (client) -> {
+            if (!(client instanceof Udfps)) {
+                Slog.w(TAG, "onFingerDown received during client: " + client);
+                return;
+            }
+            ((Udfps) client).onPointerUp(pc);
+        });
     }
 
     @Override
-    public void onUiReady(int sensorId) {
-        final BaseClientMonitor client = mScheduler.getCurrentClient();
-        if (!(client instanceof Udfps)) {
-            Slog.w(TAG, "onUiReady received during client: " + client);
-            return;
-        }
-        final Udfps udfps = (Udfps) client;
-        udfps.onUiReady();
+    public void onUdfpsUiEvent(@FingerprintManager.UdfpsUiEvent int event, long requestId,
+            int sensorId) {
+        mScheduler.getCurrentClientIfMatches(requestId, (client) -> {
+            if (!(client instanceof Udfps)) {
+                Slog.w(TAG, "onUdfpsUiEvent received during client: " + client);
+                return;
+            }
+            ((Udfps) client).onUdfpsUiEvent(event);
+        });
+    }
+
+    @Override
+    public void onPowerPressed() {
+        Slog.e(TAG, "onPowerPressed not supported for HIDL clients");
     }
 
     @Override
@@ -921,6 +998,6 @@ public class Fingerprint21 implements IHwBinder.DeathRecipient, ServiceProvider 
     public ITestSession createTestSession(int sensorId, @NonNull ITestSessionCallback callback,
             @NonNull String opPackageName) {
         return new BiometricTestSessionImpl(mContext, mSensorProperties.sensorId, callback,
-                mFingerprintStateCallback, this, mHalResultController);
+                mBiometricStateCallback, this, mHalResultController);
     }
 }

@@ -18,9 +18,11 @@ package com.android.systemui.animation
 
 import android.testing.AndroidTestingRunner
 import android.testing.TestableLooper
-import android.widget.LinearLayout
+import android.widget.FrameLayout
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
+import com.android.systemui.animation.view.LaunchableFrameLayout
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -30,13 +32,19 @@ import org.junit.runner.RunWith
 class GhostedViewLaunchAnimatorControllerTest : SysuiTestCase() {
     @Test
     fun animatingOrphanViewDoesNotCrash() {
-        val ghostedView = LinearLayout(mContext)
-        val controller = GhostedViewLaunchAnimatorController(ghostedView)
         val state = LaunchAnimator.State(top = 0, bottom = 0, left = 0, right = 0)
 
+        val controller = GhostedViewLaunchAnimatorController(LaunchableFrameLayout(mContext))
         controller.onIntentStarted(willAnimate = true)
         controller.onLaunchAnimationStart(isExpandingFullyAbove = true)
         controller.onLaunchAnimationProgress(state, progress = 0f, linearProgress = 0f)
         controller.onLaunchAnimationEnd(isExpandingFullyAbove = true)
+    }
+
+    @Test
+    fun creatingControllerFromNormalViewThrows() {
+        assertThrows(IllegalArgumentException::class.java) {
+            GhostedViewLaunchAnimatorController(FrameLayout(mContext))
+        }
     }
 }

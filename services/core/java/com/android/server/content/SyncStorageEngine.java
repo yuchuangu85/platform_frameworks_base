@@ -33,6 +33,7 @@ import android.content.SyncInfo;
 import android.content.SyncRequest;
 import android.content.SyncStatusInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageManagerInternal;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -50,8 +51,6 @@ import android.util.Log;
 import android.util.Pair;
 import android.util.Slog;
 import android.util.SparseArray;
-import android.util.TypedXmlPullParser;
-import android.util.TypedXmlSerializer;
 import android.util.Xml;
 import android.util.proto.ProtoInputStream;
 import android.util.proto.ProtoOutputStream;
@@ -59,6 +58,9 @@ import android.util.proto.ProtoOutputStream;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.IntPair;
+import com.android.modules.utils.TypedXmlPullParser;
+import com.android.modules.utils.TypedXmlSerializer;
+import com.android.server.LocalServices;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
@@ -166,7 +168,12 @@ public class SyncStorageEngine {
     private static HashMap<String, String> sAuthorityRenames;
     private static PeriodicSyncAddedListener mPeriodicSyncAddedListener;
 
+    private final PackageManagerInternal mPackageManagerInternal;
+
     private volatile boolean mIsClockValid;
+
+    private volatile boolean mIsJobNamespaceMigrated;
+    private volatile boolean mIsJobAttributionFixed;
 
     static {
         sAuthorityRenames = new HashMap<String, String>();
@@ -525,6 +532,8 @@ public class SyncStorageEngine {
         mDefaultMasterSyncAutomatically = mContext.getResources().getBoolean(
                 com.android.internal.R.bool.config_syncstorageengine_masterSyncAutomatically);
 
+        mPackageManagerInternal = LocalServices.getService(PackageManagerInternal.class);
+
         File systemDir = new File(dataDir, "system");
         mSyncDir = new File(systemDir, SYNC_DIR_NAME);
         mSyncDir.mkdirs();
@@ -609,9 +618,9 @@ public class SyncStorageEngine {
         return mSyncRandomOffset;
     }
 
-    public void addStatusChangeListener(int mask, int userId, ISyncStatusObserver callback) {
+    public void addStatusChangeListener(int mask, int callingUid, ISyncStatusObserver callback) {
         synchronized (mAuthorities) {
-            final long cookie = IntPair.of(userId, mask);
+            final long cookie = IntPair.of(callingUid, mask);
             mChangeListeners.register(callback, cookie);
         }
     }
@@ -644,16 +653,32 @@ public class SyncStorageEngine {
         }
     }
 
-    void reportChange(int which, int callingUserId) {
+    void reportChange(int which, EndPoint target) {
+        final String syncAdapterPackageName;
+        if (target.account == null || target.provider == null) {
+            syncAdapterPackageName = null;
+        } else {
+            syncAdapterPackageName = ContentResolver.getSyncAdapterPackageAsUser(
+                    target.account.type, target.provider, target.userId);
+        }
+        reportChange(which, syncAdapterPackageName, target.userId);
+    }
+
+    void reportChange(int which, String callingPackageName, int callingUserId) {
         ArrayList<ISyncStatusObserver> reports = null;
         synchronized (mAuthorities) {
             int i = mChangeListeners.beginBroadcast();
             while (i > 0) {
                 i--;
                 final long cookie = (long) mChangeListeners.getBroadcastCookie(i);
-                final int userId = IntPair.first(cookie);
+                final int registerUid = IntPair.first(cookie);
+                final int registerUserId = UserHandle.getUserId(registerUid);
                 final int mask = IntPair.second(cookie);
-                if ((which & mask) == 0 || callingUserId != userId) {
+                if ((which & mask) == 0 || callingUserId != registerUserId) {
+                    continue;
+                }
+                if (callingPackageName != null && mPackageManagerInternal.filterAppAccess(
+                        callingPackageName, registerUid, callingUserId)) {
                     continue;
                 }
                 if (reports == null) {
@@ -716,12 +741,12 @@ public class SyncStorageEngine {
                 " cuid=", callingUid,
                 " cpid=", callingPid
         );
+        final AuthorityInfo authority;
         synchronized (mAuthorities) {
-            AuthorityInfo authority =
-                    getOrCreateAuthorityLocked(
-                            new EndPoint(account, providerName, userId),
-                            -1 /* ident */,
-                            false);
+            authority = getOrCreateAuthorityLocked(
+                    new EndPoint(account, providerName, userId),
+                    -1 /* ident */,
+                    false);
             if (authority.enabled == sync) {
                 if (Log.isLoggable(TAG, Log.VERBOSE)) {
                     Slog.d(TAG, "setSyncAutomatically: already set to " + sync + ", doing nothing");
@@ -743,7 +768,7 @@ public class SyncStorageEngine {
                     new Bundle(),
                     syncExemptionFlag, callingUid, callingPid);
         }
-        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS, userId);
+        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS, authority.target);
         queueBackup();
     }
 
@@ -811,7 +836,35 @@ public class SyncStorageEngine {
             requestSync(aInfo, SyncOperation.REASON_IS_SYNCABLE, new Bundle(),
                     ContentResolver.SYNC_EXEMPTION_NONE, callingUid, callingPid);
         }
-        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS, target.userId);
+        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS, target);
+    }
+
+    void setJobNamespaceMigrated(boolean migrated) {
+        if (mIsJobNamespaceMigrated == migrated) {
+            return;
+        }
+        mIsJobNamespaceMigrated = migrated;
+        // This isn't urgent enough to write synchronously. Post it to the handler thread so
+        // SyncManager can move on with whatever it was doing.
+        mHandler.sendEmptyMessageDelayed(MSG_WRITE_STATUS, WRITE_STATUS_DELAY);
+    }
+
+    boolean isJobNamespaceMigrated() {
+        return mIsJobNamespaceMigrated;
+    }
+
+    void setJobAttributionFixed(boolean fixed) {
+        if (mIsJobAttributionFixed == fixed) {
+            return;
+        }
+        mIsJobAttributionFixed = fixed;
+        // This isn't urgent enough to write synchronously. Post it to the handler thread so
+        // SyncManager can move on with whatever it was doing.
+        mHandler.sendEmptyMessageDelayed(MSG_WRITE_STATUS, WRITE_STATUS_DELAY);
+    }
+
+    boolean isJobAttributionFixed() {
+        return mIsJobAttributionFixed;
     }
 
     public Pair<Long, Long> getBackoff(EndPoint info) {
@@ -857,7 +910,7 @@ public class SyncStorageEngine {
             }
         }
         if (changed) {
-            reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS, info.userId);
+            reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS, info);
         }
     }
 
@@ -919,7 +972,8 @@ public class SyncStorageEngine {
         }
 
         for (int i = changedUserIds.size() - 1; i > 0; i--) {
-            reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS, changedUserIds.valueAt(i));
+            reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS,
+                    null /* callingPackageName */, changedUserIds.valueAt(i));
         }
     }
 
@@ -945,7 +999,7 @@ public class SyncStorageEngine {
             }
             authority.delayUntil = delayUntil;
         }
-        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS, info.userId);
+        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS, info);
     }
 
     /**
@@ -988,7 +1042,8 @@ public class SyncStorageEngine {
                     new Bundle(),
                     syncExemptionFlag, callingUid, callingPid);
         }
-        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS, userId);
+        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_SETTINGS,
+                null /* callingPackageName */, userId);
         mContext.sendBroadcast(ContentResolver.ACTION_SYNC_CONN_STATUS_CHANGED);
         queueBackup();
     }
@@ -1039,7 +1094,7 @@ public class SyncStorageEngine {
             SyncStatusInfo status = getOrCreateSyncStatusLocked(authority.ident);
             status.pending = pendingValue;
         }
-        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_PENDING, info.userId);
+        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_PENDING, info);
     }
 
     /**
@@ -1129,7 +1184,7 @@ public class SyncStorageEngine {
                     activeSyncContext.mStartTime);
             getCurrentSyncs(authorityInfo.target.userId).add(syncInfo);
         }
-        reportActiveChange(activeSyncContext.mSyncOperation.target.userId);
+        reportActiveChange(activeSyncContext.mSyncOperation.target);
         return syncInfo;
     }
 
@@ -1146,14 +1201,14 @@ public class SyncStorageEngine {
             getCurrentSyncs(userId).remove(syncInfo);
         }
 
-        reportActiveChange(userId);
+        reportActiveChange(new EndPoint(syncInfo.account, syncInfo.authority, userId));
     }
 
     /**
      * To allow others to send active change reports, to poke clients.
      */
-    public void reportActiveChange(int userId) {
-        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_ACTIVE, userId);
+    public void reportActiveChange(EndPoint target) {
+        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_ACTIVE, target);
     }
 
     /**
@@ -1188,12 +1243,13 @@ public class SyncStorageEngine {
             if (Log.isLoggable(TAG, Log.VERBOSE)) Slog.v(TAG, "returning historyId " + id);
         }
 
-        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_STATUS, op.target.userId);
+        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_STATUS, op.owningPackage, op.target.userId);
         return id;
     }
 
     public void stopSyncEvent(long historyId, long elapsedTime, String resultMessage,
-                              long downstreamActivity, long upstreamActivity, int userId) {
+                              long downstreamActivity, long upstreamActivity, String opPackageName,
+                              int userId) {
         synchronized (mAuthorities) {
             if (Log.isLoggable(TAG, Log.VERBOSE)) {
                 Slog.v(TAG, "stopSyncEvent: historyId=" + historyId);
@@ -1333,7 +1389,7 @@ public class SyncStorageEngine {
             }
         }
 
-        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_STATUS, userId);
+        reportChange(ContentResolver.SYNC_OBSERVER_TYPE_STATUS, opPackageName, userId);
     }
 
     /**
@@ -1559,7 +1615,6 @@ public class SyncStorageEngine {
             removeAuthorityLocked(info.account, info.userId, info.provider, true /* doWrite */);
         }
     }
-
 
     /**
      * Remove an authority associated with a provider. Needs to be a standalone function for
@@ -1790,7 +1845,7 @@ public class SyncStorageEngine {
     private void parseListenForTickles(TypedXmlPullParser parser) {
         int userId = 0;
         try {
-            parser.getAttributeInt(null, XML_ATTR_USER);
+            userId = parser.getAttributeInt(null, XML_ATTR_USER);
         } catch (XmlPullParserException e) {
             Slog.e(TAG, "error parsing the user for listen-for-tickles", e);
         }
@@ -2058,7 +2113,7 @@ public class SyncStorageEngine {
             try (FileInputStream in = mStatusFile.openRead()) {
                 readStatusInfoLocked(in);
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
             Slog.e(TAG, "Unable to read status info file.", e);
         }
     }
@@ -2075,6 +2130,14 @@ public class SyncStorageEngine {
                         status.pending = false;
                         mSyncStatus.put(status.authorityId, status);
                     }
+                    break;
+                case (int) SyncStatusProto.IS_JOB_NAMESPACE_MIGRATED:
+                    mIsJobNamespaceMigrated =
+                            proto.readBoolean(SyncStatusProto.IS_JOB_NAMESPACE_MIGRATED);
+                    break;
+                case (int) SyncStatusProto.IS_JOB_ATTRIBUTION_FIXED:
+                    mIsJobAttributionFixed =
+                            proto.readBoolean(SyncStatusProto.IS_JOB_ATTRIBUTION_FIXED);
                     break;
                 case ProtoInputStream.NO_MORE_FIELDS:
                     return;
@@ -2343,6 +2406,10 @@ public class SyncStorageEngine {
             }
             proto.end(token);
         }
+
+        proto.write(SyncStatusProto.IS_JOB_NAMESPACE_MIGRATED, mIsJobNamespaceMigrated);
+        proto.write(SyncStatusProto.IS_JOB_ATTRIBUTION_FIXED, mIsJobAttributionFixed);
+
         proto.flush();
     }
 
@@ -2396,10 +2463,10 @@ public class SyncStorageEngine {
     public static final int STATISTICS_FILE_ITEM = 101;
 
     private void readStatsParcelLocked(File parcel) {
+        Parcel in = Parcel.obtain();
         try {
             final AtomicFile parcelFile = new AtomicFile(parcel);
             byte[] data = parcelFile.readFully();
-            Parcel in = Parcel.obtain();
             in.unmarshall(data, 0, data.length);
             in.setDataPosition(0);
             int token;
@@ -2427,6 +2494,8 @@ public class SyncStorageEngine {
             }
         } catch (IOException e) {
             Slog.i(TAG, "No initial statistics");
+        } finally {
+            in.recycle();
         }
     }
 
@@ -2456,7 +2525,7 @@ public class SyncStorageEngine {
             try (FileInputStream in = mStatisticsFile.openRead()) {
                 readDayStatsLocked(in);
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
             Slog.e(TAG, "Unable to read day stats file.", e);
         }
     }

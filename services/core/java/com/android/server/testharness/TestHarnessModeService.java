@@ -17,13 +17,13 @@
 package com.android.server.testharness;
 
 import android.annotation.Nullable;
+import android.annotation.UserIdInt;
 import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.UserInfo;
 import android.debug.AdbManagerInternal;
 import android.location.LocationManager;
 import android.os.BatteryManager;
@@ -34,7 +34,6 @@ import android.os.ShellCallback;
 import android.os.ShellCommand;
 import android.os.SystemProperties;
 import android.os.UserHandle;
-import android.os.UserManager;
 import android.provider.Settings;
 import android.util.Slog;
 
@@ -42,8 +41,9 @@ import com.android.internal.messages.nano.SystemMessageProto.SystemMessage;
 import com.android.internal.notification.SystemNotificationChannels;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.server.LocalServices;
-import com.android.server.PersistentDataBlockManagerInternal;
 import com.android.server.SystemService;
+import com.android.server.pdb.PersistentDataBlockManagerInternal;
+import com.android.server.pm.UserManagerInternal;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -69,8 +69,8 @@ import java.util.Set;
  * automatic updates, etc.) are all disabled by default but may be re-enabled by the user.
  */
 public class TestHarnessModeService extends SystemService {
+    public static final String TEST_HARNESS_MODE_PROPERTY = "persist.sys.test_harness";
     private static final String TAG = TestHarnessModeService.class.getSimpleName();
-    private static final String TEST_HARNESS_MODE_PROPERTY = "persist.sys.test_harness";
 
     private PersistentDataBlockManagerInternal mPersistentDataBlockManagerInternal;
 
@@ -117,9 +117,9 @@ public class TestHarnessModeService extends SystemService {
     }
 
     private void disableLockScreen() {
-        UserInfo userInfo = getPrimaryUser();
+        int mainUserId = getMainUserId();
         LockPatternUtils utils = new LockPatternUtils(getContext());
-        utils.setLockScreenDisabled(true, userInfo.id);
+        utils.setLockScreenDisabled(true, mainUserId);
     }
 
     private void completeTestHarnessModeSetup() {
@@ -168,9 +168,9 @@ public class TestHarnessModeService extends SystemService {
             Slog.d(TAG, "Restarted adbd");
         }
 
-        // Disable the TTL for ADB keys before enabling ADB
+        // Disable the TTL for ADB keys before ADB is enabled as a part of AdbService's
+        // initialization.
         Settings.Global.putLong(cr, Settings.Global.ADB_ALLOWED_CONNECTION_TIME, 0);
-        Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1);
         Settings.Global.putInt(cr, Settings.Global.DEVELOPMENT_SETTINGS_ENABLED, 1);
         Settings.Global.putInt(cr, Settings.Global.PACKAGE_VERIFIER_INCLUDE_ADB, 0);
         Settings.Global.putInt(
@@ -189,20 +189,28 @@ public class TestHarnessModeService extends SystemService {
         if (adbManager.getAdbTempKeysFile() != null) {
             writeBytesToFile(persistentData.mAdbTempKeys, adbManager.getAdbTempKeysFile().toPath());
         }
+        adbManager.notifyKeyFilesUpdated();
     }
 
     private void configureUser() {
-        UserInfo primaryUser = getPrimaryUser();
+        int mainUserId = getMainUserId();
 
-        ContentResolver.setMasterSyncAutomaticallyAsUser(false, primaryUser.id);
+        ContentResolver.setMasterSyncAutomaticallyAsUser(false, mainUserId);
 
         LocationManager locationManager = getContext().getSystemService(LocationManager.class);
-        locationManager.setLocationEnabledForUser(true, primaryUser.getUserHandle());
+        locationManager.setLocationEnabledForUser(true, UserHandle.of(mainUserId));
     }
 
-    private UserInfo getPrimaryUser() {
-        UserManager userManager = UserManager.get(getContext());
-        return userManager.getPrimaryUser();
+    private @UserIdInt int getMainUserId() {
+        UserManagerInternal umi = LocalServices.getService(UserManagerInternal.class);
+        int mainUserId = umi.getMainUserId();
+        if (mainUserId >= 0) {
+            return mainUserId;
+        } else {
+            // If there is no MainUser, fall back to the historical usage of user 0.
+            Slog.w(TAG, "No MainUser exists; using user 0 instead");
+            return UserHandle.USER_SYSTEM;
+        }
     }
 
     private void writeBytesToFile(byte[] keys, Path adbKeys) {
@@ -317,7 +325,7 @@ public class TestHarnessModeService extends SystemService {
 
         private boolean isDeviceSecure() {
             KeyguardManager keyguardManager = getContext().getSystemService(KeyguardManager.class);
-            return keyguardManager.isDeviceSecure(getPrimaryUser().id);
+            return keyguardManager.isDeviceSecure(getMainUserId());
         }
 
         private int handleEnable() {

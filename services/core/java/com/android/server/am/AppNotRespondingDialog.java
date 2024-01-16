@@ -48,12 +48,14 @@ final class AppNotRespondingDialog extends BaseErrorDialog implements View.OnCli
 
     private final ActivityManagerService mService;
     private final ProcessRecord mProc;
+    private final Data mData;
 
     public AppNotRespondingDialog(ActivityManagerService service, Context context, Data data) {
         super(context);
 
         mService = service;
         mProc = data.proc;
+        mData = data;
         Resources res = context.getResources();
 
         setCancelable(false);
@@ -161,10 +163,16 @@ final class AppNotRespondingDialog extends BaseErrorDialog implements View.OnCli
 
                         synchronized (mService.mProcLock) {
                             errState.setNotResponding(false);
-                            errState.setNotRespondingReport(null);
+                            // We're not clearing the ANR report here, in case we'd need to report
+                            // it again when the ANR dialog shows again.
+                            // errState.setNotRespondingReport(null);
                             errState.getDialogController().clearAnrDialogs();
                         }
                         mService.mServices.scheduleServiceTimeoutLocked(app);
+                        if (mData.isContinuousAnr) {
+                            // If the app remains unresponsive, show the dialog again after a delay.
+                            mService.mInternal.rescheduleAnrDialog(mData);
+                        }
                     }
                     break;
             }
@@ -191,10 +199,17 @@ final class AppNotRespondingDialog extends BaseErrorDialog implements View.OnCli
         final ApplicationInfo aInfo;
         final boolean aboveSystem;
 
-        Data(ProcessRecord proc, ApplicationInfo aInfo, boolean aboveSystem) {
+        // If true, then even if the user presses "WAIT" on the ANR dialog,
+        // we'll show it again until the app start responding again.
+        // (we only use it for input dispatch ANRs)
+        final boolean isContinuousAnr;
+
+        Data(ProcessRecord proc, ApplicationInfo aInfo, boolean aboveSystem,
+                boolean isContinuousAnr) {
             this.proc = proc;
             this.aInfo = aInfo;
             this.aboveSystem = aboveSystem;
+            this.isContinuousAnr = isContinuousAnr;
         }
     }
 }

@@ -22,7 +22,9 @@ import android.service.quicksettings.Tile
 import android.testing.AndroidTestingRunner
 import android.testing.TestableLooper
 import android.text.TextUtils
+import android.view.ContextThemeWrapper
 import android.view.View
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.TextView
 import androidx.test.filters.SmallTest
 import com.android.systemui.R
@@ -257,11 +259,139 @@ class QSTileViewImplTest : SysuiTestCase() {
         assertThat((tileView.secondaryLabel as TextView).text).isEqualTo(onString)
     }
 
+    @Test
+    fun testCollectionItemInfoHasPosition() {
+        val position = 5
+        tileView.setPosition(position)
+
+        val info = AccessibilityNodeInfo(tileView)
+        tileView.onInitializeAccessibilityNodeInfo(info)
+
+        assertThat(info.collectionItemInfo.rowIndex).isEqualTo(position)
+        assertThat(info.collectionItemInfo.rowSpan).isEqualTo(1)
+        assertThat(info.collectionItemInfo.columnIndex).isEqualTo(0)
+        assertThat(info.collectionItemInfo.columnSpan).isEqualTo(1)
+    }
+
+    @Test
+    fun testCollectionItemInfoNoPosition() {
+        val info = AccessibilityNodeInfo(tileView)
+        tileView.onInitializeAccessibilityNodeInfo(info)
+
+        assertThat(info.collectionItemInfo).isNull()
+    }
+
+    @Test
+    fun testDisabledByPolicyInactive_usesUnavailableColors() {
+        val stateDisabledByPolicy = QSTile.State()
+        stateDisabledByPolicy.state = Tile.STATE_INACTIVE
+        stateDisabledByPolicy.disabledByPolicy = true
+
+        val stateUnavailable = QSTile.State()
+        stateUnavailable.state = Tile.STATE_UNAVAILABLE
+
+        tileView.changeState(stateDisabledByPolicy)
+        val colorsDisabledByPolicy = tileView.getCurrentColors()
+
+        tileView.changeState(stateUnavailable)
+        val colorsUnavailable = tileView.getCurrentColors()
+
+        assertThat(colorsDisabledByPolicy).containsExactlyElementsIn(colorsUnavailable)
+    }
+
+    @Test
+    fun testDisabledByPolicyActive_usesUnavailableColors() {
+        val stateDisabledByPolicy = QSTile.State()
+        stateDisabledByPolicy.state = Tile.STATE_ACTIVE
+        stateDisabledByPolicy.disabledByPolicy = true
+
+        val stateUnavailable = QSTile.State()
+        stateUnavailable.state = Tile.STATE_UNAVAILABLE
+
+        tileView.changeState(stateDisabledByPolicy)
+        val colorsDisabledByPolicy = tileView.getCurrentColors()
+
+        tileView.changeState(stateUnavailable)
+        val colorsUnavailable = tileView.getCurrentColors()
+
+        assertThat(colorsDisabledByPolicy).containsExactlyElementsIn(colorsUnavailable)
+    }
+
+    @Test
+    fun testDisableByPolicyThenRemoved_changesColor() {
+        val stateActive = QSTile.State()
+        stateActive.state = Tile.STATE_ACTIVE
+
+        val stateDisabledByPolicy = stateActive.copy()
+        stateDisabledByPolicy.disabledByPolicy = true
+
+        tileView.changeState(stateActive)
+        val activeColors = tileView.getCurrentColors()
+
+        tileView.changeState(stateDisabledByPolicy)
+        // It has unavailable colors
+        assertThat(tileView.getCurrentColors()).isNotEqualTo(activeColors)
+
+        // When we get back to not disabled by policy tile, it should go back to active colors
+        tileView.changeState(stateActive)
+        assertThat(tileView.getCurrentColors()).containsExactlyElementsIn(activeColors)
+    }
+
+    @Test
+    fun testDisabledByPolicy_secondaryLabelText() {
+        val testA11yLabel = "TEST_LABEL"
+        context.orCreateTestableResources
+                .addOverride(
+                        R.string.accessibility_tile_disabled_by_policy_action_description,
+                        testA11yLabel
+                )
+
+        val stateDisabledByPolicy = QSTile.State()
+        stateDisabledByPolicy.state = Tile.STATE_INACTIVE
+        stateDisabledByPolicy.disabledByPolicy = true
+
+        tileView.changeState(stateDisabledByPolicy)
+
+        val info = AccessibilityNodeInfo(tileView)
+        tileView.onInitializeAccessibilityNodeInfo(info)
+        assertThat(
+                info.actionList.find {
+                        it.id == AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK.id
+                }?.label
+        ).isEqualTo(testA11yLabel)
+    }
+
+    @Test
+    fun testDisabledByPolicy_unavailableInStateDescription() {
+        val state = QSTile.BooleanState()
+        val spec = "internet"
+        state.spec = spec
+        state.disabledByPolicy = true
+        state.state = Tile.STATE_INACTIVE
+
+        val unavailableString = "${spec}_unavailable"
+        val offString = "${spec}_off"
+        val onString = "${spec}_on"
+
+        context.orCreateTestableResources.addOverride(R.array.tile_states_internet, arrayOf(
+                unavailableString,
+                offString,
+                onString
+        ))
+
+        tileView.changeState(state)
+        assertThat(tileView.stateDescription?.contains(unavailableString)).isTrue()
+    }
+
     class FakeTileView(
         context: Context,
         icon: QSIconView,
         collapsed: Boolean
-    ) : QSTileViewImpl(context, icon, collapsed) {
+    ) : QSTileViewImpl(
+            ContextThemeWrapper(context, R.style.Theme_SystemUI_QuickSettings),
+            icon,
+            collapsed
+    ) {
         fun changeState(state: QSTile.State) {
             handleStateChanged(state)
         }

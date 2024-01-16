@@ -16,12 +16,15 @@
 
 package android.app.activity;
 
+import static android.app.ActivityThread.shouldReportChange;
 import static android.app.servertransaction.ActivityLifecycleItem.ON_CREATE;
 import static android.app.servertransaction.ActivityLifecycleItem.ON_DESTROY;
 import static android.app.servertransaction.ActivityLifecycleItem.ON_PAUSE;
 import static android.app.servertransaction.ActivityLifecycleItem.ON_RESUME;
 import static android.app.servertransaction.ActivityLifecycleItem.ON_START;
 import static android.app.servertransaction.ActivityLifecycleItem.ON_STOP;
+import static android.content.pm.ActivityInfo.CONFIG_FONT_SCALE;
+import static android.content.pm.ActivityInfo.CONFIG_SCREEN_SIZE;
 
 import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentation;
 
@@ -31,6 +34,8 @@ import static com.android.dx.mockito.inline.extended.ExtendedMockito.mockitoSess
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.spyOn;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.clearInvocations;
@@ -46,16 +51,17 @@ import android.app.ActivityThread.ActivityClientRecord;
 import android.app.LoadedApk;
 import android.app.servertransaction.PendingTransactionActions;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
-import android.content.res.CompatibilityInfo;
 import android.content.res.Configuration;
 import android.os.IBinder;
 import android.os.UserHandle;
 import android.platform.test.annotations.Presubmit;
 import android.testing.PollingCheck;
 import android.view.WindowManagerGlobal;
+import android.window.SizeConfigurationBuckets;
 
 import androidx.test.annotation.UiThreadTest;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -175,7 +181,7 @@ public class ActivityThreadClientTest {
 
             // Verify for ON_START state. Activity should be relaunched.
             getInstrumentation().runOnMainSync(() -> clientSession.startActivity(r));
-            recreateAndVerifyRelaunched(activityThread, activity[0], r, ON_START);
+            recreateAndVerifyRelaunched(activityThread, activity[0], r, ON_PAUSE);
 
             // Verify for ON_RESUME state. Activity should be relaunched.
             getInstrumentation().runOnMainSync(() -> clientSession.resumeActivity(r));
@@ -193,6 +199,56 @@ public class ActivityThreadClientTest {
             getInstrumentation().runOnMainSync(() -> clientSession.destroyActivity(r));
             recreateAndVerifyNoRelaunch(activityThread, activity[0]);
         }
+    }
+
+    @Test
+    public void testShouldReportChange() {
+        final Configuration newConfig = new Configuration();
+        final Configuration currentConfig = new Configuration();
+
+        assertFalse("Must not report change if no public diff",
+                shouldReportChange(currentConfig, newConfig, null /* sizeBuckets */,
+                        0 /* handledConfigChanges */, false /* alwaysReportChange */));
+
+        final int[] verticalThresholds = {100, 400};
+        final SizeConfigurationBuckets buckets = new SizeConfigurationBuckets(
+                null /* horizontal */,
+                verticalThresholds,
+                null /* smallest */,
+                null /* screenLayoutSize */,
+                false /* screenLayoutLongSet */);
+        currentConfig.screenHeightDp = 200;
+        newConfig.screenHeightDp = 300;
+
+        assertFalse("Must not report changes if the diff is small and not handled",
+                shouldReportChange(currentConfig, newConfig, buckets,
+                        CONFIG_FONT_SCALE /* handledConfigChanges */,
+                        false /* alwaysReportChange */));
+
+        assertTrue("Must report changes if the small diff is handled",
+                shouldReportChange(currentConfig, newConfig, buckets,
+                        CONFIG_SCREEN_SIZE /* handledConfigChanges */,
+                        false /* alwaysReportChange */));
+
+        assertTrue("Must report changes if it should, even it is small and not handled",
+                shouldReportChange(currentConfig, newConfig, buckets,
+                        CONFIG_FONT_SCALE /* handledConfigChanges */,
+                        true /* alwaysReportChange */));
+
+        currentConfig.fontScale = 0.8f;
+        newConfig.fontScale = 1.2f;
+
+        assertTrue("Must report handled changes regardless of small unhandled change",
+                shouldReportChange(currentConfig, newConfig, buckets,
+                        CONFIG_FONT_SCALE /* handledConfigChanges */,
+                        false /* alwaysReportChange */));
+
+        newConfig.screenHeightDp = 500;
+
+        assertFalse("Must not report changes if there's unhandled big changes",
+                shouldReportChange(currentConfig, newConfig, buckets,
+                        CONFIG_FONT_SCALE /* handledConfigChanges */,
+                        false /* alwaysReportChange */));
     }
 
     private void recreateAndVerifyNoRelaunch(ActivityThread activityThread, TestActivity activity) {
@@ -238,7 +294,7 @@ public class ActivityThreadClientTest {
 
         private Activity launchActivity(ActivityClientRecord r) {
             return mThread.handleLaunchActivity(r, null /* pendingActions */,
-                    null /* customIntent */);
+                    Context.DEVICE_ID_DEFAULT, null /* customIntent */);
         }
 
         private void startActivity(ActivityClientRecord r) {
@@ -247,13 +303,13 @@ public class ActivityThreadClientTest {
 
         private void resumeActivity(ActivityClientRecord r) {
             mThread.handleResumeActivity(r, true /* finalStateRequest */,
-                    true /* isForward */, "test");
+                    true /* isForward */, false /* shouldSendCompatFakeFocus */, "test");
         }
 
         private void pauseActivity(ActivityClientRecord r) {
             mThread.handlePauseActivity(r, false /* finished */,
-                    false /* userLeaving */, 0 /* configChanges */, null /* pendingActions */,
-                    "test");
+                    false /* userLeaving */, 0 /* configChanges */, false /* autoEnteringPip */,
+                    null /* pendingActions */, "test");
         }
 
         private void stopActivity(ActivityClientRecord r) {
@@ -292,14 +348,12 @@ public class ActivityThreadClientTest {
             doNothing().when(packageInfo).updateApplicationInfo(any(), any());
 
             return new ActivityClientRecord(mock(IBinder.class), Intent.makeMainActivity(component),
-                    0 /* ident */, info, new Configuration(),
-                    CompatibilityInfo.DEFAULT_COMPATIBILITY_INFO, null /* referrer */,
+                    0 /* ident */, info, new Configuration(), null /* referrer */,
                     null /* voiceInteractor */, null /* state */, null /* persistentState */,
                     null /* pendingResults */, null /* pendingNewIntents */,
                     null /* activityOptions */, true /* isForward */, null /* profilerInfo */,
-                    mThread /* client */, null /* asssitToken */,
-                    null /* fixedRotationAdjustments */, null /* shareableActivityToken */,
-                    false /* launchedFromBubble */);
+                    mThread /* client */, null /* asssitToken */, null /* shareableActivityToken */,
+                    false /* launchedFromBubble */, null /* taskfragmentToken */);
         }
 
         @Override

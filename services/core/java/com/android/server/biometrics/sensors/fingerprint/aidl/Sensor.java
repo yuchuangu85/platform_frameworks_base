@@ -39,19 +39,23 @@ import android.os.UserManager;
 import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.FrameworkStatsLog;
 import com.android.server.biometrics.HardwareAuthTokenUtils;
 import com.android.server.biometrics.SensorServiceStateProto;
 import com.android.server.biometrics.SensorStateProto;
 import com.android.server.biometrics.UserStateProto;
 import com.android.server.biometrics.Utils;
+import com.android.server.biometrics.log.BiometricContext;
+import com.android.server.biometrics.log.BiometricLogger;
 import com.android.server.biometrics.sensors.AcquisitionClient;
+import com.android.server.biometrics.sensors.AuthSessionCoordinator;
 import com.android.server.biometrics.sensors.AuthenticationConsumer;
 import com.android.server.biometrics.sensors.BaseClientMonitor;
 import com.android.server.biometrics.sensors.BiometricScheduler;
+import com.android.server.biometrics.sensors.BiometricStateCallback;
 import com.android.server.biometrics.sensors.EnumerateConsumer;
 import com.android.server.biometrics.sensors.ErrorConsumer;
-import com.android.server.biometrics.sensors.HalClientMonitor;
 import com.android.server.biometrics.sensors.LockoutCache;
 import com.android.server.biometrics.sensors.LockoutConsumer;
 import com.android.server.biometrics.sensors.LockoutResetDispatcher;
@@ -59,20 +63,20 @@ import com.android.server.biometrics.sensors.RemovalConsumer;
 import com.android.server.biometrics.sensors.StartUserClient;
 import com.android.server.biometrics.sensors.StopUserClient;
 import com.android.server.biometrics.sensors.UserAwareBiometricScheduler;
-import com.android.server.biometrics.sensors.fingerprint.FingerprintStateCallback;
 import com.android.server.biometrics.sensors.fingerprint.FingerprintUtils;
 import com.android.server.biometrics.sensors.fingerprint.GestureAvailabilityDispatcher;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Maintains the state of a single sensor within an instance of the
  * {@link android.hardware.biometrics.fingerprint.IFingerprint} HAL.
  */
 @SuppressWarnings("deprecation")
-class Sensor {
+public class Sensor {
 
     private boolean mTestHalEnabled;
 
@@ -86,26 +90,11 @@ class Sensor {
     @NonNull private final LockoutCache mLockoutCache;
     @NonNull private final Map<Integer, Long> mAuthenticatorIds;
 
-    @Nullable private Session mCurrentSession;
-    @NonNull private final HalClientMonitor.LazyDaemon<ISession> mLazySession;
+    @Nullable AidlSession mCurrentSession;
+    @NonNull private final Supplier<AidlSession> mLazySession;
 
-    static class Session {
-        @NonNull private final String mTag;
-        @NonNull private final ISession mSession;
-        private final int mUserId;
-        @NonNull final HalSessionCallback mHalSessionCallback;
-
-        Session(@NonNull String tag, @NonNull ISession session, int userId,
-                @NonNull HalSessionCallback halSessionCallback) {
-            mTag = tag;
-            mSession = session;
-            mUserId = userId;
-            mHalSessionCallback = halSessionCallback;
-            Slog.d(mTag, "New session created for user: " + userId);
-        }
-    }
-
-    static class HalSessionCallback extends ISessionCallback.Stub {
+    @VisibleForTesting
+    public static class HalSessionCallback extends ISessionCallback.Stub {
 
         /**
          * Interface to sends results to the HalSessionCallback's owner.
@@ -132,12 +121,15 @@ class Sensor {
         @NonNull
         private final LockoutResetDispatcher mLockoutResetDispatcher;
         @NonNull
+        private AuthSessionCoordinator mAuthSessionCoordinator;
+        @NonNull
         private final Callback mCallback;
 
         HalSessionCallback(@NonNull Context context, @NonNull Handler handler, @NonNull String tag,
                 @NonNull UserAwareBiometricScheduler scheduler, int sensorId, int userId,
                 @NonNull LockoutCache lockoutTracker,
                 @NonNull LockoutResetDispatcher lockoutResetDispatcher,
+                @NonNull AuthSessionCoordinator authSessionCoordinator,
                 @NonNull Callback callback) {
             mContext = context;
             mHandler = handler;
@@ -147,6 +139,7 @@ class Sensor {
             mUserId = userId;
             mLockoutCache = lockoutTracker;
             mLockoutResetDispatcher = lockoutResetDispatcher;
+            mAuthSessionCoordinator = authSessionCoordinator;
             mCallback = callback;
         }
 
@@ -328,8 +321,12 @@ class Sensor {
                 final BaseClientMonitor client = mScheduler.getCurrentClient();
                 if (!(client instanceof FingerprintResetLockoutClient)) {
                     Slog.d(mTag, "onLockoutCleared outside of resetLockout by HAL");
+                    // Given that onLockoutCleared() can happen at any time, and is not necessarily
+                    // coming from a specific client, set this to -1 to indicate it wasn't for a
+                    // specific request.
                     FingerprintResetLockoutClient.resetLocalLockoutStateToNone(mSensorId, mUserId,
-                            mLockoutCache, mLockoutResetDispatcher);
+                            mLockoutCache, mLockoutResetDispatcher, mAuthSessionCoordinator,
+                            Utils.getCurrentStrength(mSensorId), -1 /* requestId */);
                 } else {
                     Slog.d(mTag, "onLockoutCleared after resetLockout");
                     final FingerprintResetLockoutClient resetLockoutClient =
@@ -441,7 +438,8 @@ class Sensor {
     Sensor(@NonNull String tag, @NonNull FingerprintProvider provider, @NonNull Context context,
             @NonNull Handler handler, @NonNull FingerprintSensorPropertiesInternal sensorProperties,
             @NonNull LockoutResetDispatcher lockoutResetDispatcher,
-            @NonNull GestureAvailabilityDispatcher gestureAvailabilityDispatcher) {
+            @NonNull GestureAvailabilityDispatcher gestureAvailabilityDispatcher,
+            @NonNull BiometricContext biometricContext, AidlSession session) {
         mTag = tag;
         mProvider = provider;
         mContext = context;
@@ -452,32 +450,36 @@ class Sensor {
         mScheduler = new UserAwareBiometricScheduler(tag,
                 BiometricScheduler.sensorTypeFromFingerprintProperties(mSensorProperties),
                 gestureAvailabilityDispatcher,
-                () -> mCurrentSession != null ? mCurrentSession.mUserId : UserHandle.USER_NULL,
+                () -> mCurrentSession != null ? mCurrentSession.getUserId() : UserHandle.USER_NULL,
                 new UserAwareBiometricScheduler.UserSwitchCallback() {
                     @NonNull
                     @Override
                     public StopUserClient<?> getStopUserClient(int userId) {
                         return new FingerprintStopUserClient(mContext, mLazySession, mToken,
-                                userId, mSensorProperties.sensorId, () -> mCurrentSession = null);
+                                userId, mSensorProperties.sensorId,
+                                BiometricLogger.ofUnknown(mContext), biometricContext,
+                                () -> mCurrentSession = null);
                     }
 
                     @NonNull
                     @Override
                     public StartUserClient<?, ?> getStartUserClient(int newUserId) {
-                        final HalSessionCallback.Callback callback = () -> {
-                            Slog.e(mTag, "Got ERROR_HW_UNAVAILABLE");
-                            mCurrentSession = null;
-                        };
-
                         final int sensorId = mSensorProperties.sensorId;
 
                         final HalSessionCallback resultController = new HalSessionCallback(mContext,
                                 mHandler, mTag, mScheduler, sensorId, newUserId, mLockoutCache,
-                                lockoutResetDispatcher, callback);
+                                lockoutResetDispatcher,
+                                biometricContext.getAuthSessionCoordinator(), () -> {
+                            Slog.e(mTag, "Got ERROR_HW_UNAVAILABLE");
+                            mCurrentSession = null;
+                        });
 
                         final StartUserClient.UserStartedCallback<ISession> userStartedCallback =
-                                (userIdStarted, newSession) -> {
-                                    mCurrentSession = new Session(mTag,
+                                (userIdStarted, newSession, halInterfaceVersion) -> {
+                                    Slog.d(mTag, "New session created for user: "
+                                            + userIdStarted + " with hal version: "
+                                            + halInterfaceVersion);
+                                    mCurrentSession = new AidlSession(halInterfaceVersion,
                                             newSession, userIdStarted, resultController);
                                     if (FingerprintUtils.getInstance(sensorId)
                                             .isInvalidationInProgress(mContext, userIdStarted)) {
@@ -493,14 +495,25 @@ class Sensor {
 
                         return new FingerprintStartUserClient(mContext, provider::getHalInstance,
                                 mToken, newUserId, mSensorProperties.sensorId,
+                                BiometricLogger.ofUnknown(mContext), biometricContext,
                                 resultController, userStartedCallback);
                     }
                 });
         mAuthenticatorIds = new HashMap<>();
-        mLazySession = () -> mCurrentSession != null ? mCurrentSession.mSession : null;
+        mLazySession = () -> mCurrentSession != null ? mCurrentSession : null;
+        mCurrentSession = session;
     }
 
-    @NonNull HalClientMonitor.LazyDaemon<ISession> getLazySession() {
+    Sensor(@NonNull String tag, @NonNull FingerprintProvider provider, @NonNull Context context,
+            @NonNull Handler handler, @NonNull FingerprintSensorPropertiesInternal sensorProperties,
+            @NonNull LockoutResetDispatcher lockoutResetDispatcher,
+            @NonNull GestureAvailabilityDispatcher gestureAvailabilityDispatcher,
+            @NonNull BiometricContext biometricContext) {
+        this(tag, provider, context, handler, sensorProperties, lockoutResetDispatcher,
+                gestureAvailabilityDispatcher, biometricContext, null);
+    }
+
+    @NonNull Supplier<AidlSession> getLazySession() {
         return mLazySession;
     }
 
@@ -508,8 +521,8 @@ class Sensor {
         return mSensorProperties;
     }
 
-    @Nullable Session getSessionForUser(int userId) {
-        if (mCurrentSession != null && mCurrentSession.mUserId == userId) {
+    @Nullable AidlSession getSessionForUser(int userId) {
+        if (mCurrentSession != null && mCurrentSession.getUserId() == userId) {
             return mCurrentSession;
         } else {
             return null;
@@ -517,9 +530,9 @@ class Sensor {
     }
 
     @NonNull ITestSession createTestSession(@NonNull ITestSessionCallback callback,
-            @NonNull FingerprintStateCallback fingerprintStateCallback) {
+            @NonNull BiometricStateCallback biometricStateCallback) {
         return new BiometricTestSessionImpl(mContext, mSensorProperties.sensorId, callback,
-                fingerprintStateCallback, mProvider, this);
+                biometricStateCallback, mProvider, this);
     }
 
     @NonNull BiometricScheduler getScheduler() {
@@ -539,10 +552,10 @@ class Sensor {
         if (enabled != mTestHalEnabled) {
             // The framework should retrieve a new session from the HAL.
             try {
-                if (mCurrentSession != null && mCurrentSession.mSession != null) {
+                if (mCurrentSession != null) {
                     // TODO(181984005): This should be scheduled instead of directly invoked
                     Slog.d(mTag, "Closing old session");
-                    mCurrentSession.mSession.close();
+                    mCurrentSession.getSession().close();
                 }
             } catch (RemoteException e) {
                 Slog.e(mTag, "RemoteException", e);
@@ -596,6 +609,8 @@ class Sensor {
                     BiometricsProtoEnums.MODALITY_FINGERPRINT,
                     BiometricsProtoEnums.ISSUE_HAL_DEATH,
                     -1 /* sensorId */);
+        } else if (client != null) {
+            client.cancel();
         }
 
         mScheduler.recordCrashState();

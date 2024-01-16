@@ -16,24 +16,16 @@
 
 package com.android.server.wm;
 
-import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION_STARTING;
 import static android.view.WindowManager.LayoutParams.TYPE_NOTIFICATION_SHADE;
-
-import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
-import static com.android.dx.mockito.inline.extended.ExtendedMockito.mock;
 
 import android.annotation.Nullable;
 import android.content.Context;
-import android.content.res.CompatibilityInfo;
 import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.PowerManager.GoToSleepReason;
 import android.os.PowerManager.WakeReason;
-import android.os.RemoteException;
 import android.util.proto.ProtoOutputStream;
-import android.view.IWindow;
-import android.view.IWindowManager;
 import android.view.KeyEvent;
 import android.view.WindowManager;
 import android.view.animation.Animation;
@@ -41,35 +33,24 @@ import android.view.animation.Animation;
 import com.android.internal.policy.IKeyguardDismissCallback;
 import com.android.internal.policy.IShortcutService;
 import com.android.server.policy.WindowManagerPolicy;
-import com.android.server.wm.WindowState.PowerManagerWrapper;
 
 import java.io.PrintWriter;
-import java.util.function.Supplier;
 
 class TestWindowManagerPolicy implements WindowManagerPolicy {
-    private final Supplier<WindowManagerService> mWmSupplier;
-    private final PowerManagerWrapper mPowerManagerWrapper;
 
-    int mRotationToReport = 0;
     boolean mKeyguardShowingAndNotOccluded = false;
     boolean mOkToAnimate = true;
+    boolean mIsUserSetupComplete = false;
 
-    private Runnable mRunnableWhenAddingSplashScreen;
-
-    TestWindowManagerPolicy(Supplier<WindowManagerService> wmSupplier,
-            PowerManagerWrapper powerManagerWrapper) {
-        mWmSupplier = wmSupplier;
-        mPowerManagerWrapper = powerManagerWrapper;
+    TestWindowManagerPolicy() {
     }
 
     @Override
-    public void registerShortcutKey(long shortcutCode, IShortcutService shortcutKeyReceiver)
-            throws RemoteException {
+    public void registerShortcutKey(long shortcutCode, IShortcutService shortcutKeyReceiver) {
     }
 
     @Override
-    public void init(Context context, IWindowManager windowManager,
-            WindowManagerFuncs windowManagerFuncs) {
+    public void init(Context context, WindowManagerFuncs windowManagerFuncs) {
     }
 
     public void setDefaultDisplay(DisplayContentInfo displayContentInfo) {
@@ -89,42 +70,6 @@ class TestWindowManagerPolicy implements WindowManagerPolicy {
     @Override
     public boolean isKeyguardHostWindow(WindowManager.LayoutParams attrs) {
         return attrs.type == TYPE_NOTIFICATION_SHADE;
-    }
-
-    /**
-     * Sets a runnable to run when adding a splash screen which gets executed after the window has
-     * been added but before returning the surface.
-     */
-    void setRunnableWhenAddingSplashScreen(Runnable r) {
-        mRunnableWhenAddingSplashScreen = r;
-    }
-
-    @Override
-    public StartingSurface addSplashScreen(IBinder appToken, int userId, String packageName,
-            int theme, CompatibilityInfo compatInfo, CharSequence nonLocalizedLabel, int labelRes,
-            int icon, int logo, int windowFlags, Configuration overrideConfig, int displayId) {
-        final com.android.server.wm.WindowState window;
-        final ActivityRecord activity;
-        final WindowManagerService wm = mWmSupplier.get();
-        synchronized (wm.mGlobalLock) {
-            activity = wm.mRoot.getActivityRecord(appToken);
-            IWindow iWindow = mock(IWindow.class);
-            doReturn(mock(IBinder.class)).when(iWindow).asBinder();
-            window = WindowTestsBase.createWindow(null, TYPE_APPLICATION_STARTING, activity,
-                    "Starting window", 0 /* ownerId */, 0 /* userId*/, false /* internalWindows */,
-                    wm, mock(Session.class), iWindow, mPowerManagerWrapper);
-            activity.mStartingWindow = window;
-        }
-        if (mRunnableWhenAddingSplashScreen != null) {
-            mRunnableWhenAddingSplashScreen.run();
-            mRunnableWhenAddingSplashScreen = null;
-        }
-        return (a) -> {
-            synchronized (wm.mGlobalLock) {
-                activity.removeChild(window);
-                activity.mStartingWindow = null;
-            }
-        };
     }
 
     @Override
@@ -169,19 +114,35 @@ class TestWindowManagerPolicy implements WindowManagerPolicy {
     }
 
     @Override
-    public void startedWakingUp(@WakeReason int wakeReason) {
+    public void startedWakingUpGlobal(@WakeReason int reason) {
     }
 
     @Override
-    public void finishedWakingUp(@WakeReason int wakeReason) {
+    public void finishedWakingUpGlobal(@WakeReason int reason) {
     }
 
     @Override
-    public void startedGoingToSleep(@GoToSleepReason int sleepReason) {
+    public void startedGoingToSleepGlobal(@GoToSleepReason int reason) {
     }
 
     @Override
-    public void finishedGoingToSleep(@GoToSleepReason int sleepReason) {
+    public void finishedGoingToSleepGlobal(@GoToSleepReason int reason) {
+    }
+
+    @Override
+    public void startedWakingUp(int displayGroupId, @WakeReason int wakeReason) {
+    }
+
+    @Override
+    public void finishedWakingUp(int displayGroupId, @WakeReason int wakeReason) {
+    }
+
+    @Override
+    public void startedGoingToSleep(int displayGroupId, @GoToSleepReason int sleepReason) {
+    }
+
+    @Override
+    public void finishedGoingToSleep(int displayGroupId, @GoToSleepReason int sleepReason) {
     }
 
     @Override
@@ -197,7 +158,7 @@ class TestWindowManagerPolicy implements WindowManagerPolicy {
     }
 
     @Override
-    public void screenTurnedOff(int displayId) {
+    public void screenTurnedOff(int displayId, boolean isSwappingDisplay) {
     }
 
     @Override
@@ -295,7 +256,7 @@ class TestWindowManagerPolicy implements WindowManagerPolicy {
     }
 
     @Override
-    public void userActivity() {
+    public void userActivity(int displayGroupId, int event) {
     }
 
     @Override
@@ -335,7 +296,7 @@ class TestWindowManagerPolicy implements WindowManagerPolicy {
 
     @Override
     public boolean isUserSetupComplete() {
-        return false;
+        return mIsUserSetupComplete;
     }
 
     @Override
@@ -360,11 +321,11 @@ class TestWindowManagerPolicy implements WindowManagerPolicy {
     }
 
     @Override
-    public void startKeyguardExitAnimation(long startTime, long fadeoutDuration) {
+    public void startKeyguardExitAnimation(long startTime) {
     }
 
     @Override
-    public int applyKeyguardOcclusionChange(boolean keyguardOccludingStarted) {
+    public int applyKeyguardOcclusionChange() {
         return 0;
     }
 
@@ -387,5 +348,10 @@ class TestWindowManagerPolicy implements WindowManagerPolicy {
     @Override
     public boolean canDismissBootAnimation() {
         return true;
+    }
+
+    @Override
+    public boolean isGlobalKey(int keyCode) {
+        return false;
     }
 }

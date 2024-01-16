@@ -34,7 +34,7 @@ public class IntArray implements Cloneable {
     private int[] mValues;
     private int mSize;
 
-    private  IntArray(int[] array, int size) {
+    private IntArray(int[] array, int size) {
         mValues = array;
         mSize = Preconditions.checkArgumentInRange(size, 0, array.length, "size");
     }
@@ -43,7 +43,7 @@ public class IntArray implements Cloneable {
      * Creates an empty IntArray with the default initial capacity.
      */
     public IntArray() {
-        this(10);
+        this(0);
     }
 
     /**
@@ -178,10 +178,8 @@ public class IntArray implements Cloneable {
     }
 
     @Override
-    public IntArray clone() throws CloneNotSupportedException {
-        final IntArray clone = (IntArray) super.clone();
-        clone.mValues = mValues.clone();
-        return clone;
+    public IntArray clone() {
+        return new IntArray(mValues.clone(), mSize);
     }
 
     /**
@@ -235,5 +233,24 @@ public class IntArray implements Cloneable {
      */
     public int[] toArray() {
         return Arrays.copyOf(mValues, mSize);
+    }
+
+    @Override
+    public String toString() {
+        // Code below is copied from Arrays.toString(), but uses mSize in the lopp (it cannot call
+        // Arrays.toString() directly as it would return the unused elements as well)
+        int iMax = mSize - 1;
+        if (iMax == -1) {
+            return "[]";
+        }
+        StringBuilder b = new StringBuilder();
+        b.append('[');
+        for (int i = 0;; i++) {
+            b.append(mValues[i]);
+            if (i == iMax) {
+                return b.append(']').toString();
+            }
+            b.append(", ");
+        }
     }
 }

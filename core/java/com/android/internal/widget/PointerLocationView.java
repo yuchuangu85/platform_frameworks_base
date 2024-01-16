@@ -18,6 +18,7 @@ package com.android.internal.widget;
 
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.graphics.Canvas;
 import android.graphics.Insets;
 import android.graphics.Paint;
@@ -32,19 +33,19 @@ import android.os.RemoteException;
 import android.os.SystemProperties;
 import android.util.Log;
 import android.util.Slog;
+import android.util.SparseArray;
 import android.view.ISystemGestureExclusionListener;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.MotionEvent.PointerCoords;
+import android.view.RoundedCorner;
 import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.WindowInsets;
 import android.view.WindowManagerGlobal;
 import android.view.WindowManagerPolicyConstants.PointerEventListener;
-
-import java.util.ArrayList;
 
 public class PointerLocationView extends View implements InputDeviceListener,
         PointerEventListener {
@@ -60,21 +61,24 @@ public class PointerLocationView extends View implements InputDeviceListener,
      */
     private static final String GESTURE_EXCLUSION_PROP = "debug.pointerlocation.showexclusion";
 
+    // In case when it's in first time or no active pointer found, draw the empty state.
+    private static final PointerState EMPTY_POINTER_STATE = new PointerState();
+
     public static class PointerState {
         // Trace of previous points.
         private float[] mTraceX = new float[32];
         private float[] mTraceY = new float[32];
         private boolean[] mTraceCurrent = new boolean[32];
         private int mTraceCount;
-        
+
         // True if the pointer is down.
         @UnsupportedAppUsage
         private boolean mCurDown;
-        
+
         // Most recent coordinates.
         private PointerCoords mCoords = new PointerCoords();
         private int mToolType;
-        
+
         // Most recent velocity.
         private float mXVelocity;
         private float mYVelocity;
@@ -87,10 +91,6 @@ public class PointerLocationView extends View implements InputDeviceListener,
         private float mBoundingTop;
         private float mBoundingRight;
         private float mBoundingBottom;
-
-        // Position estimator.
-        private VelocityTracker.Estimator mEstimator = new VelocityTracker.Estimator();
-        private VelocityTracker.Estimator mAltEstimator = new VelocityTracker.Estimator();
 
         @UnsupportedAppUsage
         public PointerState() {
@@ -107,7 +107,7 @@ public class PointerLocationView extends View implements InputDeviceListener,
                 float[] newTraceX = new float[traceCapacity];
                 System.arraycopy(mTraceX, 0, newTraceX, 0, mTraceCount);
                 mTraceX = newTraceX;
-                
+
                 float[] newTraceY = new float[traceCapacity];
                 System.arraycopy(mTraceY, 0, newTraceY, 0, mTraceCount);
                 mTraceY = newTraceY;
@@ -116,7 +116,7 @@ public class PointerLocationView extends View implements InputDeviceListener,
                 System.arraycopy(mTraceCurrent, 0, newTraceCurrent, 0, mTraceCount);
                 mTraceCurrent= newTraceCurrent;
             }
-            
+
             mTraceX[mTraceCount] = x;
             mTraceY[mTraceCount] = y;
             mTraceCurrent[mTraceCount] = current;
@@ -146,7 +146,7 @@ public class PointerLocationView extends View implements InputDeviceListener,
     private int mMaxNumPointers;
     private int mActivePointerId;
     @UnsupportedAppUsage
-    private final ArrayList<PointerState> mPointers = new ArrayList<PointerState>();
+    private final SparseArray<PointerState> mPointers = new SparseArray<PointerState>();
     private final PointerCoords mTempCoords = new PointerCoords();
 
     private final Region mSystemGestureExclusion = new Region();
@@ -162,7 +162,9 @@ public class PointerLocationView extends View implements InputDeviceListener,
 
     @UnsupportedAppUsage
     private boolean mPrintCoords = true;
-    
+
+    private float mDensity;
+
     public PointerLocationView(Context c) {
         super(c);
         setFocusableInTouchMode(true);
@@ -172,8 +174,6 @@ public class PointerLocationView extends View implements InputDeviceListener,
         mVC = ViewConfiguration.get(c);
         mTextPaint = new Paint();
         mTextPaint.setAntiAlias(true);
-        mTextPaint.setTextSize(10
-                * getResources().getDisplayMetrics().density);
         mTextPaint.setARGB(255, 0, 0, 0);
         mTextBackgroundPaint = new Paint();
         mTextBackgroundPaint.setAntiAlias(false);
@@ -185,20 +185,19 @@ public class PointerLocationView extends View implements InputDeviceListener,
         mPaint.setAntiAlias(true);
         mPaint.setARGB(255, 255, 255, 255);
         mPaint.setStyle(Paint.Style.STROKE);
-        mPaint.setStrokeWidth(2);
         mCurrentPointPaint = new Paint();
         mCurrentPointPaint.setAntiAlias(true);
         mCurrentPointPaint.setARGB(255, 255, 0, 0);
         mCurrentPointPaint.setStyle(Paint.Style.STROKE);
-        mCurrentPointPaint.setStrokeWidth(2);
         mTargetPaint = new Paint();
         mTargetPaint.setAntiAlias(false);
         mTargetPaint.setARGB(255, 0, 0, 192);
         mPathPaint = new Paint();
         mPathPaint.setAntiAlias(false);
         mPathPaint.setARGB(255, 0, 96, 255);
-        mPaint.setStyle(Paint.Style.STROKE);
-        mPaint.setStrokeWidth(1);
+        mPathPaint.setStyle(Paint.Style.STROKE);
+
+        configureDensityDependentFactors();
 
         mSystemGestureExclusionPaint = new Paint();
         mSystemGestureExclusionPaint.setARGB(25, 255, 0, 0);
@@ -208,10 +207,8 @@ public class PointerLocationView extends View implements InputDeviceListener,
         mSystemGestureExclusionRejectedPaint.setARGB(25, 0, 0, 255);
         mSystemGestureExclusionRejectedPaint.setStyle(Paint.Style.FILL_AND_STROKE);
 
-        PointerState ps = new PointerState();
-        mPointers.add(ps);
         mActivePointerId = 0;
-        
+
         mVelocity = VelocityTracker.obtain();
 
         String altStrategy = SystemProperties.get(ALT_STRATEGY_PROPERY_KEY);
@@ -229,13 +226,29 @@ public class PointerLocationView extends View implements InputDeviceListener,
 
     @Override
     public WindowInsets onApplyWindowInsets(WindowInsets insets) {
-        if (insets.getDisplayCutout() != null) {
-            mHeaderPaddingTop = insets.getDisplayCutout().getSafeInsetTop();
-            mWaterfallInsets = insets.getDisplayCutout().getWaterfallInsets();
-        } else {
-            mHeaderPaddingTop = 0;
-            mWaterfallInsets = Insets.NONE;
+        int headerPaddingTop = 0;
+        Insets waterfallInsets = Insets.NONE;
+
+        final RoundedCorner topLeftRounded =
+                insets.getRoundedCorner(RoundedCorner.POSITION_TOP_LEFT);
+        if (topLeftRounded != null) {
+            headerPaddingTop = topLeftRounded.getRadius();
         }
+
+        final RoundedCorner topRightRounded =
+                insets.getRoundedCorner(RoundedCorner.POSITION_TOP_RIGHT);
+        if (topRightRounded != null) {
+            headerPaddingTop = Math.max(headerPaddingTop, topRightRounded.getRadius());
+        }
+
+        if (insets.getDisplayCutout() != null) {
+            headerPaddingTop =
+                    Math.max(headerPaddingTop, insets.getDisplayCutout().getSafeInsetTop());
+            waterfallInsets = insets.getDisplayCutout().getWaterfallInsets();
+        }
+
+        mHeaderPaddingTop = headerPaddingTop;
+        mWaterfallInsets = waterfallInsets;
         return super.onApplyWindowInsets(insets);
     }
 
@@ -252,7 +265,7 @@ public class PointerLocationView extends View implements InputDeviceListener,
                     + " bottom=" + mTextMetrics.bottom);
         }
     }
-    
+
     // Draw an oval.  When angle is 0 radians, orients the major axis vertically,
     // angles less than or greater than 0 radians rotate the major axis left or right.
     private RectF mReusableOvalRect = new RectF();
@@ -289,7 +302,7 @@ public class PointerLocationView extends View implements InputDeviceListener,
 
         // Pointer trace.
         for (int p = 0; p < NP; p++) {
-            final PointerState ps = mPointers.get(p);
+            final PointerState ps = mPointers.valueAt(p);
 
             // Draw path.
             final int N = ps.mTraceCount;
@@ -300,7 +313,7 @@ public class PointerLocationView extends View implements InputDeviceListener,
             for (int i=0; i < N; i++) {
                 float x = ps.mTraceX[i];
                 float y = ps.mTraceY[i];
-                if (Float.isNaN(x)) {
+                if (Float.isNaN(x) || Float.isNaN(y)) {
                     haveLast = false;
                     continue;
                 }
@@ -354,11 +367,8 @@ public class PointerLocationView extends View implements InputDeviceListener,
                 drawOval(canvas, ps.mCoords.x, ps.mCoords.y, ps.mCoords.toolMajor,
                         ps.mCoords.toolMinor, ps.mCoords.orientation, mPaint);
 
-                // Draw the orientation arrow.
-                float arrowSize = ps.mCoords.toolMajor * 0.7f;
-                if (arrowSize < 20) {
-                    arrowSize = 20;
-                }
+                // Draw the orientation arrow, and ensure it has a minimum size of 24dp.
+                final float arrowSize = Math.max(ps.mCoords.toolMajor * 0.7f, 24 * mDensity);
                 mPaint.setARGB(255, pressureLevel, 255, 0);
                 float orientationVectorX = (float) (Math.sin(ps.mCoords.orientation)
                         * arrowSize);
@@ -387,7 +397,7 @@ public class PointerLocationView extends View implements InputDeviceListener,
                 canvas.drawCircle(
                         ps.mCoords.x + orientationVectorX * tiltScale,
                         ps.mCoords.y + orientationVectorY * tiltScale,
-                        3.0f, mPaint);
+                        3.0f * mDensity, mPaint);
 
                 // Draw the current bounding box
                 if (ps.mHasBoundingBox) {
@@ -399,10 +409,6 @@ public class PointerLocationView extends View implements InputDeviceListener,
     }
 
     private void drawLabels(Canvas canvas) {
-        if (mActivePointerId < 0) {
-            return;
-        }
-
         final int w = getWidth() - mWaterfallInsets.left - mWaterfallInsets.right;
         final int itemW = w / 7;
         final int base = mHeaderPaddingTop - mTextMetrics.ascent + 1;
@@ -410,7 +416,7 @@ public class PointerLocationView extends View implements InputDeviceListener,
 
         canvas.save();
         canvas.translate(mWaterfallInsets.left, 0);
-        final PointerState ps = mPointers.get(mActivePointerId);
+        final PointerState ps = mPointers.get(mActivePointerId, EMPTY_POINTER_STATE);
 
         canvas.drawRect(0, mHeaderPaddingTop, itemW - 1, bottom, mTextBackgroundPaint);
         canvas.drawText(mText.clear()
@@ -581,18 +587,13 @@ public class PointerLocationView extends View implements InputDeviceListener,
     @Override
     public void onPointerEvent(MotionEvent event) {
         final int action = event.getAction();
-        int NP = mPointers.size();
 
         if (action == MotionEvent.ACTION_DOWN
                 || (action & MotionEvent.ACTION_MASK) == MotionEvent.ACTION_POINTER_DOWN) {
             final int index = (action & MotionEvent.ACTION_POINTER_INDEX_MASK)
                     >> MotionEvent.ACTION_POINTER_INDEX_SHIFT; // will be 0 for down
             if (action == MotionEvent.ACTION_DOWN) {
-                for (int p=0; p<NP; p++) {
-                    final PointerState ps = mPointers.get(p);
-                    ps.clearTrace();
-                    ps.mCurDown = false;
-                }
+                mPointers.clear();
                 mCurDown = true;
                 mCurNumPointers = 0;
                 mMaxNumPointers = 0;
@@ -608,18 +609,17 @@ public class PointerLocationView extends View implements InputDeviceListener,
             }
 
             final int id = event.getPointerId(index);
-            while (NP <= id) {
-                PointerState ps = new PointerState();
-                mPointers.add(ps);
-                NP++;
+            PointerState ps = mPointers.get(id);
+            if (ps == null) {
+                ps = new PointerState();
+                mPointers.put(id, ps);
             }
 
-            if (mActivePointerId < 0 ||
-                    !mPointers.get(mActivePointerId).mCurDown) {
+            if (!mPointers.contains(mActivePointerId)
+                    || !mPointers.get(mActivePointerId).mCurDown) {
                 mActivePointerId = id;
             }
 
-            final PointerState ps = mPointers.get(id);
             ps.mCurDown = true;
             InputDevice device = InputDevice.getDevice(event.getDeviceId());
             ps.mHasBoundingBox = device != null &&
@@ -662,11 +662,9 @@ public class PointerLocationView extends View implements InputDeviceListener,
                 ps.addTrace(coords.x, coords.y, true);
                 ps.mXVelocity = mVelocity.getXVelocity(id);
                 ps.mYVelocity = mVelocity.getYVelocity(id);
-                mVelocity.getEstimator(id, ps.mEstimator);
                 if (mAltVelocity != null) {
                     ps.mAltXVelocity = mAltVelocity.getXVelocity(id);
                     ps.mAltYVelocity = mAltVelocity.getYVelocity(id);
-                    mAltVelocity.getEstimator(id, ps.mAltEstimator);
                 }
                 ps.mToolType = event.getToolType(i);
 
@@ -686,13 +684,13 @@ public class PointerLocationView extends View implements InputDeviceListener,
                     >> MotionEvent.ACTION_POINTER_INDEX_SHIFT; // will be 0 for UP
 
             final int id = event.getPointerId(index);
-            if (id >= NP) {
-                Slog.wtf(TAG, "Got pointer ID out of bounds: id=" + id + " arraysize="
-                        + NP + " pointerindex=" + index
+            final PointerState ps = mPointers.get(id);
+            if (ps == null) {
+                Slog.wtf(TAG, "Could not find pointer id=" + id + " in mPointers map,"
+                        + " size=" + mPointers.size() + " pointerindex=" + index
                         + " action=0x" + Integer.toHexString(action));
                 return;
             }
-            final PointerState ps = mPointers.get(id);
             ps.mCurDown = false;
 
             if (action == MotionEvent.ACTION_UP
@@ -710,7 +708,7 @@ public class PointerLocationView extends View implements InputDeviceListener,
 
         invalidate();
     }
-    
+
     @Override
     public boolean onTouchEvent(MotionEvent event) {
         onPointerEvent(event);
@@ -811,6 +809,8 @@ public class PointerLocationView extends View implements InputDeviceListener,
                     mSystemGestureExclusionListener, mContext.getDisplayId());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Failed to unregister window manager callbacks", e);
         }
     }
 
@@ -862,16 +862,16 @@ public class PointerLocationView extends View implements InputDeviceListener,
     private static final class FasterStringBuilder {
         private char[] mChars;
         private int mLength;
-        
+
         public FasterStringBuilder() {
             mChars = new char[64];
         }
-        
+
         public FasterStringBuilder clear() {
             mLength = 0;
             return this;
         }
-        
+
         public FasterStringBuilder append(String value) {
             final int valueLength = value.length();
             final int index = reserve(valueLength);
@@ -879,11 +879,11 @@ public class PointerLocationView extends View implements InputDeviceListener,
             mLength += valueLength;
             return this;
         }
-        
+
         public FasterStringBuilder append(int value) {
             return append(value, 0);
         }
-        
+
         public FasterStringBuilder append(int value, int zeroPadWidth) {
             final boolean negative = value < 0;
             if (negative) {
@@ -893,16 +893,16 @@ public class PointerLocationView extends View implements InputDeviceListener,
                     return this;
                 }
             }
-            
+
             int index = reserve(11);
             final char[] chars = mChars;
-            
+
             if (value == 0) {
                 chars[index++] = '0';
                 mLength += 1;
                 return this;
             }
-            
+
             if (negative) {
                 chars[index++] = '-';
             }
@@ -916,18 +916,18 @@ public class PointerLocationView extends View implements InputDeviceListener,
                     chars[index++] = '0';
                 }
             }
-            
+
             do {
                 int digit = value / divisor;
                 value -= digit * divisor;
                 divisor /= 10;
                 chars[index++] = (char) (digit + '0');
             } while (divisor != 0);
-            
+
             mLength = index;
             return this;
         }
-        
+
         public FasterStringBuilder append(float value, int precision) {
             int scale = 1;
             for (int i = 0; i < precision; i++) {
@@ -947,15 +947,15 @@ public class PointerLocationView extends View implements InputDeviceListener,
                 value -= Math.floor(value);
                 append((int) (value * scale), precision);
             }
-            
+
             return this;
         }
-        
+
         @Override
         public String toString() {
             return new String(mChars, 0, mLength);
         }
-        
+
         private int reserve(int length) {
             final int oldLength = mLength;
             final int newLength = mLength + length;
@@ -993,4 +993,19 @@ public class PointerLocationView extends View implements InputDeviceListener,
             }
         }
     };
+
+    @Override
+    protected void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        configureDensityDependentFactors();
+    }
+
+    // Compute size by display density.
+    private void configureDensityDependentFactors() {
+        mDensity = getResources().getDisplayMetrics().density;
+        mTextPaint.setTextSize(10 * mDensity);
+        mPaint.setStrokeWidth(1 * mDensity);
+        mCurrentPointPaint.setStrokeWidth(1 * mDensity);
+        mPathPaint.setStrokeWidth(1 * mDensity);
+    }
 }

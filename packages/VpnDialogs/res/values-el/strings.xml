@@ -18,6 +18,7 @@
     xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
     <string name="prompt" msgid="3183836924226407828">"Αίτημα σύνδεσης"</string>
     <string name="warning" msgid="809658604548412033">"Η εφαρμογή <xliff:g id="APP">%s</xliff:g> επιθυμεί να ρυθμίσει μια σύνδεση VPN που της επιτρέπει να παρακολουθεί την επισκεψιμότητα του δικτύου. Αποδεχτείτε το αίτημα μόνο εάν εμπιστεύεστε την πηγή. Το εικονίδιο &lt;br /&gt; &lt;br /&gt; &lt;img src=vpn_icon /&gt; εμφανίζεται στο επάνω μέρος της οθόνης σας όταν είναι ενεργό το VPN."</string>
+    <string name="warning" product="tv" msgid="5188957997628124947">"Η εφαρμογή <xliff:g id="APP">%s</xliff:g> επιθυμεί να ρυθμίσει μια σύνδεση VPN που της επιτρέπει να παρακολουθεί την επισκεψιμότητα του δικτύου. Αποδεχτείτε το αίτημα μόνο εάν εμπιστεύεστε την πηγή. Το εικονίδιο &lt;br /&gt; &lt;br /&gt; &lt;img src=vpn_icon /&gt; εμφανίζεται στην οθόνη σας όταν είναι ενεργό το VPN."</string>
     <string name="legacy_title" msgid="192936250066580964">"Το VPN συνδέθηκε"</string>
     <string name="session" msgid="6470628549473641030">"Περίοδος σύνδεσης"</string>
     <string name="duration" msgid="3584782459928719435">"Διάρκεια:"</string>
@@ -33,4 +34,6 @@
     <string name="disconnect" msgid="971412338304200056">"Αποσύνδεση"</string>
     <string name="open_app" msgid="3717639178595958667">"Άνοιγμα εφαρμογής"</string>
     <string name="dismiss" msgid="6192859333764711227">"Παράβλεψη"</string>
+    <string name="sanitized_vpn_label_with_ellipsis" msgid="7014327474633422235">"<xliff:g id="SANITIZED_VPN_LABEL_WITH_ELLIPSIS_0">%1$s</xliff:g>… ( <xliff:g id="SANITIZED_VPN_LABEL_WITH_ELLIPSIS_1">%2$s</xliff:g>)"</string>
+    <string name="sanitized_vpn_label" msgid="1877415015009794766">"<xliff:g id="SANITIZED_VPN_LABEL_0">%1$s</xliff:g> ( <xliff:g id="SANITIZED_VPN_LABEL_1">%2$s</xliff:g>)"</string>
 </resources>

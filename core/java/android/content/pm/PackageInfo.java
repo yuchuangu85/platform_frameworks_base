@@ -91,7 +91,7 @@ public class PackageInfo implements Parcelable {
     /**
      * The version name of this package, as specified by the &lt;manifest&gt;
      * tag's {@link android.R.styleable#AndroidManifest_versionName versionName}
-     * attribute.
+     * attribute, or null if there was none.
      */
     public String versionName;
 
@@ -213,14 +213,15 @@ public class PackageInfo implements Parcelable {
      * or null if there were none.  This is only filled in if the flag
      * {@link PackageManager#GET_PERMISSIONS} was set.  Each value matches
      * the corresponding entry in {@link #requestedPermissions}, and will have
-     * the flag {@link #REQUESTED_PERMISSION_GRANTED} set as appropriate.
+     * the flags {@link #REQUESTED_PERMISSION_GRANTED} and
+     * {@link #REQUESTED_PERMISSION_NEVER_FOR_LOCATION} set as appropriate.
      */
     public int[] requestedPermissionsFlags;
 
     /**
      * Array of all {@link android.R.styleable#AndroidManifestAttribution
      * &lt;attribution&gt;} tags included under &lt;manifest&gt;, or null if there were none. This
-     * is only filled if the flag {@link PackageManager#GET_ATTRIBUTIONS} was set.
+     * is only filled if the flag {@link PackageManager#GET_ATTRIBUTIONS_LONG} was set.
      */
     @SuppressWarnings({"ArrayReturn", "NullableCollection"})
     public @Nullable Attribution[] attributions;
@@ -249,6 +250,13 @@ public class PackageInfo implements Parcelable {
      * {@link android.Manifest.permission#ACCESS_COARSE_LOCATION} being granted.
      */
     public static final int REQUESTED_PERMISSION_NEVER_FOR_LOCATION = 0x00010000;
+
+    /**
+     * Flag for {@link #requestedPermissionsFlags}: the requested permission was
+     * not explicitly requested via uses-permission, but was instead implicitly
+     * requested (e.g., for version compatibility reasons).
+     */
+    public static final int REQUESTED_PERMISSION_IMPLICIT = 0x00000004;
 
     /**
      * Array of all signatures read from the package file. This is only filled
@@ -346,20 +354,44 @@ public class PackageInfo implements Parcelable {
      */
     public int installLocation = INSTALL_LOCATION_INTERNAL_ONLY;
 
-    /** @hide */
+    /**
+     * Whether or not the package is a stub and should be replaced by a full version of the app.
+     *
+     * @hide
+     */
     public boolean isStub;
 
-    /** @hide */
+    /**
+     * Whether the app is included when the device is booted into a minimal state. Set through the
+     * non-namespaced "coreApp" attribute of the manifest tag.
+     *
+     * @hide
+     */
     @UnsupportedAppUsage
     public boolean coreApp;
 
-    /** @hide */
+    /**
+     * Signals that this app is required for all users on the device.
+     *
+     * When a restricted user profile is created, the user is prompted with a list of apps to
+     * install on that user. Settings uses this field to determine obligatory apps which cannot be
+     * deselected.
+     *
+     * This restriction is not handled by the framework itself.
+     * @hide
+     */
     public boolean requiredForAllUsers;
 
-    /** @hide */
+    /**
+     * The restricted account authenticator type that is used by this application.
+     * @hide
+     */
     public String restrictedAccountType;
 
-    /** @hide */
+    /**
+     * The required account type without which this application will not function.
+     * @hide
+     */
     public String requiredAccountType;
 
     /**
@@ -422,6 +454,12 @@ public class PackageInfo implements Parcelable {
      * Whether the package is an APEX package.
      */
     public boolean isApex;
+
+    /**
+     * Whether this is an active APEX package.
+     * @hide
+     */
+    public boolean isActiveApex;
 
     public PackageInfo() {
     }
@@ -509,6 +547,7 @@ public class PackageInfo implements Parcelable {
             dest.writeInt(0);
         }
         dest.writeBoolean(isApex);
+        dest.writeBoolean(isActiveApex);
         dest.restoreAllowSquashing(prevAllowSquashing);
     }
 
@@ -573,5 +612,6 @@ public class PackageInfo implements Parcelable {
             signingInfo = SigningInfo.CREATOR.createFromParcel(source);
         }
         isApex = source.readBoolean();
+        isActiveApex = source.readBoolean();
     }
 }

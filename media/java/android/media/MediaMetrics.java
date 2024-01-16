@@ -49,10 +49,11 @@ public class MediaMetrics {
         public static final String AUDIO_FOCUS = AUDIO + SEPARATOR + "focus";
         public static final String AUDIO_FORCE_USE = AUDIO + SEPARATOR + "forceUse";
         public static final String AUDIO_MIC = AUDIO + SEPARATOR + "mic";
+        public static final String AUDIO_MIDI = AUDIO + SEPARATOR + "midi";
+        public static final String AUDIO_MODE = AUDIO + SEPARATOR + "mode";
         public static final String AUDIO_SERVICE = AUDIO + SEPARATOR + "service";
         public static final String AUDIO_VOLUME = AUDIO + SEPARATOR + "volume";
         public static final String AUDIO_VOLUME_EVENT = AUDIO_VOLUME + SEPARATOR + "event";
-        public static final String AUDIO_MODE = AUDIO + SEPARATOR + "mode";
         public static final String METRICS_MANAGER = "metrics" + SEPARATOR + "manager";
     }
 
@@ -90,15 +91,27 @@ public class MediaMetrics {
         // The client name
         public static final Key<String> CLIENT_NAME = createKey("clientName", String.class);
 
+        public static final Key<Integer> CLOSED_COUNT =
+                createKey("closedCount", Integer.class); // MIDI
+
         // The device type
         public static final Key<Integer> DELAY_MS = createKey("delayMs", Integer.class);
 
         // The device type
         public static final Key<String> DEVICE = createKey("device", String.class);
 
+        // Whether the device is disconnected. This is either "true" or "false"
+        public static final Key<String> DEVICE_DISCONNECTED =
+                createKey("deviceDisconnected", String.class); // MIDI
+
+        // The ID of the device
+        public static final Key<Integer> DEVICE_ID =
+                createKey("deviceId", Integer.class); // MIDI
+
         // For volume changes, up or down
         public static final Key<String> DIRECTION = createKey("direction", String.class);
-
+        public static final Key<Long> DURATION_NS =
+                createKey("durationNs", Long.class); // MIDI
         // A reason for early return or error
         public static final Key<String> EARLY_RETURN =
                 createKey("earlyReturn", String.class);
@@ -106,6 +119,9 @@ public class MediaMetrics {
         public static final Key<String> ENCODING = createKey("encoding", String.class);
 
         public static final Key<String> EVENT = createKey("event#", String.class);
+
+        // Generally string "true" or "false"
+        public static final Key<String> ENABLED = createKey("enabled", String.class);
 
         // event generated is external (yes, no)
         public static final Key<String> EXTERNAL = createKey("external", String.class);
@@ -122,7 +138,20 @@ public class MediaMetrics {
         public static final Key<String> GROUP =
                 createKey("group", String.class);
 
+        // Generally string "true" or "false"
+        public static final Key<String> HAS_HEAD_TRACKER =
+                createKey("hasHeadTracker", String.class);     // spatializer
+        public static final Key<Integer> HARDWARE_TYPE =
+                createKey("hardwareType", Integer.class); // MIDI
+        // Generally string "true" or "false"
+        public static final Key<String> HEAD_TRACKER_ENABLED =
+                createKey("headTrackerEnabled", String.class); // spatializer
+
         public static final Key<Integer> INDEX = createKey("index", Integer.class); // volume
+        public static final Key<Integer> INPUT_PORT_COUNT =
+                createKey("inputPortCount", Integer.class); // MIDI
+        // Either "true" or "false"
+        public static final Key<String> IS_SHARED = createKey("isShared", String.class); // MIDI
         public static final Key<String> LOG_SESSION_ID = createKey("logSessionId", String.class);
         public static final Key<Integer> MAX_INDEX = createKey("maxIndex", Integer.class); // vol
         public static final Key<Integer> MIN_INDEX = createKey("minIndex", Integer.class); // vol
@@ -139,6 +168,11 @@ public class MediaMetrics {
         public static final Key<Integer> OBSERVERS =
                 createKey("observers", Integer.class);
 
+        public static final Key<Integer> OPENED_COUNT =
+                createKey("openedCount", Integer.class); // MIDI
+        public static final Key<Integer> OUTPUT_PORT_COUNT =
+                createKey("outputPortCount", Integer.class); // MIDI
+
         public static final Key<String> REQUEST =
                 createKey("request", String.class);
 
@@ -153,6 +187,18 @@ public class MediaMetrics {
         public static final Key<String> STATE = createKey("state", String.class);
         public static final Key<Integer> STATUS = createKey("status", Integer.class);
         public static final Key<String> STREAM_TYPE = createKey("streamType", String.class);
+
+        // The following MIDI string is generally either "true" or "false"
+        public static final Key<String> SUPPORTS_MIDI_UMP =
+                createKey("supportsMidiUmp", String.class); // Universal MIDI Packets
+
+        public static final Key<Integer> TOTAL_INPUT_BYTES =
+                createKey("totalInputBytes", Integer.class); // MIDI
+        public static final Key<Integer> TOTAL_OUTPUT_BYTES =
+                createKey("totalOutputBytes", Integer.class); // MIDI
+
+        // The following MIDI string is generally either "true" or "false"
+        public static final Key<String> USING_ALSA = createKey("usingAlsa", String.class);
     }
 
     /**

@@ -28,7 +28,6 @@ import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.util.AttributeSet;
 import android.util.Log;
-import android.util.Pools;
 import android.view.LayoutInflater;
 import android.view.ViewGroup;
 import android.widget.ImageView;
@@ -44,8 +43,8 @@ import java.io.IOException;
 @RemoteViews.RemoteView
 public class MessagingImageMessage extends ImageView implements MessagingMessage {
     private static final String TAG = "MessagingImageMessage";
-    private static Pools.SimplePool<MessagingImageMessage> sInstancePool
-            = new Pools.SynchronizedPool<>(10);
+    private static final MessagingPool<MessagingImageMessage> sInstancePool =
+            new MessagingPool<>(10);
     private final MessagingMessageState mState = new MessagingMessageState(this);
     private final int mMinImageHeight;
     private final Path mPath = new Path();
@@ -94,8 +93,9 @@ public class MessagingImageMessage extends ImageView implements MessagingMessage
     }
 
     @Override
-    public boolean setMessage(Notification.MessagingStyle.Message message) {
-        MessagingMessage.super.setMessage(message);
+    public boolean setMessage(Notification.MessagingStyle.Message message,
+            boolean usePrecomputedText) {
+        MessagingMessage.super.setMessage(message, usePrecomputedText);
         Drawable drawable;
         try {
             Uri uri = message.getDataUri();
@@ -115,30 +115,40 @@ public class MessagingImageMessage extends ImageView implements MessagingMessage
         }
         mDrawable = drawable;
         mAspectRatio = ((float) mDrawable.getIntrinsicWidth()) / intrinsicHeight;
-        setImageDrawable(drawable);
-        setContentDescription(message.getText());
+        if (!usePrecomputedText) {
+            finalizeInflate();
+        }
         return true;
     }
 
     static MessagingMessage createMessage(IMessagingLayout layout,
-            Notification.MessagingStyle.Message m, ImageResolver resolver) {
+            Notification.MessagingStyle.Message m, ImageResolver resolver,
+            boolean usePrecomputedText) {
         MessagingLinearLayout messagingLinearLayout = layout.getMessagingLinearLayout();
         MessagingImageMessage createdMessage = sInstancePool.acquire();
         if (createdMessage == null) {
             createdMessage = (MessagingImageMessage) LayoutInflater.from(
                     layout.getContext()).inflate(
-                            R.layout.notification_template_messaging_image_message,
-                            messagingLinearLayout,
-                            false);
+                    R.layout.notification_template_messaging_image_message,
+                    messagingLinearLayout,
+                    false);
             createdMessage.addOnLayoutChangeListener(MessagingLayout.MESSAGING_PROPERTY_ANIMATOR);
         }
         createdMessage.setImageResolver(resolver);
-        boolean created = createdMessage.setMessage(m);
-        if (!created) {
+        // MessagingImageMessage does not use usePrecomputedText.
+        boolean populated = createdMessage.setMessage(m, /* usePrecomputedText= */false);
+        if (!populated) {
             createdMessage.recycle();
-            return MessagingTextMessage.createMessage(layout, m);
+            return MessagingTextMessage.createMessage(layout, m, usePrecomputedText);
         }
         return createdMessage;
+    }
+
+
+    @Override
+    public void finalizeInflate() {
+        setImageDrawable(mDrawable);
+        setContentDescription(getMessage().getText());
     }
 
     private void setImageResolver(ImageResolver resolver) {
@@ -194,11 +204,16 @@ public class MessagingImageMessage extends ImageView implements MessagingMessage
     }
 
     public static void dropCache() {
-        sInstancePool = new Pools.SynchronizedPool<>(10);
+        sInstancePool.clear();
     }
 
     @Override
     public int getMeasuredType() {
+        if (mDrawable == null) {
+            Log.e(TAG, "getMeasuredType() after recycle()!");
+            return MEASURED_NORMAL;
+        }
+
         int measuredHeight = getMeasuredHeight();
         int minImageHeight;
         if (mIsIsolated) {
@@ -227,6 +242,13 @@ public class MessagingImageMessage extends ImageView implements MessagingMessage
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+
+        if (mDrawable == null) {
+            Log.e(TAG, "onMeasure() after recycle()!");
+            setMeasuredDimension(0, 0);
+            return;
+        }
+
         if (mIsIsolated) {
             // When isolated we have a fixed size, let's use that sizing.
             setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec),

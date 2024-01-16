@@ -153,8 +153,8 @@ public class TimeUtils {
      *
      * <p>Time zone database updates should be expected to occur periodically due to
      * political and legal changes that cannot be anticipated in advance.  Therefore,
-     * when computing the UTC time for a future event, applications should be aware that
-     * the results may differ following a time zone database update.  This method allows
+     * when computing the time for a future event, applications should be aware that the
+     * results may differ following a time zone database update.  This method allows
      * applications to detect that a database change has occurred, and to recalculate any
      * cached times accordingly.
      *
@@ -351,6 +351,15 @@ public class TimeUtils {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     public static void formatDuration(long duration, PrintWriter pw) {
         formatDuration(duration, pw, 0);
+    }
+
+    /** @hide Just for debugging; not internationalized. */
+    public static void formatDuration(long time, long now, StringBuilder sb) {
+        if (time == 0) {
+            sb.append("--");
+            return;
+        }
+        formatDuration(time-now, sb, 0);
     }
 
     /** @hide Just for debugging; not internationalized. */

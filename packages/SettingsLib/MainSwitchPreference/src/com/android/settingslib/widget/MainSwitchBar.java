@@ -97,6 +97,10 @@ public class MainSwitchBar extends LinearLayout implements CompoundButton.OnChec
         }
         addOnSwitchChangeListener((switchView, isChecked) -> setChecked(isChecked));
 
+        if (mSwitch.getVisibility() == VISIBLE) {
+            mSwitch.setOnCheckedChangeListener(this);
+        }
+
         setChecked(mSwitch.isChecked());
 
         if (attrs != null) {
@@ -109,7 +113,7 @@ public class MainSwitchBar extends LinearLayout implements CompoundButton.OnChec
             a.recycle();
         }
 
-        setBackground(true);
+        setBackground(mSwitch.isChecked());
     }
 
     @Override
@@ -119,7 +123,8 @@ public class MainSwitchBar extends LinearLayout implements CompoundButton.OnChec
 
     @Override
     public boolean performClick() {
-        return mSwitch.performClick();
+        mSwitch.performClick();
+        return super.performClick();
     }
 
     /**
@@ -152,6 +157,19 @@ public class MainSwitchBar extends LinearLayout implements CompoundButton.OnChec
     public void setTitle(CharSequence text) {
         if (mTextView != null) {
             mTextView.setText(text);
+        }
+    }
+
+    /**
+     * Set icon space reserved for title
+     */
+    public void setIconSpaceReserved(boolean iconSpaceReserved) {
+        if (mTextView != null && !BuildCompatUtils.isAtLeastS()) {
+            LayoutParams params = (LayoutParams) mTextView.getLayoutParams();
+            int iconSpace = getContext().getResources().getDimensionPixelSize(
+                    R.dimen.settingslib_switchbar_subsettings_margin_start);
+            params.setMarginStart(iconSpaceReserved ? iconSpace : 0);
+            mTextView.setLayoutParams(params);
         }
     }
 

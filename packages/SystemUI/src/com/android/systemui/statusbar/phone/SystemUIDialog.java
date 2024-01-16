@@ -23,12 +23,15 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.res.Configuration;
+import android.graphics.Insets;
+import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.util.TypedValue;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewRootImpl;
 import android.view.Window;
@@ -40,8 +43,16 @@ import androidx.annotation.Nullable;
 
 import com.android.systemui.Dependency;
 import com.android.systemui.R;
+import com.android.systemui.animation.DialogLaunchAnimator;
 import com.android.systemui.broadcast.BroadcastDispatcher;
-import com.android.systemui.statusbar.policy.KeyguardStateController;
+import com.android.systemui.flags.FeatureFlags;
+import com.android.systemui.flags.Flags;
+import com.android.systemui.model.SysUiState;
+import com.android.systemui.shared.system.QuickStepContract;
+import com.android.systemui.util.DialogKt;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Base class for dialogs that should appear over panels and keyguard.
@@ -53,50 +64,65 @@ import com.android.systemui.statusbar.policy.KeyguardStateController;
  * and dismisses itself when it receives the broadcast.
  */
 public class SystemUIDialog extends AlertDialog implements ViewRootImpl.ConfigChangedCallback {
+    protected static final int DEFAULT_THEME = R.style.Theme_SystemUI_Dialog;
     // TODO(b/203389579): Remove this once the dialog width on large screens has been agreed on.
     private static final String FLAG_TABLET_DIALOG_WIDTH =
             "persist.systemui.flag_tablet_dialog_width";
+    private static final boolean DEFAULT_DISMISS_ON_DEVICE_LOCK = true;
 
     private final Context mContext;
+    private final FeatureFlags mFeatureFlags;
     @Nullable private final DismissReceiver mDismissReceiver;
     private final Handler mHandler = new Handler();
-    @Nullable private final SystemUIDialogManager mDialogManager;
+    private final SystemUIDialogManager mDialogManager;
+    private final SysUiState mSysUiState;
 
     private int mLastWidth = Integer.MIN_VALUE;
     private int mLastHeight = Integer.MIN_VALUE;
     private int mLastConfigurationWidthDp = -1;
     private int mLastConfigurationHeightDp = -1;
 
-    public SystemUIDialog(Context context) {
-        this(context, R.style.Theme_SystemUI_Dialog);
-    }
+    private List<Runnable> mOnCreateRunnables = new ArrayList<>();
 
-    public SystemUIDialog(Context context, SystemUIDialogManager dialogManager) {
-        this(context, R.style.Theme_SystemUI_Dialog, true, dialogManager);
+    public SystemUIDialog(Context context) {
+        this(context, DEFAULT_THEME, DEFAULT_DISMISS_ON_DEVICE_LOCK);
     }
 
     public SystemUIDialog(Context context, int theme) {
-        this(context, theme, true /* dismissOnDeviceLock */);
-    }
-    public SystemUIDialog(Context context, int theme, boolean dismissOnDeviceLock) {
-        this(context, theme, dismissOnDeviceLock, null);
+        this(context, theme, DEFAULT_DISMISS_ON_DEVICE_LOCK);
     }
 
-    /**
-     * @param udfpsDialogManager If set, UDFPS will hide if this dialog is showing.
-     */
+    public SystemUIDialog(Context context, int theme, boolean dismissOnDeviceLock) {
+        // TODO(b/219008720): Remove those calls to Dependency.get by introducing a
+        // SystemUIDialogFactory and make all other dialogs create a SystemUIDialog to which we set
+        // the content and attach listeners.
+        this(context, theme, dismissOnDeviceLock,
+                Dependency.get(FeatureFlags.class),
+                Dependency.get(SystemUIDialogManager.class),
+                Dependency.get(SysUiState.class),
+                Dependency.get(BroadcastDispatcher.class),
+                Dependency.get(DialogLaunchAnimator.class));
+    }
+
     public SystemUIDialog(Context context, int theme, boolean dismissOnDeviceLock,
-            SystemUIDialogManager dialogManager) {
+            FeatureFlags featureFlags,
+            SystemUIDialogManager dialogManager,
+            SysUiState sysUiState,
+            BroadcastDispatcher broadcastDispatcher,
+            DialogLaunchAnimator dialogLaunchAnimator) {
         super(context, theme);
         mContext = context;
+        mFeatureFlags = featureFlags;
 
         applyFlags(this);
         WindowManager.LayoutParams attrs = getWindow().getAttributes();
         attrs.setTitle(getClass().getSimpleName());
         getWindow().setAttributes(attrs);
 
-        mDismissReceiver = dismissOnDeviceLock ? new DismissReceiver(this) : null;
+        mDismissReceiver = dismissOnDeviceLock ? new DismissReceiver(this, broadcastDispatcher,
+                dialogLaunchAnimator) : null;
         mDialogManager = dialogManager;
+        mSysUiState = sysUiState;
     }
 
     @Override
@@ -107,6 +133,16 @@ public class SystemUIDialog extends AlertDialog implements ViewRootImpl.ConfigCh
         mLastConfigurationWidthDp = config.screenWidthDp;
         mLastConfigurationHeightDp = config.screenHeightDp;
         updateWindowSize();
+
+        for (int i = 0; i < mOnCreateRunnables.size(); i++) {
+            mOnCreateRunnables.get(i).run();
+        }
+        if (mFeatureFlags.isEnabled(Flags.WM_ENABLE_PREDICTIVE_BACK_QS_DIALOG_ANIM)) {
+            DialogKt.registerAnimationOnBackInvoked(
+                    /* dialog = */ this,
+                    /* targetView = */ getWindow().getDecorView()
+            );
+        }
     }
 
     private void updateWindowSize() {
@@ -143,7 +179,7 @@ public class SystemUIDialog extends AlertDialog implements ViewRootImpl.ConfigCh
      * the device configuration changes, and the result will be used to resize this dialog window.
      */
     protected int getWidth() {
-        return getDefaultDialogWidth(mContext);
+        return getDefaultDialogWidth(this);
     }
 
     /**
@@ -155,36 +191,50 @@ public class SystemUIDialog extends AlertDialog implements ViewRootImpl.ConfigCh
     }
 
     @Override
-    protected void onStart() {
+    protected final void onStart() {
         super.onStart();
 
         if (mDismissReceiver != null) {
             mDismissReceiver.register();
         }
 
-        if (mDialogManager != null) {
-            mDialogManager.setShowing(this, true);
-        }
-
         // Listen for configuration changes to resize this dialog window. This is mostly necessary
         // for foldables that often go from large <=> small screen when folding/unfolding.
         ViewRootImpl.addConfigCallback(this);
+        mDialogManager.setShowing(this, true);
+        mSysUiState.setFlag(QuickStepContract.SYSUI_STATE_DIALOG_SHOWING, true)
+                .commitUpdate(mContext.getDisplayId());
+
+        start();
     }
 
+    /**
+     * Called when {@link #onStart} is called. Subclasses wishing to override {@link #onStart()}
+     * should override this method instead.
+     */
+    protected void start() {}
+
     @Override
-    protected void onStop() {
+    protected final void onStop() {
         super.onStop();
 
         if (mDismissReceiver != null) {
             mDismissReceiver.unregister();
         }
 
-        if (mDialogManager != null) {
-            mDialogManager.setShowing(this, false);
-        }
-
         ViewRootImpl.removeConfigCallback(this);
+        mDialogManager.setShowing(this, false);
+        mSysUiState.setFlag(QuickStepContract.SYSUI_STATE_DIALOG_SHOWING, false)
+                .commitUpdate(mContext.getDisplayId());
+
+        stop();
     }
+
+    /**
+     * Called when {@link #onStop} is called. Subclasses wishing to override {@link #onStop()}
+     * should override this method instead.
+     */
+    protected void stop() {}
 
     public void setShowForAllUsers(boolean show) {
         setShowForAllUsers(this, show);
@@ -194,16 +244,67 @@ public class SystemUIDialog extends AlertDialog implements ViewRootImpl.ConfigCh
         setMessage(mContext.getString(resId));
     }
 
+    /**
+     * Set a listener to be invoked when the positive button of the dialog is pressed. The dialog
+     * will automatically be dismissed when the button is clicked.
+     */
     public void setPositiveButton(int resId, OnClickListener onClick) {
-        setButton(BUTTON_POSITIVE, mContext.getString(resId), onClick);
+        setPositiveButton(resId, onClick, true /* dismissOnClick */);
     }
 
+    /**
+     * Set a listener to be invoked when the positive button of the dialog is pressed. The dialog
+     * will be dismissed when the button is clicked iff {@code dismissOnClick} is true.
+     */
+    public void setPositiveButton(int resId, OnClickListener onClick, boolean dismissOnClick) {
+        setButton(BUTTON_POSITIVE, resId, onClick, dismissOnClick);
+    }
+
+    /**
+     * Set a listener to be invoked when the negative button of the dialog is pressed. The dialog
+     * will automatically be dismissed when the button is clicked.
+     */
     public void setNegativeButton(int resId, OnClickListener onClick) {
-        setButton(BUTTON_NEGATIVE, mContext.getString(resId), onClick);
+        setNegativeButton(resId, onClick, true /* dismissOnClick */);
     }
 
+    /**
+     * Set a listener to be invoked when the negative button of the dialog is pressed. The dialog
+     * will be dismissed when the button is clicked iff {@code dismissOnClick} is true.
+     */
+    public void setNegativeButton(int resId, OnClickListener onClick, boolean dismissOnClick) {
+        setButton(BUTTON_NEGATIVE, resId, onClick, dismissOnClick);
+    }
+
+    /**
+     * Set a listener to be invoked when the neutral button of the dialog is pressed. The dialog
+     * will automatically be dismissed when the button is clicked.
+     */
     public void setNeutralButton(int resId, OnClickListener onClick) {
-        setButton(BUTTON_NEUTRAL, mContext.getString(resId), onClick);
+        setNeutralButton(resId, onClick, true /* dismissOnClick */);
+    }
+
+    /**
+     * Set a listener to be invoked when the neutral button of the dialog is pressed. The dialog
+     * will be dismissed when the button is clicked iff {@code dismissOnClick} is true.
+     */
+    public void setNeutralButton(int resId, OnClickListener onClick, boolean dismissOnClick) {
+        setButton(BUTTON_NEUTRAL, resId, onClick, dismissOnClick);
+    }
+
+    private void setButton(int whichButton, int resId, OnClickListener onClick,
+            boolean dismissOnClick) {
+        if (dismissOnClick) {
+            setButton(whichButton, mContext.getString(resId), onClick);
+        } else {
+            // Set a null OnClickListener to make sure the button is still created and shown.
+            setButton(whichButton, mContext.getString(resId), (OnClickListener) null);
+
+            // When the dialog is created, set the click listener but don't dismiss the dialog when
+            // it is clicked.
+            mOnCreateRunnables.add(() -> getButton(whichButton).setOnClickListener(
+                    view -> onClick.onClick(this, whichButton)));
+        }
     }
 
     public static void setShowForAllUsers(Dialog dialog, boolean show) {
@@ -216,10 +317,13 @@ public class SystemUIDialog extends AlertDialog implements ViewRootImpl.ConfigCh
         }
     }
 
-    public static void setWindowOnTop(Dialog dialog) {
+    /**
+     * Ensure the window type is set properly to show over all other screens
+     */
+    public static void setWindowOnTop(Dialog dialog, boolean isKeyguardShowing) {
         final Window window = dialog.getWindow();
         window.setType(LayoutParams.TYPE_STATUS_BAR_SUB_PANEL);
-        if (Dependency.get(KeyguardStateController.class).isShowing()) {
+        if (isKeyguardShowing) {
             window.getAttributes().setFitInsetsTypes(
                     window.getAttributes().getFitInsetsTypes() & ~Type.statusBars());
         }
@@ -261,7 +365,10 @@ public class SystemUIDialog extends AlertDialog implements ViewRootImpl.ConfigCh
      * @param dismissAction An action to run when the dialog is dismissed.
      */
     public static void registerDismissListener(Dialog dialog, @Nullable Runnable dismissAction) {
-        DismissReceiver dismissReceiver = new DismissReceiver(dialog);
+        // TODO(b/219008720): Remove those calls to Dependency.get.
+        DismissReceiver dismissReceiver = new DismissReceiver(dialog,
+                Dependency.get(BroadcastDispatcher.class),
+                Dependency.get(DialogLaunchAnimator.class));
         dialog.setOnDismissListener(d -> {
             dismissReceiver.unregister();
             if (dismissAction != null) dismissAction.run();
@@ -274,34 +381,58 @@ public class SystemUIDialog extends AlertDialog implements ViewRootImpl.ConfigCh
         // We need to create the dialog first, otherwise the size will be overridden when it is
         // created.
         dialog.create();
-        dialog.getWindow().setLayout(getDefaultDialogWidth(dialog.getContext()),
-                getDefaultDialogHeight());
+        dialog.getWindow().setLayout(getDefaultDialogWidth(dialog), getDefaultDialogHeight());
     }
 
-    private static int getDefaultDialogWidth(Context context) {
-        boolean isOnTablet = context.getResources().getConfiguration().smallestScreenWidthDp >= 600;
-        if (!isOnTablet) {
-            return ViewGroup.LayoutParams.MATCH_PARENT;
-        }
-
+    private static int getDefaultDialogWidth(Dialog dialog) {
+        Context context = dialog.getContext();
         int flagValue = SystemProperties.getInt(FLAG_TABLET_DIALOG_WIDTH, 0);
         if (flagValue == -1) {
             // The width of bottom sheets (624dp).
-            return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 624,
-                    context.getResources().getDisplayMetrics()));
+            return calculateDialogWidthWithInsets(dialog, 624);
         } else if (flagValue == -2) {
             // The suggested small width for all dialogs (348dp)
-            return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 348,
-                    context.getResources().getDisplayMetrics()));
+            return calculateDialogWidthWithInsets(dialog, 348);
         } else if (flagValue > 0) {
             // Any given width.
-            return Math.round(
-                    TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, flagValue,
-                            context.getResources().getDisplayMetrics()));
+            return calculateDialogWidthWithInsets(dialog, flagValue);
         } else {
-            // By default we use the same width as the notification shade in portrait mode (504dp).
-            return context.getResources().getDimensionPixelSize(R.dimen.large_dialog_width);
+            // By default we use the same width as the notification shade in portrait mode.
+            int width = context.getResources().getDimensionPixelSize(R.dimen.large_dialog_width);
+            if (width > 0) {
+                // If we are neither WRAP_CONTENT or MATCH_PARENT, add the background insets so that
+                // the dialog is the desired width.
+                width += getHorizontalInsets(dialog);
+            }
+            return width;
         }
+    }
+
+    /**
+     * Return the pixel width {@param dialog} should be so that it is {@param widthInDp} wide,
+     * taking its background insets into consideration.
+     */
+    private static int calculateDialogWidthWithInsets(Dialog dialog, int widthInDp) {
+        float widthInPixels = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, widthInDp,
+                dialog.getContext().getResources().getDisplayMetrics());
+        return Math.round(widthInPixels + getHorizontalInsets(dialog));
+    }
+
+    private static int getHorizontalInsets(Dialog dialog) {
+        View decorView = dialog.getWindow().getDecorView();
+        if (decorView == null) {
+            return 0;
+        }
+
+        // We first look for the background on the dialogContentWithBackground added by
+        // DialogLaunchAnimator. If it's not there, we use the background of the DecorView.
+        View viewWithBackground = decorView.findViewByPredicate(
+                view -> view.getTag(
+                        com.android.systemui.animation.R.id.tag_dialog_background) != null);
+        Drawable background = viewWithBackground != null ? viewWithBackground.getBackground()
+                : decorView.getBackground();
+        Insets insets = background != null ? background.getOpticalInsets() : Insets.NONE;
+        return insets.left + insets.right;
     }
 
     private static int getDefaultDialogHeight() {
@@ -318,10 +449,13 @@ public class SystemUIDialog extends AlertDialog implements ViewRootImpl.ConfigCh
         private final Dialog mDialog;
         private boolean mRegistered;
         private final BroadcastDispatcher mBroadcastDispatcher;
+        private final DialogLaunchAnimator mDialogLaunchAnimator;
 
-        DismissReceiver(Dialog dialog) {
+        DismissReceiver(Dialog dialog, BroadcastDispatcher broadcastDispatcher,
+                DialogLaunchAnimator dialogLaunchAnimator) {
             mDialog = dialog;
-            mBroadcastDispatcher = Dependency.get(BroadcastDispatcher.class);
+            mBroadcastDispatcher = broadcastDispatcher;
+            mDialogLaunchAnimator = dialogLaunchAnimator;
         }
 
         void register() {
@@ -338,7 +472,12 @@ public class SystemUIDialog extends AlertDialog implements ViewRootImpl.ConfigCh
 
         @Override
         public void onReceive(Context context, Intent intent) {
+            // These broadcast are usually received when locking the device, swiping up to home
+            // (which collapses the shade), etc. In those cases, we usually don't want to animate
+            // back into the view.
+            mDialogLaunchAnimator.disableAllCurrentDialogsExitAnimations();
             mDialog.dismiss();
         }
     }
+
 }

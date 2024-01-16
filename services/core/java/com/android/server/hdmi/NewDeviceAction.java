@@ -68,7 +68,7 @@ final class NewDeviceAction extends HdmiCecFeatureAction {
         mDeviceLogicalAddress = deviceLogicalAddress;
         mDevicePhysicalAddress = devicePhysicalAddress;
         mDeviceType = deviceType;
-        mVendorId = Constants.UNKNOWN_VENDOR_ID;
+        mVendorId = Constants.VENDOR_ID_UNKNOWN;
     }
 
     @Override
@@ -172,13 +172,17 @@ final class NewDeviceAction extends HdmiCecFeatureAction {
             return;
         }
         if (mDisplayName == null) {
-            mDisplayName = HdmiUtils.getDefaultDeviceName(mDeviceLogicalAddress);
+            mDisplayName = "";
         }
-        HdmiDeviceInfo deviceInfo = new HdmiDeviceInfo(
-                mDeviceLogicalAddress, mDevicePhysicalAddress,
-                tv().getPortId(mDevicePhysicalAddress),
-                mDeviceType, mVendorId, mDisplayName);
-        localDevice().mService.getHdmiCecNetwork().addCecDevice(deviceInfo);
+        HdmiDeviceInfo deviceInfo = HdmiDeviceInfo.cecDeviceBuilder()
+                .setLogicalAddress(mDeviceLogicalAddress)
+                .setPhysicalAddress(mDevicePhysicalAddress)
+                .setPortId(tv().getPortId(mDevicePhysicalAddress))
+                .setDeviceType(mDeviceType)
+                .setVendorId(mVendorId)
+                .setDisplayName(mDisplayName)
+                .build();
+        localDevice().mService.getHdmiCecNetwork().updateCecDevice(deviceInfo);
 
         // Consume CEC messages we already got for this newly found device.
         tv().processDelayedMessages(mDeviceLogicalAddress);

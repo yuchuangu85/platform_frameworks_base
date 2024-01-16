@@ -19,5 +19,8 @@ java_library_static {
     defaults: ["platform_service_defaults"],
     srcs: [":services.backup-sources"],
     libs: ["services.core"],
-    static_libs: ["backuplib", "app-compat-annotations"],
+    static_libs: ["app-compat-annotations"],
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }

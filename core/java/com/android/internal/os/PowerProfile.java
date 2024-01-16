@@ -17,25 +17,33 @@
 package com.android.internal.os;
 
 
+import android.annotation.LongDef;
 import android.annotation.StringDef;
+import android.annotation.XmlRes;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.res.Resources;
 import android.content.res.XmlResourceParser;
+import android.util.IndentingPrintWriter;
 import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.power.ModemPowerProfile;
 import com.android.internal.util.XmlUtils;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
 
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Locale;
 
 /**
  * Reports power consumption values for various device activities. Reads values from an XML file.
@@ -259,6 +267,34 @@ public class PowerProfile {
     public @interface PowerGroup {}
 
     /**
+     * Constants for generating a 64bit power constant key.
+     *
+     * The bitfields of a key describes what its corresponding power constant represents:
+     * [63:40] - RESERVED
+     * [39:32] - {@link Subsystem} (max count = 16).
+     * [31:0] - per Subsystem fields, see {@link ModemPowerProfile}.
+     *
+     */
+    private static final long SUBSYSTEM_MASK = 0xF_0000_0000L;
+    /**
+     * Power constant not associated with a subsystem.
+     */
+    public static final long SUBSYSTEM_NONE = 0x0_0000_0000L;
+    /**
+     * Modem power constant.
+     */
+    public static final long SUBSYSTEM_MODEM = 0x1_0000_0000L;
+
+    @LongDef(prefix = { "SUBSYSTEM_" }, value = {
+            SUBSYSTEM_NONE,
+            SUBSYSTEM_MODEM,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface Subsystem {}
+
+    private static final long SUBSYSTEM_FIELDS_MASK = 0xFFFF_FFFF;
+
+    /**
      * A map from Power Use Item to its power consumption.
      */
     static final HashMap<String, Double> sPowerItemMap = new HashMap<>();
@@ -268,13 +304,19 @@ public class PowerProfile {
      */
     static final HashMap<String, Double[]> sPowerArrayMap = new HashMap<>();
 
+    static final ModemPowerProfile sModemPowerProfile = new ModemPowerProfile();
+
     private static final String TAG_DEVICE = "device";
     private static final String TAG_ITEM = "item";
     private static final String TAG_ARRAY = "array";
     private static final String TAG_ARRAYITEM = "value";
     private static final String ATTR_NAME = "name";
 
+    private static final String TAG_MODEM = "modem";
+
     private static final Object sLock = new Object();
+
+    private int mCpuPowerBracketCount;
 
     @VisibleForTesting
     @UnsupportedAppUsage
@@ -289,19 +331,39 @@ public class PowerProfile {
     public PowerProfile(Context context, boolean forTest) {
         // Read the XML file for the given profile (normally only one per device)
         synchronized (sLock) {
-            if (sPowerItemMap.size() == 0 && sPowerArrayMap.size() == 0) {
-                readPowerValuesFromXml(context, forTest);
-            }
-            initCpuClusters();
-            initDisplays();
+            final int xmlId = forTest ? com.android.internal.R.xml.power_profile_test
+                    : com.android.internal.R.xml.power_profile;
+            initLocked(context, xmlId);
         }
     }
 
-    private void readPowerValuesFromXml(Context context, boolean forTest) {
-        final int id = forTest ? com.android.internal.R.xml.power_profile_test :
-                com.android.internal.R.xml.power_profile;
+    /**
+     * Reinitialize the PowerProfile with the provided XML.
+     * WARNING: use only for testing!
+     */
+    @VisibleForTesting
+    public void forceInitForTesting(Context context, @XmlRes int xmlId) {
+        synchronized (sLock) {
+            sPowerItemMap.clear();
+            sPowerArrayMap.clear();
+            sModemPowerProfile.clear();
+            initLocked(context, xmlId);
+        }
+    }
+
+    @GuardedBy("sLock")
+    private void initLocked(Context context, @XmlRes int xmlId) {
+        if (sPowerItemMap.size() == 0 && sPowerArrayMap.size() == 0) {
+            readPowerValuesFromXml(context, xmlId);
+        }
+        initCpuClusters();
+        initDisplays();
+        initModem();
+    }
+
+    private void readPowerValuesFromXml(Context context, @XmlRes int xmlId) {
         final Resources resources = context.getResources();
-        XmlResourceParser parser = resources.getXml(id);
+        XmlResourceParser parser = resources.getXml(xmlId);
         boolean parsingArray = false;
         ArrayList<Double> array = new ArrayList<>();
         String arrayName = null;
@@ -340,6 +402,8 @@ public class PowerProfile {
                             array.add(value);
                         }
                     }
+                } else if (element.equals(TAG_MODEM)) {
+                    sModemPowerProfile.parseFromXml(parser);
                 }
             }
             if (parsingArray) {
@@ -388,6 +452,9 @@ public class PowerProfile {
     private static final String CPU_CLUSTER_POWER_COUNT = "cpu.cluster_power.cluster";
     private static final String CPU_CORE_SPEED_PREFIX = "cpu.core_speeds.cluster";
     private static final String CPU_CORE_POWER_PREFIX = "cpu.core_power.cluster";
+    private static final String CPU_POWER_BRACKETS_PREFIX = "cpu.power_brackets.cluster";
+
+    private static final int DEFAULT_CPU_POWER_BRACKET_NUMBER = 3;
 
     private void initCpuClusters() {
         if (sPowerArrayMap.containsKey(CPU_PER_CLUSTER_CORE_COUNT)) {
@@ -409,13 +476,104 @@ public class PowerProfile {
             mCpuClusters[0] = new CpuClusterKey(CPU_CORE_SPEED_PREFIX + 0,
                     CPU_CLUSTER_POWER_COUNT + 0, CPU_CORE_POWER_PREFIX + 0, numCpus);
         }
+
+        initCpuPowerBrackets(DEFAULT_CPU_POWER_BRACKET_NUMBER);
     }
 
-    public static class CpuClusterKey {
-        private final String freqKey;
-        private final String clusterPowerKey;
-        private final String corePowerKey;
-        private final int numCpus;
+    /**
+     * Parses or computes CPU power brackets: groups of states with similar power requirements.
+     */
+    @VisibleForTesting
+    public void initCpuPowerBrackets(int defaultCpuPowerBracketNumber) {
+        boolean anyBracketsSpecified = false;
+        boolean allBracketsSpecified = true;
+        for (int cluster = 0; cluster < mCpuClusters.length; cluster++) {
+            final int steps = getNumSpeedStepsInCpuCluster(cluster);
+            mCpuClusters[cluster].powerBrackets = new int[steps];
+            if (sPowerArrayMap.get(CPU_POWER_BRACKETS_PREFIX + cluster) != null) {
+                anyBracketsSpecified = true;
+            } else {
+                allBracketsSpecified = false;
+            }
+        }
+
+        if (anyBracketsSpecified && !allBracketsSpecified) {
+            throw new RuntimeException(
+                    "Power brackets should be specified for all clusters or no clusters");
+        }
+
+        mCpuPowerBracketCount = 0;
+        if (allBracketsSpecified) {
+            for (int cluster = 0; cluster < mCpuClusters.length; cluster++) {
+                final Double[] data = sPowerArrayMap.get(CPU_POWER_BRACKETS_PREFIX + cluster);
+                if (data.length != mCpuClusters[cluster].powerBrackets.length) {
+                    throw new RuntimeException(
+                            "Wrong number of items in " + CPU_POWER_BRACKETS_PREFIX + cluster);
+                }
+
+                for (int i = 0; i < data.length; i++) {
+                    final int bracket = (int) Math.round(data[i]);
+                    mCpuClusters[cluster].powerBrackets[i] = bracket;
+                    if (bracket > mCpuPowerBracketCount) {
+                        mCpuPowerBracketCount = bracket;
+                    }
+                }
+            }
+            mCpuPowerBracketCount++;
+        } else {
+            double minPower = Double.MAX_VALUE;
+            double maxPower = Double.MIN_VALUE;
+            int stateCount = 0;
+            for (int cluster = 0; cluster < mCpuClusters.length; cluster++) {
+                final int steps = getNumSpeedStepsInCpuCluster(cluster);
+                for (int step = 0; step < steps; step++) {
+                    final double power = getAveragePowerForCpuCore(cluster, step);
+                    if (power < minPower) {
+                        minPower = power;
+                    }
+                    if (power > maxPower) {
+                        maxPower = power;
+                    }
+                }
+                stateCount += steps;
+            }
+
+            if (stateCount <= defaultCpuPowerBracketNumber) {
+                mCpuPowerBracketCount = stateCount;
+                int bracket = 0;
+                for (int cluster = 0; cluster < mCpuClusters.length; cluster++) {
+                    final int steps = getNumSpeedStepsInCpuCluster(cluster);
+                    for (int step = 0; step < steps; step++) {
+                        mCpuClusters[cluster].powerBrackets[step] = bracket++;
+                    }
+                }
+            } else {
+                mCpuPowerBracketCount = defaultCpuPowerBracketNumber;
+                final double minLogPower = Math.log(minPower);
+                final double logBracket = (Math.log(maxPower) - minLogPower)
+                        / defaultCpuPowerBracketNumber;
+
+                for (int cluster = 0; cluster < mCpuClusters.length; cluster++) {
+                    final int steps = getNumSpeedStepsInCpuCluster(cluster);
+                    for (int step = 0; step < steps; step++) {
+                        final double power = getAveragePowerForCpuCore(cluster, step);
+                        int bracket = (int) ((Math.log(power) - minLogPower) / logBracket);
+                        if (bracket >= defaultCpuPowerBracketNumber) {
+                            bracket = defaultCpuPowerBracketNumber - 1;
+                        }
+                        mCpuClusters[cluster].powerBrackets[step] = bracket;
+                    }
+                }
+            }
+        }
+    }
+
+    private static class CpuClusterKey {
+        public final String freqKey;
+        public final String clusterPowerKey;
+        public final String corePowerKey;
+        public final int numCpus;
+        public int[] powerBrackets;
 
         private CpuClusterKey(String freqKey, String clusterPowerKey,
                 String corePowerKey, int numCpus) {
@@ -462,6 +620,57 @@ public class PowerProfile {
         }
         return 0;
     }
+
+    /**
+     * Returns the number of CPU power brackets: groups of states with similar power requirements.
+     */
+    public int getCpuPowerBracketCount() {
+        return mCpuPowerBracketCount;
+    }
+
+    /**
+     * Description of a CPU power bracket: which cluster/frequency combinations are included.
+     */
+    public String getCpuPowerBracketDescription(int powerBracket) {
+        StringBuilder sb = new StringBuilder();
+        for (int cluster = 0; cluster < mCpuClusters.length; cluster++) {
+            int[] brackets = mCpuClusters[cluster].powerBrackets;
+            for (int step = 0; step < brackets.length; step++) {
+                if (brackets[step] == powerBracket) {
+                    if (sb.length() != 0) {
+                        sb.append(", ");
+                    }
+                    if (mCpuClusters.length > 1) {
+                        sb.append(cluster).append('/');
+                    }
+                    Double[] freqs = sPowerArrayMap.get(mCpuClusters[cluster].freqKey);
+                    if (freqs != null && step < freqs.length) {
+                        // Frequency in MHz
+                        sb.append(freqs[step].intValue() / 1000);
+                    }
+                    sb.append('(');
+                    sb.append(String.format(Locale.US, "%.1f",
+                            getAveragePowerForCpuCore(cluster, step)));
+                    sb.append(')');
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Returns the CPU power bracket corresponding to the specified cluster and frequency step
+     */
+    public int getPowerBracketForCpuCore(int cluster, int step) {
+        if (cluster >= 0
+                && cluster < mCpuClusters.length
+                && step >= 0
+                && step < mCpuClusters[cluster].powerBrackets.length) {
+            return mCpuClusters[cluster].powerBrackets[step];
+        }
+        return 0;
+    }
+
 
     private int mNumDisplays;
 
@@ -515,6 +724,39 @@ public class PowerProfile {
         return mNumDisplays;
     }
 
+    private void initModem() {
+        handleDeprecatedModemConstant(ModemPowerProfile.MODEM_DRAIN_TYPE_SLEEP,
+                POWER_MODEM_CONTROLLER_SLEEP, 0);
+        handleDeprecatedModemConstant(ModemPowerProfile.MODEM_DRAIN_TYPE_IDLE,
+                POWER_MODEM_CONTROLLER_IDLE, 0);
+        handleDeprecatedModemConstant(
+                ModemPowerProfile.MODEM_RAT_TYPE_DEFAULT | ModemPowerProfile.MODEM_DRAIN_TYPE_RX,
+                POWER_MODEM_CONTROLLER_RX, 0);
+        handleDeprecatedModemConstant(
+                ModemPowerProfile.MODEM_RAT_TYPE_DEFAULT | ModemPowerProfile.MODEM_DRAIN_TYPE_TX
+                        | ModemPowerProfile.MODEM_TX_LEVEL_0, POWER_MODEM_CONTROLLER_TX, 0);
+        handleDeprecatedModemConstant(
+                ModemPowerProfile.MODEM_RAT_TYPE_DEFAULT | ModemPowerProfile.MODEM_DRAIN_TYPE_TX
+                        | ModemPowerProfile.MODEM_TX_LEVEL_1, POWER_MODEM_CONTROLLER_TX, 1);
+        handleDeprecatedModemConstant(
+                ModemPowerProfile.MODEM_RAT_TYPE_DEFAULT | ModemPowerProfile.MODEM_DRAIN_TYPE_TX
+                        | ModemPowerProfile.MODEM_TX_LEVEL_2, POWER_MODEM_CONTROLLER_TX, 2);
+        handleDeprecatedModemConstant(
+                ModemPowerProfile.MODEM_RAT_TYPE_DEFAULT | ModemPowerProfile.MODEM_DRAIN_TYPE_TX
+                        | ModemPowerProfile.MODEM_TX_LEVEL_3, POWER_MODEM_CONTROLLER_TX, 3);
+        handleDeprecatedModemConstant(
+                ModemPowerProfile.MODEM_RAT_TYPE_DEFAULT | ModemPowerProfile.MODEM_DRAIN_TYPE_TX
+                        | ModemPowerProfile.MODEM_TX_LEVEL_4, POWER_MODEM_CONTROLLER_TX, 4);
+    }
+
+    private void handleDeprecatedModemConstant(int key, String deprecatedKey, int level) {
+        final double drain = sModemPowerProfile.getAverageBatteryDrainMa(key);
+        if (!Double.isNaN(drain)) return; // Value already set, don't overwrite it.
+
+        final double deprecatedDrain = getAveragePower(deprecatedKey, level);
+        sModemPowerProfile.setPowerConstant(key, Double.toString(deprecatedDrain));
+    }
+
     /**
      * Returns the number of memory bandwidth buckets defined in power_profile.xml, or a
      * default value if the subsystem has no recorded value.
@@ -557,6 +799,43 @@ public class PowerProfile {
     @UnsupportedAppUsage
     public double getAveragePower(String type) {
         return getAveragePowerOrDefault(type, 0);
+    }
+
+    /**
+     * Returns the average current in mA consumed by a subsystem's specified operation, or the given
+     * default value if the subsystem has no recorded value.
+     *
+     * @param key that describes a subsystem's battery draining operation
+     *            The key is built from multiple constant, see {@link Subsystem} and
+     *            {@link ModemPowerProfile}.
+     * @param defaultValue the value to return if the subsystem has no recorded value.
+     * @return the average current in milliAmps.
+     */
+    public double getAverageBatteryDrainOrDefaultMa(long key, double defaultValue) {
+        final long subsystemType = key & SUBSYSTEM_MASK;
+        final int subsystemFields = (int) (key & SUBSYSTEM_FIELDS_MASK);
+
+        final double value;
+        if (subsystemType == SUBSYSTEM_MODEM) {
+            value = sModemPowerProfile.getAverageBatteryDrainMa(subsystemFields);
+        } else {
+            value = Double.NaN;
+        }
+
+        if (Double.isNaN(value)) return defaultValue;
+        return value;
+    }
+
+    /**
+     * Returns the average current in mA consumed by a subsystem's specified operation.
+     *
+     * @param key that describes a subsystem's battery draining operation
+     *            The key is built from multiple constant, see {@link Subsystem} and
+     *            {@link ModemPowerProfile}.
+     * @return the average current in milliAmps.
+     */
+    public double getAverageBatteryDrainMa(long key) {
+        return getAverageBatteryDrainOrDefaultMa(key, 0);
     }
 
     /**
@@ -782,6 +1061,25 @@ public class PowerProfile {
         // battery.capacity
         writePowerConstantToProto(proto, POWER_BATTERY_CAPACITY,
                 PowerProfileProto.BATTERY_CAPACITY);
+    }
+
+    /**
+     * Dump the PowerProfile values.
+     */
+    public void dump(PrintWriter pw) {
+        final IndentingPrintWriter ipw = new IndentingPrintWriter(pw);
+        sPowerItemMap.forEach((key, value) -> {
+            ipw.print(key, value);
+            ipw.println();
+        });
+        sPowerArrayMap.forEach((key, value) -> {
+            ipw.print(key, Arrays.toString(value));
+            ipw.println();
+        });
+        ipw.println("Modem values:");
+        ipw.increaseIndent();
+        sModemPowerProfile.dump(ipw);
+        ipw.decreaseIndent();
     }
 
     // Writes items in sPowerItemMap to proto if exists.

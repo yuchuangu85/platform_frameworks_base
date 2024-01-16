@@ -59,7 +59,7 @@ public class AAAPlusPlusVerifySysuiRequiredTestPropertiesTest extends SysuiTestC
 
     private static final String TAG = "AAA++VerifyTest";
 
-    private static final Class[] BASE_CLS_WHITELIST = {
+    private static final Class[] BASE_CLS_TO_INCLUDE = {
             SysuiTestCase.class,
             SysuiBaseFragmentTest.class,
     };
@@ -81,7 +81,7 @@ public class AAAPlusPlusVerifySysuiRequiredTestPropertiesTest extends SysuiTestC
             if (!isTestClass(cls)) continue;
 
             boolean hasParent = false;
-            for (Class<?> parent : BASE_CLS_WHITELIST) {
+            for (Class<?> parent : BASE_CLS_TO_INCLUDE) {
                 if (parent.isAssignableFrom(cls)) {
                     hasParent = true;
                     break;
@@ -110,6 +110,17 @@ public class AAAPlusPlusVerifySysuiRequiredTestPropertiesTest extends SysuiTestC
     private Collection<String> getClassNamesFromClassPath() {
         ClassPathScanner scanner = new ClassPathScanner(mContext.getPackageCodePath());
 
+        ChainedClassNameFilter filter = makeClassNameFilter();
+
+        try {
+            return scanner.getClassPathEntries(filter);
+        } catch (IOException e) {
+            Log.e(getTag(), "Failed to scan classes", e);
+        }
+        return Collections.emptyList();
+    }
+
+    protected ChainedClassNameFilter makeClassNameFilter() {
         ChainedClassNameFilter filter = new ChainedClassNameFilter();
 
         filter.add(new ExternalClassNameFilter());
@@ -120,19 +131,13 @@ public class AAAPlusPlusVerifySysuiRequiredTestPropertiesTest extends SysuiTestC
         // with the main process dependency graph because it will not exist
         // at runtime and could lead to incorrect tests which assume
         // the main SystemUI process. Therefore, exclude this package
-        // from the base class whitelist.
+        // from the base class allowlist.
         filter.add(s -> !s.startsWith("com.android.systemui.screenshot"));
-
-        try {
-            return scanner.getClassPathEntries(filter);
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to scan classes", e);
-        }
-        return Collections.emptyList();
+        return filter;
     }
 
     private String getClsStr() {
-        return TextUtils.join(",", Arrays.asList(BASE_CLS_WHITELIST)
+        return TextUtils.join(",", Arrays.asList(BASE_CLS_TO_INCLUDE)
                 .stream().map(cls -> cls.getSimpleName()).toArray());
     }
 
@@ -212,8 +217,12 @@ public class AAAPlusPlusVerifySysuiRequiredTestPropertiesTest extends SysuiTestC
      * as loggable to limit log spam during normal use.
      */
     private void logDebug(String msg) {
-        if (Log.isLoggable(TAG, Log.DEBUG)) {
-            Log.d(TAG, msg);
+        if (Log.isLoggable(getTag(), Log.DEBUG)) {
+            Log.d(getTag(), msg);
         }
+    }
+
+    protected String getTag() {
+        return TAG;
     }
 }

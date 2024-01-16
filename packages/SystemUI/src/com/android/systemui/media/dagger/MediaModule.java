@@ -17,22 +17,35 @@
 package com.android.systemui.media.dagger;
 
 import com.android.systemui.dagger.SysUISingleton;
-import com.android.systemui.media.MediaDataManager;
-import com.android.systemui.media.MediaHierarchyManager;
-import com.android.systemui.media.MediaHost;
-import com.android.systemui.media.MediaHostStatesManager;
+import com.android.systemui.log.LogBuffer;
+import com.android.systemui.log.LogBufferFactory;
+import com.android.systemui.media.controls.pipeline.MediaDataManager;
+import com.android.systemui.media.controls.ui.MediaHierarchyManager;
+import com.android.systemui.media.controls.ui.MediaHost;
+import com.android.systemui.media.controls.ui.MediaHostStatesManager;
+import com.android.systemui.media.dream.dagger.MediaComplicationComponent;
+import com.android.systemui.media.taptotransfer.MediaTttCommandLineHelper;
+import com.android.systemui.media.taptotransfer.MediaTttFlags;
+import com.android.systemui.media.taptotransfer.receiver.MediaTttReceiverLogBuffer;
+import com.android.systemui.media.taptotransfer.sender.MediaTttSenderLogBuffer;
 
-import javax.inject.Named;
-
+import dagger.Lazy;
 import dagger.Module;
 import dagger.Provides;
 
+import java.util.Optional;
+
+import javax.inject.Named;
+
 /** Dagger module for the media package. */
-@Module
+@Module(subcomponents = {
+        MediaComplicationComponent.class,
+})
 public interface MediaModule {
     String QS_PANEL = "media_qs_panel";
     String QUICK_QS_PANEL = "media_quick_qs_panel";
     String KEYGUARD = "media_keyguard";
+    String DREAM = "dream";
 
     /** */
     @Provides
@@ -62,5 +75,45 @@ public interface MediaModule {
             MediaHierarchyManager hierarchyManager, MediaDataManager dataManager,
             MediaHostStatesManager statesManager) {
         return new MediaHost(stateHolder, hierarchyManager, dataManager, statesManager);
+    }
+
+    /** */
+    @Provides
+    @SysUISingleton
+    @Named(DREAM)
+    static MediaHost providesDreamMediaHost(MediaHost.MediaHostStateHolder stateHolder,
+            MediaHierarchyManager hierarchyManager, MediaDataManager dataManager,
+            MediaHostStatesManager statesManager) {
+        return new MediaHost(stateHolder, hierarchyManager, dataManager, statesManager);
+    }
+
+    /** Provides a logging buffer related to the media tap-to-transfer chip on the sender device. */
+    @Provides
+    @SysUISingleton
+    @MediaTttSenderLogBuffer
+    static LogBuffer provideMediaTttSenderLogBuffer(LogBufferFactory factory) {
+        return factory.create("MediaTttSender", 30);
+    }
+
+    /**
+     * Provides a logging buffer related to the media tap-to-transfer chip on the receiver device.
+     */
+    @Provides
+    @SysUISingleton
+    @MediaTttReceiverLogBuffer
+    static LogBuffer provideMediaTttReceiverLogBuffer(LogBufferFactory factory) {
+        return factory.create("MediaTttReceiver", 20);
+    }
+
+    /** */
+    @Provides
+    @SysUISingleton
+    static Optional<MediaTttCommandLineHelper> providesMediaTttCommandLineHelper(
+            MediaTttFlags mediaTttFlags,
+            Lazy<MediaTttCommandLineHelper> helperLazy) {
+        if (!mediaTttFlags.isMediaTttEnabled()) {
+            return Optional.empty();
+        }
+        return Optional.of(helperLazy.get());
     }
 }

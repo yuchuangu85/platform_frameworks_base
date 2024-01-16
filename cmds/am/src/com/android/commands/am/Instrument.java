@@ -16,9 +16,11 @@
 
 package com.android.commands.am;
 
+import static android.app.ActivityManager.INSTR_FLAG_ALWAYS_CHECK_SIGNATURE;
 import static android.app.ActivityManager.INSTR_FLAG_DISABLE_HIDDEN_API_CHECKS;
 import static android.app.ActivityManager.INSTR_FLAG_DISABLE_ISOLATED_STORAGE;
 import static android.app.ActivityManager.INSTR_FLAG_DISABLE_TEST_API_CHECKS;
+import static android.app.ActivityManager.INSTR_FLAG_INSTRUMENT_SDK_SANDBOX;
 import static android.app.ActivityManager.INSTR_FLAG_NO_RESTART;
 
 import android.app.IActivityManager;
@@ -95,6 +97,8 @@ public class Instrument {
     public Bundle args = new Bundle();
     // Required
     public String componentNameArg;
+    public boolean alwaysCheckSignature = false;
+    public boolean instrumentSdkSandbox = false;
 
     /**
      * Construct the instrument command runner.
@@ -421,7 +425,8 @@ public class Instrument {
             if (cn == null) throw new IllegalArgumentException("Bad component name: " + cnArg);
             return cn;
         } else {
-            List<InstrumentationInfo> infos = mPm.queryInstrumentation(null, 0).getList();
+            List<InstrumentationInfo> infos = mPm.queryInstrumentationAsUser(
+                    null, 0, userId).getList();
 
             final int numInfos = infos == null ? 0: infos.size();
             ArrayList<ComponentName> cns = new ArrayList<>();
@@ -518,6 +523,12 @@ public class Instrument {
             }
             if (noRestart) {
                 flags |= INSTR_FLAG_NO_RESTART;
+            }
+            if (alwaysCheckSignature) {
+                flags |= INSTR_FLAG_ALWAYS_CHECK_SIGNATURE;
+            }
+            if (instrumentSdkSandbox) {
+                flags |= INSTR_FLAG_INSTRUMENT_SDK_SANDBOX;
             }
             if (!mAm.startInstrumentation(cn, profileFile, flags, args, watcher, connection, userId,
                         abi)) {

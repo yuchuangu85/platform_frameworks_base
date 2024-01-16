@@ -91,15 +91,14 @@ struct SQLiteConnection {
 // Called each time a statement begins execution, when tracing is enabled.
 static void sqliteTraceCallback(void *data, const char *sql) {
     SQLiteConnection* connection = static_cast<SQLiteConnection*>(data);
-    ALOG(LOG_VERBOSE, SQLITE_TRACE_TAG, "%s: \"%s\"\n",
-            connection->label.string(), sql);
+    ALOG(LOG_VERBOSE, SQLITE_TRACE_TAG, "%s: \"%s\"\n", connection->label.c_str(), sql);
 }
 
 // Called each time a statement finishes execution, when profiling is enabled.
 static void sqliteProfileCallback(void *data, const char *sql, sqlite3_uint64 tm) {
     SQLiteConnection* connection = static_cast<SQLiteConnection*>(data);
-    ALOG(LOG_VERBOSE, SQLITE_PROFILE_TAG, "%s: \"%s\" took %0.3f ms\n",
-            connection->label.string(), sql, tm * 0.000001f);
+    ALOG(LOG_VERBOSE, SQLITE_PROFILE_TAG, "%s: \"%s\" took %0.3f ms\n", connection->label.c_str(),
+         sql, tm * 0.000001f);
 }
 
 // Called after each SQLite VM instruction when cancelation is enabled.
@@ -130,7 +129,7 @@ static jlong nativeOpen(JNIEnv* env, jclass clazz, jstring pathStr, jint openFla
     env->ReleaseStringUTFChars(labelStr, labelChars);
 
     sqlite3* db;
-    int err = sqlite3_open_v2(path.string(), &db, sqliteFlags, NULL);
+    int err = sqlite3_open_v2(path.c_str(), &db, sqliteFlags, NULL);
     if (err != SQLITE_OK) {
         throw_sqlite3_exception_errcode(env, err, "Could not open database");
         return 0;
@@ -180,7 +179,7 @@ static jlong nativeOpen(JNIEnv* env, jclass clazz, jstring pathStr, jint openFla
         sqlite3_profile(db, &sqliteProfileCallback, connection);
     }
 
-    ALOGV("Opened connection %p with label '%s'", db, label.string());
+    ALOGV("Opened connection %p with label '%s'", db, label.c_str());
     return reinterpret_cast<jlong>(connection);
 }
 
@@ -518,23 +517,29 @@ static void nativeResetStatementAndClearBindings(JNIEnv* env, jclass clazz, jlon
     }
 }
 
-static int executeNonQuery(JNIEnv* env, SQLiteConnection* connection, sqlite3_stmt* statement) {
-    int err = sqlite3_step(statement);
-    if (err == SQLITE_ROW) {
+static int executeNonQuery(JNIEnv* env, SQLiteConnection* connection, sqlite3_stmt* statement,
+        bool isPragmaStmt) {
+    int rc = sqlite3_step(statement);
+    if (isPragmaStmt) {
+        while (rc == SQLITE_ROW) {
+            rc = sqlite3_step(statement);
+        }
+    }
+    if (rc == SQLITE_ROW) {
         throw_sqlite3_exception(env,
                 "Queries can be performed using SQLiteDatabase query or rawQuery methods only.");
-    } else if (err != SQLITE_DONE) {
+    } else if (rc != SQLITE_DONE) {
         throw_sqlite3_exception(env, connection->db);
     }
-    return err;
+    return rc;
 }
 
-static void nativeExecute(JNIEnv* env, jclass clazz, jlong connectionPtr,
-        jlong statementPtr) {
+static void nativeExecute(JNIEnv* env, jclass clazz, jlong connectionPtr, jlong statementPtr,
+        jboolean isPragmaStmt) {
     SQLiteConnection* connection = reinterpret_cast<SQLiteConnection*>(connectionPtr);
     sqlite3_stmt* statement = reinterpret_cast<sqlite3_stmt*>(statementPtr);
 
-    executeNonQuery(env, connection, statement);
+    executeNonQuery(env, connection, statement, isPragmaStmt);
 }
 
 static jint nativeExecuteForChangedRowCount(JNIEnv* env, jclass clazz,
@@ -542,7 +547,7 @@ static jint nativeExecuteForChangedRowCount(JNIEnv* env, jclass clazz,
     SQLiteConnection* connection = reinterpret_cast<SQLiteConnection*>(connectionPtr);
     sqlite3_stmt* statement = reinterpret_cast<sqlite3_stmt*>(statementPtr);
 
-    int err = executeNonQuery(env, connection, statement);
+    int err = executeNonQuery(env, connection, statement, false);
     return err == SQLITE_DONE ? sqlite3_changes(connection->db) : -1;
 }
 
@@ -551,7 +556,7 @@ static jlong nativeExecuteForLastInsertedRowId(JNIEnv* env, jclass clazz,
     SQLiteConnection* connection = reinterpret_cast<SQLiteConnection*>(connectionPtr);
     sqlite3_stmt* statement = reinterpret_cast<sqlite3_stmt*>(statementPtr);
 
-    int err = executeNonQuery(env, connection, statement);
+    int err = executeNonQuery(env, connection, statement, false);
     return err == SQLITE_DONE && sqlite3_changes(connection->db) > 0
             ? sqlite3_last_insert_rowid(connection->db) : -1;
 }
@@ -754,7 +759,7 @@ static jlong nativeExecuteForCursorWindow(JNIEnv* env, jclass clazz,
     if (status) {
         String8 msg;
         msg.appendFormat("Failed to clear the cursor window, status=%d", status);
-        throw_sqlite3_exception(env, connection->db, msg.string());
+        throw_sqlite3_exception(env, connection->db, msg.c_str());
         return 0;
     }
 
@@ -764,7 +769,7 @@ static jlong nativeExecuteForCursorWindow(JNIEnv* env, jclass clazz,
         String8 msg;
         msg.appendFormat("Failed to set the cursor window column count to %d, status=%d",
                 numColumns, status);
-        throw_sqlite3_exception(env, connection->db, msg.string());
+        throw_sqlite3_exception(env, connection->db, msg.c_str());
         return 0;
     }
 
@@ -839,7 +844,7 @@ static jlong nativeExecuteForCursorWindow(JNIEnv* env, jclass clazz,
         String8 msg;
         msg.appendFormat("Row too big to fit into CursorWindow requiredPos=%d, totalRows=%d",
                 requiredPos, totalRows);
-        throw_sqlite3_exception(env, SQLITE_TOOBIG, NULL, msg.string());
+        throw_sqlite3_exception(env, SQLITE_TOOBIG, NULL, msg.c_str());
         return 0;
     }
 
@@ -912,7 +917,7 @@ static const JNINativeMethod sMethods[] =
             (void*)nativeBindBlob },
     { "nativeResetStatementAndClearBindings", "(JJ)V",
             (void*)nativeResetStatementAndClearBindings },
-    { "nativeExecute", "(JJ)V",
+    { "nativeExecute", "(JJZ)V",
             (void*)nativeExecute },
     { "nativeExecuteForLong", "(JJ)J",
             (void*)nativeExecuteForLong },

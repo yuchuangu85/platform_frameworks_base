@@ -18,6 +18,8 @@ package android.hardware.usb;
 
 import android.app.PendingIntent;
 import android.content.ComponentName;
+import android.hardware.usb.IDisplayPortAltModeInfoListener;
+import android.hardware.usb.IUsbOperationInternal;
 import android.hardware.usb.UsbAccessory;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.ParcelableUsbPort;
@@ -78,8 +80,19 @@ interface IUsbManager
     /* Returns true if the caller has permission to access the device. */
     boolean hasDevicePermission(in UsbDevice device, String packageName);
 
+    /* Returns true if the given package/pid/uid has permission to access the device. */
+    @JavaPassthrough(annotation=
+            "@android.annotation.RequiresPermission(android.Manifest.permission.MANAGE_USB)")
+    boolean hasDevicePermissionWithIdentity(in UsbDevice device, String packageName,
+            int pid, int uid);
+
     /* Returns true if the caller has permission to access the accessory. */
     boolean hasAccessoryPermission(in UsbAccessory accessory);
+
+    /* Returns true if the given pid/uid has permission to access the accessory. */
+    @JavaPassthrough(annotation=
+            "@android.annotation.RequiresPermission(android.Manifest.permission.MANAGE_USB)")
+    boolean hasAccessoryPermissionWithIdentity(in UsbAccessory accessory, int pid, int uid);
 
     /* Requests permission for the given package to access the device.
      * Will display a system dialog to query the user if permission
@@ -110,10 +123,10 @@ interface IUsbManager
     boolean isFunctionEnabled(String function);
 
     /* Sets the current USB function. */
-    void setCurrentFunctions(long functions);
+    void setCurrentFunctions(long functions, int operationId);
 
     /* Compatibility version of setCurrentFunctions(long). */
-    void setCurrentFunction(String function, boolean usbDataUnlocked);
+    void setCurrentFunction(String function, boolean usbDataUnlocked, int operationId);
 
     /* Gets the current USB functions. */
     long getCurrentFunctions();
@@ -135,8 +148,14 @@ interface IUsbManager
     /* Resets the USB gadget. */
     void resetUsbGadget();
 
+    /* Resets the USB port. */
+    void resetUsbPort(in String portId, int operationId, in IUsbOperationInternal callback);
+
     /* Set USB data on or off */
-    boolean enableUsbDataSignal(boolean enable);
+    boolean enableUsbData(in String portId, boolean enable, int operationId, in IUsbOperationInternal callback);
+
+    /* Enable USB data when disabled due to docking event  */
+    void enableUsbDataWhileDocked(in String portId, int operationId, in IUsbOperationInternal callback);
 
     /* Gets the USB Hal Version. */
     int getUsbHalVersion();
@@ -156,9 +175,25 @@ interface IUsbManager
     /* Sets the port's current role. */
     void setPortRoles(in String portId, int powerRole, int dataRole);
 
+    /* Limit power transfer in & out of the port within the allowed limit by the USB
+     * specification.
+     */
+    void enableLimitPowerTransfer(in String portId, boolean limit, int operationId, in IUsbOperationInternal callback);
+
     /* Enable/disable contaminant detection */
     void enableContaminantDetection(in String portId, boolean enable);
 
-   /* Sets USB device connection handler. */
-   void setUsbDeviceConnectionHandler(in ComponentName usbDeviceConnectionHandler);
+    /* Sets USB device connection handler. */
+    void setUsbDeviceConnectionHandler(in ComponentName usbDeviceConnectionHandler);
+
+    /* Registers callback for Usb events */
+    @JavaPassthrough(annotation=
+            "@android.annotation.RequiresPermission(android.Manifest.permission.MANAGE_USB)")
+    boolean registerForDisplayPortEvents(IDisplayPortAltModeInfoListener listener);
+
+    /* Unregisters Usb event callback */
+    @JavaPassthrough(annotation=
+            "@android.annotation.RequiresPermission(android.Manifest.permission.MANAGE_USB)")
+    void unregisterForDisplayPortEvents(IDisplayPortAltModeInfoListener listener);
+
 }

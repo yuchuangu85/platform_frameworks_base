@@ -19,15 +19,13 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
 
 import android.os.Handler;
 import android.os.Looper;
@@ -35,6 +33,11 @@ import android.os.Message;
 import android.test.suitebuilder.annotation.SmallTest;
 import android.testing.TestableLooper.MessageHandler;
 import android.testing.TestableLooper.RunWithLooper;
+
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.InOrder;
 
 @SmallTest
 @RunWith(AndroidTestingRunner.class)
@@ -162,7 +165,7 @@ public class TestableLooperTest {
 
     @Test
     public void testCorrectLooperExecution() throws Exception {
-        boolean[] hasRun = new boolean[] { false };
+        boolean[] hasRun = new boolean[]{false};
         Runnable r = () -> {
             assertEquals("Should run on main looper", Looper.getMainLooper(), Looper.myLooper());
             hasRun[0] = true;
@@ -176,5 +179,93 @@ public class TestableLooperTest {
         } finally {
             testableLooper.destroy();
         }
+    }
+
+    @Test
+    public void testDelayedDispatchNoTimeMove() {
+        Handler handler = spy(new Handler(mTestableLooper.getLooper()));
+        InOrder inOrder = inOrder(handler);
+
+        final Message messageA = handler.obtainMessage(1);
+        final Message messageB = handler.obtainMessage(2);
+
+        handler.sendMessageDelayed(messageA, 0);
+        handler.sendMessageDelayed(messageB, 0);
+
+        mTestableLooper.processAllMessages();
+
+        inOrder.verify(handler).dispatchMessage(messageA);
+        inOrder.verify(handler).dispatchMessage(messageB);
+    }
+
+    @Test
+    public void testDelayedMessageDoesntSend() {
+        Handler handler = spy(new Handler(mTestableLooper.getLooper()));
+        InOrder inOrder = inOrder(handler);
+
+        final Message messageA = handler.obtainMessage(1);
+        final Message messageB = handler.obtainMessage(2);
+        final Message messageC = handler.obtainMessage(3);
+
+        handler.sendMessageDelayed(messageA, 0);
+        handler.sendMessageDelayed(messageB, 0);
+        handler.sendMessageDelayed(messageC, 500);
+
+        mTestableLooper.processAllMessages();
+
+        inOrder.verify(handler).dispatchMessage(messageA);
+        inOrder.verify(handler).dispatchMessage(messageB);
+        verify(handler, never()).dispatchMessage(messageC);
+    }
+
+    @Test
+    public void testMessageSendsAfterDelay() {
+        Handler handler = spy(new Handler(mTestableLooper.getLooper()));
+        InOrder inOrder = inOrder(handler);
+
+        final Message messageA = handler.obtainMessage(1);
+        final Message messageB = handler.obtainMessage(2);
+        final Message messageC = handler.obtainMessage(3);
+
+        handler.sendMessageDelayed(messageA, 0);
+        handler.sendMessageDelayed(messageB, 0);
+        handler.sendMessageDelayed(messageC, 500);
+
+        mTestableLooper.moveTimeForward(500);
+        mTestableLooper.processAllMessages();
+
+        inOrder.verify(handler).dispatchMessage(messageA);
+        inOrder.verify(handler).dispatchMessage(messageB);
+        inOrder.verify(handler).dispatchMessage(messageC);
+    }
+
+    @Test
+    public void testProcessMessagesNonBlocking_onlyArgNumber() {
+        Handler h = new Handler(mTestableLooper.getLooper());
+        Runnable r = mock(Runnable.class);
+
+        h.post(r);
+        h.post(r);
+        h.post(r);
+
+        int processed = mTestableLooper.processMessagesNonBlocking(2);
+
+        verify(r, times(2)).run();
+        assertEquals(2, processed);
+    }
+
+    @Test
+    public void testProcessMessagesNonBlocking_lessMessagesThanArg() {
+        Handler h = new Handler(mTestableLooper.getLooper());
+        Runnable r = mock(Runnable.class);
+
+        h.post(r);
+        h.post(r);
+        h.post(r);
+
+        int processed = mTestableLooper.processMessagesNonBlocking(5);
+
+        verify(r, times(3)).run();
+        assertEquals(3, processed);
     }
 }

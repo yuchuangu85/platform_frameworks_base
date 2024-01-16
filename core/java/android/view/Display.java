@@ -19,17 +19,16 @@ package android.view;
 import static android.Manifest.permission.CONFIGURE_DISPLAY_COLOR_MODE;
 import static android.Manifest.permission.CONTROL_DISPLAY_BRIGHTNESS;
 
+import android.Manifest;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SuppressLint;
 import android.annotation.TestApi;
-import android.app.ActivityThread;
 import android.app.KeyguardManager;
 import android.app.WindowConfiguration;
 import android.compat.annotation.UnsupportedAppUsage;
-import android.content.ComponentName;
 import android.content.res.CompatibilityInfo;
 import android.content.res.Configuration;
 import android.content.res.Resources;
@@ -37,10 +36,12 @@ import android.graphics.ColorSpace;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
 import android.graphics.Rect;
+import android.hardware.OverlayProperties;
 import android.hardware.display.BrightnessInfo;
 import android.hardware.display.DeviceProductInfo;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.DisplayManagerGlobal;
+import android.hardware.graphics.common.DisplayDecorationSupport;
 import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -50,14 +51,13 @@ import android.util.ArraySet;
 import android.util.DisplayMetrics;
 import android.util.Log;
 
-import com.android.internal.R;
-
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Optional;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 /**
  * Provides information about the size and density of a logical display.
@@ -113,19 +113,7 @@ public final class Display {
     private int mCachedAppWidthCompat;
     private int mCachedAppHeightCompat;
 
-    /**
-     * Indicates that the application is started in a different rotation than the real display, so
-     * the display information may be adjusted. That ensures the methods {@link #getRotation},
-     * {@link #getRealSize}, {@link #getRealMetrics}, and {@link #getCutout} are consistent with how
-     * the application window is laid out.
-     */
-    private boolean mMayAdjustByFixedRotation;
-
-    /**
-     * Cache if the application is the recents component.
-     * TODO(b/179308296) Remove once Launcher addresses issue
-     */
-    private Optional<Boolean> mIsRecentsComponent = Optional.empty();
+    private ArrayList<HdrSdrRatioListenerWrapper> mHdrSdrRatioListeners = new ArrayList<>();
 
     /**
      * The default Display id, which is the id of the primary display assuming there is one.
@@ -136,6 +124,24 @@ public final class Display {
      * Invalid display id.
      */
     public static final int INVALID_DISPLAY = -1;
+
+    /**
+     * Invalid resolution width.
+     * @hide
+     */
+    public static final int INVALID_DISPLAY_WIDTH = -1;
+
+    /**
+     * Invalid resolution height.
+     * @hide
+     */
+    public static final int INVALID_DISPLAY_HEIGHT = -1;
+
+    /**
+     * Invalid refresh rate.
+     * @hide
+     */
+    public static final float INVALID_DISPLAY_REFRESH_RATE = 0.0f;
 
     /**
      * The default display group id, which is the display group id of the primary display assuming
@@ -297,6 +303,84 @@ public final class Display {
      * @see #getFlags()
      */
     public static final int FLAG_OWN_DISPLAY_GROUP = 1 << 8;
+
+    /**
+     * Flag: Indicates that the display should always be unlocked. Only valid on virtual displays
+     * that aren't in the default display group.
+     *
+     * @hide
+     * @see #getFlags()
+     */
+    public static final int FLAG_ALWAYS_UNLOCKED = 1 << 9;
+
+    /**
+     * Flag: Indicates that the display should not play sound effects or perform haptic feedback
+     * when the user touches the screen.
+     *
+     * @hide
+     * @see #getFlags()
+     */
+    public static final int FLAG_TOUCH_FEEDBACK_DISABLED = 1 << 10;
+
+    /**
+     * Flag: Indicates that the display maintains its own focus and touch mode.
+     *
+     * This flag is similar to {@link com.android.internal.R.bool.config_perDisplayFocusEnabled} in
+     * behavior, but only applies to the specific display instead of system-wide to all displays.
+     *
+     * Note: The display must be trusted in order to have its own focus.
+     *
+     * @see #FLAG_TRUSTED
+     * @hide
+     */
+    public static final int FLAG_OWN_FOCUS = 1 << 11;
+
+    /**
+     * Flag: Indicates that the display should not become the top focused display by stealing the
+     * top focus from another display.
+     *
+     * <p>The result is that only targeted input events (displayId of input event matches the
+     * displayId of the display) can reach this display. A display with this flag set can still
+     * become the top focused display, if the system consists of only one display or if all
+     * displays have this flag set. In both cases the default display becomes the top focused
+     * display.
+     *
+     * <p>Note:  A display only has a focused window if either
+     * - the display is the top focused display or
+     * - the display manages its own focus (via {@link #FLAG_OWN_FOCUS})
+     * - or all the displays manage their own focus (via {@code config_perDisplayFocusEnabled} flag)
+     * If a display has no focused window, no input event is dispatched to it. Therefore this
+     * flag is only useful together with {@link #FLAG_OWN_FOCUS} and will be
+     * ignored if it is not set.
+     *
+     * <p>Note: The framework only supports IME on the top focused display (b/262520411). Therefore,
+     * Enabling this flag on a display implicitly disables showing any IME. This is not intended
+     * behavior but cannot be fixed until b/262520411 is implemented. If you need IME on display do
+     * not set this flag.
+     *
+     * @hide
+     * @see #getFlags()
+     */
+    public static final int FLAG_STEAL_TOP_FOCUS_DISABLED = 1 << 12;
+
+    /**
+     * Display flag: Indicates that the display is a rear display.
+     * <p>
+     * This flag identifies complementary displays that are facing away from the user.
+     * </p>
+     *
+     * @hide
+     * @see #getFlags()
+     */
+    public static final int FLAG_REAR = 1 << 13;
+
+    /**
+     * Display flag: Indicates that the orientation of this display is not fixed and is coupled to
+     * the orientation of its content.
+     *
+     * @hide
+     */
+    public static final int FLAG_ROTATES_WITH_CONTENT = 1 << 14;
 
     /**
      * Display flag: Indicates that the contents of the display should not be scaled
@@ -555,7 +639,8 @@ public final class Display {
      * @see com.android.service.display.DisplayDevice#hasStableUniqueId().
      * @hide
      */
-    public String getUniqueId() {
+    @TestApi
+    public @Nullable String getUniqueId() {
         return mDisplayInfo.uniqueId;
     }
 
@@ -741,35 +826,42 @@ public final class Display {
     }
 
     /**
-     * Gets the size of the display, in pixels.
-     * Value returned by this method does not necessarily represent the actual raw size
-     * (native resolution) of the display.
-     * <p>
-     * 1. The returned size may be adjusted to exclude certain system decor elements
-     * that are always visible.
-     * </p><p>
-     * 2. It may be scaled to provide compatibility with older applications that
-     * were originally designed for smaller displays.
-     * </p><p>
-     * 3. It can be different depending on the WindowManager to which the display belongs.
-     * </p><p>
-     * - If requested from non-Activity context (e.g. Application context via
-     * {@code (WindowManager) getApplicationContext().getSystemService(Context.WINDOW_SERVICE)})
-     * it will report the size of the entire display based on current rotation and with subtracted
-     * system decoration areas.
-     * </p><p>
-     * - If requested from activity (either using {@code getWindowManager()} or
-     * {@code (WindowManager) getSystemService(Context.WINDOW_SERVICE)}) resulting size will
-     * correspond to current app window size. In this case it can be smaller than physical size in
-     * multi-window mode.
-     * </p><p>
-     * Typically for the purposes of layout apps should make a request from activity context
-     * to obtain size available for the app content.
-     * </p>
+     * Gets the size of the display in pixels.
      *
-     * @param outSize A {@link Point} object to receive the size information.
-     * @deprecated Use {@link WindowManager#getCurrentWindowMetrics()} to obtain an instance of
-     * {@link WindowMetrics} and use {@link WindowMetrics#getBounds()} instead.
+     * <p>The return value does not necessarily represent the actual size (native resolution) of the
+     * display. The returned size might be adjusted to exclude certain system decor elements that
+     * are always visible, or the size might be scaled to provide compatibility with older
+     * applications that were originally designed for smaller displays.
+     *
+     * <p>The returned size can also be different depending on the WindowManager bound to the
+     * display:
+     * <ul>
+     *     <li>If size is requested from an activity (either using a WindowManager accessed by
+     *         {@code getWindowManager()} or {@code getSystemService(Context.WINDOW_SERVICE)}), the
+     *         size of the current app window is returned. As a result, in multi-window mode, the
+     *         returned size can be smaller than the size of the device screen.
+     *     <li>If size is requested from a non-activity context (for example, the application
+     *         context, where the WindowManager is accessed by
+     *         {@code getApplicationContext().getSystemService(Context.WINDOW_SERVICE)}), the
+     *         returned size can vary depending on API level:
+     *         <ul>
+     *             <li>API level 29 and below &mdash; The size of the entire display (based on
+     *                 current rotation) minus system decoration areas is returned.
+     *             <li>API level 30 and above &mdash; The size of the top running activity in the
+     *                 current process is returned. If the current process has no running
+     *                 activities, the size of the device default display, including system
+     *                 decoration areas, is returned.
+     *         </ul>
+     * </ul>
+     *
+     * <p>For layout purposes, apps should make a request from an activity context to obtain the
+     * size of the display area available for app content.
+     *
+     * @param outSize A {@link Point} object which receives the display size information.
+     *
+     * @deprecated Use {@link WindowMetrics} instead. Obtain a {@code WindowMetrics} instance by
+     *     calling {@link WindowManager#getCurrentWindowMetrics()}, then call
+     *     {@link WindowMetrics#getBounds()} to get the dimensions of the application window.
      */
     @Deprecated
     public void getSize(Point outSize) {
@@ -785,8 +877,9 @@ public final class Display {
      * Gets the size of the display as a rectangle, in pixels.
      *
      * @param outSize A {@link Rect} object to receive the size information.
+     *
      * @deprecated Use {@link WindowMetrics#getBounds()} to get the dimensions of the application
-     * window area.
+     * window.
      */
     @Deprecated
     public void getRectSize(Rect outSize) {
@@ -888,14 +981,27 @@ public final class Display {
      * degrees counter-clockwise, to compensate rendering will be rotated by
      * 90 degrees clockwise and thus the returned value here will be
      * {@link Surface#ROTATION_90 Surface.ROTATION_90}.
+     *
+     * This rotation value will match the results of {@link #getMetrics}: this means that the
+     * rotation value will correspond to the activity if accessed through the activity.
      */
     @Surface.Rotation
     public int getRotation() {
         synchronized (mLock) {
             updateDisplayInfoLocked();
-            return mMayAdjustByFixedRotation
-                    ? getDisplayAdjustments().getRotation(mDisplayInfo.rotation)
-                    : mDisplayInfo.rotation;
+            return getLocalRotation();
+        }
+    }
+
+    /**
+     * Returns the install orientation of the display.
+     * @hide
+     */
+    @Surface.Rotation
+    public int getInstallOrientation() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            return mDisplayInfo.installOrientation;
         }
     }
 
@@ -919,9 +1025,15 @@ public final class Display {
     public DisplayCutout getCutout() {
         synchronized (mLock) {
             updateDisplayInfoLocked();
-            return mMayAdjustByFixedRotation
-                    ? getDisplayAdjustments().getDisplayCutout(mDisplayInfo.displayCutout)
-                    : mDisplayInfo.displayCutout;
+            if (mResources == null) return mDisplayInfo.displayCutout;
+            final DisplayCutout localCutout = mDisplayInfo.displayCutout;
+            if (localCutout == null) return null;
+            int rotation = getLocalRotation();
+            if (rotation != mDisplayInfo.rotation) {
+                return localCutout.getRotated(mDisplayInfo.logicalWidth, mDisplayInfo.logicalHeight,
+                        mDisplayInfo.rotation, rotation);
+            }
+            return localCutout;
         }
     }
 
@@ -937,17 +1049,35 @@ public final class Display {
     public RoundedCorner getRoundedCorner(@RoundedCorner.Position int position) {
         synchronized (mLock) {
             updateDisplayInfoLocked();
-            RoundedCorners roundedCorners;
-            if (mMayAdjustByFixedRotation) {
-                roundedCorners = getDisplayAdjustments().adjustRoundedCorner(
-                        mDisplayInfo.roundedCorners,
-                        mDisplayInfo.rotation,
-                        mDisplayInfo.logicalWidth,
-                        mDisplayInfo.logicalHeight);
-            } else {
-                roundedCorners = mDisplayInfo.roundedCorners;
+            final RoundedCorners roundedCorners = mDisplayInfo.roundedCorners;
+            final @Surface.Rotation int rotation = getLocalRotation();
+            if (roundedCorners != null && rotation != mDisplayInfo.rotation) {
+                roundedCorners.rotate(rotation,
+                        mDisplayInfo.logicalWidth, mDisplayInfo.logicalHeight);
             }
             return roundedCorners == null ? null : roundedCorners.getRoundedCorner(position);
+        }
+    }
+
+    /**
+     * Returns the {@link DisplayShape} which is based on display coordinates.
+     *
+     * To get the {@link DisplayShape} based on the window frame, use
+     * {@link WindowInsets#getDisplayShape()} instead.
+     *
+     * @see DisplayShape
+     */
+    @SuppressLint("VisiblySynchronized")
+    @NonNull
+    public DisplayShape getShape() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            final DisplayShape displayShape = mDisplayInfo.displayShape;
+            final @Surface.Rotation int rotation = getLocalRotation();
+            if (displayShape != null && rotation != mDisplayInfo.rotation) {
+                return displayShape.setRotation(rotation);
+            }
+            return displayShape;
         }
     }
 
@@ -996,6 +1126,18 @@ public final class Display {
         synchronized (mLock) {
             updateDisplayInfoLocked();
             return mDisplayInfo.getMode();
+        }
+    }
+
+    /**
+     * Returns the default mode of the display.
+     * @hide
+     */
+    @TestApi
+    public @NonNull Mode getDefaultMode() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            return mDisplayInfo.getDefaultMode();
         }
     }
 
@@ -1071,63 +1213,77 @@ public final class Display {
     }
 
     /**
-     * Returns the display's HDR capabilities.
+     * Returns the system's preferred display mode. This mode will be used when the user has not
+     * specified a display-mode preference. This returns null if the boot display mode feature is
+     * not supported by system.
+     *
+     * @hide
+     */
+    @TestApi
+    @Nullable
+    public Display.Mode getSystemPreferredDisplayMode() {
+        return mGlobal.getSystemPreferredDisplayMode(getDisplayId());
+    }
+
+    /**
+     * Returns the current display mode's HDR capabilities.
      *
      * @see #isHdr()
      */
     public HdrCapabilities getHdrCapabilities() {
         synchronized (mLock) {
             updateDisplayInfoLocked();
-            if (mDisplayInfo.userDisabledHdrTypes.length == 0) {
-                return mDisplayInfo.hdrCapabilities;
-            }
-
             if (mDisplayInfo.hdrCapabilities == null) {
                 return null;
             }
-
-            ArraySet<Integer> enabledTypesSet = new ArraySet<>();
-            for (int supportedType : mDisplayInfo.hdrCapabilities.getSupportedHdrTypes()) {
-                boolean typeDisabled = false;
-                for (int userDisabledType : mDisplayInfo.userDisabledHdrTypes) {
-                    if (supportedType == userDisabledType) {
-                        typeDisabled = true;
-                        break;
+            int[] supportedHdrTypes;
+            if (mDisplayInfo.userDisabledHdrTypes.length == 0) {
+                int[] modeSupportedHdrTypes = getMode().getSupportedHdrTypes();
+                supportedHdrTypes = Arrays.copyOf(modeSupportedHdrTypes,
+                        modeSupportedHdrTypes.length);
+            } else {
+                ArraySet<Integer> enabledTypesSet = new ArraySet<>();
+                for (int supportedType : getMode().getSupportedHdrTypes()) {
+                    if (!contains(mDisplayInfo.userDisabledHdrTypes, supportedType)) {
+                        enabledTypesSet.add(supportedType);
                     }
                 }
-                if (!typeDisabled) {
-                    enabledTypesSet.add(supportedType);
+
+                supportedHdrTypes = new int[enabledTypesSet.size()];
+                int index = 0;
+                for (int enabledType : enabledTypesSet) {
+                    supportedHdrTypes[index++] = enabledType;
                 }
             }
-
-            int[] enabledTypes = new int[enabledTypesSet.size()];
-            int index = 0;
-            for (int enabledType : enabledTypesSet) {
-                enabledTypes[index++] = enabledType;
-            }
-            return new HdrCapabilities(enabledTypes,
+            return new HdrCapabilities(supportedHdrTypes,
                     mDisplayInfo.hdrCapabilities.mMaxLuminance,
                     mDisplayInfo.hdrCapabilities.mMaxAverageLuminance,
                     mDisplayInfo.hdrCapabilities.mMinLuminance);
         }
     }
 
+    private boolean contains(int[] disabledHdrTypes, int hdrType) {
+        for (Integer disabledHdrFormat : disabledHdrTypes) {
+            if (disabledHdrFormat == hdrType) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * @hide
-     * Returns the display's HDR supported types.
+     * Returns the current mode's supported HDR types.
      *
      * @see #isHdr()
-     * @see HdrCapabilities#getSupportedHdrTypes()
+     * @see Mode#getSupportedHdrTypes()
      */
     @TestApi
     @NonNull
     public int[] getReportedHdrTypes() {
         synchronized (mLock) {
             updateDisplayInfoLocked();
-            if (mDisplayInfo.hdrCapabilities == null) {
-                return new int[0];
-            }
-            return mDisplayInfo.hdrCapabilities.getSupportedHdrTypes();
+            return mDisplayInfo.getMode().getSupportedHdrTypes();
         }
     }
 
@@ -1147,6 +1303,136 @@ public final class Display {
             return !(hdrCapabilities.getSupportedHdrTypes().length == 0);
         }
     }
+
+    /**
+     * @return Whether the display supports reporting an hdr/sdr ratio. If this is false,
+     *         {@link #getHdrSdrRatio()} will always be 1.0f
+     */
+    public boolean isHdrSdrRatioAvailable() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            return !Float.isNaN(mDisplayInfo.hdrSdrRatio);
+        }
+    }
+
+    /**
+     * @return The current hdr/sdr ratio expressed as the ratio of targetHdrPeakBrightnessInNits /
+     *         targetSdrWhitePointInNits. If {@link #isHdrSdrRatioAvailable()} is false, this
+     *         always returns 1.0f.
+     */
+    public float getHdrSdrRatio() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            return Float.isNaN(mDisplayInfo.hdrSdrRatio)
+                    ? 1.0f : mDisplayInfo.hdrSdrRatio;
+        }
+    }
+
+    private int findHdrSdrRatioListenerLocked(Consumer<Display> listener) {
+        for (int i = 0; i < mHdrSdrRatioListeners.size(); i++) {
+            final HdrSdrRatioListenerWrapper wrapper = mHdrSdrRatioListeners.get(i);
+            if (wrapper.mListener == listener) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Registers a listener that will be invoked whenever the display's hdr/sdr ratio has changed.
+     * After receiving the callback on the specified Executor, call {@link #getHdrSdrRatio()} to
+     * get the updated value.
+     * If {@link #isHdrSdrRatioAvailable()} is false, then an IllegalStateException will be thrown
+     *
+     * @see #unregisterHdrSdrRatioChangedListener(Consumer)
+     * @param executor The executor to invoke the listener on
+     * @param listener The listener to invoke when the HDR/SDR ratio changes
+     * @throws IllegalStateException if {@link #isHdrSdrRatioAvailable()} is false
+     */
+    public void registerHdrSdrRatioChangedListener(@NonNull Executor executor,
+            @NonNull Consumer<Display> listener) {
+        if (!isHdrSdrRatioAvailable()) {
+            throw new IllegalStateException("HDR/SDR ratio changed not available");
+        }
+        HdrSdrRatioListenerWrapper toRegister = null;
+        synchronized (mLock) {
+            if (findHdrSdrRatioListenerLocked(listener) == -1) {
+                toRegister = new HdrSdrRatioListenerWrapper(listener);
+                mHdrSdrRatioListeners.add(toRegister);
+            } // else already listening, don't do anything
+        }
+        if (toRegister != null) {
+            // Although we only care about the HDR/SDR ratio changing, that can also come in the
+            // form of the larger DISPLAY_CHANGED event
+            mGlobal.registerDisplayListener(toRegister, executor,
+                    DisplayManager.EVENT_FLAG_HDR_SDR_RATIO_CHANGED
+                            | DisplayManagerGlobal.EVENT_DISPLAY_CHANGED);
+        }
+
+    }
+
+    /**
+     * @param listener  The previously
+     *                  {@link #registerHdrSdrRatioChangedListener(Executor, Consumer) registered}
+     *                  hdr/sdr ratio listener to remove.
+     *
+     * @see #registerHdrSdrRatioChangedListener(Executor, Consumer)
+     */
+    public void unregisterHdrSdrRatioChangedListener(@NonNull Consumer<Display> listener) {
+        HdrSdrRatioListenerWrapper toRemove = null;
+        synchronized (mLock) {
+            int index = findHdrSdrRatioListenerLocked(listener);
+            if (index != -1) {
+                toRemove = mHdrSdrRatioListeners.remove(index);
+            }
+        }
+        if (toRemove != null) {
+            mGlobal.unregisterDisplayListener(toRemove);
+        }
+    }
+
+    /**
+     * Sets the default {@link Display.Mode} to use for the display.  The display mode includes
+     * preference for resolution and refresh rate.
+     * If the mode specified is not supported by the display, then no mode change occurs.
+     *
+     * @param mode The {@link Display.Mode} to set, which can include resolution and/or
+     * refresh-rate. It is created using {@link Display.Mode.Builder}.
+     *`
+     * @hide
+     */
+    @TestApi
+    @RequiresPermission(Manifest.permission.MODIFY_USER_PREFERRED_DISPLAY_MODE)
+    public void setUserPreferredDisplayMode(@NonNull Display.Mode mode) {
+        // Create a new object containing default values for the unused fields like mode ID and
+        // alternative refresh rates.
+        Display.Mode preferredMode = new Display.Mode(mode.getPhysicalWidth(),
+                mode.getPhysicalHeight(), mode.getRefreshRate());
+        mGlobal.setUserPreferredDisplayMode(mDisplayId, preferredMode);
+    }
+
+    /**
+     * Removes the display's user preferred display mode.
+     *
+     * @hide
+     */
+    @TestApi
+    @RequiresPermission(Manifest.permission.MODIFY_USER_PREFERRED_DISPLAY_MODE)
+    public void clearUserPreferredDisplayMode() {
+        mGlobal.setUserPreferredDisplayMode(mDisplayId, null);
+    }
+
+    /**
+     * Returns the display's user preferred display mode.
+     *
+     * @hide
+     */
+    @TestApi
+    @Nullable
+    public Display.Mode getUserPreferredDisplayMode() {
+        return mGlobal.getUserPreferredDisplayMode(mDisplayId);
+    }
+
 
     /**
      * Returns whether this display can be used to display wide color gamut content.
@@ -1174,6 +1460,21 @@ public final class Display {
             updateDisplayInfoLocked();
             if (mDisplayInfo.isWideColorGamut()) {
                 return mGlobal.getPreferredWideGamutColorSpace();
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Returns null if it's virtual display.
+     * @hide
+     */
+    @Nullable
+    public OverlayProperties getOverlaySupport() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            if (mDisplayInfo.type != TYPE_VIRTUAL) {
+                return mGlobal.getOverlaySupport();
             }
             return null;
         }
@@ -1275,32 +1576,40 @@ public final class Display {
     }
 
     /**
-     * Gets display metrics that describe the size and density of this display.
-     * The size returned by this method does not necessarily represent the
-     * actual raw size (native resolution) of the display.
-     * <p>
-     * 1. The returned size may be adjusted to exclude certain system decor elements
-     * that are always visible.
-     * </p><p>
-     * 2. It may be scaled to provide compatibility with older applications that
-     * were originally designed for smaller displays.
-     * </p><p>
-     * 3. It can be different depending on the WindowManager to which the display belongs.
-     * </p><p>
-     * - If requested from non-Activity context (e.g. Application context via
-     * {@code (WindowManager) getApplicationContext().getSystemService(Context.WINDOW_SERVICE)})
-     * metrics will report the size of the entire display based on current rotation and with
-     * subtracted system decoration areas.
-     * </p><p>
-     * - If requested from activity (either using {@code getWindowManager()} or
-     * {@code (WindowManager) getSystemService(Context.WINDOW_SERVICE)}) resulting metrics will
-     * correspond to current app window metrics. In this case the size can be smaller than physical
-     * size in multi-window mode.
-     * </p>
+     * Gets the size and density of this display.
      *
-     * @param outMetrics A {@link DisplayMetrics} object to receive the metrics.
+     * <p>The size returned does not necessarily represent the actual size (native resolution) of
+     * the display. The returned size might be adjusted to exclude certain system decor elements
+     * that are always visible, or the size might be scaled to provide compatibility with older
+     * applications that were originally designed for smaller displays.
+     *
+     * <p>The returned size can also be different depending on the WindowManager associated with the
+     * display:
+     * <ul>
+     *     <li>If metrics are requested from an activity (either using a WindowManager accessed by
+     *         {@code getWindowManager()} or {@code getSystemService(Context.WINDOW_SERVICE)}), the
+     *         returned metrics provide the size of the current app window. As a result, in
+     *         multi-window mode, the returned size can be smaller than the size of the device
+     *         screen.
+     *     <li>If metrics are requested from a non-activity context (for example, the application
+     *         context, where the WindowManager is accessed by
+     *         {@code getApplicationContext().getSystemService(Context.WINDOW_SERVICE)}), the
+     *         returned size can vary depending on API level:
+     *         <ul>
+     *             <li>API level 29 and below &mdash; The returned metrics provide the size of the
+     *                 entire display (based on current rotation) minus system decoration areas.
+     *             <li>API level 30 and above &mdash; The returned metrics provide the size of the
+     *                 top running activity in the current process. If the current process has no
+     *                 running activities, the metrics provide the size of the default display of
+     *                 the device, including system decoration areas.
+     *         </ul>
+     * </ul>
+     *
+     * @param outMetrics A {@link DisplayMetrics} object which receives the display metrics.
+     *
      * @deprecated Use {@link WindowMetrics#getBounds()} to get the dimensions of the application
-     * window area, and {@link Configuration#densityDpi} to get the current density.
+     *     window. Use {@link WindowMetrics#getDensity()} to get the density of the application
+     *     window.
      */
     @Deprecated
     public void getMetrics(DisplayMetrics outMetrics) {
@@ -1337,7 +1646,7 @@ public final class Display {
      * bounds of the window.
      * <p></p>
      * Handling multi-window mode correctly is necessary since applications are not always
-     * fullscreen. A user on a large screen device, such as a tablet or Chrome OS devices, is more
+     * fullscreen. A user on a large screen device, such as a tablet or ChromeOS devices, is more
      * likely to use multi-window modes.
      * <p></p>
      * For example, consider a device with a display partitioned into two halves. The user may have
@@ -1373,8 +1682,9 @@ public final class Display {
             }
             outSize.x = mDisplayInfo.logicalWidth;
             outSize.y = mDisplayInfo.logicalHeight;
-            if (mMayAdjustByFixedRotation) {
-                getDisplayAdjustments().adjustSize(outSize, mDisplayInfo.rotation);
+            final @Surface.Rotation int rotation = getLocalRotation();
+            if (rotation != mDisplayInfo.rotation) {
+                adjustSize(outSize, mDisplayInfo.rotation, rotation);
             }
         }
     }
@@ -1406,7 +1716,7 @@ public final class Display {
      * bounds of the window.
      * <p></p>
      * Handling multi-window mode correctly is necessary since applications are not always
-     * fullscreen. A user on a large screen device, such as a tablet or Chrome OS devices, is more
+     * fullscreen. A user on a large screen device, such as a tablet or ChromeOS devices, is more
      * likely to use multi-window modes.
      * <p></p>
      * For example, consider a device with a display partitioned into two halves. The user may have
@@ -1442,8 +1752,9 @@ public final class Display {
             }
             mDisplayInfo.getLogicalMetrics(outMetrics,
                     CompatibilityInfo.DEFAULT_COMPATIBILITY_INFO, null);
-            if (mMayAdjustByFixedRotation) {
-                getDisplayAdjustments().adjustMetrics(outMetrics, mDisplayInfo.rotation);
+            final @Surface.Rotation int rotation = getLocalRotation();
+            if (rotation != mDisplayInfo.rotation) {
+                adjustMetrics(outMetrics, mDisplayInfo.rotation, rotation);
             }
         }
     }
@@ -1463,36 +1774,7 @@ public final class Display {
             return false;
         }
         final Configuration config = mResources.getConfiguration();
-        // TODO(b/179308296) Temporarily exclude Launcher from being given max bounds, by checking
-        // if the caller is the recents component.
-        return config != null && !config.windowConfiguration.getMaxBounds().isEmpty()
-                && !isRecentsComponent();
-    }
-
-    /**
-     * Returns {@code true} when the calling package is the recents component.
-     * TODO(b/179308296) Remove once Launcher addresses issue
-     */
-    boolean isRecentsComponent() {
-        if (mIsRecentsComponent.isPresent()) {
-            return mIsRecentsComponent.get();
-        }
-        if (mResources == null) {
-            return false;
-        }
-        try {
-            String recentsComponent = mResources.getString(R.string.config_recentsComponentName);
-            if (recentsComponent == null) {
-                return false;
-            }
-            String recentsPackage = ComponentName.unflattenFromString(recentsComponent)
-                    .getPackageName();
-            mIsRecentsComponent = Optional.of(recentsPackage != null
-                    && recentsPackage.equals(ActivityThread.currentPackageName()));
-            return mIsRecentsComponent.get();
-        } catch (Resources.NotFoundException e) {
-            return false;
-        }
+        return config != null && !config.windowConfiguration.getMaxBounds().isEmpty();
     }
 
     /**
@@ -1506,6 +1788,21 @@ public final class Display {
         synchronized (mLock) {
             updateDisplayInfoLocked();
             return mIsValid ? mDisplayInfo.state : STATE_UNKNOWN;
+        }
+    }
+
+    /**
+     * Returns the committed state of the display.
+     *
+     * @return The latest committed display state, such as {@link #STATE_ON}. The display state
+     * {@link Display#getState()} is set as committed only after power state changes finish.
+     *
+     * @hide
+     */
+    public int getCommittedState() {
+        synchronized (mLock) {
+            updateDisplayInfoLocked();
+            return mIsValid ? mDisplayInfo.committedState : STATE_UNKNOWN;
         }
     }
 
@@ -1547,6 +1844,16 @@ public final class Display {
         return (mFlags & FLAG_TRUSTED) == FLAG_TRUSTED;
     }
 
+    /**
+     * @return {@code true} if the display can steal the top focus from another display.
+     *
+     * @see #FLAG_STEAL_TOP_FOCUS_DISABLED
+     * @hide
+     */
+    public boolean canStealTopFocus() {
+        return (mFlags & FLAG_STEAL_TOP_FOCUS_DISABLED) == 0;
+    }
+
     private void updateDisplayInfoLocked() {
         // Note: The display manager caches display info objects on our behalf.
         DisplayInfo newInfo = mGlobal.getDisplayInfo(mDisplayId);
@@ -1568,9 +1875,6 @@ public final class Display {
                 }
             }
         }
-
-        mMayAdjustByFixedRotation = mResources != null
-                && mResources.hasOverrideDisplayAdjustments();
     }
 
     private void updateCachedAppSizeIfNeededLocked() {
@@ -1584,6 +1888,49 @@ public final class Display {
         }
     }
 
+    /** Returns {@code false} if the width and height of display should swap. */
+    private static boolean noFlip(@Surface.Rotation int realRotation,
+            @Surface.Rotation int localRotation) {
+        // Check if the delta is rotated by 90 degrees.
+        return (realRotation - localRotation + 4) % 2 == 0;
+    }
+
+    /**
+     * Adjusts the given size by a rotation offset if necessary.
+     * @hide
+     */
+    private void adjustSize(@NonNull Point size, @Surface.Rotation int realRotation,
+            @Surface.Rotation int localRotation) {
+        if (noFlip(realRotation, localRotation)) return;
+        final int w = size.x;
+        size.x = size.y;
+        size.y = w;
+    }
+
+    /**
+     * Adjusts the given metrics by a rotation offset if necessary.
+     * @hide
+     */
+    private void adjustMetrics(@NonNull DisplayMetrics metrics,
+            @Surface.Rotation int realRotation, @Surface.Rotation int localRotation) {
+        if (noFlip(realRotation, localRotation)) return;
+        int w = metrics.widthPixels;
+        metrics.widthPixels = metrics.heightPixels;
+        metrics.heightPixels = w;
+
+        w = metrics.noncompatWidthPixels;
+        metrics.noncompatWidthPixels = metrics.noncompatHeightPixels;
+        metrics.noncompatHeightPixels = w;
+    }
+
+    private @Surface.Rotation int getLocalRotation() {
+        if (mResources == null) return mDisplayInfo.rotation;
+        final @Surface.Rotation int localRotation =
+                mResources.getConfiguration().windowConfiguration.getDisplayRotation();
+        if (localRotation != WindowConfiguration.ROTATION_UNDEFINED) return localRotation;
+        return mDisplayInfo.rotation;
+    }
+
     // For debugging purposes
     @Override
     public String toString() {
@@ -1591,9 +1938,7 @@ public final class Display {
             updateDisplayInfoLocked();
             final DisplayAdjustments adjustments = getDisplayAdjustments();
             mDisplayInfo.getAppMetrics(mTempMetrics, adjustments);
-            return "Display id " + mDisplayId + ": " + mDisplayInfo
-                    + (mMayAdjustByFixedRotation
-                            ? (", " + adjustments.getFixedRotationAdjustments() + ", ") : ", ")
+            return "Display id " + mDisplayId + ": " + mDisplayInfo + ", "
                     + mTempMetrics + ", isValid=" + mIsValid;
         }
     }
@@ -1689,6 +2034,43 @@ public final class Display {
     }
 
     /**
+     * Returns true if the specified width is valid.
+     * @hide
+     */
+    public static boolean isWidthValid(int width) {
+        return width > 0;
+    }
+
+    /**
+     * Returns true if the specified height is valid.
+     * @hide
+     */
+    public static boolean isHeightValid(int height) {
+        return height > 0;
+    }
+
+    /**
+     * Returns true if the specified refresh-rate is valid.
+     * @hide
+     */
+    public static boolean isRefreshRateValid(float refreshRate) {
+        return refreshRate > 0.0f;
+    }
+
+    /**
+     * Returns whether/how the specified display supports DISPLAY_DECORATION.
+     *
+     * Composition.DISPLAY_DECORATION is a special layer type which is used to
+     * render the screen decorations (i.e. antialiased rounded corners and
+     * cutouts) while taking advantage of specific hardware.
+     *
+     * @hide
+     */
+    public DisplayDecorationSupport getDisplayDecorationSupport() {
+        return mGlobal.getDisplayDecorationSupport(mDisplayId);
+    }
+
+    /**
      * A mode supported by a given display.
      *
      * @see Display#getSupportedModes()
@@ -1699,26 +2081,42 @@ public final class Display {
          */
         public static final Mode[] EMPTY_ARRAY = new Mode[0];
 
+        /**
+         * @hide
+         */
+        public static final int INVALID_MODE_ID = -1;
+
         private final int mModeId;
         private final int mWidth;
         private final int mHeight;
         private final float mRefreshRate;
         @NonNull
         private final float[] mAlternativeRefreshRates;
+        @NonNull
+        @HdrCapabilities.HdrType
+        private final int[] mSupportedHdrTypes;
+
+        /**
+         * @hide
+         */
+        @TestApi
+        public Mode(int width, int height, float refreshRate) {
+            this(INVALID_MODE_ID, width, height, refreshRate, new float[0], new int[0]);
+        }
 
         /**
          * @hide
          */
         @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
         public Mode(int modeId, int width, int height, float refreshRate) {
-            this(modeId, width, height, refreshRate, new float[0]);
+            this(modeId, width, height, refreshRate, new float[0], new int[0]);
         }
 
         /**
          * @hide
          */
         public Mode(int modeId, int width, int height, float refreshRate,
-                float[] alternativeRefreshRates) {
+                float[] alternativeRefreshRates, @HdrCapabilities.HdrType int[] supportedHdrTypes) {
             mModeId = modeId;
             mWidth = width;
             mHeight = height;
@@ -1726,6 +2124,8 @@ public final class Display {
             mAlternativeRefreshRates =
                     Arrays.copyOf(alternativeRefreshRates, alternativeRefreshRates.length);
             Arrays.sort(mAlternativeRefreshRates);
+            mSupportedHdrTypes = Arrays.copyOf(supportedHdrTypes, supportedHdrTypes.length);
+            Arrays.sort(mSupportedHdrTypes);
         }
 
         /**
@@ -1796,7 +2196,16 @@ public final class Display {
          */
         @NonNull
         public float[] getAlternativeRefreshRates() {
-            return mAlternativeRefreshRates;
+            return Arrays.copyOf(mAlternativeRefreshRates, mAlternativeRefreshRates.length);
+        }
+
+        /**
+         * Returns the supported {@link HdrCapabilities} HDR_TYPE_* for this specific mode
+         */
+        @NonNull
+        @HdrCapabilities.HdrType
+        public int[] getSupportedHdrTypes() {
+            return Arrays.copyOf(mSupportedHdrTypes, mSupportedHdrTypes.length);
         }
 
         /**
@@ -1804,10 +2213,35 @@ public final class Display {
          *
          * @hide
          */
+        @TestApi
         public boolean matches(int width, int height, float refreshRate) {
             return mWidth == width &&
                     mHeight == height &&
                     Float.floatToIntBits(mRefreshRate) == Float.floatToIntBits(refreshRate);
+        }
+
+        /**
+         * Returns {@code true} if this mode matches the given parameters, if those parameters are
+         * valid.<p>
+         * If resolution (width and height) is valid and refresh-rate is not, the method matches
+         * only resolution.
+         * If refresh-rate is valid and resolution (width and height) is not, the method matches
+         * only refresh-rate.</p>
+         *
+         * @hide
+         */
+        public boolean matchesIfValid(int width, int height, float refreshRate) {
+            if (!isWidthValid(width) && !isHeightValid(height)
+                    && !isRefreshRateValid(refreshRate)) {
+                return false;
+            }
+            if (isWidthValid(width) != isHeightValid(height)) {
+                return false;
+            }
+            return (!isWidthValid(width) || mWidth == width)
+                    && (!isHeightValid(height) || mHeight == height)
+                    && (!isRefreshRateValid(refreshRate)
+                    || Float.floatToIntBits(mRefreshRate) == Float.floatToIntBits(refreshRate));
         }
 
         /**
@@ -1820,6 +2254,24 @@ public final class Display {
             return mWidth == other.mWidth && mHeight == other.mHeight;
         }
 
+        /**
+         * Returns {@code true} if refresh-rate is set for a display mode
+         *
+         * @hide
+         */
+        public boolean isRefreshRateSet() {
+            return mRefreshRate != INVALID_DISPLAY_REFRESH_RATE;
+        }
+
+        /**
+         * Returns {@code true} if refresh-rate is set for a display mode
+         *
+         * @hide
+         */
+        public boolean isResolutionSet() {
+            return mWidth != INVALID_DISPLAY_WIDTH && mHeight != INVALID_DISPLAY_HEIGHT;
+        }
+
         @Override
         public boolean equals(@Nullable Object other) {
             if (this == other) {
@@ -1830,7 +2282,8 @@ public final class Display {
             }
             Mode that = (Mode) other;
             return mModeId == that.mModeId && matches(that.mWidth, that.mHeight, that.mRefreshRate)
-                    && Arrays.equals(mAlternativeRefreshRates, that.mAlternativeRefreshRates);
+                    && Arrays.equals(mAlternativeRefreshRates, that.mAlternativeRefreshRates)
+                    && Arrays.equals(mSupportedHdrTypes, that.mSupportedHdrTypes);
         }
 
         @Override
@@ -1841,6 +2294,7 @@ public final class Display {
             hash = hash * 17 + mHeight;
             hash = hash * 17 + Float.floatToIntBits(mRefreshRate);
             hash = hash * 17 + Arrays.hashCode(mAlternativeRefreshRates);
+            hash = hash * 17 + Arrays.hashCode(mSupportedHdrTypes);
             return hash;
         }
 
@@ -1853,6 +2307,8 @@ public final class Display {
                     .append(", fps=").append(mRefreshRate)
                     .append(", alternativeRefreshRates=")
                     .append(Arrays.toString(mAlternativeRefreshRates))
+                    .append(", supportedHdrTypes=")
+                    .append(Arrays.toString(mSupportedHdrTypes))
                     .append("}")
                     .toString();
         }
@@ -1863,7 +2319,8 @@ public final class Display {
         }
 
         private Mode(Parcel in) {
-            this(in.readInt(), in.readInt(), in.readInt(), in.readFloat(), in.createFloatArray());
+            this(in.readInt(), in.readInt(), in.readInt(), in.readFloat(), in.createFloatArray(),
+                    in.createIntArray());
         }
 
         @Override
@@ -1873,6 +2330,7 @@ public final class Display {
             out.writeInt(mHeight);
             out.writeFloat(mRefreshRate);
             out.writeFloatArray(mAlternativeRefreshRates);
+            out.writeIntArray(mSupportedHdrTypes);
         }
 
         @SuppressWarnings("hiding")
@@ -1888,6 +2346,80 @@ public final class Display {
                 return new Mode[size];
             }
         };
+
+        /**
+         * Builder is used to create {@link Display.Mode} objects
+         *
+         * @hide
+         */
+        @TestApi
+        public static final class Builder {
+            private int mWidth;
+            private int mHeight;
+            private float mRefreshRate;
+
+            public Builder() {
+                mWidth = Display.INVALID_DISPLAY_WIDTH;
+                mHeight = Display.INVALID_DISPLAY_HEIGHT;
+                mRefreshRate = Display.INVALID_DISPLAY_REFRESH_RATE;
+            }
+
+            /**
+             * Sets the resolution (width and height) of a {@link Display.Mode}
+             *
+             * @return Instance of {@link Builder}
+             */
+            @NonNull
+            public Builder setResolution(int width, int height) {
+                if (width > 0 && height > 0) {
+                    mWidth = width;
+                    mHeight = height;
+                }
+                return this;
+            }
+
+            /**
+             * Sets the refresh rate of a {@link Display.Mode}
+             *
+             * @return Instance of {@link Builder}
+             */
+            @NonNull
+            public Builder setRefreshRate(float refreshRate) {
+                if (refreshRate > 0.0f) {
+                    mRefreshRate = refreshRate;
+                }
+                return this;
+            }
+
+            /**
+             * Creates the {@link Display.Mode} object.
+             *
+             * <p>
+             * If resolution needs to be set, but refresh-rate doesn't matter, create a mode with
+             * Builder and call setResolution.
+             * {@code
+             * Display.Mode mode =
+             *      new Display.Mode.Builder()
+             *      .setResolution(width, height)
+             *      .build();
+             * }
+             * </p><p>
+             * If refresh-rate needs to be set, but resolution doesn't matter, create a mode with
+             * Builder and call setRefreshRate.
+             * {@code
+             * Display.Mode mode =
+             *      new Display.Mode.Builder()
+             *      .setRefreshRate(refreshRate)
+             *      .build();
+             * }
+             * </p>
+             */
+            @NonNull
+            public Mode build() {
+                Display.Mode mode = new Mode(mWidth, mHeight, mRefreshRate);
+                return mode;
+            }
+        }
     }
 
     /**
@@ -1901,6 +2433,10 @@ public final class Display {
          * Invalid luminance value.
          */
         public static final float INVALID_LUMINANCE = -1;
+        /**
+         * Invalid HDR type value.
+         */
+        public static final int HDR_TYPE_INVALID = -1;
         /**
          * Dolby Vision high dynamic range (HDR) display.
          */
@@ -1929,6 +2465,7 @@ public final class Display {
 
         /** @hide */
         @IntDef(prefix = { "HDR_TYPE_" }, value = {
+                HDR_TYPE_INVALID,
                 HDR_TYPE_DOLBY_VISION,
                 HDR_TYPE_HDR10,
                 HDR_TYPE_HLG,
@@ -1964,9 +2501,14 @@ public final class Display {
         /**
          * Gets the supported HDR types of this display.
          * Returns empty array if HDR is not supported by the display.
+         *
+         * @deprecated use {@link Display#getMode()}
+         * and {@link Mode#getSupportedHdrTypes()} instead
          */
-        public @HdrType int[] getSupportedHdrTypes() {
-            return mSupportedHdrTypes;
+        @Deprecated
+        @HdrType
+        public int[] getSupportedHdrTypes() {
+            return Arrays.copyOf(mSupportedHdrTypes, mSupportedHdrTypes.length);
         }
         /**
          * Returns the desired content max luminance data in cd/m2 for this display.
@@ -2067,6 +2609,54 @@ public final class Display {
                     + ", mMaxLuminance=" + mMaxLuminance
                     + ", mMaxAverageLuminance=" + mMaxAverageLuminance
                     + ", mMinLuminance=" + mMinLuminance + '}';
+        }
+
+        /**
+         * @hide
+         */
+        @NonNull
+        public static String hdrTypeToString(int hdrType) {
+            switch (hdrType) {
+                case HDR_TYPE_DOLBY_VISION:
+                    return "HDR_TYPE_DOLBY_VISION";
+                case HDR_TYPE_HDR10:
+                    return "HDR_TYPE_HDR10";
+                case HDR_TYPE_HLG:
+                    return "HDR_TYPE_HLG";
+                case HDR_TYPE_HDR10_PLUS:
+                    return "HDR_TYPE_HDR10_PLUS";
+                default:
+                    return "HDR_TYPE_INVALID";
+            }
+        }
+    }
+
+    private class HdrSdrRatioListenerWrapper implements DisplayManager.DisplayListener {
+        Consumer<Display> mListener;
+        float mLastReportedRatio = 1.f;
+
+        private HdrSdrRatioListenerWrapper(Consumer<Display> listener) {
+            mListener = listener;
+        }
+
+        @Override
+        public void onDisplayAdded(int displayId) {
+            // don't care
+        }
+
+        @Override
+        public void onDisplayRemoved(int displayId) {
+            // don't care
+        }
+
+        @Override
+        public void onDisplayChanged(int displayId) {
+            if (displayId == getDisplayId()) {
+                float newRatio = getHdrSdrRatio();
+                if (newRatio != mLastReportedRatio) {
+                    mListener.accept(Display.this);
+                }
+            }
         }
     }
 }

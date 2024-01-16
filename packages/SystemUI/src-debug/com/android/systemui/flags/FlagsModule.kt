@@ -20,16 +20,37 @@ import android.content.Context
 import android.os.Handler
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.util.settings.SettingsUtilModule
+import dagger.Binds
 import dagger.Module
 import dagger.Provides
+import dagger.multibindings.IntoSet
+import javax.inject.Named
 
 @Module(includes = [
-    SettingsUtilModule::class
+    FeatureFlagsDebugStartableModule::class,
+    FlagsCommonModule::class,
+    ServerFlagReaderModule::class,
+    SettingsUtilModule::class,
 ])
-object FlagsModule {
-    @JvmStatic
-    @Provides
-    fun provideFlagManager(context: Context, @Main handler: Handler): FlagManager {
-        return FlagManager(context, handler)
+abstract class FlagsModule {
+    @Binds
+    abstract fun bindsFeatureFlagDebug(impl: FeatureFlagsDebug): FeatureFlags
+
+    @Binds
+    @IntoSet
+    abstract fun bindsScreenIdleCondition(impl: ScreenIdleCondition): ConditionalRestarter.Condition
+
+    @Module
+    companion object {
+        @JvmStatic
+        @Provides
+        fun provideFlagManager(context: Context, @Main handler: Handler): FlagManager {
+            return FlagManager(context, handler)
+        }
+
+        @JvmStatic
+        @Provides
+        @Named(ConditionalRestarter.RESTART_DELAY)
+        fun provideRestartDelaySec(): Long = 1
     }
 }

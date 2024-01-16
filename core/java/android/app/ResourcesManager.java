@@ -41,6 +41,7 @@ import android.os.Trace;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.DisplayMetrics;
+import android.util.IndentingPrintWriter;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Slog;
@@ -51,7 +52,6 @@ import android.window.WindowContext;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.ArrayUtils;
-import com.android.internal.util.IndentingPrintWriter;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -65,7 +65,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.WeakHashMap;
-import java.util.function.Consumer;
 import java.util.function.Function;
 
 /** @hide */
@@ -174,6 +173,7 @@ public class ResourcesManager {
 
     /**
      * The ApkAssets that are being referenced in the wild that we can reuse.
+     * Used as a lock for itself as well.
      */
     private final ArrayMap<ApkKey, WeakReference<ApkAssets>> mCachedApkAssets = new ArrayMap<>();
 
@@ -287,38 +287,43 @@ public class ResourcesManager {
      * try as hard as possible to release any open FDs.
      */
     public void invalidatePath(String path) {
+        final List<ResourcesImpl> implsToFlush = new ArrayList<>();
         synchronized (mLock) {
-            int count = 0;
-
             for (int i = mResourceImpls.size() - 1; i >= 0; i--) {
                 final ResourcesKey key = mResourceImpls.keyAt(i);
                 if (key.isPathReferenced(path)) {
-                    ResourcesImpl impl = mResourceImpls.removeAt(i).get();
-                    if (impl != null) {
-                        impl.flushLayoutCache();
+                    ResourcesImpl resImpl = mResourceImpls.removeAt(i).get();
+                    if (resImpl != null) {
+                        implsToFlush.add(resImpl);
                     }
-                    count++;
                 }
             }
-
-            Log.i(TAG, "Invalidated " + count + " asset managers that referenced " + path);
-
+        }
+        for (int i = 0; i < implsToFlush.size(); i++) {
+            implsToFlush.get(i).flushLayoutCache();
+        }
+        final List<ApkAssets> assetsToClose = new ArrayList<>();
+        synchronized (mCachedApkAssets) {
             for (int i = mCachedApkAssets.size() - 1; i >= 0; i--) {
                 final ApkKey key = mCachedApkAssets.keyAt(i);
                 if (key.path.equals(path)) {
-                    WeakReference<ApkAssets> apkAssetsRef = mCachedApkAssets.removeAt(i);
-                    if (apkAssetsRef != null && apkAssetsRef.get() != null) {
-                        apkAssetsRef.get().close();
+                    final WeakReference<ApkAssets> apkAssetsRef = mCachedApkAssets.removeAt(i);
+                    final ApkAssets apkAssets = apkAssetsRef != null ? apkAssetsRef.get() : null;
+                    if (apkAssets != null) {
+                        assetsToClose.add(apkAssets);
                     }
                 }
             }
         }
+        for (int i = 0; i < assetsToClose.size(); i++) {
+            assetsToClose.get(i).close();
+        }
+        Log.i(TAG,
+                "Invalidated " + implsToFlush.size() + " asset managers that referenced " + path);
     }
 
     public Configuration getConfiguration() {
-        synchronized (mLock) {
-            return mResConfiguration;
-        }
+        return mResConfiguration;
     }
 
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
@@ -343,12 +348,31 @@ public class ResourcesManager {
         return dm;
     }
 
+    /**
+     * Like getDisplayMetrics, but will adjust the result based on the display information in
+     * config. This is used to make sure that the global configuration matches the activity's
+     * apparent display.
+     */
+    private DisplayMetrics getDisplayMetrics(Configuration config) {
+        final DisplayManagerGlobal displayManagerGlobal = DisplayManagerGlobal.getInstance();
+        final DisplayMetrics dm = new DisplayMetrics();
+        final DisplayInfo displayInfo = displayManagerGlobal != null
+                ? displayManagerGlobal.getDisplayInfo(mResDisplayId) : null;
+        if (displayInfo != null) {
+            displayInfo.getAppMetrics(dm,
+                    DisplayAdjustments.DEFAULT_DISPLAY_ADJUSTMENTS.getCompatibilityInfo(), config);
+        } else {
+            dm.setToDefaults();
+        }
+        return dm;
+    }
+
     private static void applyDisplayMetricsToConfiguration(@NonNull DisplayMetrics dm,
             @NonNull Configuration config) {
         config.touchscreen = Configuration.TOUCHSCREEN_NOTOUCH;
         config.densityDpi = dm.densityDpi;
-        config.screenWidthDp = (int) (dm.widthPixels / dm.density);
-        config.screenHeightDp = (int) (dm.heightPixels / dm.density);
+        config.screenWidthDp = (int) (dm.widthPixels / dm.density + 0.5f);
+        config.screenHeightDp = (int) (dm.heightPixels / dm.density + 0.5f);
         int sl = Configuration.resetScreenLayout(config.screenLayout);
         if (dm.widthPixels > dm.heightPixels) {
             config.orientation = Configuration.ORIENTATION_LANDSCAPE;
@@ -384,14 +408,12 @@ public class ResourcesManager {
      * @param resources The {@link Resources} backing the display adjustments.
      */
     public Display getAdjustedDisplay(final int displayId, Resources resources) {
-        synchronized (mLock) {
-            final DisplayManagerGlobal dm = DisplayManagerGlobal.getInstance();
-            if (dm == null) {
-                // may be null early in system startup
-                return null;
-            }
-            return dm.getCompatibleDisplay(displayId, resources);
+        final DisplayManagerGlobal dm = DisplayManagerGlobal.getInstance();
+        if (dm == null) {
+            // may be null early in system startup
+            return null;
         }
+        return dm.getCompatibleDisplay(displayId, resources);
     }
 
     /**
@@ -428,16 +450,14 @@ public class ResourcesManager {
         ApkAssets apkAssets;
 
         // Optimistically check if this ApkAssets exists somewhere else.
-        synchronized (mLock) {
-            final WeakReference<ApkAssets> apkAssetsRef = mCachedApkAssets.get(key);
-            if (apkAssetsRef != null) {
-                apkAssets = apkAssetsRef.get();
-                if (apkAssets != null && apkAssets.isUpToDate()) {
-                    return apkAssets;
-                } else {
-                    // Clean up the reference.
-                    mCachedApkAssets.remove(key);
-                }
+        final WeakReference<ApkAssets> apkAssetsRef;
+        synchronized (mCachedApkAssets) {
+            apkAssetsRef = mCachedApkAssets.get(key);
+        }
+        if (apkAssetsRef != null) {
+            apkAssets = apkAssetsRef.get();
+            if (apkAssets != null && apkAssets.isUpToDate()) {
+                return apkAssets;
             }
         }
 
@@ -454,7 +474,7 @@ public class ResourcesManager {
             apkAssets = ApkAssets.loadFromPath(key.path, flags);
         }
 
-        synchronized (mLock) {
+        synchronized (mCachedApkAssets) {
             mCachedApkAssets.put(key, new WeakReference<>(apkAssets));
         }
 
@@ -566,28 +586,33 @@ public class ResourcesManager {
      * @hide
      */
     public void dump(String prefix, PrintWriter printWriter) {
+        final int references;
+        final int resImpls;
         synchronized (mLock) {
-            IndentingPrintWriter pw = new IndentingPrintWriter(printWriter, "  ");
-            for (int i = 0; i < prefix.length() / 2; i++) {
-                pw.increaseIndent();
-            }
-
-            pw.println("ResourcesManager:");
-            pw.increaseIndent();
-            pw.print("total apks: ");
-            pw.println(countLiveReferences(mCachedApkAssets.values()));
-
-            pw.print("resources: ");
-
-            int references = countLiveReferences(mResourceReferences);
+            int refs = countLiveReferences(mResourceReferences);
             for (ActivityResources activityResources : mActivityResourceReferences.values()) {
-                references += activityResources.countLiveReferences();
+                refs += activityResources.countLiveReferences();
             }
-            pw.println(references);
-
-            pw.print("resource impls: ");
-            pw.println(countLiveReferences(mResourceImpls.values()));
+            references = refs;
+            resImpls = countLiveReferences(mResourceImpls.values());
         }
+        final int liveAssets;
+        synchronized (mCachedApkAssets) {
+            liveAssets = countLiveReferences(mCachedApkAssets.values());
+        }
+
+        final var pw = new IndentingPrintWriter(printWriter, "  ");
+        for (int i = 0; i < prefix.length() / 2; i++) {
+            pw.increaseIndent();
+        }
+        pw.println("ResourcesManager:");
+        pw.increaseIndent();
+        pw.print("total apks: ");
+        pw.println(liveAssets);
+        pw.print("resources: ");
+        pw.println(references);
+        pw.print("resource impls: ");
+        pw.println(resImpls);
     }
 
     private Configuration generateConfig(@NonNull ResourcesKey key) {
@@ -1311,12 +1336,6 @@ public class ResourcesManager {
 
     public final boolean applyConfigurationToResources(@NonNull Configuration config,
             @Nullable CompatibilityInfo compat) {
-        return applyConfigurationToResources(config, compat, null /* adjustments */);
-    }
-
-    /** Applies the global configuration to the managed resources. */
-    public final boolean applyConfigurationToResources(@NonNull Configuration config,
-            @Nullable CompatibilityInfo compat, @Nullable DisplayAdjustments adjustments) {
         synchronized (mLock) {
             try {
                 Trace.traceBegin(Trace.TRACE_TAG_RESOURCES,
@@ -1346,12 +1365,7 @@ public class ResourcesManager {
                     applyAllPendingAppInfoUpdates();
                 }
 
-                DisplayMetrics displayMetrics = getDisplayMetrics();
-                if (adjustments != null) {
-                    // Currently the only case where the adjustment takes effect is to simulate
-                    // placing an app in a rotated display.
-                    adjustments.adjustGlobalAppMetrics(displayMetrics);
-                }
+                final DisplayMetrics displayMetrics = getDisplayMetrics(config);
                 Resources.updateSystemConfiguration(config, displayMetrics, compat);
 
                 ApplicationPackageManager.configurationChanged();
@@ -1589,41 +1603,6 @@ public class ResourcesManager {
                 }
             }
         }
-    }
-
-    /**
-     * Overrides the display adjustments of all resources which are associated with the given token.
-     *
-     * @param token The token that owns the resources.
-     * @param override The operation to override the existing display adjustments. If it is null,
-     *                 the override adjustments will be cleared.
-     * @return {@code true} if the override takes effect.
-     */
-    public boolean overrideTokenDisplayAdjustments(IBinder token,
-            @Nullable Consumer<DisplayAdjustments> override) {
-        boolean handled = false;
-        synchronized (mLock) {
-            final ActivityResources tokenResources = mActivityResourceReferences.get(token);
-            if (tokenResources == null) {
-                return false;
-            }
-            final ArrayList<ActivityResource> resourcesRefs = tokenResources.activityResources;
-            for (int i = resourcesRefs.size() - 1; i >= 0; i--) {
-                final ActivityResource activityResource = resourcesRefs.get(i);
-                if (activityResource.overrideDisplayId != null) {
-                    // This resource overrides the display of the token so we should not be
-                    // modifying its display adjustments here.
-                    continue;
-                }
-
-                final Resources res = activityResource.resources.get();
-                if (res != null) {
-                    res.overrideDisplayAdjustments(override);
-                    handled = true;
-                }
-            }
-        }
-        return handled;
     }
 
     private class UpdateHandler implements Resources.UpdateCallbacks {

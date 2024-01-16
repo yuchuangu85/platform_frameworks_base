@@ -31,8 +31,11 @@ import android.app.usage.ExternalStorageStats;
 import android.app.usage.IStorageStatsManager;
 import android.app.usage.StorageStats;
 import android.app.usage.UsageStatsManagerInternal;
+import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
@@ -58,6 +61,7 @@ import android.os.storage.CrateMetadata;
 import android.os.storage.StorageEventListener;
 import android.os.storage.StorageManager;
 import android.os.storage.VolumeInfo;
+import android.provider.DeviceConfig;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.text.format.DateUtils;
@@ -67,6 +71,7 @@ import android.util.Pair;
 import android.util.Slog;
 import android.util.SparseLongArray;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.Preconditions;
@@ -94,7 +99,8 @@ public class StorageStatsService extends IStorageStatsManager.Stub {
     private static final String PROP_DISABLE_QUOTA = "fw.disable_quota";
     private static final String PROP_VERIFY_STORAGE = "fw.verify_storage";
 
-    private static final long DELAY_IN_MILLIS = 30 * DateUtils.SECOND_IN_MILLIS;
+    private static final long DELAY_CHECK_STORAGE_DELTA = 30 * DateUtils.SECOND_IN_MILLIS;
+    private static final long DELAY_RECALCULATE_QUOTAS = 10 * DateUtils.HOUR_IN_MILLIS;
     private static final long DEFAULT_QUOTA = DataUnit.MEBIBYTES.toBytes(64);
 
     public static class Lifecycle extends SystemService {
@@ -123,6 +129,12 @@ public class StorageStatsService extends IStorageStatsManager.Stub {
 
     private final CopyOnWriteArrayList<Pair<String, StorageStatsAugmenter>>
             mStorageStatsAugmenters = new CopyOnWriteArrayList<>();
+
+    @GuardedBy("mLock")
+    private int
+            mStorageThresholdPercentHigh = StorageManager.DEFAULT_STORAGE_THRESHOLD_PERCENT_HIGH;
+
+    private final Object mLock = new Object();
 
     public StorageStatsService(Context context) {
         mContext = Preconditions.checkNotNull(context);
@@ -154,6 +166,34 @@ public class StorageStatsService extends IStorageStatsManager.Stub {
         });
 
         LocalManagerRegistry.addManager(StorageStatsManagerLocal.class, new LocalService());
+
+        IntentFilter prFilter = new IntentFilter();
+        prFilter.addAction(Intent.ACTION_PACKAGE_REMOVED);
+        prFilter.addAction(Intent.ACTION_PACKAGE_FULLY_REMOVED);
+        prFilter.addDataScheme("package");
+        mContext.registerReceiver(new BroadcastReceiver() {
+            @Override public void onReceive(Context context, Intent intent) {
+                String action = intent.getAction();
+                if (Intent.ACTION_PACKAGE_REMOVED.equals(action)
+                        || Intent.ACTION_PACKAGE_FULLY_REMOVED.equals(action)) {
+                    mHandler.removeMessages(H.MSG_PACKAGE_REMOVED);
+                    mHandler.sendEmptyMessage(H.MSG_PACKAGE_REMOVED);
+                }
+            }
+        }, prFilter);
+
+        updateConfig();
+        DeviceConfig.addOnPropertiesChangedListener(DeviceConfig.NAMESPACE_STORAGE_NATIVE_BOOT,
+                mContext.getMainExecutor(), properties -> updateConfig());
+    }
+
+    private void updateConfig() {
+        synchronized (mLock) {
+            mStorageThresholdPercentHigh = DeviceConfig.getInt(
+                    DeviceConfig.NAMESPACE_STORAGE_NATIVE_BOOT,
+                    StorageManager.STORAGE_THRESHOLD_PERCENT_HIGH_KEY,
+                    StorageManager.DEFAULT_STORAGE_THRESHOLD_PERCENT_HIGH);
+        }
     }
 
     private void invalidateMounts() {
@@ -208,7 +248,7 @@ public class StorageStatsService extends IStorageStatsManager.Stub {
     public boolean isReservedSupported(String volumeUuid, String callingPackage) {
         if (volumeUuid == StorageManager.UUID_PRIVATE_INTERNAL) {
             return SystemProperties.getBoolean(StorageManager.PROP_HAS_RESERVED, false)
-                    || Build.IS_CONTAINER;
+                    || Build.IS_ARC;
         } else {
             return false;
         }
@@ -219,7 +259,24 @@ public class StorageStatsService extends IStorageStatsManager.Stub {
         // NOTE: No permissions required
 
         if (volumeUuid == StorageManager.UUID_PRIVATE_INTERNAL) {
-            return FileUtils.roundStorageSize(mStorage.getPrimaryStorageSize());
+            // As a safety measure, use the original implementation for the devices
+            // with storage size <= 512GB to prevent any potential regressions
+            final long roundedUserspaceBytes = mStorage.getPrimaryStorageSize();
+            if (roundedUserspaceBytes <= DataUnit.GIGABYTES.toBytes(512)) {
+                return roundedUserspaceBytes;
+            }
+
+            // Since 1TB devices can actually have either 1000GB or 1024GB,
+            // get the block device size and do just a small rounding if any at all
+            final long totalBytes = mStorage.getInternalStorageBlockDeviceSize();
+            final long totalBytesRounded = FileUtils.roundStorageSize(totalBytes);
+            // If the storage size is 997GB-999GB, round it to a 1000GB to show
+            // 1TB in UI instead of 0.99TB. Same for 2TB, 4TB, 8TB etc.
+            if (totalBytesRounded - totalBytes <= DataUnit.GIGABYTES.toBytes(3)) {
+                return totalBytesRounded;
+            } else {
+                return totalBytes;
+            }
         } else {
             final VolumeInfo vol = mStorage.findVolumeByUuid(volumeUuid);
             if (vol == null) {
@@ -246,15 +303,19 @@ public class StorageStatsService extends IStorageStatsManager.Stub {
             // Free space is usable bytes plus any cached data that we're
             // willing to automatically clear. To avoid user confusion, this
             // logic should be kept in sync with getAllocatableBytes().
+            long freeBytes;
             if (isQuotaSupported(volumeUuid, PLATFORM_PACKAGE_NAME)) {
                 final long cacheTotal = getCacheBytes(volumeUuid, PLATFORM_PACKAGE_NAME);
                 final long cacheReserved = mStorage.getStorageCacheBytes(path, 0);
                 final long cacheClearable = Math.max(0, cacheTotal - cacheReserved);
 
-                return path.getUsableSpace() + cacheClearable;
+                freeBytes = path.getUsableSpace() + cacheClearable;
             } else {
-                return path.getUsableSpace();
+                freeBytes = path.getUsableSpace();
             }
+
+            Slog.d(TAG, "getFreeBytes: " + freeBytes);
+            return freeBytes;
         } finally {
             Binder.restoreCallingIdentity(token);
         }
@@ -529,25 +590,30 @@ public class StorageStatsService extends IStorageStatsManager.Stub {
     private class H extends Handler {
         private static final int MSG_CHECK_STORAGE_DELTA = 100;
         private static final int MSG_LOAD_CACHED_QUOTAS_FROM_FILE = 101;
+        private static final int MSG_RECALCULATE_QUOTAS = 102;
+        private static final int MSG_PACKAGE_REMOVED = 103;
         /**
          * By only triggering a re-calculation after the storage has changed sizes, we can avoid
-         * recalculating quotas too often. Minimum change delta defines the percentage of change
-         * we need to see before we recalculate.
+         * recalculating quotas too often. Minimum change delta high and low define the
+         * percentage of change we need to see before we recalculate quotas when the device has
+         * enough storage space (more than mStorageThresholdPercentHigh of total
+         * free) and in low storage condition respectively.
          */
-        private static final double MINIMUM_CHANGE_DELTA = 0.05;
+        private static final long MINIMUM_CHANGE_DELTA_PERCENT_HIGH = 5;
+        private static final long MINIMUM_CHANGE_DELTA_PERCENT_LOW = 2;
         private static final int UNSET = -1;
         private static final boolean DEBUG = false;
 
         private final StatFs mStats;
         private long mPreviousBytes;
-        private double mMinimumThresholdBytes;
+        private long mTotalBytes;
 
         public H(Looper looper) {
             super(looper);
             // TODO: Handle all private volumes.
             mStats = new StatFs(Environment.getDataDirectory().getAbsolutePath());
             mPreviousBytes = mStats.getAvailableBytes();
-            mMinimumThresholdBytes = mStats.getTotalBytes() * MINIMUM_CHANGE_DELTA;
+            mTotalBytes = mStats.getTotalBytes();
         }
 
         public void handleMessage(Message msg) {
@@ -561,13 +627,25 @@ public class StorageStatsService extends IStorageStatsManager.Stub {
 
             switch (msg.what) {
                 case MSG_CHECK_STORAGE_DELTA: {
+                    mStats.restat(Environment.getDataDirectory().getAbsolutePath());
                     long bytesDelta = Math.abs(mPreviousBytes - mStats.getAvailableBytes());
-                    if (bytesDelta > mMinimumThresholdBytes) {
+                    long bytesDeltaThreshold;
+                    synchronized (mLock) {
+                        if (mStats.getAvailableBytes() >  mTotalBytes
+                                * mStorageThresholdPercentHigh / 100) {
+                            bytesDeltaThreshold = mTotalBytes
+                                    * MINIMUM_CHANGE_DELTA_PERCENT_HIGH / 100;
+                        } else {
+                            bytesDeltaThreshold = mTotalBytes
+                                    * MINIMUM_CHANGE_DELTA_PERCENT_LOW / 100;
+                        }
+                    }
+                    if (bytesDelta > bytesDeltaThreshold) {
                         mPreviousBytes = mStats.getAvailableBytes();
                         recalculateQuotas(getInitializedStrategy());
                         notifySignificantDelta();
                     }
-                    sendEmptyMessageDelayed(MSG_CHECK_STORAGE_DELTA, DELAY_IN_MILLIS);
+                    sendEmptyMessageDelayed(MSG_CHECK_STORAGE_DELTA, DELAY_CHECK_STORAGE_DELTA);
                     break;
                 }
                 case MSG_LOAD_CACHED_QUOTAS_FROM_FILE: {
@@ -583,10 +661,22 @@ public class StorageStatsService extends IStorageStatsManager.Stub {
 
                     // If errors occurred getting the quotas from disk, let's re-calc them.
                     if (mPreviousBytes < 0) {
+                        mStats.restat(Environment.getDataDirectory().getAbsolutePath());
                         mPreviousBytes = mStats.getAvailableBytes();
                         recalculateQuotas(strategy);
                     }
-                    sendEmptyMessageDelayed(MSG_CHECK_STORAGE_DELTA, DELAY_IN_MILLIS);
+                    sendEmptyMessageDelayed(MSG_CHECK_STORAGE_DELTA, DELAY_CHECK_STORAGE_DELTA);
+                    sendEmptyMessageDelayed(MSG_RECALCULATE_QUOTAS, DELAY_RECALCULATE_QUOTAS);
+                    break;
+                }
+                case MSG_RECALCULATE_QUOTAS: {
+                    recalculateQuotas(getInitializedStrategy());
+                    sendEmptyMessageDelayed(MSG_RECALCULATE_QUOTAS, DELAY_RECALCULATE_QUOTAS);
+                    break;
+                }
+                case MSG_PACKAGE_REMOVED: {
+                    // recalculate quotas when package is removed
+                    recalculateQuotas(getInitializedStrategy());
                     break;
                 }
                 default:

@@ -29,13 +29,46 @@ import android.bluetooth.BluetoothProfile;
 import android.content.Context;
 import android.util.Log;
 
+import androidx.annotation.IntDef;
+import androidx.annotation.NonNull;
+
 import com.android.settingslib.R;
 import com.android.settingslib.Utils;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
 import java.util.List;
 
 public class HearingAidProfile implements LocalBluetoothProfile {
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef({
+            DeviceSide.SIDE_INVALID,
+            DeviceSide.SIDE_LEFT,
+            DeviceSide.SIDE_RIGHT
+    })
+
+    /** Side definition for hearing aids. See {@link BluetoothHearingAid}. */
+    public @interface DeviceSide {
+        int SIDE_INVALID = -1;
+        int SIDE_LEFT = 0;
+        int SIDE_RIGHT = 1;
+    }
+
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef({
+            DeviceMode.MODE_INVALID,
+            DeviceMode.MODE_MONAURAL,
+            DeviceMode.MODE_BINAURAL
+    })
+
+    /** Mode definition for hearing aids. See {@link BluetoothHearingAid}. */
+    public @interface DeviceMode {
+        int MODE_INVALID = -1;
+        int MODE_MONAURAL = 0;
+        int MODE_BINAURAL = 1;
+    }
+
     private static final String TAG = "HearingAidProfile";
     private static boolean V = true;
 
@@ -78,12 +111,13 @@ public class HearingAidProfile implements LocalBluetoothProfile {
 
             // Check current list of CachedDevices to see if any are Hearing Aid devices.
             mDeviceManager.updateHearingAidsDevices();
-            mIsProfileReady=true;
+            mIsProfileReady = true;
             mProfileManager.callServiceConnectedListeners();
         }
 
         public void onServiceDisconnected(int profile) {
-            mIsProfileReady=false;
+            mIsProfileReady = false;
+            mProfileManager.callServiceDisconnectedListeners();
         }
     }
 
@@ -212,6 +246,11 @@ public class HearingAidProfile implements LocalBluetoothProfile {
         return isEnabled;
     }
 
+    /**
+     * Tells remote device to set an absolute volume.
+     *
+     * @param volume Absolute volume to be set on remote
+     */
     public void setVolume(int volume) {
         if (mService == null) {
             return;
@@ -219,11 +258,51 @@ public class HearingAidProfile implements LocalBluetoothProfile {
         mService.setVolume(volume);
     }
 
+    /**
+     * Gets the HiSyncId (unique hearing aid device identifier) of the device.
+     *
+     * @param device Bluetooth device
+     * @return the HiSyncId of the device
+     */
     public long getHiSyncId(BluetoothDevice device) {
         if (mService == null || device == null) {
             return BluetoothHearingAid.HI_SYNC_ID_INVALID;
         }
         return mService.getHiSyncId(device);
+    }
+
+    /**
+     * Gets the side of the device.
+     *
+     * @param device Bluetooth device.
+     * @return side of the device. See {@link DeviceSide}.
+     */
+    @DeviceSide
+    public int getDeviceSide(@NonNull BluetoothDevice device) {
+        final int defaultValue = DeviceSide.SIDE_INVALID;
+        if (mService == null) {
+            Log.w(TAG, "Proxy not attached to HearingAidService");
+            return defaultValue;
+        }
+
+        return mService.getDeviceSide(device);
+    }
+
+    /**
+     * Gets the mode of the device.
+     *
+     * @param device Bluetooth device
+     * @return mode of the device. See {@link DeviceMode}.
+     */
+    @DeviceMode
+    public int getDeviceMode(@NonNull BluetoothDevice device) {
+        final int defaultValue = DeviceMode.MODE_INVALID;
+        if (mService == null) {
+            Log.w(TAG, "Proxy not attached to HearingAidService");
+            return defaultValue;
+        }
+
+        return mService.getDeviceMode(device);
     }
 
     public String toString() {

@@ -15,22 +15,19 @@
  */
 package com.android.server.hdmi;
 
+import static com.android.server.SystemService.PHASE_SYSTEM_SERVICES_READY;
 import static com.android.server.hdmi.HdmiControlService.INITIATED_BY_ENABLE_CEC;
 
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.when;
 
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.hardware.hdmi.HdmiControlManager;
+import android.hardware.hdmi.IHdmiControlCallback;
 import android.hardware.tv.cec.V1_0.SendMessageResult;
-import android.media.AudioManager;
-import android.os.Handler;
-import android.os.IPowerManager;
-import android.os.IThermalService;
 import android.os.Looper;
-import android.os.PowerManager;
 import android.os.test.TestLooper;
 import android.platform.test.annotations.Presubmit;
 
@@ -41,10 +38,10 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
-import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.util.ArrayList;
+import java.util.Collections;
 
 /** Tests for {@link ArcTerminationActionFromAvr} */
 @SmallTest
@@ -54,6 +51,8 @@ public class ArcTerminationActionFromAvrTest {
 
     private Context mContextSpy;
     private HdmiCecLocalDeviceAudioSystem mHdmiCecLocalDeviceAudioSystem;
+    private FakePowerManagerWrapper mPowerManager;
+    private TestCallback mCallback;
     private ArcTerminationActionFromAvr mAction;
 
     private FakeNativeWrapper mNativeWrapper;
@@ -61,41 +60,18 @@ public class ArcTerminationActionFromAvrTest {
     private TestLooper mTestLooper = new TestLooper();
     private ArrayList<HdmiCecLocalDevice> mLocalDevices = new ArrayList<>();
 
-    @Mock private IPowerManager mIPowerManagerMock;
-    @Mock private IThermalService mIThermalServiceMock;
-    @Mock private AudioManager mAudioManager;
-
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
 
         mContextSpy = spy(new ContextWrapper(InstrumentationRegistry.getTargetContext()));
 
-        when(mContextSpy.getSystemService(Context.POWER_SERVICE)).thenAnswer(i ->
-                new PowerManager(mContextSpy, mIPowerManagerMock,
-                mIThermalServiceMock, new Handler(mTestLooper.getLooper())));
-        when(mContextSpy.getSystemService(PowerManager.class)).thenAnswer(i ->
-                new PowerManager(mContextSpy, mIPowerManagerMock,
-                mIThermalServiceMock, new Handler(mTestLooper.getLooper())));
-        when(mIPowerManagerMock.isInteractive()).thenReturn(true);
+        FakeAudioFramework audioFramework = new FakeAudioFramework();
 
         HdmiControlService hdmiControlService =
-                new HdmiControlService(mContextSpy) {
-                    @Override
-                    void wakeUp() {
-                    }
-
-                    @Override
-                    protected PowerManager getPowerManager() {
-                        return new PowerManager(mContextSpy, mIPowerManagerMock,
-                                mIThermalServiceMock, new Handler(mTestLooper.getLooper()));
-                    }
-
-                    @Override
-                    AudioManager getAudioManager() {
-                        return mAudioManager;
-                    }
-
+                new HdmiControlService(mContextSpy, Collections.emptyList(),
+                        audioFramework.getAudioManager(),
+                        audioFramework.getAudioDeviceVolumeManager()) {
                     @Override
                     boolean isPowerStandby() {
                         return false;
@@ -119,26 +95,44 @@ public class ArcTerminationActionFromAvrTest {
         Looper looper = mTestLooper.getLooper();
         hdmiControlService.setIoLooper(looper);
         hdmiControlService.setHdmiCecConfig(new FakeHdmiCecConfig(mContextSpy));
+        hdmiControlService.setDeviceConfig(new FakeDeviceConfigWrapper());
         mNativeWrapper = new FakeNativeWrapper();
         HdmiCecController hdmiCecController = HdmiCecController.createWithNativeWrapper(
                 hdmiControlService, mNativeWrapper, hdmiControlService.getAtomWriter());
         hdmiControlService.setCecController(hdmiCecController);
         hdmiControlService.setHdmiMhlController(HdmiMhlControllerStub.create(hdmiControlService));
-        hdmiControlService.setMessageValidator(new HdmiCecMessageValidator(hdmiControlService));
         hdmiControlService.initService();
-
+        mPowerManager = new FakePowerManagerWrapper(mContextSpy);
+        hdmiControlService.setPowerManager(mPowerManager);
         mHdmiCecLocalDeviceAudioSystem = new HdmiCecLocalDeviceAudioSystem(hdmiControlService) {
             @Override
             protected void setPreferredAddress(int addr) {
             }
         };
         mHdmiCecLocalDeviceAudioSystem.init();
-        mAction = new ArcTerminationActionFromAvr(mHdmiCecLocalDeviceAudioSystem);
+        mCallback = new TestCallback();
+        mAction = new ArcTerminationActionFromAvr(mHdmiCecLocalDeviceAudioSystem,
+                mCallback);
 
         mLocalDevices.add(mHdmiCecLocalDeviceAudioSystem);
+        hdmiControlService.onBootPhase(PHASE_SYSTEM_SERVICES_READY);
         hdmiControlService.allocateLogicalAddress(mLocalDevices, INITIATED_BY_ENABLE_CEC);
         mHdmiCecLocalDeviceAudioSystem.setArcStatus(true);
         mTestLooper.dispatchAll();
+    }
+
+    private static class TestCallback extends IHdmiControlCallback.Stub {
+        private final ArrayList<Integer> mCallbackResult = new ArrayList<Integer>();
+
+        @Override
+        public void onComplete(int result) {
+            mCallbackResult.add(result);
+        }
+
+        private int getResult() {
+            assertThat(mCallbackResult.size()).isEqualTo(1);
+            return mCallbackResult.get(0);
+        }
     }
 
     @Test
@@ -153,6 +147,7 @@ public class ArcTerminationActionFromAvrTest {
         assertThat(mNativeWrapper.getResultMessages()).contains(terminateArc);
 
         assertThat(mHdmiCecLocalDeviceAudioSystem.isArcEnabled()).isFalse();
+        assertThat(mCallback.getResult()).isEqualTo(HdmiControlManager.RESULT_TARGET_NOT_AVAILABLE);
     }
 
     @Test
@@ -163,8 +158,13 @@ public class ArcTerminationActionFromAvrTest {
                 Constants.ADDR_AUDIO_SYSTEM, Constants.ADDR_TV);
 
         assertThat(mNativeWrapper.getResultMessages()).contains(terminateArc);
+        mTestLooper.dispatchAll();
 
-        assertThat(mHdmiCecLocalDeviceAudioSystem.isArcEnabled()).isTrue();
+        mTestLooper.moveTimeForward(ArcTerminationActionFromAvr.TIMEOUT_MS);
+        mTestLooper.dispatchAll();
+
+        assertThat(mHdmiCecLocalDeviceAudioSystem.isArcEnabled()).isFalse();
+        assertThat(mCallback.getResult()).isEqualTo(HdmiControlManager.RESULT_TIMEOUT);
     }
 
     @Test
@@ -183,5 +183,28 @@ public class ArcTerminationActionFromAvrTest {
         mTestLooper.dispatchAll();
 
         assertThat(mHdmiCecLocalDeviceAudioSystem.isArcEnabled()).isFalse();
+        assertThat(mCallback.getResult()).isEqualTo(HdmiControlManager.RESULT_SUCCESS);
+    }
+
+    @Test
+    public void testReportArcTerminated_featureAbort() {
+        mHdmiCecLocalDeviceAudioSystem.addAndStartAction(mAction);
+        mTestLooper.dispatchAll();
+        HdmiCecMessage terminateArc = HdmiCecMessageBuilder.buildTerminateArc(
+                Constants.ADDR_AUDIO_SYSTEM, Constants.ADDR_TV);
+
+        assertThat(mNativeWrapper.getResultMessages()).contains(terminateArc);
+
+        HdmiCecMessage arcTerminatedResponse = HdmiCecMessageBuilder.buildFeatureAbortCommand(
+                Constants.ADDR_TV,
+                Constants.ADDR_AUDIO_SYSTEM,
+                Constants.MESSAGE_TERMINATE_ARC,
+                Constants.ABORT_REFUSED);
+
+        mNativeWrapper.onCecMessage(arcTerminatedResponse);
+        mTestLooper.dispatchAll();
+
+        assertThat(mHdmiCecLocalDeviceAudioSystem.isArcEnabled()).isFalse();
+        assertThat(mCallback.getResult()).isEqualTo(HdmiControlManager.RESULT_TARGET_NOT_AVAILABLE);
     }
 }

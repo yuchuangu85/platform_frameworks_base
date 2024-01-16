@@ -19,6 +19,8 @@ package android.security.identity;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
+import android.content.pm.FeatureInfo;
+import android.content.pm.PackageManager;
 import android.os.ServiceManager;
 
 class CredstoreIdentityCredentialStore extends IdentityCredentialStore {
@@ -27,10 +29,28 @@ class CredstoreIdentityCredentialStore extends IdentityCredentialStore {
 
     private Context mContext = null;
     private ICredentialStore mStore = null;
+    private int mFeatureVersion;
+
+    static int getFeatureVersion(@NonNull Context context) {
+        PackageManager pm = context.getPackageManager();
+        if (pm.hasSystemFeature(PackageManager.FEATURE_IDENTITY_CREDENTIAL_HARDWARE)) {
+            FeatureInfo[] infos = pm.getSystemAvailableFeatures();
+            for (int n = 0; n < infos.length; n++) {
+                FeatureInfo info = infos[n];
+                if (info.name.equals(PackageManager.FEATURE_IDENTITY_CREDENTIAL_HARDWARE)) {
+                    return info.version;
+                }
+            }
+        }
+        // Use of the system feature is not required since Android 12. So for Android 11
+        // return 202009 which is the feature version shipped with Android 11.
+        return 202009;
+    }
 
     private CredstoreIdentityCredentialStore(@NonNull Context context, ICredentialStore store) {
         mContext = context;
         mStore = store;
+        mFeatureVersion = getFeatureVersion(mContext);
     }
 
     static CredstoreIdentityCredentialStore getInstanceForType(@NonNull Context context,
@@ -102,8 +122,7 @@ class CredstoreIdentityCredentialStore extends IdentityCredentialStore {
             @NonNull String docType) throws AlreadyPersonalizedException,
             DocTypeNotSupportedException {
         try {
-            IWritableCredential wc;
-            wc = mStore.createCredential(credentialName, docType);
+            IWritableCredential wc = mStore.createCredential(credentialName, docType);
             return new CredstoreWritableIdentityCredential(mContext, credentialName, docType, wc);
         } catch (android.os.RemoteException e) {
             throw new RuntimeException("Unexpected RemoteException ", e);
@@ -126,8 +145,7 @@ class CredstoreIdentityCredentialStore extends IdentityCredentialStore {
             ICredential credstoreCredential;
             credstoreCredential = mStore.getCredentialByName(credentialName, cipherSuite);
             return new CredstoreIdentityCredential(mContext, credentialName, cipherSuite,
-                    credstoreCredential,
-                    null);
+                    credstoreCredential, null, mFeatureVersion);
         } catch (android.os.RemoteException e) {
             throw new RuntimeException("Unexpected RemoteException ", e);
         } catch (android.os.ServiceSpecificException e) {
@@ -169,7 +187,8 @@ class CredstoreIdentityCredentialStore extends IdentityCredentialStore {
             throws CipherSuiteNotSupportedException {
         try {
             ISession credstoreSession = mStore.createPresentationSession(cipherSuite);
-            return new CredstorePresentationSession(mContext, cipherSuite, this, credstoreSession);
+            return new CredstorePresentationSession(mContext, cipherSuite, this, credstoreSession,
+                                                    mFeatureVersion);
         } catch (android.os.RemoteException e) {
             throw new RuntimeException("Unexpected RemoteException ", e);
         } catch (android.os.ServiceSpecificException e) {

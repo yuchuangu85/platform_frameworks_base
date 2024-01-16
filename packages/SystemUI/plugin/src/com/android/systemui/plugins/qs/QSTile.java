@@ -16,9 +16,11 @@ package com.android.systemui.plugins.qs;
 
 import android.annotation.NonNull;
 import android.content.Context;
+import android.content.res.Resources;
 import android.graphics.drawable.Drawable;
 import android.metrics.LogMaker;
 import android.service.quicksettings.Tile;
+import android.text.TextUtils;
 import android.view.View;
 
 import androidx.annotation.Nullable;
@@ -35,14 +37,12 @@ import java.util.function.Supplier;
 
 @ProvidesInterface(version = QSTile.VERSION)
 @DependsOn(target = QSIconView.class)
-@DependsOn(target = DetailAdapter.class)
 @DependsOn(target = Callback.class)
 @DependsOn(target = Icon.class)
 @DependsOn(target = State.class)
 public interface QSTile {
-    int VERSION = 1;
+    int VERSION = 4;
 
-    DetailAdapter getDetailAdapter();
     String getTileSpec();
 
     boolean isAvailable();
@@ -79,6 +79,12 @@ public interface QSTile {
     void longClick(@Nullable View view);
 
     void userSwitch(int currentUser);
+
+    /**
+     * @deprecated not needed as {@link com.android.internal.logging.UiEvent} will use
+     * {@link #getMetricsSpec}
+     */
+    @Deprecated
     int getMetricsCategory();
 
     void setListening(Object client, boolean listening);
@@ -110,14 +116,16 @@ public interface QSTile {
         return false;
     }
 
+    /**
+     * Return whether the tile is set to its listening state and therefore receiving updates and
+     * refreshes from controllers
+     */
+    boolean isListening();
+
     @ProvidesInterface(version = Callback.VERSION)
-    public interface Callback {
-        public static final int VERSION = 1;
+    interface Callback {
+        static final int VERSION = 2;
         void onStateChanged(State state);
-        void onShowDetail(boolean show);
-        void onToggleStateChanged(boolean state);
-        void onScanStateChanged(boolean state);
-        void onAnnouncementRequested(CharSequence announcement);
     }
 
     @ProvidesInterface(version = Icon.VERSION)
@@ -154,9 +162,9 @@ public interface QSTile {
         public Supplier<Icon> iconSupplier;
         public int state = DEFAULT_STATE;
         public CharSequence label;
-        public CharSequence secondaryLabel;
+        @Nullable public CharSequence secondaryLabel;
         public CharSequence contentDescription;
-        public CharSequence stateDescription;
+        @Nullable public CharSequence stateDescription;
         public CharSequence dualLabelContentDescription;
         public boolean disabledByPolicy;
         public boolean dualTarget = false;
@@ -164,9 +172,29 @@ public interface QSTile {
         public String expandedAccessibilityClassName;
         public SlashState slash;
         public boolean handlesLongClick = true;
-        public boolean showRippleEffect = true;
+        @Nullable
         public Drawable sideViewCustomDrawable;
         public String spec;
+
+        /** Get the state text. */
+        public String getStateText(int arrayResId, Resources resources) {
+            if (state == Tile.STATE_UNAVAILABLE || this instanceof QSTile.BooleanState) {
+                String[] array = resources.getStringArray(arrayResId);
+                return array[state];
+            } else {
+                return "";
+            }
+        }
+
+        /** Get the text for secondaryLabel. */
+        public String getSecondaryLabel(String stateText) {
+            // Use a local reference as the value might change from other threads
+            CharSequence localSecondaryLabel = secondaryLabel;
+            if (TextUtils.isEmpty(localSecondaryLabel)) {
+                return stateText;
+            }
+            return localSecondaryLabel.toString();
+        }
 
         public boolean copyTo(State other) {
             if (other == null) throw new IllegalArgumentException();
@@ -188,7 +216,6 @@ public interface QSTile {
                     || !Objects.equals(other.dualTarget, dualTarget)
                     || !Objects.equals(other.slash, slash)
                     || !Objects.equals(other.handlesLongClick, handlesLongClick)
-                    || !Objects.equals(other.showRippleEffect, showRippleEffect)
                     || !Objects.equals(other.sideViewCustomDrawable, sideViewCustomDrawable);
             other.spec = spec;
             other.icon = icon;
@@ -205,7 +232,6 @@ public interface QSTile {
             other.isTransient = isTransient;
             other.slash = slash != null ? slash.copy() : null;
             other.handlesLongClick = handlesLongClick;
-            other.showRippleEffect = showRippleEffect;
             other.sideViewCustomDrawable = sideViewCustomDrawable;
             return changed;
         }

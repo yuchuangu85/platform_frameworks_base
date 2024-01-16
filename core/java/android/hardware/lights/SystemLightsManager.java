@@ -59,7 +59,6 @@ public final class SystemLightsManager extends LightsManager {
      */
     @VisibleForTesting
     public SystemLightsManager(@NonNull Context context, @NonNull ILightsManager service) {
-        super(context);
         mService = Preconditions.checkNotNull(service);
     }
 
@@ -145,7 +144,7 @@ public final class SystemLightsManager extends LightsManager {
          */
         @RequiresPermission(Manifest.permission.CONTROL_DEVICE_LIGHTS)
         private SystemLightsSession() {
-            mCloseGuard.open("close");
+            mCloseGuard.open("SystemLightsSession.close");
         }
 
         /**

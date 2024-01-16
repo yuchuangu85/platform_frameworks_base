@@ -18,7 +18,13 @@ package android.view;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UiThread;
+import android.graphics.Rect;
+import android.graphics.Region;
 import android.hardware.HardwareBuffer;
+import android.window.SurfaceSyncGroup;
+
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
 
 /**
  * Provides an interface to the root-Surface of a View Hierarchy or Window. This
@@ -123,5 +129,81 @@ public interface AttachedSurfaceControl {
      */
     default void removeOnBufferTransformHintChangedListener(
             @NonNull OnBufferTransformHintChangedListener listener) {
+    }
+
+    /**
+     * Sets the touchable region for this SurfaceControl, expressed in surface local
+     * coordinates. By default the touchable region is the entire Layer, indicating
+     * that if the layer is otherwise eligible to receive touch it receives touch
+     * on the entire surface. Setting the touchable region allows the SurfaceControl
+     * to receive touch in some regions, while allowing for pass-through in others.
+     *
+     * @param r The region to use or null to use the entire Layer bounds
+     */
+    default void setTouchableRegion(@Nullable Region r) {
+    }
+
+    /**
+     * Returns a SurfaceSyncGroup that can be used to sync {@link AttachedSurfaceControl} in a
+     * {@link SurfaceSyncGroup}
+     *
+     * @hide
+     */
+    @Nullable
+    default SurfaceSyncGroup getOrCreateSurfaceSyncGroup() {
+        return null;
+    }
+
+    /**
+     * Set a crop region on all children parented to the layer represented by this
+     * AttachedSurfaceControl. This includes SurfaceView, and an example usage may
+     * be to ensure that SurfaceView with {@link android.view.SurfaceView#setZOrderOnTop}
+     * are cropped to a region not including the app bar.
+     * <p>
+     * This cropped is expressed in terms of insets in window-space. Negative insets
+     * are considered invalid and will produce an exception. Insets of zero will produce
+     * the same result as if this function had never been called.
+     *
+     * @param insets The insets in each direction by which to bound the children
+     *               expressed in window-space.
+     * @throws IllegalArgumentException If negative insets are provided.
+     */
+    default void setChildBoundingInsets(@NonNull Rect insets) {
+    }
+
+    /**
+     * Add a trusted presentation listener on the SurfaceControl associated with this window.
+     *
+     * @param t          Transaction that the trusted presentation listener is added on. This should
+     *                   be applied by the caller.
+     * @param thresholds The {@link SurfaceControl.TrustedPresentationThresholds} that will specify
+     *                   when the to invoke the callback.
+     * @param executor   The {@link Executor} where the callback will be invoked on.
+     * @param listener   The {@link Consumer} that will receive the callbacks when entered or
+     *                   exited the threshold.
+     *
+     * @see SurfaceControl.Transaction#setTrustedPresentationCallback(SurfaceControl,
+     * SurfaceControl.TrustedPresentationThresholds, Executor, Consumer)
+     *
+     * @hide b/287076178 un-hide with API bump
+     */
+    default void addTrustedPresentationCallback(@NonNull SurfaceControl.Transaction t,
+            @NonNull SurfaceControl.TrustedPresentationThresholds thresholds,
+            @NonNull Executor executor, @NonNull Consumer<Boolean> listener) {
+    }
+
+    /**
+     * Remove a trusted presentation listener on the SurfaceControl associated with this window.
+     *
+     * @param t          Transaction that the trusted presentation listener removed on. This should
+     *                   be applied by the caller.
+     * @param listener   The {@link Consumer} that was previously registered with
+     *                   addTrustedPresentationCallback that should be removed.
+     *
+     * @see SurfaceControl.Transaction#clearTrustedPresentationCallback(SurfaceControl)
+     * @hide b/287076178 un-hide with API bump
+     */
+    default void removeTrustedPresentationCallback(@NonNull SurfaceControl.Transaction t,
+            @NonNull Consumer<Boolean> listener) {
     }
 }

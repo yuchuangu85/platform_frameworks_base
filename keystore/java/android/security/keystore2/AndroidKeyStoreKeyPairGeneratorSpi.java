@@ -16,9 +16,10 @@
 
 package android.security.keystore2;
 
+import static android.security.keystore2.AndroidKeyStoreCipherSpiBase.DEFAULT_MGF1_DIGEST;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.app.ActivityThread;
 import android.content.Context;
 import android.hardware.security.keymint.EcCurve;
 import android.hardware.security.keymint.KeyParameter;
@@ -26,9 +27,8 @@ import android.hardware.security.keymint.KeyPurpose;
 import android.hardware.security.keymint.SecurityLevel;
 import android.hardware.security.keymint.Tag;
 import android.os.Build;
-import android.os.RemoteException;
-import android.security.GenerateRkpKey;
-import android.security.GenerateRkpKeyException;
+import android.os.StrictMode;
+import android.security.Flags;
 import android.security.KeyPairGeneratorSpec;
 import android.security.KeyStore2;
 import android.security.KeyStoreException;
@@ -50,6 +50,7 @@ import android.system.keystore2.KeyEntryResponse;
 import android.system.keystore2.KeyMetadata;
 import android.system.keystore2.ResponseCode;
 import android.telephony.TelephonyManager;
+import android.text.TextUtils;
 import android.util.ArraySet;
 import android.util.Log;
 
@@ -188,6 +189,7 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
     private int[] mKeymasterEncryptionPaddings;
     private int[] mKeymasterSignaturePaddings;
     private int[] mKeymasterDigests;
+    private int[] mKeymasterMgf1Digests;
 
     private Long mRSAPublicExponent;
 
@@ -322,6 +324,21 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                     mKeymasterDigests = KeyProperties.Digest.allToKeymaster(spec.getDigests());
                 } else {
                     mKeymasterDigests = EmptyArray.INT;
+                }
+                if (spec.isMgf1DigestsSpecified()) {
+                    // User-specified digests: Add all of them and do _not_ add the SHA-1
+                    // digest by default (stick to what the user provided).
+                    Set<String> mgfDigests = spec.getMgf1Digests();
+                    mKeymasterMgf1Digests = new int[mgfDigests.size()];
+                    int offset = 0;
+                    for (String digest : mgfDigests) {
+                        mKeymasterMgf1Digests[offset] = KeyProperties.Digest.toKeymaster(digest);
+                        offset++;
+                    }
+                } else {
+                    // No user-specified digests: Add the SHA-1 default.
+                    mKeymasterMgf1Digests = new int[]{
+                            KeyProperties.Digest.toKeymaster(DEFAULT_MGF1_DIGEST)};
                 }
 
                 // Check that user authentication related parameters are acceptable. This method
@@ -544,6 +561,7 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
         mKeymasterEncryptionPaddings = null;
         mKeymasterSignaturePaddings = null;
         mKeymasterDigests = null;
+        mKeymasterMgf1Digests = null;
         mKeySizeBits = 0;
         mSpec = null;
         mRSAPublicExponent = null;
@@ -618,18 +636,7 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
 
     @Override
     public KeyPair generateKeyPair() {
-        try {
-            return generateKeyPairHelper();
-        } catch (GenerateRkpKeyException e) {
-            try {
-                return generateKeyPairHelper();
-            } catch (GenerateRkpKeyException f) {
-                throw new ProviderException("Failed to provision new attestation keys.");
-            }
-        }
-    }
-
-    private KeyPair generateKeyPairHelper() throws GenerateRkpKeyException {
+        StrictMode.noteSlowCall("generateKeyPair");
         if (mKeyStore == null || mSpec == null) {
             throw new IllegalStateException("Not initialized");
         }
@@ -667,32 +674,12 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
             AndroidKeyStorePublicKey publicKey =
                     AndroidKeyStoreProvider.makeAndroidKeyStorePublicKeyFromKeyEntryResponse(
                             descriptor, metadata, iSecurityLevel, mKeymasterAlgorithm);
-            GenerateRkpKey keyGen = new GenerateRkpKey(ActivityThread
-                    .currentApplication());
-            try {
-                if (mSpec.getAttestationChallenge() != null) {
-                    keyGen.notifyKeyGenerated(securityLevel);
-                }
-            } catch (RemoteException e) {
-                // This is not really an error state, and necessarily does not apply to non RKP
-                // systems or hybrid systems where RKP is not currently turned on.
-                Log.d(TAG, "Couldn't connect to the RemoteProvisioner backend.", e);
-            }
             success = true;
             return new KeyPair(publicKey, publicKey.getPrivateKey());
-        } catch (android.security.KeyStoreException e) {
+        } catch (KeyStoreException e) {
             switch (e.getErrorCode()) {
                 case KeymasterDefs.KM_ERROR_HARDWARE_TYPE_UNAVAILABLE:
                     throw new StrongBoxUnavailableException("Failed to generated key pair.", e);
-                case ResponseCode.OUT_OF_KEYS:
-                    GenerateRkpKey keyGen = new GenerateRkpKey(ActivityThread
-                            .currentApplication());
-                    try {
-                        keyGen.notifyEmpty(securityLevel);
-                    } catch (RemoteException f) {
-                        throw new ProviderException("Failed to talk to RemoteProvisioner", f);
-                    }
-                    throw new GenerateRkpKeyException();
                 default:
                     ProviderException p = new ProviderException("Failed to generate key pair.", e);
                     if ((mSpec.getPurposes() & KeyProperties.PURPOSE_WRAP_KEY) != 0) {
@@ -728,25 +715,40 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
             ));
 
             if (mSpec.isDevicePropertiesAttestationIncluded()) {
+                final String platformReportedBrand =
+                        isPropertyEmptyOrUnknown(Build.BRAND_FOR_ATTESTATION)
+                        ? Build.BRAND : Build.BRAND_FOR_ATTESTATION;
                 params.add(KeyStore2ParameterUtils.makeBytes(
                         KeymasterDefs.KM_TAG_ATTESTATION_ID_BRAND,
-                        Build.BRAND.getBytes(StandardCharsets.UTF_8)
+                        platformReportedBrand.getBytes(StandardCharsets.UTF_8)
                 ));
+                final String platformReportedDevice =
+                        isPropertyEmptyOrUnknown(Build.DEVICE_FOR_ATTESTATION)
+                                ? Build.DEVICE : Build.DEVICE_FOR_ATTESTATION;
                 params.add(KeyStore2ParameterUtils.makeBytes(
                         KeymasterDefs.KM_TAG_ATTESTATION_ID_DEVICE,
-                        Build.DEVICE.getBytes(StandardCharsets.UTF_8)
+                        platformReportedDevice.getBytes(StandardCharsets.UTF_8)
                 ));
+                final String platformReportedProduct =
+                        isPropertyEmptyOrUnknown(Build.PRODUCT_FOR_ATTESTATION)
+                        ? Build.PRODUCT : Build.PRODUCT_FOR_ATTESTATION;
                 params.add(KeyStore2ParameterUtils.makeBytes(
                         KeymasterDefs.KM_TAG_ATTESTATION_ID_PRODUCT,
-                        Build.PRODUCT.getBytes(StandardCharsets.UTF_8)
+                        platformReportedProduct.getBytes(StandardCharsets.UTF_8)
                 ));
+                final String platformReportedManufacturer =
+                        isPropertyEmptyOrUnknown(Build.MANUFACTURER_FOR_ATTESTATION)
+                                ? Build.MANUFACTURER : Build.MANUFACTURER_FOR_ATTESTATION;
                 params.add(KeyStore2ParameterUtils.makeBytes(
                         KeymasterDefs.KM_TAG_ATTESTATION_ID_MANUFACTURER,
-                        Build.MANUFACTURER.getBytes(StandardCharsets.UTF_8)
+                        platformReportedManufacturer.getBytes(StandardCharsets.UTF_8)
                 ));
+                final String platformReportedModel =
+                        isPropertyEmptyOrUnknown(Build.MODEL_FOR_ATTESTATION)
+                        ? Build.MODEL : Build.MODEL_FOR_ATTESTATION;
                 params.add(KeyStore2ParameterUtils.makeBytes(
                         KeymasterDefs.KM_TAG_ATTESTATION_ID_MODEL,
-                        Build.MODEL.getBytes(StandardCharsets.UTF_8)
+                        platformReportedModel.getBytes(StandardCharsets.UTF_8)
                 ));
             }
 
@@ -785,6 +787,13 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
                                 KeymasterDefs.KM_TAG_ATTESTATION_ID_IMEI,
                                 imei.getBytes(StandardCharsets.UTF_8)
                         ));
+                        final String secondImei = telephonyService.getImei(1);
+                        if (!TextUtils.isEmpty(secondImei)) {
+                            params.add(KeyStore2ParameterUtils.makeBytes(
+                                    KeymasterDefs.KM_TAG_ATTESTATION_ID_SECOND_IMEI,
+                                    secondImei.getBytes(StandardCharsets.UTF_8)
+                            ));
+                        }
                         break;
                     }
                     case AttestationUtils.ID_TYPE_MEID: {
@@ -839,6 +848,29 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
             params.add(KeyStore2ParameterUtils.makeEnum(
                     KeymasterDefs.KM_TAG_PADDING, padding
             ));
+            if (padding == KeymasterDefs.KM_PAD_RSA_OAEP) {
+                ArrayUtils.forEach(mKeymasterMgf1Digests, (mgf1Digest) -> {
+                    params.add(KeyStore2ParameterUtils.makeEnum(
+                            KeymasterDefs.KM_TAG_RSA_OAEP_MGF_DIGEST, mgf1Digest
+                    ));
+                });
+
+                /* If the MGF1 Digest setter is not set, fall back to the previous behaviour:
+                 * Add, as MGF1 Digest function, all the primary digests.
+                 * Avoid adding the default MGF1 digest as it will have been included in the
+                 * mKeymasterMgf1Digests field.
+                 */
+                if (!getMgf1DigestSetterFlag()) {
+                    final int defaultMgf1Digest = KeyProperties.Digest.toKeymaster(
+                            DEFAULT_MGF1_DIGEST);
+                    ArrayUtils.forEach(mKeymasterDigests, (digest) -> {
+                        if (digest != defaultMgf1Digest) {
+                            params.add(KeyStore2ParameterUtils.makeEnum(
+                                    KeymasterDefs.KM_TAG_RSA_OAEP_MGF_DIGEST, digest));
+                        }
+                    });
+                }
+            }
         });
         ArrayUtils.forEach(mKeymasterSignaturePaddings, (padding) -> {
             params.add(KeyStore2ParameterUtils.makeEnum(
@@ -912,6 +944,16 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
 
         return params;
     }
+
+    private static boolean getMgf1DigestSetterFlag() {
+        try {
+            return Flags.mgf1DigestSetter();
+        } catch (SecurityException e) {
+            Log.w(TAG, "Cannot read MGF1 Digest setter flag value", e);
+            return false;
+        }
+    }
+
 
     private void addAlgorithmSpecificParameters(List<KeyParameter> params) {
         switch (mKeymasterAlgorithm) {
@@ -1119,5 +1161,9 @@ public abstract class AndroidKeyStoreKeyPairGeneratorSpi extends KeyPairGenerato
         Set<Integer> result = new HashSet<Integer>(supportedKeymasterSignatureDigests);
         result.retainAll(authorizedKeymasterKeyDigests);
         return result;
+    }
+
+    private boolean isPropertyEmptyOrUnknown(String property) {
+        return TextUtils.isEmpty(property) || property.equals(Build.UNKNOWN);
     }
 }

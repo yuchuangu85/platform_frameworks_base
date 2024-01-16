@@ -18,9 +18,12 @@ package com.android.server.am;
 
 import static com.android.server.am.ActivityManagerDebugConfig.TAG_AM;
 
+import android.annotation.Nullable;
 import android.app.IServiceConnection;
 import android.app.PendingIntent;
+import android.content.ComponentName;
 import android.content.Context;
+import android.os.SystemClock;
 import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
 import android.util.proto.ProtoUtils;
@@ -38,7 +41,7 @@ final class ConnectionRecord {
     final AppBindRecord binding;    // The application/service binding.
     final ActivityServiceConnectionsHolder<ConnectionRecord> activity;  // If non-null, the owning activity.
     final IServiceConnection conn;  // The client connection.
-    final int flags;                // Binding options.
+    private final long flags;                // Binding options.
     final int clientLabel;          // String resource labeling this client.
     final PendingIntent clientIntent; // How to launch the client.
     final int clientUid;            // The identity of this connection's client
@@ -48,6 +51,12 @@ final class ConnectionRecord {
     String stringName;              // Caching of toString.
     boolean serviceDead;            // Well is it?
     private Object mProcStatsLock;  // Internal lock for accessing AssociationState
+    /**
+     * If the connection was made against an alias, then the alias conponent name. Otherwise, null.
+     * We return this component name to the client.
+     */
+    @Nullable
+    final ComponentName aliasComponent;
 
     // Please keep the following two enum list synced.
     private static final int[] BIND_ORIG_ENUMS = new int[] {
@@ -63,11 +72,12 @@ final class ConnectionRecord {
             Context.BIND_FOREGROUND_SERVICE_WHILE_AWAKE,
             Context.BIND_FOREGROUND_SERVICE,
             Context.BIND_TREAT_LIKE_ACTIVITY,
-            Context.BIND_VISIBLE,
+            Context.BIND_TREAT_LIKE_VISIBLE_FOREGROUND_SERVICE,
             Context.BIND_SHOWING_UI,
             Context.BIND_NOT_VISIBLE,
             Context.BIND_NOT_PERCEPTIBLE,
             Context.BIND_INCLUDE_CAPABILITIES,
+            Context.BIND_ALLOW_ACTIVITY_STARTS,
     };
     private static final int[] BIND_PROTO_ENUMS = new int[] {
             ConnectionRecordProto.AUTO_CREATE,
@@ -87,6 +97,7 @@ final class ConnectionRecord {
             ConnectionRecordProto.NOT_VISIBLE,
             ConnectionRecordProto.NOT_PERCEPTIBLE,
             ConnectionRecordProto.INCLUDE_CAPABILITIES,
+            ConnectionRecordProto.ALLOW_ACTIVITY_STARTS,
     };
 
     void dump(PrintWriter pw, String prefix) {
@@ -95,14 +106,15 @@ final class ConnectionRecord {
             activity.dump(pw, prefix);
         }
         pw.println(prefix + "conn=" + conn.asBinder()
-                + " flags=0x" + Integer.toHexString(flags));
+                + " flags=0x" + Long.toHexString(flags));
     }
 
     ConnectionRecord(AppBindRecord _binding,
             ActivityServiceConnectionsHolder<ConnectionRecord> _activity,
-            IServiceConnection _conn, int _flags,
+            IServiceConnection _conn, long _flags,
             int _clientLabel, PendingIntent _clientIntent,
-            int _clientUid, String _clientProcessName, String _clientPackageName) {
+            int _clientUid, String _clientProcessName, String _clientPackageName,
+            ComponentName _aliasComponent) {
         binding = _binding;
         activity = _activity;
         conn = _conn;
@@ -112,14 +124,27 @@ final class ConnectionRecord {
         clientUid = _clientUid;
         clientProcessName = _clientProcessName;
         clientPackageName = _clientPackageName;
+        aliasComponent = _aliasComponent;
+    }
+
+    public long getFlags() {
+        return flags;
     }
 
     public boolean hasFlag(final int flag) {
+        return (flags & Integer.toUnsignedLong(flag)) != 0;
+    }
+
+    public boolean hasFlag(final long flag) {
         return (flags & flag) != 0;
     }
 
     public boolean notHasFlag(final int flag) {
-        return (flags & flag) == 0;
+        return !hasFlag(flag);
+    }
+
+    public boolean notHasFlag(final long flag) {
+        return !hasFlag(flag);
     }
 
     public void startAssociationIfNeeded() {
@@ -148,10 +173,10 @@ final class ConnectionRecord {
         }
     }
 
-    public void trackProcState(int procState, int seq, long now) {
+    public void trackProcState(int procState, int seq) {
         if (association != null) {
             synchronized (mProcStatsLock) {
-                association.trackProcState(procState, seq, now);
+                association.trackProcState(procState, seq, SystemClock.uptimeMillis());
             }
         }
     }
@@ -175,58 +200,61 @@ final class ConnectionRecord {
         sb.append(" u");
         sb.append(binding.client.userId);
         sb.append(' ');
-        if ((flags&Context.BIND_AUTO_CREATE) != 0) {
+        if (hasFlag(Context.BIND_AUTO_CREATE)) {
             sb.append("CR ");
         }
-        if ((flags&Context.BIND_DEBUG_UNBIND) != 0) {
+        if (hasFlag(Context.BIND_DEBUG_UNBIND)) {
             sb.append("DBG ");
         }
-        if ((flags&Context.BIND_NOT_FOREGROUND) != 0) {
+        if (hasFlag(Context.BIND_NOT_FOREGROUND)) {
             sb.append("!FG ");
         }
-        if ((flags&Context.BIND_IMPORTANT_BACKGROUND) != 0) {
+        if (hasFlag(Context.BIND_IMPORTANT_BACKGROUND)) {
             sb.append("IMPB ");
         }
-        if ((flags&Context.BIND_ABOVE_CLIENT) != 0) {
+        if (hasFlag(Context.BIND_ABOVE_CLIENT)) {
             sb.append("ABCLT ");
         }
-        if ((flags&Context.BIND_ALLOW_OOM_MANAGEMENT) != 0) {
+        if (hasFlag(Context.BIND_ALLOW_OOM_MANAGEMENT)) {
             sb.append("OOM ");
         }
-        if ((flags&Context.BIND_WAIVE_PRIORITY) != 0) {
+        if (hasFlag(Context.BIND_WAIVE_PRIORITY)) {
             sb.append("WPRI ");
         }
-        if ((flags&Context.BIND_IMPORTANT) != 0) {
+        if (hasFlag(Context.BIND_IMPORTANT)) {
             sb.append("IMP ");
         }
-        if ((flags&Context.BIND_ADJUST_WITH_ACTIVITY) != 0) {
+        if (hasFlag(Context.BIND_ADJUST_WITH_ACTIVITY)) {
             sb.append("WACT ");
         }
-        if ((flags&Context.BIND_FOREGROUND_SERVICE_WHILE_AWAKE) != 0) {
+        if (hasFlag(Context.BIND_FOREGROUND_SERVICE_WHILE_AWAKE)) {
             sb.append("FGSA ");
         }
-        if ((flags&Context.BIND_FOREGROUND_SERVICE) != 0) {
+        if (hasFlag(Context.BIND_FOREGROUND_SERVICE)) {
             sb.append("FGS ");
         }
-        if ((flags&Context.BIND_TREAT_LIKE_ACTIVITY) != 0) {
+        if (hasFlag(Context.BIND_TREAT_LIKE_ACTIVITY)) {
             sb.append("LACT ");
         }
-        if ((flags & Context.BIND_SCHEDULE_LIKE_TOP_APP) != 0) {
+        if (hasFlag(Context.BIND_SCHEDULE_LIKE_TOP_APP)) {
             sb.append("SLTA ");
         }
-        if ((flags&Context.BIND_VISIBLE) != 0) {
-            sb.append("VIS ");
+        if (hasFlag(Context.BIND_TREAT_LIKE_VISIBLE_FOREGROUND_SERVICE)) {
+            sb.append("VFGS ");
         }
-        if ((flags&Context.BIND_SHOWING_UI) != 0) {
+        if (hasFlag(Context.BIND_SHOWING_UI)) {
             sb.append("UI ");
         }
-        if ((flags&Context.BIND_NOT_VISIBLE) != 0) {
+        if (hasFlag(Context.BIND_NOT_VISIBLE)) {
             sb.append("!VIS ");
         }
-        if ((flags & Context.BIND_NOT_PERCEPTIBLE) != 0) {
+        if (hasFlag(Context.BIND_NOT_PERCEPTIBLE)) {
             sb.append("!PRCP ");
         }
-        if ((flags & Context.BIND_INCLUDE_CAPABILITIES) != 0) {
+        if (hasFlag(Context.BIND_ALLOW_ACTIVITY_STARTS)) {
+            sb.append("BALF ");
+        }
+        if (hasFlag(Context.BIND_INCLUDE_CAPABILITIES)) {
             sb.append("CAPS ");
         }
         if (serviceDead) {
@@ -235,6 +263,7 @@ final class ConnectionRecord {
         sb.append(binding.service.shortInstanceName);
         sb.append(":@");
         sb.append(Integer.toHexString(System.identityHashCode(conn.asBinder())));
+        sb.append(" flags=0x" + Long.toHexString(flags));
         sb.append('}');
         return stringName = sb.toString();
     }

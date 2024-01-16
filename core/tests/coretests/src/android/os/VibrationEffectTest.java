@@ -16,7 +16,12 @@
 
 package android.os;
 
+import static android.os.VibrationEffect.DEFAULT_AMPLITUDE;
+import static android.os.VibrationEffect.VibrationParameter.targetAmplitude;
+import static android.os.VibrationEffect.VibrationParameter.targetFrequency;
+
 import static junit.framework.Assert.assertEquals;
+import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertNotNull;
 import static junit.framework.Assert.assertNull;
 import static junit.framework.Assert.assertTrue;
@@ -30,17 +35,27 @@ import android.content.ContentInterface;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.res.Resources;
+import android.hardware.vibrator.IVibrator;
 import android.net.Uri;
+import android.os.SystemVibrator;
+import android.os.VibrationEffect.Composition.UnreachableAfterRepeatingIndefinitelyException;
+import android.os.Vibrator;
+import android.os.VibratorInfo;
 import android.os.vibrator.PrebakedSegment;
 import android.os.vibrator.PrimitiveSegment;
 import android.os.vibrator.StepSegment;
 import android.platform.test.annotations.Presubmit;
+
+import androidx.test.InstrumentationRegistry;
 
 import com.android.internal.R;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnitRunner;
+
+import java.time.Duration;
+import java.util.Arrays;
 
 @Presubmit
 @RunWith(MockitoJUnitRunner.class)
@@ -55,14 +70,361 @@ public class VibrationEffectTest {
     private static final int TEST_AMPLITUDE = 100;
     private static final long[] TEST_TIMINGS = new long[] { 100, 100, 200 };
     private static final int[] TEST_AMPLITUDES =
-            new int[] { 255, 0, VibrationEffect.DEFAULT_AMPLITUDE };
+            new int[] { 255, 0, DEFAULT_AMPLITUDE };
 
     private static final VibrationEffect TEST_ONE_SHOT =
             VibrationEffect.createOneShot(TEST_TIMING, TEST_AMPLITUDE);
     private static final VibrationEffect DEFAULT_ONE_SHOT =
-            VibrationEffect.createOneShot(TEST_TIMING, VibrationEffect.DEFAULT_AMPLITUDE);
+            VibrationEffect.createOneShot(TEST_TIMING, DEFAULT_AMPLITUDE);
     private static final VibrationEffect TEST_WAVEFORM =
             VibrationEffect.createWaveform(TEST_TIMINGS, TEST_AMPLITUDES, -1);
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_zeroAmplitudesOnEvenIndices() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3, 4, 5},
+                /* amplitudes= */ new int[] {0, DEFAULT_AMPLITUDE, 0, DEFAULT_AMPLITUDE, 0},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {1, 2, 3, 4, 5};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_zeroAmplitudesOnOddIndices() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3, 4, 5},
+                /* amplitudes= */ new int[] {
+                        DEFAULT_AMPLITUDE, 0, DEFAULT_AMPLITUDE, 0, DEFAULT_AMPLITUDE},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {0, 1, 2, 3, 4, 5};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_zeroAmplitudesAtTheStart() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3},
+                /* amplitudes= */ new int[] {0, 0, DEFAULT_AMPLITUDE},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {3, 3};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_zeroAmplitudesAtTheEnd() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3},
+                /* amplitudes= */ new int[] {DEFAULT_AMPLITUDE, 0, 0},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {0, 1, 5};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_allDefaultAmplitudes() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3},
+                /* amplitudes= */ new int[] {
+                        DEFAULT_AMPLITUDE, DEFAULT_AMPLITUDE, DEFAULT_AMPLITUDE},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {0, 6};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_allZeroAmplitudes() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3},
+                /* amplitudes= */ new int[] {0, 0, 0},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {6};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_sparsedZeroAmplitudes() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3, 4, 5, 6, 7},
+                /* amplitudes= */ new int[] {
+                        0, 0, DEFAULT_AMPLITUDE, 0, DEFAULT_AMPLITUDE, DEFAULT_AMPLITUDE, 0},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {3, 3, 4, 11, 7};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_oneTimingWithDefaultAmplitude() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1},
+                /* amplitudes= */ new int[] {DEFAULT_AMPLITUDE},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {0, 1};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_oneTimingWithZeroAmplitude() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1},
+                /* amplitudes= */ new int[] {0},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {1};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_repeating() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3, 4, 5},
+                /* amplitudes= */ new int[] {0, DEFAULT_AMPLITUDE, 0, DEFAULT_AMPLITUDE, 0},
+                /* repeatIndex= */ 0);
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+
+        effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3, 4, 5},
+                /* amplitudes= */ new int[] {0, DEFAULT_AMPLITUDE, 0, DEFAULT_AMPLITUDE, 0},
+                /* repeatIndex= */ 3);
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+
+        effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2},
+                /* amplitudes= */ new int[] {DEFAULT_AMPLITUDE, DEFAULT_AMPLITUDE},
+                /* repeatIndex= */ 1);
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsAndAmplitudes_badAmplitude() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1},
+                /* amplitudes= */ new int[] {200},
+                /* repeatIndex= */ -1);
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsOnly_nonZeroTimings() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {1, 2, 3};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsOnly_oneValue() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {5},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {5};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsOnly_zeroesAtTheEnd() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3, 0, 0},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {1, 2, 3, 0, 0};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsOnly_zeroesAtTheStart() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {0, 0, 1, 2, 3},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {0, 0, 1, 2, 3};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsOnly_zeroesAtTheMiddle() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 0, 0, 3, 4, 5},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {1, 2, 0, 0, 3, 4, 5};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsOnly_sparsedZeroes() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {0, 1, 2, 0, 0, 3, 4, 5, 0},
+                /* repeatIndex= */ -1);
+        long[] expectedPattern = new long[] {0, 1, 2, 0, 0, 3, 4, 5, 0};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_timingsOnly_repeating() {
+        VibrationEffect effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {0, 1, 2, 0, 0, 3, 4, 5, 0},
+                /* repeatIndex= */ 0);
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+
+        effect = VibrationEffect.createWaveform(
+                /* timings= */ new long[] {1, 2, 3, 4},
+                /* repeatIndex= */ 2);
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_notPatternPased() {
+        VibrationEffect effect = VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK);
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_oneShot_defaultAmplitude() {
+        VibrationEffect effect = VibrationEffect.createOneShot(
+                /* milliseconds= */ 5, /* ampliutde= */ DEFAULT_AMPLITUDE);
+        long[] expectedPattern = new long[] {0, 5};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_oneShot_badAmplitude() {
+        VibrationEffect effect = VibrationEffect.createOneShot(
+                /* milliseconds= */ 5, /* ampliutde= */ 50);
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_composition_noOffDuration() {
+        VibrationEffect effect = VibrationEffect.startComposition()
+                .addEffect(
+                        VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {5},
+                                /* repeatIndex= */ -1))
+                .addEffect(
+                        VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {2, 3},
+                                /* repeatIndex= */ -1))
+                .addEffect(
+                        VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {10, 20},
+                                /* amplitudes= */ new int[] {DEFAULT_AMPLITUDE, DEFAULT_AMPLITUDE},
+                                /* repeatIndex= */ -1))
+                .addEffect(
+                        VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {4, 5},
+                                /* amplitudes= */ new int[] {0, DEFAULT_AMPLITUDE},
+                                /* repeatIndex= */ -1))
+                .compose();
+        long[] expectedPattern = new long[] {7, 33, 4, 5};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_composition_withOffDuration() {
+        VibrationEffect effect = VibrationEffect.startComposition()
+                .addOffDuration(Duration.ofMillis(20))
+                .addEffect(
+                        VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {10, 20},
+                                /* amplitudes= */ new int[] {0, DEFAULT_AMPLITUDE},
+                                /* repeatIndex= */ -1))
+                .addEffect(
+                        VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {30, 40},
+                                /* amplitudes= */ new int[] {DEFAULT_AMPLITUDE, DEFAULT_AMPLITUDE},
+                                /* repeatIndex= */ -1))
+                .addOffDuration(Duration.ofMillis(10))
+                .addEffect(
+                        VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {4, 5},
+                                /* repeatIndex= */ -1))
+                .addOffDuration(Duration.ofMillis(5))
+                .compose();
+        long[] expectedPattern = new long[] {30, 90, 14, 5, 5};
+
+        assertArrayEq(expectedPattern, effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_composition_withPrimitives() {
+        VibrationEffect effect = VibrationEffect.startComposition()
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK)
+                .addOffDuration(Duration.ofMillis(20))
+                .addEffect(
+                        VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {5},
+                                /* repeatIndex= */ -1))
+                .compose();
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_composition_repeating() {
+        VibrationEffect effect = VibrationEffect.startComposition()
+                .addEffect(
+                        VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {5},
+                                /* repeatIndex= */ -1))
+                .repeatEffectIndefinitely(
+                        VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {2, 3},
+                                /* repeatIndex= */ -1))
+                .compose();
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
+
+    @Test
+    public void computeLegacyPattern_effectsViaStartWaveform() {
+        // Effects created via startWaveform are not expected to be converted to long[] patterns, as
+        // they are not configured to always play with the default amplitude.
+        VibrationEffect effect = VibrationEffect.startWaveform(targetFrequency(60))
+                .addTransition(Duration.ofMillis(100), targetAmplitude(1), targetFrequency(120))
+                .addSustain(Duration.ofMillis(200))
+                .addTransition(Duration.ofMillis(100), targetAmplitude(0), targetFrequency(60))
+                .build();
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+
+        effect = VibrationEffect.startWaveform(targetFrequency(60))
+                .addTransition(Duration.ofMillis(80), targetAmplitude(1))
+                .addSustain(Duration.ofMillis(200))
+                .addTransition(Duration.ofMillis(100), targetAmplitude(0))
+                .build();
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+
+        effect = VibrationEffect.startWaveform(targetFrequency(60))
+                .addTransition(Duration.ofMillis(100), targetFrequency(50))
+                .addSustain(Duration.ofMillis(50))
+                .addTransition(Duration.ofMillis(20), targetFrequency(75))
+                .build();
+
+        assertNull(effect.computeCreateWaveformOffOnTimingsOrNull());
+    }
 
     @Test
     public void getRingtones_noPrebakedRingtones() {
@@ -93,7 +455,7 @@ public class VibrationEffectTest {
     @Test
     public void testValidateOneShot() {
         VibrationEffect.createOneShot(1, 255).validate();
-        VibrationEffect.createOneShot(1, VibrationEffect.DEFAULT_AMPLITUDE).validate();
+        VibrationEffect.createOneShot(1, DEFAULT_AMPLITUDE).validate();
 
         assertThrows(IllegalArgumentException.class,
                 () -> VibrationEffect.createOneShot(-1, 255).validate());
@@ -121,16 +483,7 @@ public class VibrationEffectTest {
         VibrationEffect.createWaveform(TEST_TIMINGS, TEST_AMPLITUDES, -1).validate();
         VibrationEffect.createWaveform(new long[]{10, 10}, new int[] {0, 0}, -1).validate();
         VibrationEffect.createWaveform(TEST_TIMINGS, TEST_AMPLITUDES, 0).validate();
-        VibrationEffect.startWaveform()
-                .addStep(/* amplitude= */ 1, /* duration= */ 10)
-                .addRamp(/* amplitude= */ 0, /* duration= */ 20)
-                .addStep(/* amplitude= */ 1, /* frequency*/ 1, /* duration= */ 100)
-                .addRamp(/* amplitude= */ 0.5f, /* frequency*/ -1, /* duration= */ 50)
-                .build()
-                .validate();
 
-        assertThrows(IllegalStateException.class,
-                () -> VibrationEffect.startWaveform().build().validate());
         assertThrows(IllegalArgumentException.class,
                 () -> VibrationEffect.createWaveform(new long[0], new int[0], -1).validate());
         assertThrows(IllegalArgumentException.class,
@@ -144,31 +497,109 @@ public class VibrationEffectTest {
         assertThrows(IllegalArgumentException.class,
                 () -> VibrationEffect.createWaveform(
                         TEST_TIMINGS, TEST_AMPLITUDES, TEST_TIMINGS.length).validate());
+    }
+
+    @Test
+    public void testValidateWaveformBuilder() {
+        // Cover builder methods
+        VibrationEffect.startWaveform(targetAmplitude(1))
+                .addTransition(Duration.ofSeconds(1), targetAmplitude(0.5f), targetFrequency(100))
+                .addTransition(Duration.ZERO, targetAmplitude(0f), targetFrequency(200))
+                .addSustain(Duration.ofMinutes(2))
+                .addTransition(Duration.ofMillis(10), targetAmplitude(1f), targetFrequency(50))
+                .addSustain(Duration.ofMillis(1))
+                .addTransition(Duration.ZERO, targetFrequency(150))
+                .addSustain(Duration.ofMillis(2))
+                .addTransition(Duration.ofSeconds(15), targetAmplitude(1))
+                .build()
+                .validate();
+
+        // Make sure class summary javadoc examples compile and are valid.
+        // NOTE: IF THIS IS UPDATED, PLEASE ALSO UPDATE WaveformBuilder javadocs.
+        VibrationEffect.startWaveform(targetFrequency(60))
+                .addTransition(Duration.ofMillis(100), targetAmplitude(1), targetFrequency(120))
+                .addSustain(Duration.ofMillis(200))
+                .addTransition(Duration.ofMillis(100), targetAmplitude(0), targetFrequency(60))
+                .build()
+                .validate();
+        VibrationEffect.startComposition()
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK)
+                .addOffDuration(Duration.ofMillis(20))
+                .repeatEffectIndefinitely(
+                        VibrationEffect.startWaveform(targetAmplitude(0.2f))
+                                .addSustain(Duration.ofMillis(10))
+                                .addTransition(Duration.ofMillis(20), targetAmplitude(0.4f))
+                                .addSustain(Duration.ofMillis(30))
+                                .addTransition(Duration.ofMillis(40), targetAmplitude(0.8f))
+                                .addSustain(Duration.ofMillis(50))
+                                .addTransition(Duration.ofMillis(60), targetAmplitude(0.2f))
+                                .build())
+                .compose()
+                .validate();
+        VibrationEffect.createWaveform(new long[]{10, 20, 30}, new int[]{51, 102, 204}, -1)
+                .validate();
+        VibrationEffect.startWaveform(targetAmplitude(0.2f))
+                .addSustain(Duration.ofMillis(10))
+                .addTransition(Duration.ZERO, targetAmplitude(0.4f))
+                .addSustain(Duration.ofMillis(20))
+                .addTransition(Duration.ZERO, targetAmplitude(0.8f))
+                .addSustain(Duration.ofMillis(30))
+                .build()
+                .validate();
+
+        assertThrows(IllegalStateException.class,
+                () -> VibrationEffect.startWaveform().build().validate());
+        assertThrows(IllegalArgumentException.class, () -> targetAmplitude(-2));
+        assertThrows(IllegalArgumentException.class, () -> targetFrequency(0));
         assertThrows(IllegalArgumentException.class,
-                () -> VibrationEffect.startWaveform()
-                        .addStep(/* amplitude= */ -2, 10).build().validate());
+                () -> VibrationEffect.startWaveform().addTransition(
+                        Duration.ofMillis(-10), targetAmplitude(1)).build().validate());
         assertThrows(IllegalArgumentException.class,
-                () -> VibrationEffect.startWaveform()
-                        .addStep(1, /* duration= */ -1).build().validate());
-        assertThrows(IllegalArgumentException.class,
-                () -> VibrationEffect.startWaveform()
-                        .addStep(1, 0, /* duration= */ -1).build().validate());
+                () -> VibrationEffect.startWaveform().addSustain(Duration.ZERO).build().validate());
     }
 
     @Test
     public void testValidateComposed() {
+        // Cover builder methods
         VibrationEffect.startComposition()
                 .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK)
                 .addEffect(TEST_ONE_SHOT)
                 .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 1f)
-                .addEffect(TEST_WAVEFORM, 100)
+                .addOffDuration(Duration.ofMillis(100))
                 .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.5f, 10)
                 .addEffect(VibrationEffect.get(VibrationEffect.EFFECT_CLICK))
+                .addEffect(VibrationEffect.createWaveform(new long[]{10, 20}, /* repeat= */ 0))
+                .compose()
+                .validate();
+        VibrationEffect.startComposition()
+                .repeatEffectIndefinitely(TEST_ONE_SHOT)
+                .compose()
+                .validate();
+
+        // Make sure class summary javadoc examples compile and are valid.
+        // NOTE: IF THIS IS UPDATED, PLEASE ALSO UPDATE Composition javadocs.
+        VibrationEffect.startComposition()
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_SLOW_RISE, 0.5f)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_QUICK_FALL, 0.5f)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 1.0f, 100)
+                .compose()
+                .validate();
+        VibrationEffect.startComposition()
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_LOW_TICK)
+                .addOffDuration(Duration.ofMillis(10))
+                .addEffect(VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK))
+                .addOffDuration(Duration.ofMillis(50))
+                .addEffect(VibrationEffect.createWaveform(new long[]{10, 20}, /* repeat= */ 0))
                 .compose()
                 .validate();
 
         assertThrows(IllegalStateException.class,
                 () -> VibrationEffect.startComposition().compose().validate());
+        assertThrows(IllegalStateException.class,
+                () -> VibrationEffect.startComposition()
+                        .addOffDuration(Duration.ofSeconds(0))
+                        .compose()
+                        .validate());
         assertThrows(IllegalArgumentException.class,
                 () -> VibrationEffect.startComposition().addPrimitive(-1).compose().validate());
         assertThrows(IllegalArgumentException.class,
@@ -183,12 +614,27 @@ public class VibrationEffectTest {
                         .validate());
         assertThrows(IllegalArgumentException.class,
                 () -> VibrationEffect.startComposition()
-                        .addEffect(TEST_ONE_SHOT, /* delay= */ -10)
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 1f, -1)
                         .compose()
                         .validate());
         assertThrows(IllegalArgumentException.class,
                 () -> VibrationEffect.startComposition()
-                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 1f, -1)
+                        .repeatEffectIndefinitely(
+                                // Repeating waveform.
+                                VibrationEffect.createWaveform(
+                                        new long[] { 10 }, new int[] { 100}, 0))
+                        .compose()
+                        .validate());
+        assertThrows(UnreachableAfterRepeatingIndefinitelyException.class,
+                () -> VibrationEffect.startComposition()
+                        .repeatEffectIndefinitely(TEST_WAVEFORM)
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK)
+                        .compose()
+                        .validate());
+        assertThrows(UnreachableAfterRepeatingIndefinitelyException.class,
+                () -> VibrationEffect.startComposition()
+                        .repeatEffectIndefinitely(TEST_WAVEFORM)
+                        .addEffect(TEST_ONE_SHOT)
                         .compose()
                         .validate());
     }
@@ -312,8 +758,152 @@ public class VibrationEffectTest {
         assertTrue(100 / 255f > ((StepSegment) scaledDown.getSegments().get(1)).getAmplitude());
     }
 
+
+    @Test
+    public void testDuration() {
+        assertEquals(1, VibrationEffect.createOneShot(1, 1).getDuration());
+        assertEquals(-1, VibrationEffect.get(VibrationEffect.EFFECT_CLICK).getDuration());
+        assertEquals(-1,
+                VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK)
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 1, 100)
+                        .compose()
+                        .getDuration());
+        assertEquals(6, VibrationEffect.createWaveform(
+                new long[]{1, 2, 3}, new int[]{1, 2, 3}, -1).getDuration());
+        assertEquals(Long.MAX_VALUE, VibrationEffect.createWaveform(
+                new long[]{1, 2, 3}, new int[]{1, 2, 3}, 0).getDuration());
+    }
+
+    @Test
+    public void testAreVibrationFeaturesSupported_allSegmentsSupported() {
+        Vibrator vibrator =
+                createVibratorWithCustomInfo(new VibratorInfo.Builder(/* id= */ 1)
+                        .setCapabilities(IVibrator.CAP_AMPLITUDE_CONTROL)
+                        .build());
+
+        assertTrue(VibrationEffect.createWaveform(
+                        /* timings= */ new long[] {1, 2, 3}, /* repeatIndex= */ -1)
+                .areVibrationFeaturesSupported(vibrator));
+        assertTrue(VibrationEffect.createWaveform(
+                        /* timings= */ new long[] {1, 2, 3},
+                        /* amplitudes= */ new int[] {10, 20, 40},
+                        /* repeatIndex= */ 2)
+                .areVibrationFeaturesSupported(vibrator));
+        assertTrue(
+                VibrationEffect.startComposition()
+                        .addEffect(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
+                        .repeatEffectIndefinitely(TEST_ONE_SHOT)
+                        .compose()
+                .areVibrationFeaturesSupported(vibrator));
+    }
+
+    @Test
+    public void testAreVibrationFeaturesSupported_withUnsupportedSegments() {
+        Vibrator vibrator =
+                createVibratorWithCustomInfo(new VibratorInfo.Builder(/* id= */ 1).build());
+
+        assertFalse(
+                VibrationEffect.startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK)
+                        .addEffect(VibrationEffect.createWaveform(
+                                /* timings= */ new long[] {1, 2, 3},
+                                /* amplitudes= */ new int[] {10, 20, 40},
+                                /* repeatIndex= */ -1))
+                        .compose()
+                .areVibrationFeaturesSupported(vibrator));
+    }
+
+    @Test
+    public void testIsHapticFeedbackCandidate_repeatingEffects_notCandidates() {
+        assertFalse(VibrationEffect.createWaveform(
+                new long[]{1, 2, 3}, new int[]{1, 2, 3}, 0).isHapticFeedbackCandidate());
+    }
+
+    @Test
+    public void testIsHapticFeedbackCandidate_longEffects_notCandidates() {
+        assertFalse(VibrationEffect.createOneShot(1500, 255).isHapticFeedbackCandidate());
+        assertFalse(VibrationEffect.createWaveform(
+                new long[]{200, 200, 700}, new int[]{1, 2, 3}, -1).isHapticFeedbackCandidate());
+        assertFalse(VibrationEffect.startWaveform()
+                .addTransition(Duration.ofMillis(500), targetAmplitude(1))
+                .addTransition(Duration.ofMillis(200), targetAmplitude(0.5f))
+                .addTransition(Duration.ofMillis(500), targetAmplitude(0))
+                .build()
+                .isHapticFeedbackCandidate());
+    }
+
+    @Test
+    public void testIsHapticFeedbackCandidate_shortEffects_areCandidates() {
+        assertTrue(VibrationEffect.createOneShot(500, 255).isHapticFeedbackCandidate());
+        assertTrue(VibrationEffect.createWaveform(
+                new long[]{100, 200, 300}, new int[]{1, 2, 3}, -1).isHapticFeedbackCandidate());
+        assertTrue(VibrationEffect.startWaveform()
+                .addTransition(Duration.ofMillis(300), targetAmplitude(1))
+                .addTransition(Duration.ofMillis(200), targetAmplitude(0.5f))
+                .addTransition(Duration.ofMillis(300), targetAmplitude(0))
+                .build()
+                .isHapticFeedbackCandidate());
+    }
+
+    @Test
+    public void testIsHapticFeedbackCandidate_longCompositions_notCandidates() {
+        assertFalse(VibrationEffect.startComposition()
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_LOW_TICK)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_SPIN)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_THUD)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_SLOW_RISE)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_QUICK_FALL)
+                .compose()
+                .isHapticFeedbackCandidate());
+
+        assertFalse(VibrationEffect.startComposition()
+                .addEffect(VibrationEffect.createOneShot(1500, 255))
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK)
+                .compose()
+                .isHapticFeedbackCandidate());
+    }
+
+    @Test
+    public void testIsHapticFeedbackCandidate_shortCompositions_areCandidates() {
+        assertTrue(VibrationEffect.startComposition()
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_SLOW_RISE)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_QUICK_FALL)
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK)
+                .compose()
+                .isHapticFeedbackCandidate());
+
+        assertTrue(VibrationEffect.startComposition()
+                .addEffect(VibrationEffect.createOneShot(100, 255))
+                .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK)
+                .compose()
+                .isHapticFeedbackCandidate());
+    }
+
+    @Test
+    public void testIsHapticFeedbackCandidate_prebakedRingtones_notCandidates() {
+        assertFalse(VibrationEffect.get(
+                VibrationEffect.RINGTONES[1]).isHapticFeedbackCandidate());
+    }
+
+    @Test
+    public void testIsHapticFeedbackCandidate_prebakedNotRingtoneConstants_areCandidates() {
+        assertTrue(VibrationEffect.get(VibrationEffect.EFFECT_CLICK).isHapticFeedbackCandidate());
+        assertTrue(VibrationEffect.get(VibrationEffect.EFFECT_THUD).isHapticFeedbackCandidate());
+        assertTrue(VibrationEffect.get(VibrationEffect.EFFECT_TICK).isHapticFeedbackCandidate());
+    }
+
+    private void assertArrayEq(long[] expected, long[] actual) {
+        assertTrue(
+                String.format("Expected pattern %s, but was %s",
+                        Arrays.toString(expected), Arrays.toString(actual)),
+                Arrays.equals(expected, actual));
+    }
+
     private Resources mockRingtoneResources() {
-        return mockRingtoneResources(new String[] {
+        return mockRingtoneResources(new String[]{
                 RINGTONE_URI_1,
                 RINGTONE_URI_2,
                 RINGTONE_URI_3
@@ -344,5 +934,14 @@ public class VibrationEffectTest {
         }
 
         return context;
+    }
+
+    private Vibrator createVibratorWithCustomInfo(VibratorInfo info) {
+        return new SystemVibrator(InstrumentationRegistry.getContext()) {
+            @Override
+            public VibratorInfo getInfo() {
+                return info;
+            }
+        };
     }
 }

@@ -41,14 +41,18 @@ final class TestSupport {
     }
 
     private static ConfigurationInternal createUserConfig(
-            @UserIdInt int userId, boolean geoDetectionEnabled) {
-        return new ConfigurationInternal.Builder(userId)
+            @UserIdInt int userId, boolean geoDetectionEnabledSetting) {
+        return new ConfigurationInternal.Builder()
+                .setUserId(userId)
                 .setUserConfigAllowed(true)
                 .setTelephonyDetectionFeatureSupported(true)
                 .setGeoDetectionFeatureSupported(true)
-                .setAutoDetectionEnabled(true)
-                .setLocationEnabled(true)
-                .setGeoDetectionEnabled(geoDetectionEnabled)
+                .setTelephonyFallbackSupported(false)
+                .setGeoDetectionRunInBackgroundEnabled(false)
+                .setEnhancedMetricsCollectionEnabled(false)
+                .setAutoDetectionEnabledSetting(true)
+                .setLocationEnabledSetting(true)
+                .setGeoDetectionEnabledSetting(geoDetectionEnabledSetting)
                 .build();
     }
 }

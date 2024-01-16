@@ -15,26 +15,34 @@
 package com.android.systemui.privacy
 
 import android.content.Context
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.util.AttributeSet
+import android.view.Gravity.CENTER_VERTICAL
+import android.view.Gravity.END
 import android.view.ViewGroup
-import android.widget.FrameLayout
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.ImageView
 import android.widget.LinearLayout
 import com.android.settingslib.Utils
 import com.android.systemui.R
+import com.android.systemui.animation.view.LaunchableFrameLayout
+import com.android.systemui.statusbar.events.BackgroundAnimatableView
 
 class OngoingPrivacyChip @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
     defStyleAttrs: Int = 0,
     defStyleRes: Int = 0
-) : FrameLayout(context, attrs, defStyleAttrs, defStyleRes) {
+) : LaunchableFrameLayout(context, attrs, defStyleAttrs, defStyleRes), BackgroundAnimatableView {
 
+    private var configuration: Configuration
     private var iconMargin = 0
     private var iconSize = 0
     private var iconColor = 0
 
-    private lateinit var iconsContainer: LinearLayout
+    private val iconsContainer: LinearLayout
 
     var privacyList = emptyList<PrivacyItem>()
         set(value) {
@@ -42,12 +50,25 @@ class OngoingPrivacyChip @JvmOverloads constructor(
             updateView(PrivacyChipBuilder(context, field))
         }
 
-    override fun onFinishInflate() {
-        super.onFinishInflate()
-
+    init {
+        inflate(context, R.layout.ongoing_privacy_chip, this)
+        id = R.id.privacy_chip
+        layoutParams = LayoutParams(WRAP_CONTENT, MATCH_PARENT, CENTER_VERTICAL or END)
+        clipChildren = true
+        clipToPadding = true
         iconsContainer = requireViewById(R.id.icons_container)
-
+        configuration = Configuration(context.resources.configuration)
         updateResources()
+    }
+
+    /**
+     * When animating as a chip in the status bar, we want to animate the width for the container
+     * of the privacy items. We have to subtract our own top and left offset because the bounds
+     * come to us as absolute on-screen bounds, and `iconsContainer` is laid out relative to the
+     * frame layout's bounds.
+     */
+    override fun setBoundsForAnimation(l: Int, t: Int, r: Int, b: Int) {
+        iconsContainer.setLeftTopRightBottom(l - left, t - top, r - left, b - top)
     }
 
     // Should only be called if the builder icons or app changed
@@ -85,6 +106,17 @@ class OngoingPrivacyChip @JvmOverloads constructor(
                 R.string.ongoing_privacy_chip_content_multiple_apps, typesText)
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration?) {
+        super.onConfigurationChanged(newConfig)
+        if (newConfig != null) {
+            val diff = newConfig.diff(configuration)
+            configuration.setTo(newConfig)
+            if (diff.and(ActivityInfo.CONFIG_DENSITY.or(ActivityInfo.CONFIG_FONT_SCALE)) != 0) {
+                updateResources()
+            }
+        }
+    }
+
     private fun updateResources() {
         iconMargin = context.resources
                 .getDimensionPixelSize(R.dimen.ongoing_appops_chip_icon_margin)
@@ -93,9 +125,12 @@ class OngoingPrivacyChip @JvmOverloads constructor(
         iconColor =
                 Utils.getColorAttrDefaultColor(context, com.android.internal.R.attr.colorPrimary)
 
+        val height = context.resources
+                .getDimensionPixelSize(R.dimen.ongoing_appops_chip_height)
         val padding = context.resources
                 .getDimensionPixelSize(R.dimen.ongoing_appops_chip_side_padding)
+        iconsContainer.layoutParams.height = height
         iconsContainer.setPaddingRelative(padding, 0, padding, 0)
-        iconsContainer.background = context.getDrawable(R.drawable.privacy_chip_bg)
+        iconsContainer.background = context.getDrawable(R.drawable.statusbar_privacy_chip_bg)
     }
 }

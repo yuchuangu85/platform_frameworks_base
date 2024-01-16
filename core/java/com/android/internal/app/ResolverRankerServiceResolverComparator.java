@@ -17,11 +17,13 @@
 
 package com.android.internal.app;
 
+import android.annotation.Nullable;
 import android.app.usage.UsageStats;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
+import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
@@ -38,17 +40,21 @@ import android.service.resolver.ResolverTarget;
 import android.util.Log;
 
 import com.android.internal.app.ResolverActivity.ResolvedComponentInfo;
+import com.android.internal.app.chooser.TargetInfo;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
 
+import com.google.android.collect.Lists;
+
 import java.text.Collator;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 /**
  * Ranks and compares packages based on usage stats and uses the {@link ResolverRankerService}.
@@ -69,10 +75,10 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
     private static final int CONNECTION_COST_TIMEOUT_MILLIS = 200;
 
     private final Collator mCollator;
-    private final Map<String, UsageStats> mStats;
+    private final Map<UserHandle, Map<String, UsageStats>> mStatsPerUser;
     private final long mCurrentTime;
     private final long mSinceTime;
-    private final LinkedHashMap<ComponentName, ResolverTarget> mTargetsDict = new LinkedHashMap<>();
+    private final Map<UserHandle, LinkedHashMap<ComponentName, ResolverTarget>> mTargetsDictPerUser;
     private final String mReferrerPackage;
     private final Object mLock = new Object();
     private ArrayList<ResolverTarget> mTargets;
@@ -83,22 +89,42 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
     private ResolverRankerServiceConnection mConnection;
     private Context mContext;
     private CountDownLatch mConnectSignal;
+    private ResolverRankerServiceComparatorModel mComparatorModel;
 
-    public ResolverRankerServiceResolverComparator(Context context, Intent intent,
+    // context here refers to the activity calling this comparator.
+    // targetUserSpace refers to the userSpace in which the targets to be ranked lie.
+    public ResolverRankerServiceResolverComparator(Context launchedFromContext, Intent intent,
                 String referrerPackage, AfterCompute afterCompute,
-                ChooserActivityLogger chooserActivityLogger) {
-        super(context, intent);
-        mCollator = Collator.getInstance(context.getResources().getConfiguration().locale);
-        mReferrerPackage = referrerPackage;
-        mContext = context;
+                ChooserActivityLogger chooserActivityLogger, UserHandle targetUserSpace) {
+        this(launchedFromContext, intent, referrerPackage, afterCompute, chooserActivityLogger,
+                Lists.newArrayList(targetUserSpace));
+    }
 
+    // context here refers to the activity calling this comparator.
+    // targetUserSpaceList refers to the userSpace(s) in which the targets to be ranked lie.
+    public ResolverRankerServiceResolverComparator(Context launchedFromContext, Intent intent,
+            String referrerPackage, AfterCompute afterCompute,
+            ChooserActivityLogger chooserActivityLogger, List<UserHandle> targetUserSpaceList) {
+        super(launchedFromContext, intent, targetUserSpaceList);
+        mCollator = Collator.getInstance(launchedFromContext
+                .getResources().getConfiguration().locale);
+        mReferrerPackage = referrerPackage;
+        mContext = launchedFromContext;
         mCurrentTime = System.currentTimeMillis();
         mSinceTime = mCurrentTime - USAGE_STATS_PERIOD;
-        mStats = mUsm.queryAndAggregateUsageStats(mSinceTime, mCurrentTime);
+        mStatsPerUser = new HashMap<>();
+        mTargetsDictPerUser = new HashMap<>();
+        for (UserHandle user : targetUserSpaceList) {
+            mStatsPerUser.put(user, mUsmMap.get(user)
+                    .queryAndAggregateUsageStats(mSinceTime, mCurrentTime));
+            mTargetsDictPerUser.put(user, new LinkedHashMap<>());
+        }
         mAction = intent.getAction();
         mRankerServiceName = new ComponentName(mContext, this.getClass());
         setCallBack(afterCompute);
         setChooserActivityLogger(chooserActivityLogger);
+
+        mComparatorModel = buildUpdatedModel();
     }
 
     @Override
@@ -125,6 +151,7 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
             }
             if (isUpdated) {
                 mRankerServiceName = mResolvedRankerName;
+                mComparatorModel = buildUpdatedModel();
             }
         } else {
             Log.e(TAG, "Sizes of sent and received ResolverTargets diff.");
@@ -143,57 +170,63 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
 
         for (ResolvedComponentInfo target : targets) {
             final ResolverTarget resolverTarget = new ResolverTarget();
-            mTargetsDict.put(target.name, resolverTarget);
-            final UsageStats pkStats = mStats.get(target.name.getPackageName());
-            if (pkStats != null) {
-                // Only count recency for apps that weren't the caller
-                // since the caller is always the most recent.
-                // Persistent processes muck this up, so omit them too.
-                if (!target.name.getPackageName().equals(mReferrerPackage)
-                        && !isPersistentProcess(target)) {
-                    final float recencyScore =
-                            (float) Math.max(pkStats.getLastTimeUsed() - recentSinceTime, 0);
-                    resolverTarget.setRecencyScore(recencyScore);
-                    if (recencyScore > mostRecencyScore) {
-                        mostRecencyScore = recencyScore;
-                    }
-                }
-                final float timeSpentScore = (float) pkStats.getTotalTimeInForeground();
-                resolverTarget.setTimeSpentScore(timeSpentScore);
-                if (timeSpentScore > mostTimeSpentScore) {
-                    mostTimeSpentScore = timeSpentScore;
-                }
-                final float launchScore = (float) pkStats.mLaunchCount;
-                resolverTarget.setLaunchScore(launchScore);
-                if (launchScore > mostLaunchScore) {
-                    mostLaunchScore = launchScore;
-                }
-
-                float chooserScore = 0.0f;
-                if (pkStats.mChooserCounts != null && mAction != null
-                        && pkStats.mChooserCounts.get(mAction) != null) {
-                    chooserScore = (float) pkStats.mChooserCounts.get(mAction)
-                            .getOrDefault(mContentType, 0);
-                    if (mAnnotations != null) {
-                        final int size = mAnnotations.length;
-                        for (int i = 0; i < size; i++) {
-                            chooserScore += (float) pkStats.mChooserCounts.get(mAction)
-                                    .getOrDefault(mAnnotations[i], 0);
+            final LinkedHashMap<ComponentName, ResolverTarget> targetsDict = mTargetsDictPerUser
+                    .get(target.getResolveInfoAt(0).userHandle);
+            final Map<String, UsageStats> stats = mStatsPerUser
+                    .get(target.getResolveInfoAt(0).userHandle);
+            if (targetsDict != null && stats != null) {
+                targetsDict.put(target.name, resolverTarget);
+                final UsageStats pkStats = stats.get(target.name.getPackageName());
+                if (pkStats != null) {
+                    // Only count recency for apps that weren't the caller
+                    // since the caller is always the most recent.
+                    // Persistent processes muck this up, so omit them too.
+                    if (!target.name.getPackageName().equals(mReferrerPackage)
+                            && !isPersistentProcess(target)) {
+                        final float recencyScore =
+                                (float) Math.max(pkStats.getLastTimeUsed() - recentSinceTime, 0);
+                        resolverTarget.setRecencyScore(recencyScore);
+                        if (recencyScore > mostRecencyScore) {
+                            mostRecencyScore = recencyScore;
                         }
                     }
-                }
-                if (DEBUG) {
-                    if (mAction == null) {
-                        Log.d(TAG, "Action type is null");
-                    } else {
-                        Log.d(TAG, "Chooser Count of " + mAction + ":" +
-                                target.name.getPackageName() + " is " +
-                                Float.toString(chooserScore));
+                    final float timeSpentScore = (float) pkStats.getTotalTimeInForeground();
+                    resolverTarget.setTimeSpentScore(timeSpentScore);
+                    if (timeSpentScore > mostTimeSpentScore) {
+                        mostTimeSpentScore = timeSpentScore;
                     }
-                }
-                resolverTarget.setChooserScore(chooserScore);
-                if (chooserScore > mostChooserScore) {
-                    mostChooserScore = chooserScore;
+                    final float launchScore = (float) pkStats.mLaunchCount;
+                    resolverTarget.setLaunchScore(launchScore);
+                    if (launchScore > mostLaunchScore) {
+                        mostLaunchScore = launchScore;
+                    }
+
+                    float chooserScore = 0.0f;
+                    if (pkStats.mChooserCounts != null && mAction != null
+                            && pkStats.mChooserCounts.get(mAction) != null) {
+                        chooserScore = (float) pkStats.mChooserCounts.get(mAction)
+                                .getOrDefault(mContentType, 0);
+                        if (mAnnotations != null) {
+                            final int size = mAnnotations.length;
+                            for (int i = 0; i < size; i++) {
+                                chooserScore += (float) pkStats.mChooserCounts.get(mAction)
+                                        .getOrDefault(mAnnotations[i], 0);
+                            }
+                        }
+                    }
+                    if (DEBUG) {
+                        if (mAction == null) {
+                            Log.d(TAG, "Action type is null");
+                        } else {
+                            Log.d(TAG, "Chooser Count of " + mAction + ":"
+                                    + target.name.getPackageName() + " is "
+                                    + Float.toString(chooserScore));
+                        }
+                    }
+                    resolverTarget.setChooserScore(chooserScore);
+                    if (chooserScore > mostChooserScore) {
+                        mostChooserScore = chooserScore;
+                    }
                 }
             }
         }
@@ -205,7 +238,11 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
                     + " mostChooserScore: " + mostChooserScore);
         }
 
-        mTargets = new ArrayList<>(mTargetsDict.values());
+        mTargets = new ArrayList<>();
+        for (UserHandle u : mTargetsDictPerUser.keySet()) {
+            mTargets.addAll(mTargetsDictPerUser.get(u).values());
+        }
+
         for (ResolverTarget target : mTargets) {
             final float recency = target.getRecencyScore() / mostRecencyScore;
             setFeatures(target, recency * recency * RECENCY_MULTIPLIER,
@@ -218,83 +255,25 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
             }
         }
         predictSelectProbabilities(mTargets);
+
+        mComparatorModel = buildUpdatedModel();
     }
 
     @Override
     public int compare(ResolveInfo lhs, ResolveInfo rhs) {
-        if (mStats != null) {
-            final ResolverTarget lhsTarget = mTargetsDict.get(new ComponentName(
-                    lhs.activityInfo.packageName, lhs.activityInfo.name));
-            final ResolverTarget rhsTarget = mTargetsDict.get(new ComponentName(
-                    rhs.activityInfo.packageName, rhs.activityInfo.name));
-
-            if (lhsTarget != null && rhsTarget != null) {
-                final int selectProbabilityDiff = Float.compare(
-                        rhsTarget.getSelectProbability(), lhsTarget.getSelectProbability());
-
-                if (selectProbabilityDiff != 0) {
-                    return selectProbabilityDiff > 0 ? 1 : -1;
-                }
-            }
-        }
-
-        CharSequence  sa = lhs.loadLabel(mPm);
-        if (sa == null) sa = lhs.activityInfo.name;
-        CharSequence  sb = rhs.loadLabel(mPm);
-        if (sb == null) sb = rhs.activityInfo.name;
-
-        return mCollator.compare(sa.toString().trim(), sb.toString().trim());
+        return mComparatorModel.getComparator().compare(lhs, rhs);
     }
 
     @Override
-    public float getScore(ComponentName name) {
-        final ResolverTarget target = mTargetsDict.get(name);
-        if (target != null) {
-            return target.getSelectProbability();
-        }
-        return 0;
-    }
-
-    @Override
-    List<ComponentName> getTopComponentNames(int topK) {
-        return mTargetsDict.entrySet().stream()
-                .sorted((o1, o2) -> -Float.compare(getScore(o1.getKey()), getScore(o2.getKey())))
-                .limit(topK)
-                .map(Map.Entry::getKey)
-                .collect(Collectors.toList());
+    public float getScore(TargetInfo targetInfo) {
+        return mComparatorModel.getScore(targetInfo);
     }
 
     // update ranking model when the connection to it is valid.
     @Override
-    public void updateModel(ComponentName componentName) {
+    public void updateModel(TargetInfo targetInfo) {
         synchronized (mLock) {
-            if (mRanker != null) {
-                try {
-                    int selectedPos = new ArrayList<ComponentName>(mTargetsDict.keySet())
-                            .indexOf(componentName);
-                    if (selectedPos >= 0 && mTargets != null) {
-                        final float selectedProbability = getScore(componentName);
-                        int order = 0;
-                        for (ResolverTarget target : mTargets) {
-                            if (target.getSelectProbability() > selectedProbability) {
-                                order++;
-                            }
-                        }
-                        logMetrics(order);
-                        mRanker.train(mTargets, selectedPos);
-                    } else {
-                        if (DEBUG) {
-                            Log.d(TAG, "Selected a unknown component: " + componentName);
-                        }
-                    }
-                } catch (RemoteException e) {
-                    Log.e(TAG, "Error in Train: " + e);
-                }
-            } else {
-                if (DEBUG) {
-                    Log.d(TAG, "Ranker is null; skip updateModel.");
-                }
-            }
+            mComparatorModel.notifyOnTargetSelected(targetInfo);
         }
     }
 
@@ -310,19 +289,6 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
         afterCompute();
         if (DEBUG) {
             Log.d(TAG, "Unbinded Resolver Ranker.");
-        }
-    }
-
-    // records metrics for evaluation.
-    private void logMetrics(int selectedPos) {
-        if (mRankerServiceName != null) {
-            MetricsLogger metricsLogger = new MetricsLogger();
-            LogMaker log = new LogMaker(MetricsEvent.ACTION_TARGET_SELECTED);
-            log.setComponentName(mRankerServiceName);
-            int isCategoryUsed = (mAnnotations == null) ? 0 : 1;
-            log.addTaggedData(MetricsEvent.FIELD_IS_CATEGORY_USED, isCategoryUsed);
-            log.addTaggedData(MetricsEvent.FIELD_RANKED_POSITION, selectedPos);
-            metricsLogger.write(log);
         }
     }
 
@@ -348,7 +314,8 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
     // resolve the service for ranking.
     private Intent resolveRankerService() {
         Intent intent = new Intent(ResolverRankerService.SERVICE_INTERFACE);
-        final List<ResolveInfo> resolveInfos = mPm.queryIntentServices(intent, 0);
+        final List<ResolveInfo> resolveInfos = mContext.getPackageManager()
+                        .queryIntentServices(intent, 0);
         for (ResolveInfo resolveInfo : resolveInfos) {
             if (resolveInfo == null || resolveInfo.serviceInfo == null
                     || resolveInfo.serviceInfo.applicationInfo == null) {
@@ -361,7 +328,8 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
                     resolveInfo.serviceInfo.applicationInfo.packageName,
                     resolveInfo.serviceInfo.name);
             try {
-                final String perm = mPm.getServiceInfo(componentName, 0).permission;
+                final String perm = mContext.getPackageManager()
+                        .getServiceInfo(componentName, 0).permission;
                 if (!ResolverRankerService.BIND_PERMISSION.equals(perm)) {
                     Log.w(TAG, "ResolverRankerService " + componentName + " does not require"
                             + " permission " + ResolverRankerService.BIND_PERMISSION
@@ -372,9 +340,9 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
                             + " in the manifest.");
                     continue;
                 }
-                if (PackageManager.PERMISSION_GRANTED != mPm.checkPermission(
-                        ResolverRankerService.HOLD_PERMISSION,
-                        resolveInfo.serviceInfo.packageName)) {
+                if (PackageManager.PERMISSION_GRANTED != mContext.getPackageManager()
+                        .checkPermission(ResolverRankerService.HOLD_PERMISSION,
+                            resolveInfo.serviceInfo.packageName)) {
                     Log.w(TAG, "ResolverRankerService " + componentName + " does not hold"
                             + " permission " + ResolverRankerService.HOLD_PERMISSION
                             + " - this service will not be queried for "
@@ -426,6 +394,7 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
             }
             synchronized (mLock) {
                 mRanker = IResolverRankerService.Stub.asInterface(service);
+                mComparatorModel = buildUpdatedModel();
                 mConnectSignal.countDown();
             }
         }
@@ -443,6 +412,7 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
         public void destroy() {
             synchronized (mLock) {
                 mRanker = null;
+                mComparatorModel = buildUpdatedModel();
             }
         }
     }
@@ -450,9 +420,12 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
     @Override
     void beforeCompute() {
         super.beforeCompute();
-        mTargetsDict.clear();
+        for (UserHandle userHandle : mTargetsDictPerUser.keySet()) {
+            mTargetsDictPerUser.get(userHandle).clear();
+        }
         mTargets = null;
         mRankerServiceName = new ComponentName(mContext, this.getClass());
+        mComparatorModel = buildUpdatedModel();
         mResolvedRankerName = null;
         initRanker(mContext);
     }
@@ -507,5 +480,179 @@ class ResolverRankerServiceResolverComparator extends AbstractResolverComparator
                     ApplicationInfo.FLAG_PERSISTENT) != 0;
         }
         return false;
+    }
+
+    /**
+     * Re-construct a {@code ResolverRankerServiceComparatorModel} to replace the current model
+     * instance (if any) using the up-to-date {@code ResolverRankerServiceResolverComparator} ivar
+     * values.
+     *
+     * TODO: each time we replace the model instance, we're either updating the model to use
+     * adjusted data (which is appropriate), or we're providing a (late) value for one of our ivars
+     * that wasn't available the last time the model was updated. For those latter cases, we should
+     * just avoid creating the model altogether until we have all the prerequisites we'll need. Then
+     * we can probably simplify the logic in {@code ResolverRankerServiceComparatorModel} since we
+     * won't need to handle edge cases when the model data isn't fully prepared.
+     * (In some cases, these kinds of "updates" might interleave -- e.g., we might have finished
+     * initializing the first time and now want to adjust some data, but still need to wait for
+     * changes to propagate to the other ivars before rebuilding the model.)
+     */
+    private ResolverRankerServiceComparatorModel buildUpdatedModel() {
+        // TODO: we don't currently guarantee that the underlying target list/map won't be mutated,
+        // so the ResolverComparatorModel may provide inconsistent results. We should make immutable
+        // copies of the data (waiting for any necessary remaining data before creating the model).
+        return new ResolverRankerServiceComparatorModel(
+                mStatsPerUser,
+                mTargetsDictPerUser,
+                mTargets,
+                mCollator,
+                mRanker,
+                mRankerServiceName,
+                (mAnnotations != null),
+                mPmMap);
+    }
+
+    /**
+     * Implementation of a {@code ResolverComparatorModel} that provides the same ranking logic as
+     * the legacy {@code ResolverRankerServiceResolverComparator}, as a refactoring step toward
+     * removing the complex legacy API.
+     */
+    static class ResolverRankerServiceComparatorModel implements ResolverComparatorModel {
+        private final Map<UserHandle, Map<String, UsageStats>> mStatsPerUser; // Treat as immutable.
+        private final Map<UserHandle, LinkedHashMap<ComponentName,
+                ResolverTarget>> mTargetsDictPerUser; // Treat as immutable.
+        private final List<ResolverTarget> mTargets;  // Treat as immutable.
+        private final Collator mCollator;
+        private final IResolverRankerService mRanker;
+        private final ComponentName mRankerServiceName;
+        private final boolean mAnnotationsUsed;
+        private final Map<UserHandle, PackageManager> mPmMap;
+
+        // TODO: it doesn't look like we should have to pass both targets and targetsDict, but it's
+        // not written in a way that makes it clear whether we can derive one from the other (at
+        // least in this constructor).
+        ResolverRankerServiceComparatorModel(
+                Map<UserHandle, Map<String, UsageStats>> statsPerUser,
+                Map<UserHandle, LinkedHashMap<ComponentName, ResolverTarget>> targetsDictPerUser,
+                List<ResolverTarget> targets,
+                Collator collator,
+                IResolverRankerService ranker,
+                ComponentName rankerServiceName,
+                boolean annotationsUsed,
+                Map<UserHandle, PackageManager> pmMap) {
+            mStatsPerUser = statsPerUser;
+            mTargetsDictPerUser = targetsDictPerUser;
+            mTargets = targets;
+            mCollator = collator;
+            mRanker = ranker;
+            mRankerServiceName = rankerServiceName;
+            mAnnotationsUsed = annotationsUsed;
+            mPmMap = pmMap;
+        }
+
+        @Override
+        public Comparator<ResolveInfo> getComparator() {
+            // TODO: doCompute() doesn't seem to be concerned about null-checking mStats. Is that
+            // a bug there, or do we have a way of knowing it will be non-null under certain
+            // conditions?
+            return (lhs, rhs) -> {
+                final ResolverTarget lhsTarget = getActivityResolverTargetForUser(lhs.activityInfo,
+                        lhs.userHandle);
+                final ResolverTarget rhsTarget = getActivityResolverTargetForUser(rhs.activityInfo,
+                        rhs.userHandle);
+
+                if (lhsTarget != null && rhsTarget != null) {
+                    final int selectProbabilityDiff = Float.compare(
+                            rhsTarget.getSelectProbability(), lhsTarget.getSelectProbability());
+
+                    if (selectProbabilityDiff != 0) {
+                        return selectProbabilityDiff > 0 ? 1 : -1;
+                    }
+                }
+
+                CharSequence sa = null;
+                if (mPmMap.containsKey(lhs.userHandle)) {
+                    sa = lhs.loadLabel(mPmMap.get(lhs.userHandle));
+                }
+                if (sa == null) sa = lhs.activityInfo.name;
+                CharSequence sb = null;
+                if (mPmMap.containsKey(rhs.userHandle)) {
+                    sb = rhs.loadLabel(mPmMap.get(rhs.userHandle));
+                }
+                if (sb == null) sb = rhs.activityInfo.name;
+
+                return mCollator.compare(sa.toString().trim(), sb.toString().trim());
+            };
+        }
+
+        @Override
+        public float getScore(TargetInfo targetInfo) {
+            if (mTargetsDictPerUser.containsKey(targetInfo.getResolveInfo().userHandle)
+                    && mTargetsDictPerUser.get(targetInfo.getResolveInfo().userHandle)
+                    .get(targetInfo.getResolvedComponentName()) != null) {
+                return mTargetsDictPerUser.get(targetInfo.getResolveInfo().userHandle)
+                        .get(targetInfo.getResolvedComponentName()).getSelectProbability();
+            }
+            return 0;
+        }
+
+        @Override
+        public void notifyOnTargetSelected(TargetInfo targetInfo) {
+            if (mRanker != null) {
+                try {
+                    int selectedPos = -1;
+                    if (mTargetsDictPerUser.containsKey(targetInfo.getResolveInfo().userHandle)) {
+                        selectedPos = new ArrayList<>(mTargetsDictPerUser
+                                .get(targetInfo.getResolveInfo().userHandle).keySet())
+                                .indexOf(targetInfo.getResolvedComponentName());
+                    }
+                    if (selectedPos >= 0 && mTargets != null) {
+                        final float selectedProbability = getScore(targetInfo);
+                        int order = 0;
+                        for (ResolverTarget target : mTargets) {
+                            if (target.getSelectProbability() > selectedProbability) {
+                                order++;
+                            }
+                        }
+                        logMetrics(order);
+                        mRanker.train(mTargets, selectedPos);
+                    } else {
+                        if (DEBUG) {
+                            Log.d(TAG, "Selected a unknown component: " + targetInfo
+                                    .getResolvedComponentName());
+                        }
+                    }
+                } catch (RemoteException e) {
+                    Log.e(TAG, "Error in Train: " + e);
+                }
+            } else {
+                if (DEBUG) {
+                    Log.d(TAG, "Ranker is null; skip updateModel.");
+                }
+            }
+        }
+
+        /** Records metrics for evaluation. */
+        private void logMetrics(int selectedPos) {
+            if (mRankerServiceName != null) {
+                MetricsLogger metricsLogger = new MetricsLogger();
+                LogMaker log = new LogMaker(MetricsEvent.ACTION_TARGET_SELECTED);
+                log.setComponentName(mRankerServiceName);
+                log.addTaggedData(MetricsEvent.FIELD_IS_CATEGORY_USED, mAnnotationsUsed ? 1 : 0);
+                log.addTaggedData(MetricsEvent.FIELD_RANKED_POSITION, selectedPos);
+                metricsLogger.write(log);
+            }
+        }
+
+        @Nullable
+        private ResolverTarget getActivityResolverTargetForUser(
+                ActivityInfo activity, UserHandle user) {
+            if ((mStatsPerUser == null) || !mTargetsDictPerUser.containsKey(user)) {
+                return null;
+            }
+            return mTargetsDictPerUser
+                    .get(user)
+                    .get(new ComponentName(activity.packageName, activity.name));
+        }
     }
 }

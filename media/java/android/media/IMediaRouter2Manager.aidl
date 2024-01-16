@@ -18,6 +18,8 @@ package android.media;
 
 import android.media.MediaRoute2ProviderInfo;
 import android.media.MediaRoute2Info;
+import android.media.RouteDiscoveryPreference;
+import android.media.RouteListingPreference;
 import android.media.RoutingSessionInfo;
 
 /**
@@ -27,9 +29,10 @@ oneway interface IMediaRouter2Manager {
     void notifySessionCreated(int requestId, in RoutingSessionInfo session);
     void notifySessionUpdated(in RoutingSessionInfo session);
     void notifySessionReleased(in RoutingSessionInfo session);
-    void notifyPreferredFeaturesChanged(String packageName, in List<String> preferredFeatures);
-    void notifyRoutesAdded(in List<MediaRoute2Info> routes);
-    void notifyRoutesRemoved(in List<MediaRoute2Info> routes);
-    void notifyRoutesChanged(in List<MediaRoute2Info> routes);
+    void notifyDiscoveryPreferenceChanged(String packageName,
+            in RouteDiscoveryPreference discoveryPreference);
+    void notifyRouteListingPreferenceChange(String packageName,
+            in @nullable RouteListingPreference routeListingPreference);
+    void notifyRoutesUpdated(in List<MediaRoute2Info> routes);
     void notifyRequestFailed(int requestId, int reason);
 }

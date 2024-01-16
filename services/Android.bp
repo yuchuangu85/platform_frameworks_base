@@ -13,13 +13,24 @@ java_defaults {
     plugins: ["error_prone_android_framework"],
     errorprone: {
         javacflags: [
-            // "-Xep:AndroidFrameworkBinderIdentity:ERROR",
             "-Xep:AndroidFrameworkCompatChange:ERROR",
             // "-Xep:AndroidFrameworkUid:ERROR",
+            "-Xep:SelfEquals:ERROR",
+            "-Xep:NullTernary:ERROR",
+            "-Xep:TryFailThrowable:ERROR",
+            "-Xep:HashtableContains:ERROR",
+            "-Xep:FormatString:ERROR",
+            "-Xep:ArrayHashCode:ERROR",
+            "-Xep:SelfAssignment:ERROR",
+            "-Xep:ArrayEquals:ERROR",
+            "-Xep:IdentityBinaryExpression:ERROR",
             // NOTE: only enable to generate local patchfiles
             // "-XepPatchChecks:refaster:frameworks/base/errorprone/refaster/EfficientXml.java.refaster",
             // "-XepPatchLocation:/tmp/refaster/",
         ],
+    },
+    lint: {
+        extra_check_modules: ["AndroidFrameworkLintChecker"],
     },
 }
 
@@ -32,7 +43,10 @@ soong_config_module_type {
     name: "system_optimized_java_defaults",
     module_type: "java_defaults",
     config_namespace: "ANDROID",
-    bool_variables: ["SYSTEM_OPTIMIZE_JAVA"],
+    bool_variables: [
+        "SYSTEM_OPTIMIZE_JAVA",
+        "FULL_SYSTEM_OPTIMIZE_JAVA",
+    ],
     properties: ["optimize"],
 }
 
@@ -44,13 +58,35 @@ system_optimized_java_defaults {
                 enabled: true,
                 // TODO(b/210510433): Enable optimizations after improving
                 // retracing infra.
+                // See also FULL_SYSTEM_OPTIMIZE_JAVA.
                 optimize: false,
                 shrink: true,
-                proguard_flags_files: ["proguard.flags"],
+                ignore_warnings: false,
+                proguard_compatibility: false,
+                proguard_flags_files: [
+                    "proguard.flags",
+                    // Ensure classes referenced in the framework-res manifest
+                    // and implemented in system_server are kept.
+                    ":framework-res{.aapt.proguardOptionsFile}",
+                ],
             },
-            // Note: Optimizations are disabled by default if unspecified in
-            // the java_library rule.
-            conditions_default: {},
+            conditions_default: {
+                optimize: {
+                    enabled: true,
+                    optimize: false,
+                    shrink: true,
+                    ignore_warnings: false,
+                    // Note that this proguard config is very conservative, only shrinking the
+                    // permission subpackage to prune unused jarjar'ed Kotlin dependencies.
+                    proguard_flags_files: ["proguard_permission.flags"],
+                },
+            },
+        },
+        // Allow form factors to opt-in full system java optimization
+        FULL_SYSTEM_OPTIMIZE_JAVA: {
+            optimize: {
+                optimize: true,
+            },
         },
     },
 }
@@ -76,30 +112,29 @@ filegroup {
         ":services.appwidget-sources",
         ":services.autofill-sources",
         ":services.backup-sources",
-        ":services.bluetooth-sources", // TODO(b/214988855) : Remove once apex/service-bluetooth jar is ready
-        ":backuplib-sources",
         ":services.companion-sources",
         ":services.contentcapture-sources",
         ":services.contentsuggestions-sources",
         ":services.coverage-sources",
+        ":services.credentials-sources",
         ":services.devicepolicy-sources",
         ":services.midi-sources",
         ":services.musicsearch-sources",
         ":services.net-sources",
+        ":services.permission-sources",
         ":services.print-sources",
         ":services.profcollect-sources",
         ":services.restrictions-sources",
         ":services.searchui-sources",
         ":services.smartspace-sources",
-        ":services.speech-sources",
-        ":services.startop.iorap-sources",
+        ":services.soundtrigger-sources",
         ":services.systemcaptions-sources",
         ":services.translation-sources",
         ":services.texttospeech-sources",
         ":services.usage-sources",
         ":services.usb-sources",
-        ":services.uwb-sources",
         ":services.voiceinteraction-sources",
+        ":services.wallpapereffectsgeneration-sources",
         ":services.wifi-sources",
     ],
     visibility: ["//visibility:private"],
@@ -121,6 +156,7 @@ java_library {
         app_image: true,
         profile: "art-profile",
     },
+    exclude_kotlinc_generated_files: true,
 
     srcs: [":services-main-sources"],
 
@@ -136,25 +172,27 @@ java_library {
         "services.contentcapture",
         "services.contentsuggestions",
         "services.coverage",
+        "services.credentials",
         "services.devicepolicy",
+        "services.flags",
         "services.midi",
         "services.musicsearch",
         "services.net",
         "services.people",
+        "services.permission",
         "services.print",
         "services.profcollect",
         "services.restrictions",
         "services.searchui",
         "services.smartspace",
-        "services.speech",
-        "services.startop",
+        "services.soundtrigger",
         "services.systemcaptions",
         "services.translation",
         "services.texttospeech",
         "services.usage",
         "services.usb",
-        "services.uwb",
         "services.voiceinteraction",
+        "services.wallpapereffectsgeneration",
         "services.wifi",
         "service-blobstore",
         "service-jobscheduler",
@@ -165,6 +203,17 @@ java_library {
         "android.hidl.manager-V1.0-java",
         "framework-tethering.stubs.module_lib",
         "service-art.stubs.system_server",
+        "service-permission.stubs.system_server",
+        "service-rkp.stubs.system_server",
+        "service-sdksandbox.stubs.system_server",
+    ],
+
+    vintf_fragments: [
+        "manifest_services.xml",
+    ],
+
+    required: [
+        "libukey2_jni_shared",
     ],
 
     // Uncomment to enable output of certain warnings (deprecated, unchecked)
@@ -196,13 +245,14 @@ filegroup {
 stubs_defaults {
     name: "services-stubs-default",
     installable: false,
-    args: " --show-annotation android.annotation.SystemApi\\(client=android.annotation.SystemApi.Client.SYSTEM_SERVER\\)" +
-        " --hide-annotation android.annotation.Hide" +
-        " --hide InternalClasses" + // com.android.* classes are okay in this interface
+    flags: [
+        "--show-annotation android.annotation.SystemApi\\(client=android.annotation.SystemApi.Client.SYSTEM_SERVER\\)",
+        "--hide-annotation android.annotation.Hide",
+        "--hide InternalClasses", // com.android.* classes are okay in this interface
         // TODO: remove the --hide options below
-        " --hide-package com.google.android.startop.iorap" +
-        " --hide DeprecationMismatch" +
-        " --hide HiddenTypedefConstant",
+        "--hide DeprecationMismatch",
+        "--hide HiddenTypedefConstant",
+    ],
     visibility: ["//frameworks/base:__subpackages__"],
     filter_packages: ["com.android."],
 }
@@ -236,4 +286,5 @@ droidstubs {
             tag: ".removed-api.txt",
         },
     ],
+    api_surface: "system-server",
 }

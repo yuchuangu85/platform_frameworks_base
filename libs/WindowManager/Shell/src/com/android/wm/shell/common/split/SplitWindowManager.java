@@ -37,6 +37,7 @@ import android.view.LayoutInflater;
 import android.view.SurfaceControl;
 import android.view.SurfaceControlViewHost;
 import android.view.SurfaceSession;
+import android.view.View;
 import android.view.WindowManager;
 import android.view.WindowlessWindowManager;
 
@@ -57,6 +58,9 @@ public final class SplitWindowManager extends WindowlessWindowManager {
     private SurfaceControlViewHost mViewHost;
     private SurfaceControl mLeash;
     private DividerView mDividerView;
+
+    // Used to "pass" a transaction to WWM.remove so that view removal can be synchronized.
+    private SurfaceControl.Transaction mSyncTransaction = null;
 
     public interface ParentContainerCallbacks {
         void attachToParentSurface(SurfaceControl.Builder b);
@@ -89,7 +93,7 @@ public final class SplitWindowManager extends WindowlessWindowManager {
     }
 
     @Override
-    protected void attachToParentSurface(IWindow window, SurfaceControl.Builder b) {
+    protected SurfaceControl getParentSurface(IWindow window, WindowManager.LayoutParams attrs) {
         // Can't set position for the ViewRootImpl SC directly. Create a leash to manipulate later.
         final SurfaceControl.Builder builder = new SurfaceControl.Builder(new SurfaceSession())
                 .setContainerLayer()
@@ -99,7 +103,7 @@ public final class SplitWindowManager extends WindowlessWindowManager {
         mParentContainerCallbacks.attachToParentSurface(builder);
         mLeash = builder.build();
         mParentContainerCallbacks.onLeashReady(mLeash);
-        b.setParent(mLeash);
+        return mLeash;
     }
 
     /** Inflates {@link DividerView} on to the root surface. */
@@ -109,7 +113,8 @@ public final class SplitWindowManager extends WindowlessWindowManager {
                     "Try to inflate divider view again without release first");
         }
 
-        mViewHost = new SurfaceControlViewHost(mContext, mContext.getDisplay(), this);
+        mViewHost = new SurfaceControlViewHost(mContext, mContext.getDisplay(), this,
+                "SplitWindowManager");
         mDividerView = (DividerView) LayoutInflater.from(mContext)
                 .inflate(R.layout.split_divider, null /* root */);
 
@@ -122,6 +127,7 @@ public final class SplitWindowManager extends WindowlessWindowManager {
         lp.token = new Binder();
         lp.setTitle(mWindowName);
         lp.privateFlags |= PRIVATE_FLAG_NO_MOVE_ANIMATION | PRIVATE_FLAG_TRUSTED_OVERLAY;
+        lp.accessibilityTitle = mContext.getResources().getString(R.string.accessibility_divider);
         mViewHost.setView(mDividerView, lp);
         mDividerView.setup(splitLayout, this, mViewHost, insetsState);
     }
@@ -130,25 +136,52 @@ public final class SplitWindowManager extends WindowlessWindowManager {
      * Releases the surface control of the current {@link DividerView} and tear down the view
      * hierarchy.
      */
-    void release() {
+    void release(@Nullable SurfaceControl.Transaction t) {
         if (mDividerView != null) {
             mDividerView = null;
         }
 
         if (mViewHost != null){
+            mSyncTransaction = t;
             mViewHost.release();
+            mSyncTransaction = null;
             mViewHost = null;
         }
 
         if (mLeash != null) {
-            new SurfaceControl.Transaction().remove(mLeash).apply();
+            if (t == null) {
+                new SurfaceControl.Transaction().remove(mLeash).apply();
+            } else {
+                t.remove(mLeash);
+            }
             mLeash = null;
         }
     }
 
-    void setInteractive(boolean interactive) {
+    @Override
+    protected void removeSurface(SurfaceControl sc) {
+        // This gets called via SurfaceControlViewHost.release()
+        if (mSyncTransaction != null) {
+            mSyncTransaction.remove(sc);
+        } else {
+            super.removeSurface(sc);
+        }
+    }
+
+    /**
+     * Set divider should interactive to user or not.
+     *
+     * @param interactive divider interactive.
+     * @param hideHandle divider handle hidden or not, only work when interactive is false.
+     * @param from caller from where.
+     */
+    void setInteractive(boolean interactive, boolean hideHandle, String from) {
         if (mDividerView == null) return;
-        mDividerView.setInteractive(interactive);
+        mDividerView.setInteractive(interactive, hideHandle, from);
+    }
+
+    View getDividerView() {
+        return mDividerView;
     }
 
     /**

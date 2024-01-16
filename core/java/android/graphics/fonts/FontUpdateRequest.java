@@ -24,7 +24,8 @@ import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
 import android.os.Parcelable;
 import android.text.FontConfig;
-import android.util.TypedXmlSerializer;
+
+import com.android.modules.utils.TypedXmlSerializer;
 
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
@@ -235,7 +236,7 @@ public final class FontUpdateRequest implements Parcelable {
             public Family createFromParcel(Parcel source) {
                 String familyName = source.readString8();
                 List<Font> fonts = source.readParcelableList(
-                        new ArrayList<>(), Font.class.getClassLoader());
+                        new ArrayList<>(), Font.class.getClassLoader(), android.graphics.fonts.FontUpdateRequest.Font.class);
                 return new Family(familyName, fonts);
             }
 
@@ -379,9 +380,9 @@ public final class FontUpdateRequest implements Parcelable {
 
     protected FontUpdateRequest(Parcel in) {
         mType = in.readInt();
-        mFd = in.readParcelable(ParcelFileDescriptor.class.getClassLoader());
+        mFd = in.readParcelable(ParcelFileDescriptor.class.getClassLoader(), android.os.ParcelFileDescriptor.class);
         mSignature = in.readBlob();
-        mFontFamily = in.readParcelable(FontConfig.FontFamily.class.getClassLoader());
+        mFontFamily = in.readParcelable(FontConfig.FontFamily.class.getClassLoader(), android.graphics.fonts.FontUpdateRequest.Family.class);
     }
 
     public @Type int getType() {

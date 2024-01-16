@@ -19,57 +19,56 @@ android_test {
         "src/**/*.java",
         "src/**/*.kt",
 
-        "aidl/com/android/servicestests/aidl/INetworkStateObserver.aidl",
-        "aidl/com/android/servicestests/aidl/ICmdReceiverService.aidl",
-
         "test-apps/JobTestApp/src/**/*.java",
 
         "test-apps/SuspendTestApp/src/**/*.java",
-	":service-bluetooth-tests-sources", // TODO(b/214988855) : Remove once framework-bluetooth jar is ready
     ],
     static_libs: [
         "frameworks-base-testutils",
         "services.accessibility",
         "services.appwidget",
         "services.autofill",
+        "services.contentcapture",
         "services.backup",
+        "services.companion",
         "services.core",
+        "services.credentials",
         "services.devicepolicy",
+        "services.flags",
         "services.net",
         "services.people",
         "services.usage",
-        "services.uwb",
         "guava",
         "guava-android-testlib",
         "androidx.test.core",
         "androidx.test.ext.truth",
         "androidx.test.runner",
         "androidx.test.rules",
+        "androidx.test.ext.junit",
         "cts-wm-util",
         "platform-compat-test-rules",
         "mockito-target-minus-junit4",
         "platform-test-annotations",
         "ShortcutManagerTestUtils",
-        "truth-prebuilt",
+        "truth",
         "testables",
-        "testng",
         "ub-uiautomator",
         "platformprotosnano",
+        "framework-protos",
         "hamcrest-library",
         "servicestests-utils",
-        "service-appsearch",
         "service-jobscheduler",
-        "service-permission.impl",
         // TODO: remove once Android migrates to JUnit 4.12,
         // which provides assertThrows
         "testng",
+        "truth",
         "junit",
-        "platform-compat-test-rules",
+        "junit-params",
+        "ActivityContext",
+        "coretests-aidl",
+        "securebox",
+        "flag-junit",
     ],
-
-    aidl: {
-        local_include_dirs: ["aidl"],
-    },
 
     libs: [
         "android.hardware.power-V1-java",
@@ -82,7 +81,11 @@ android_test {
     ],
 
     platform_apis: true,
-    test_suites: ["device-tests"],
+
+    test_suites: [
+        "device-tests",
+        "automotive-tests",
+    ],
 
     certificate: "platform",
 
@@ -92,7 +95,6 @@ android_test {
         "libbinder",
         "libc++",
         "libcutils",
-        "libicing",
         "liblog",
         "liblzma",
         "libnativehelper",
@@ -110,18 +112,17 @@ android_test {
     },
 
     data: [
+        ":BstatsTestApp",
         ":JobTestApp",
-        ":StubTestApp",
+        ":SimpleServiceTestApp1",
+        ":SimpleServiceTestApp2",
+        ":SimpleServiceTestApp3",
+        ":SuspendTestApp",
+        ":MediaButtonReceiverHolderTestHelperApp",
+        "data/broken_shortcut.xml",
     ],
 
     java_resources: [
-        ":PackageParserTestApp1",
-        ":PackageParserTestApp2",
-        ":PackageParserTestApp3",
-        ":PackageParserTestApp4",
-        ":apex.test",
-        ":test.rebootless_apex_v1",
-        ":test.rebootless_apex_v2",
         ":com.android.apex.cts.shim.v1_prebuilt",
         ":com.android.apex.cts.shim.v2_different_certificate_prebuilt",
         ":com.android.apex.cts.shim.v2_unsigned_apk_container_prebuilt",
@@ -132,10 +133,41 @@ android_test {
 java_library {
     name: "servicestests-core-utils",
     srcs: [
+        "src/com/android/server/am/DeviceConfigSession.java",
+        "src/com/android/server/display/TestUtils.java",
         "src/com/android/server/pm/PackageSettingBuilder.java",
+        "src/com/android/server/pm/parsing/TestPackageParser2.kt",
     ],
     static_libs: [
         "services.core",
+        "compatibility-device-util-axt",
+    ],
+}
+
+java_library {
+    name: "servicestests-dpm-utils",
+    srcs: [
+        "src/com/android/server/devicepolicy/DevicePolicyManagerServiceTestable.java",
+        "src/com/android/server/devicepolicy/DevicePolicyManagerTestable.java",
+        "src/com/android/server/devicepolicy/DpmMockContext.java",
+        "src/com/android/server/devicepolicy/DpmTestBase.java",
+        "src/com/android/server/devicepolicy/DpmTestUtils.java",
+        "src/com/android/server/devicepolicy/DummyDeviceAdmins.java",
+        "src/com/android/server/devicepolicy/MockSystemServices.java",
+        "src/com/android/server/devicepolicy/MockUtils.java",
+    ],
+    libs: [
+        "android.test.mock",
+        "android.test.base",
+        "mockito-target-minus-junit4",
+    ],
+    static_libs: [
+        "frameworks-base-testutils",
+        "androidx.test.core",
+        "androidx.test.ext.truth",
+        "androidx.test.rules",
+        "services.core",
+        "services.devicepolicy",
     ],
 }
 
@@ -145,7 +177,6 @@ java_library {
         "utils/**/*.java",
         "utils/**/*.kt",
         "utils-mockito/**/*.kt",
-        ":services.core-sources-deviceconfig-interface",
     ],
     static_libs: [
         "junit",
@@ -162,7 +193,6 @@ java_library {
         "utils/**/*.java",
         "utils/**/*.kt",
         "utils-mockito/**/*.kt",
-        ":services.core-sources-deviceconfig-interface",
     ],
     static_libs: [
         "junit",
@@ -184,18 +214,8 @@ filegroup {
 java_genrule {
     name: "FrameworksServicesTests_apks_as_resources",
     srcs: [
-        ":FrameworksCoreTests_install_complete_package_info",
-        ":FrameworksServicesTests_install_intent_filters",
         ":FrameworksServicesTests_install_split_base",
         ":FrameworksServicesTests_install_split_feature_a",
-        ":FrameworksServicesTests_install_uses_sdk_0",
-        ":FrameworksServicesTests_install_uses_sdk_q0",
-        ":FrameworksServicesTests_install_uses_sdk_q0_r0",
-        ":FrameworksServicesTests_install_uses_sdk_r_none",
-        ":FrameworksServicesTests_install_uses_sdk_r0",
-        ":FrameworksServicesTests_install_uses_sdk_r5",
-        ":FrameworksServicesTests_install_uses_sdk_r0_s0",
-        ":FrameworksServicesTests_install_uses_sdk_r0_s5",
     ],
     out: ["FrameworkServicesTests_apks_as_resources.res.zip"],
     tools: ["soong_zip"],

@@ -25,6 +25,16 @@
 #include <hwui/ImageDecoder.h>
 #include <log/log.h>
 #include <SkAndroidCodec.h>
+#include <SkAlphaType.h>
+#include <SkCodec.h>
+#include <SkCodecAnimation.h>
+#include <SkColorSpace.h>
+#include <SkColorType.h>
+#include <SkImageInfo.h>
+#include <SkRect.h>
+#include <SkRefCnt.h>
+#include <SkSize.h>
+#include <SkStream.h>
 #include <utils/Color.h>
 
 #include <fcntl.h>
@@ -198,14 +208,16 @@ static SkColorType getColorType(AndroidBitmapFormat format) {
             return kGray_8_SkColorType;
         case ANDROID_BITMAP_FORMAT_RGBA_F16:
             return kRGBA_F16_SkColorType;
+        case ANDROID_BITMAP_FORMAT_RGBA_1010102:
+            return kRGBA_1010102_SkColorType;
         default:
             return kUnknown_SkColorType;
     }
 }
 
 int AImageDecoder_setAndroidBitmapFormat(AImageDecoder* decoder, int32_t format) {
-    if (!decoder || format < ANDROID_BITMAP_FORMAT_NONE
-            || format > ANDROID_BITMAP_FORMAT_RGBA_F16) {
+    if (!decoder || format < ANDROID_BITMAP_FORMAT_NONE ||
+        format > ANDROID_BITMAP_FORMAT_RGBA_1010102) {
         return ANDROID_IMAGE_DECODER_BAD_PARAMETER;
     }
 
@@ -290,6 +302,8 @@ static AndroidBitmapFormat getFormat(SkColorType colorType) {
             return ANDROID_BITMAP_FORMAT_A_8;
         case kRGBA_F16_SkColorType:
             return ANDROID_BITMAP_FORMAT_RGBA_F16;
+        case kRGBA_1010102_SkColorType:
+            return ANDROID_BITMAP_FORMAT_RGBA_1010102;
         default:
             return ANDROID_BITMAP_FORMAT_NONE;
     }

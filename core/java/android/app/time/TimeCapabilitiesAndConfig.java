@@ -17,6 +17,7 @@
 package android.app.time;
 
 import android.annotation.NonNull;
+import android.annotation.SystemApi;
 import android.os.Parcel;
 import android.os.Parcelable;
 
@@ -27,6 +28,7 @@ import java.util.Objects;
  *
  * @hide
  */
+@SystemApi
 public final class TimeCapabilitiesAndConfig implements Parcelable {
 
     public static final @NonNull Creator<TimeCapabilitiesAndConfig> CREATOR =
@@ -42,46 +44,47 @@ public final class TimeCapabilitiesAndConfig implements Parcelable {
         }
     };
 
-    @NonNull
-    private final TimeCapabilities mTimeCapabilities;
-
-    @NonNull
-    private final TimeConfiguration mTimeConfiguration;
+    @NonNull private final TimeCapabilities mCapabilities;
+    @NonNull private final TimeConfiguration mConfiguration;
 
     /**
+     * Creates a new instance.
+     *
      * @hide
      */
     public TimeCapabilitiesAndConfig(@NonNull TimeCapabilities timeCapabilities,
             @NonNull TimeConfiguration timeConfiguration) {
-        mTimeCapabilities = Objects.requireNonNull(timeCapabilities);
-        mTimeConfiguration = Objects.requireNonNull(timeConfiguration);
+        mCapabilities = Objects.requireNonNull(timeCapabilities);
+        mConfiguration = Objects.requireNonNull(timeConfiguration);
     }
 
     @NonNull
     private static TimeCapabilitiesAndConfig readFromParcel(Parcel in) {
-        TimeCapabilities capabilities = in.readParcelable(null);
-        TimeConfiguration configuration = in.readParcelable(null);
+        TimeCapabilities capabilities = in.readParcelable(null, android.app.time.TimeCapabilities.class);
+        TimeConfiguration configuration = in.readParcelable(null, android.app.time.TimeConfiguration.class);
         return new TimeCapabilitiesAndConfig(capabilities, configuration);
+    }
+
+    @Override
+    public void writeToParcel(@NonNull Parcel dest, int flags) {
+        dest.writeParcelable(mCapabilities, flags);
+        dest.writeParcelable(mConfiguration, flags);
     }
 
     /**
      * Returns the user's time behaviour capabilities.
-     *
-     * @hide
      */
     @NonNull
-    public TimeCapabilities getTimeCapabilities() {
-        return mTimeCapabilities;
+    public TimeCapabilities getCapabilities() {
+        return mCapabilities;
     }
 
     /**
      * Returns the user's time behaviour configuration.
-     *
-     * @hide
      */
     @NonNull
-    public TimeConfiguration getTimeConfiguration() {
-        return mTimeConfiguration;
+    public TimeConfiguration getConfiguration() {
+        return mConfiguration;
     }
 
     @Override
@@ -90,30 +93,24 @@ public final class TimeCapabilitiesAndConfig implements Parcelable {
     }
 
     @Override
-    public void writeToParcel(@NonNull Parcel dest, int flags) {
-        dest.writeParcelable(mTimeCapabilities, flags);
-        dest.writeParcelable(mTimeConfiguration, flags);
-    }
-
-    @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         TimeCapabilitiesAndConfig that = (TimeCapabilitiesAndConfig) o;
-        return mTimeCapabilities.equals(that.mTimeCapabilities)
-                && mTimeConfiguration.equals(that.mTimeConfiguration);
+        return mCapabilities.equals(that.mCapabilities)
+                && mConfiguration.equals(that.mConfiguration);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(mTimeCapabilities, mTimeConfiguration);
+        return Objects.hash(mCapabilities, mConfiguration);
     }
 
     @Override
     public String toString() {
         return "TimeCapabilitiesAndConfig{"
-                + "mTimeCapabilities=" + mTimeCapabilities
-                + ", mTimeConfiguration=" + mTimeConfiguration
+                + "mCapabilities=" + mCapabilities
+                + ", mConfiguration=" + mConfiguration
                 + '}';
     }
 }

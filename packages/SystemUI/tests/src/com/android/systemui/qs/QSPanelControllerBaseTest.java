@@ -24,7 +24,6 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.times;
@@ -45,7 +44,8 @@ import com.android.internal.logging.testing.UiEventLoggerFake;
 import com.android.systemui.R;
 import com.android.systemui.SysuiTestCase;
 import com.android.systemui.dump.DumpManager;
-import com.android.systemui.media.MediaHost;
+import com.android.systemui.media.controls.ui.MediaHost;
+import com.android.systemui.plugins.qs.QSTile;
 import com.android.systemui.plugins.qs.QSTileView;
 import com.android.systemui.qs.customize.QSCustomizerController;
 import com.android.systemui.qs.logging.QSLogger;
@@ -58,10 +58,10 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.util.Collections;
+import java.util.List;
 
 @RunWith(AndroidTestingRunner.class)
 @RunWithLooper
@@ -71,7 +71,7 @@ public class QSPanelControllerBaseTest extends SysuiTestCase {
     @Mock
     private QSPanel mQSPanel;
     @Mock
-    private QSTileHost mQSTileHost;
+    private QSHost mQSHost;
     @Mock
     private QSCustomizerController mQSCustomizerController;
     @Mock
@@ -89,6 +89,8 @@ public class QSPanelControllerBaseTest extends SysuiTestCase {
     @Mock
     QSTileImpl mQSTile;
     @Mock
+    QSTile mOtherTile;
+    @Mock
     QSTileView mQSTileView;
     @Mock
     PagedTileLayout mPagedTileLayout;
@@ -103,7 +105,7 @@ public class QSPanelControllerBaseTest extends SysuiTestCase {
 
     /** Implementation needed to ensure we have a reflectively-available class name. */
     private class TestableQSPanelControllerBase extends QSPanelControllerBase<QSPanel> {
-        protected TestableQSPanelControllerBase(QSPanel view, QSTileHost host,
+        protected TestableQSPanelControllerBase(QSPanel view, QSHost host,
                 QSCustomizerController qsCustomizerController, MediaHost mediaHost,
                 MetricsLogger metricsLogger, UiEventLogger uiEventLogger, QSLogger qsLogger,
                 DumpManager dumpManager) {
@@ -128,15 +130,19 @@ public class QSPanelControllerBaseTest extends SysuiTestCase {
         when(mQSPanel.getOrCreateTileLayout()).thenReturn(mPagedTileLayout);
         when(mQSPanel.getTileLayout()).thenReturn(mPagedTileLayout);
         when(mQSTile.getTileSpec()).thenReturn("dnd");
-        when(mQSTileHost.getTiles()).thenReturn(Collections.singleton(mQSTile));
-        when(mQSTileHost.createTileView(any(), eq(mQSTile), anyBoolean())).thenReturn(mQSTileView);
+        when(mQSHost.getTiles()).thenReturn(Collections.singleton(mQSTile));
+        when(mQSHost.createTileView(any(), eq(mQSTile), anyBoolean())).thenReturn(mQSTileView);
         when(mQSTileRevealControllerFactory.create(any(), any()))
                 .thenReturn(mQSTileRevealController);
         when(mMediaHost.getDisappearParameters()).thenReturn(new DisappearParameters());
         when(mQSPanel.getResources()).thenReturn(mResources);
         when(mResources.getConfiguration()).thenReturn(mConfiguration);
+        doAnswer(invocation -> {
+            when(mQSPanel.isListening()).thenReturn(invocation.getArgument(0));
+            return null;
+        }).when(mQSPanel).setListening(anyBoolean());
 
-        mController = new TestableQSPanelControllerBase(mQSPanel, mQSTileHost,
+        mController = new TestableQSPanelControllerBase(mQSPanel, mQSHost,
                 mQSCustomizerController, mMediaHost,
                 mMetricsLogger, mUiEventLogger, mQSLogger, mDumpManager);
 
@@ -149,7 +155,7 @@ public class QSPanelControllerBaseTest extends SysuiTestCase {
         mController.onViewDetached();
 
         QSPanelControllerBase<QSPanel> controller = new TestableQSPanelControllerBase(mQSPanel,
-                mQSTileHost, mQSCustomizerController, mMediaHost,
+                mQSHost, mQSCustomizerController, mMediaHost,
                 mMetricsLogger, mUiEventLogger, mQSLogger, mDumpManager) {
             @Override
             protected QSTileRevealController createTileRevealController() {
@@ -205,20 +211,23 @@ public class QSPanelControllerBaseTest extends SysuiTestCase {
         String mockTileViewString = "Mock Tile View";
         String mockTileString = "Mock Tile";
         doAnswer(invocation -> {
-            PrintWriter pw = invocation.getArgument(1);
+            PrintWriter pw = invocation.getArgument(0);
             pw.println(mockTileString);
             return null;
-        }).when(mQSTile).dump(any(FileDescriptor.class), any(PrintWriter.class),
-                any(String[].class));
+        }).when(mQSTile).dump(any(PrintWriter.class), any(String[].class));
         when(mQSTileView.toString()).thenReturn(mockTileViewString);
 
         StringWriter w = new StringWriter();
         PrintWriter pw = new PrintWriter(w);
-        mController.dump(mock(FileDescriptor.class), pw, new String[]{});
+        mController.dump(pw, new String[]{});
         String expected = "TestableQSPanelControllerBase:\n"
                 + "  Tile records:\n"
                 + "    " + mockTileString + "\n"
-                + "    " + mockTileViewString + "\n";
+                + "    " + mockTileViewString + "\n"
+                + "  media bounds: null\n"
+                + "  horizontal layout: false\n"
+                + "  last orientation: 0\n"
+                + "  mShouldUseSplitNotificationShade: false\n";
         assertEquals(expected, w.getBuffer().toString());
     }
 
@@ -241,7 +250,7 @@ public class QSPanelControllerBaseTest extends SysuiTestCase {
 
         when(mResources.getBoolean(R.bool.config_use_split_notification_shade)).thenReturn(false);
         when(mQSPanel.getDumpableTag()).thenReturn("QSPanelLandscape");
-        mController = new TestableQSPanelControllerBase(mQSPanel, mQSTileHost,
+        mController = new TestableQSPanelControllerBase(mQSPanel, mQSHost,
                 mQSCustomizerController, mMediaHost,
                 mMetricsLogger, mUiEventLogger, mQSLogger, mDumpManager);
         mController.init();
@@ -250,7 +259,7 @@ public class QSPanelControllerBaseTest extends SysuiTestCase {
 
         when(mResources.getBoolean(R.bool.config_use_split_notification_shade)).thenReturn(true);
         when(mQSPanel.getDumpableTag()).thenReturn("QSPanelPortrait");
-        mController = new TestableQSPanelControllerBase(mQSPanel, mQSTileHost,
+        mController = new TestableQSPanelControllerBase(mQSPanel, mQSHost,
                 mQSCustomizerController, mMediaHost,
                 mMetricsLogger, mUiEventLogger, mQSLogger, mDumpManager);
         mController.init();
@@ -269,7 +278,7 @@ public class QSPanelControllerBaseTest extends SysuiTestCase {
 
         // Then the layout changes
         assertThat(mController.shouldUseHorizontalLayout()).isTrue();
-        verify(mHorizontalLayoutListener).run(); // not invoked
+        verify(mHorizontalLayoutListener).run();
 
         // When it is rotated back to portrait
         mConfiguration.orientation = Configuration.ORIENTATION_PORTRAIT;
@@ -278,5 +287,64 @@ public class QSPanelControllerBaseTest extends SysuiTestCase {
         // Then the layout changes back
         assertThat(mController.shouldUseHorizontalLayout()).isFalse();
         verify(mHorizontalLayoutListener, times(2)).run();
+    }
+
+    @Test
+    public void testRefreshAllTilesDoesntRefreshListeningTiles() {
+        when(mQSHost.getTiles()).thenReturn(List.of(mQSTile, mOtherTile));
+        mController.setTiles();
+
+        when(mQSTile.isListening()).thenReturn(false);
+        when(mOtherTile.isListening()).thenReturn(true);
+
+        mController.refreshAllTiles();
+        verify(mQSTile).refreshState();
+        verify(mOtherTile, never()).refreshState();
+    }
+
+    @Test
+    public void configurationChange_onlySplitShadeConfigChanges_horizontalLayoutStatusUpdated() {
+        // Preconditions for horizontal layout
+        when(mMediaHost.getVisible()).thenReturn(true);
+        when(mResources.getBoolean(R.bool.config_use_split_notification_shade)).thenReturn(false);
+        mConfiguration.orientation = Configuration.ORIENTATION_LANDSCAPE;
+        mController.setUsingHorizontalLayoutChangeListener(mHorizontalLayoutListener);
+        mController.mOnConfigurationChangedListener.onConfigurationChange(mConfiguration);
+        assertThat(mController.shouldUseHorizontalLayout()).isTrue();
+        reset(mHorizontalLayoutListener);
+
+        // Only split shade status changes
+        when(mResources.getBoolean(R.bool.config_use_split_notification_shade)).thenReturn(true);
+        mController.mOnConfigurationChangedListener.onConfigurationChange(mConfiguration);
+
+        // Horizontal layout is updated accordingly.
+        assertThat(mController.shouldUseHorizontalLayout()).isFalse();
+        verify(mHorizontalLayoutListener).run();
+    }
+
+    @Test
+    public void changeTiles_callbackRemovedOnOldOnes() {
+        // Start with one tile
+        assertThat(mController.mRecords.size()).isEqualTo(1);
+        QSPanelControllerBase.TileRecord record = mController.mRecords.get(0);
+
+        assertThat(record.tile).isEqualTo(mQSTile);
+
+        // Change to a different tile
+        when(mQSHost.getTiles()).thenReturn(List.of(mOtherTile));
+        mController.setTiles();
+
+        verify(mQSTile).removeCallback(record.callback);
+        verify(mOtherTile, never()).removeCallback(any());
+        verify(mOtherTile, never()).removeCallbacks();
+    }
+
+    @Test
+    public void onViewDetached_removesJustTheAssociatedCallback() {
+        QSPanelControllerBase.TileRecord record = mController.mRecords.get(0);
+
+        mController.onViewDetached();
+        verify(mQSTile).removeCallback(record.callback);
+        verify(mQSTile, never()).removeCallbacks();
     }
 }

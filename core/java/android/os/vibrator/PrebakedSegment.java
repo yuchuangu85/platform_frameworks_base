@@ -22,6 +22,7 @@ import android.annotation.TestApi;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.VibrationEffect;
+import android.os.Vibrator;
 
 import java.util.Objects;
 
@@ -67,17 +68,63 @@ public final class PrebakedSegment extends VibrationEffectSegment {
         return -1;
     }
 
+    /** @hide */
+    @Override
+    public boolean areVibrationFeaturesSupported(@NonNull Vibrator vibrator) {
+        if (vibrator.areAllEffectsSupported(mEffectId) == Vibrator.VIBRATION_EFFECT_SUPPORT_YES) {
+            return true;
+        }
+        if (!mFallback) {
+            // If the Vibrator's support is not `VIBRATION_EFFECT_SUPPORT_YES`, and this effect does
+            // not support fallbacks, the effect is considered not supported by the vibrator.
+            return false;
+        }
+        // The vibrator does not have hardware support for the effect, but the effect has fallback
+        // support. Check if a fallback will be available for the effect ID.
+        switch (mEffectId) {
+            case VibrationEffect.EFFECT_CLICK:
+            case VibrationEffect.EFFECT_DOUBLE_CLICK:
+            case VibrationEffect.EFFECT_HEAVY_CLICK:
+            case VibrationEffect.EFFECT_TICK:
+                // Any of these effects are always supported via some form of fallback.
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** @hide */
+    @Override
+    public boolean isHapticFeedbackCandidate() {
+        switch (mEffectId) {
+            case VibrationEffect.EFFECT_CLICK:
+            case VibrationEffect.EFFECT_DOUBLE_CLICK:
+            case VibrationEffect.EFFECT_HEAVY_CLICK:
+            case VibrationEffect.EFFECT_POP:
+            case VibrationEffect.EFFECT_TEXTURE_TICK:
+            case VibrationEffect.EFFECT_THUD:
+            case VibrationEffect.EFFECT_TICK:
+                return true;
+            default:
+                // VibrationEffect.RINGTONES are not segments that could represent a haptic feedback
+                return false;
+        }
+    }
+
+    /** @hide */
     @Override
     public boolean hasNonZeroAmplitude() {
         return true;
     }
 
+    /** @hide */
     @NonNull
     @Override
     public PrebakedSegment resolve(int defaultAmplitude) {
         return this;
     }
 
+    /** @hide */
     @NonNull
     @Override
     public PrebakedSegment scale(float scaleFactor) {
@@ -85,6 +132,7 @@ public final class PrebakedSegment extends VibrationEffectSegment {
         return this;
     }
 
+    /** @hide */
     @NonNull
     @Override
     public PrebakedSegment applyEffectStrength(int effectStrength) {
@@ -105,16 +153,17 @@ public final class PrebakedSegment extends VibrationEffectSegment {
         }
     }
 
+    /** @hide */
     @Override
     public void validate() {
         switch (mEffectId) {
             case VibrationEffect.EFFECT_CLICK:
             case VibrationEffect.EFFECT_DOUBLE_CLICK:
-            case VibrationEffect.EFFECT_TICK:
+            case VibrationEffect.EFFECT_HEAVY_CLICK:
+            case VibrationEffect.EFFECT_POP:
             case VibrationEffect.EFFECT_TEXTURE_TICK:
             case VibrationEffect.EFFECT_THUD:
-            case VibrationEffect.EFFECT_POP:
-            case VibrationEffect.EFFECT_HEAVY_CLICK:
+            case VibrationEffect.EFFECT_TICK:
                 break;
             default:
                 int[] ringtones = VibrationEffect.RINGTONES;

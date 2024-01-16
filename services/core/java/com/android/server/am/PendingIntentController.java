@@ -26,8 +26,10 @@ import static com.android.server.am.ActivityManagerDebugConfig.TAG_WITH_CLASS_NA
 import android.annotation.Nullable;
 import android.app.Activity;
 import android.app.ActivityManagerInternal;
+import android.app.ActivityOptions;
 import android.app.AppGlobals;
 import android.app.PendingIntent;
+import android.app.PendingIntentStats;
 import android.content.IIntentSender;
 import android.content.Intent;
 import android.os.Binder;
@@ -60,6 +62,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 
 /**
  * Helper class for {@link ActivityManagerService} responsible for managing pending intents.
@@ -124,6 +127,18 @@ public class PendingIntentController {
                 }
             }
             Bundle.setDefusable(bOptions, true);
+            ActivityOptions opts = ActivityOptions.fromBundle(bOptions);
+            if (opts != null && opts.getPendingIntentBackgroundActivityStartMode()
+                    != ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_SYSTEM_DEFINED) {
+                Slog.wtf(TAG, "Resetting option setPendingIntentBackgroundActivityStartMode("
+                        + opts.getPendingIntentBackgroundActivityStartMode()
+                        + ") to SYSTEM_DEFINED from the options provided by the pending "
+                        + "intent creator ("
+                        + packageName
+                        + ") because this option is meant for the pending intent sender");
+                opts.setPendingIntentBackgroundActivityStartMode(
+                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_SYSTEM_DEFINED);
+            }
 
             final boolean noCreate = (flags & PendingIntent.FLAG_NO_CREATE) != 0;
             final boolean cancelCurrent = (flags & PendingIntent.FLAG_CANCEL_CURRENT) != 0;
@@ -133,7 +148,7 @@ public class PendingIntentController {
 
             PendingIntentRecord.Key key = new PendingIntentRecord.Key(type, packageName, featureId,
                     token, resultWho, requestCode, intents, resolvedTypes, flags,
-                    SafeActivityOptions.fromBundle(bOptions), userId);
+                    new SafeActivityOptions(opts), userId);
             WeakReference<PendingIntentRecord> ref;
             ref = mIntentSenderRecords.get(key);
             PendingIntentRecord rec = ref != null ? ref.get() : null;
@@ -419,6 +434,55 @@ public class PendingIntentController {
                 pw.println("  (nothing)");
             }
         }
+    }
+
+    /**
+     * Provides some stats tracking of the current state of the PendingIntent queue.
+     *
+     * Data about the pending intent queue is intended to be used for memory impact tracking.
+     * Returned data (one per uid) will consist of instances of PendingIntentStats containing
+     * (I) number of PendingIntents and (II) total size of all bundled extras in the PIs.
+     *
+     * @hide
+     */
+    public List<PendingIntentStats> dumpPendingIntentStatsForStatsd() {
+        List<PendingIntentStats> pendingIntentStats = new ArrayList<>();
+
+        synchronized (mLock) {
+            if (mIntentSenderRecords.size() > 0) {
+                // First, aggregate PendingIntent data by package uid.
+                final SparseIntArray countsByUid = new SparseIntArray();
+                final SparseIntArray bundleSizesByUid = new SparseIntArray();
+
+                for (WeakReference<PendingIntentRecord> reference : mIntentSenderRecords.values()) {
+                    if (reference == null || reference.get() == null) {
+                        continue;
+                    }
+                    PendingIntentRecord record = reference.get();
+                    int index = countsByUid.indexOfKey(record.uid);
+
+                    if (index < 0) { // ie. the key was not found
+                        countsByUid.put(record.uid, 1);
+                        bundleSizesByUid.put(record.uid,
+                                record.key.requestIntent.getExtrasTotalSize());
+                    } else {
+                        countsByUid.put(record.uid, countsByUid.valueAt(index) + 1);
+                        bundleSizesByUid.put(record.uid,
+                                bundleSizesByUid.valueAt(index)
+                                + record.key.requestIntent.getExtrasTotalSize());
+                    }
+                }
+
+                // Now generate the output.
+                for (int i = 0, size = countsByUid.size(); i < size; i++) {
+                    pendingIntentStats.add(new PendingIntentStats(
+                            countsByUid.keyAt(i),
+                            countsByUid.valueAt(i),
+                            /* NB: int conversion here */ bundleSizesByUid.valueAt(i) / 1024));
+                }
+            }
+        }
+        return pendingIntentStats;
     }
 
     /**
