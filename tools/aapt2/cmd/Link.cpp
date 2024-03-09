@@ -35,6 +35,8 @@
 #include "android-base/expected.h"
 #include "android-base/file.h"
 #include "android-base/stringprintf.h"
+#include "androidfw/BigBufferStream.h"
+#include "androidfw/FileStream.h"
 #include "androidfw/IDiagnostics.h"
 #include "androidfw/Locale.h"
 #include "androidfw/StringPiece.h"
@@ -48,14 +50,13 @@
 #include "format/binary/XmlFlattener.h"
 #include "format/proto/ProtoDeserialize.h"
 #include "format/proto/ProtoSerialize.h"
-#include "io/BigBufferStream.h"
-#include "io/FileStream.h"
 #include "io/FileSystem.h"
 #include "io/Util.h"
 #include "io/ZipArchive.h"
 #include "java/JavaClassGenerator.h"
 #include "java/ManifestClassGenerator.h"
 #include "java/ProguardRules.h"
+#include "link/FeatureFlagsFilter.h"
 #include "link/Linkers.h"
 #include "link/ManifestFixer.h"
 #include "link/NoDefaultResourceRemover.h"
@@ -73,8 +74,8 @@
 #include "util/Files.h"
 #include "xml/XmlDom.h"
 
-using ::aapt::io::FileInputStream;
 using ::android::ConfigDescription;
+using ::android::FileInputStream;
 using ::android::StringPiece;
 using ::android::base::expected;
 using ::android::base::StringPrintf;
@@ -149,6 +150,7 @@ class LinkContext : public IAaptContext {
 
   void SetVerbose(bool val) {
     verbose_ = val;
+    diagnostics_->SetVerbose(val);
   }
 
   int GetMinSdkVersion() override {
@@ -262,7 +264,7 @@ static bool FlattenXml(IAaptContext* context, const xml::XmlResource& xml_res, S
         return false;
       }
 
-      io::BigBufferInputStream input_stream(&buffer);
+      android::BigBufferInputStream input_stream(&buffer);
       return io::CopyInputStreamToArchive(context, &input_stream, path, ArchiveEntry::kCompress,
                                           writer);
     } break;
@@ -283,7 +285,7 @@ static bool FlattenXml(IAaptContext* context, const xml::XmlResource& xml_res, S
 static std::unique_ptr<xml::XmlResource> LoadXml(const std::string& path,
                                                  android::IDiagnostics* diag) {
   TRACE_CALL();
-  FileInputStream fin(path);
+  android::FileInputStream fin(path);
   if (fin.HadError()) {
     diag->Error(android::DiagMessage(path) << "failed to load XML file: " << fin.GetError());
     return {};
@@ -686,7 +688,7 @@ bool ResourceFileFlattener::Flatten(ResourceTable* table, IArchiveWriter* archiv
 static bool WriteStableIdMapToPath(android::IDiagnostics* diag,
                                    const std::unordered_map<ResourceName, ResourceId>& id_map,
                                    const std::string& id_map_path) {
-  io::FileOutputStream fout(id_map_path);
+  android::FileOutputStream fout(id_map_path);
   if (fout.HadError()) {
     diag->Error(android::DiagMessage(id_map_path) << "failed to open: " << fout.GetError());
     return false;
@@ -1196,7 +1198,7 @@ class Linker {
           return false;
         }
 
-        io::BigBufferInputStream input_stream(&buffer);
+        android::BigBufferInputStream input_stream(&buffer);
         return io::CopyInputStreamToArchive(context_, &input_stream, kApkResourceTablePath,
                                             ArchiveEntry::kAlign, writer);
       } break;
@@ -1220,7 +1222,7 @@ class Linker {
     }
 
     std::string out_path;
-    std::unique_ptr<io::FileOutputStream> fout;
+    std::unique_ptr<android::FileOutputStream> fout;
     if (options_.generate_java_class_path) {
       out_path = options_.generate_java_class_path.value();
       file::AppendPath(&out_path, file::PackageToPath(out_package));
@@ -1232,7 +1234,7 @@ class Linker {
 
       file::AppendPath(&out_path, "R.java");
 
-      fout = util::make_unique<io::FileOutputStream>(out_path);
+      fout = util::make_unique<android::FileOutputStream>(out_path);
       if (fout->HadError()) {
         context_->GetDiagnostics()->Error(android::DiagMessage()
                                           << "failed writing to '" << out_path
@@ -1241,9 +1243,9 @@ class Linker {
       }
     }
 
-    std::unique_ptr<io::FileOutputStream> fout_text;
+    std::unique_ptr<android::FileOutputStream> fout_text;
     if (out_text_symbols_path) {
-      fout_text = util::make_unique<io::FileOutputStream>(out_text_symbols_path.value());
+      fout_text = util::make_unique<android::FileOutputStream>(out_text_symbols_path.value());
       if (fout_text->HadError()) {
         context_->GetDiagnostics()->Error(android::DiagMessage()
                                           << "failed writing to '" << out_text_symbols_path.value()
@@ -1385,7 +1387,7 @@ class Linker {
 
     file::AppendPath(&out_path, "Manifest.java");
 
-    io::FileOutputStream fout(out_path);
+    android::FileOutputStream fout(out_path);
     if (fout.HadError()) {
       context_->GetDiagnostics()->Error(android::DiagMessage() << "failed to open '" << out_path
                                                                << "': " << fout.GetError());
@@ -1411,7 +1413,7 @@ class Linker {
     }
 
     const std::string& out_path = out.value();
-    io::FileOutputStream fout(out_path);
+    android::FileOutputStream fout(out_path);
     if (fout.HadError()) {
       context_->GetDiagnostics()->Error(android::DiagMessage() << "failed to open '" << out_path
                                                                << "': " << fout.GetError());
@@ -1600,7 +1602,7 @@ class Linker {
       }
     }
 
-    std::unique_ptr<io::InputStream> input_stream = file->OpenInputStream();
+    std::unique_ptr<android::InputStream> input_stream = file->OpenInputStream();
     if (input_stream == nullptr) {
       context_->GetDiagnostics()->Error(android::DiagMessage(src) << "failed to open file");
       return false;
@@ -1986,6 +1988,21 @@ class Linker {
     context_->SetNameManglerPolicy(NameManglerPolicy{context_->GetCompilationPackage()});
     context_->SetSplitNameDependencies(app_info_.split_name_dependencies);
 
+    std::unique_ptr<xml::XmlResource> pre_flags_filter_manifest_xml = manifest_xml->Clone();
+
+    FeatureFlagsFilterOptions flags_filter_options;
+    if (context_->GetMinSdkVersion() > SDK_UPSIDE_DOWN_CAKE) {
+      // For API version > U, PackageManager will dynamically read the flag values and disable
+      // manifest elements accordingly when parsing the manifest.
+      // For API version <= U, we remove disabled elements from the manifest with the filter.
+      flags_filter_options.remove_disabled_elements = false;
+      flags_filter_options.flags_must_have_value = false;
+    }
+    FeatureFlagsFilter flags_filter(options_.feature_flag_values, flags_filter_options);
+    if (!flags_filter.Consume(context_, manifest_xml.get())) {
+      return 1;
+    }
+
     // Override the package ID when it is "android".
     if (context_->GetCompilationPackage() == "android") {
       context_->SetPackageId(kAndroidPackageId);
@@ -2282,7 +2299,12 @@ class Linker {
         }
 
         if (options_.generate_java_class_path) {
-          if (!WriteManifestJavaFile(manifest_xml.get())) {
+          // The FeatureFlagsFilter may remove <permission> and <permission-group> elements that
+          // generate constants in the Manifest Java file. While we want those permissions and
+          // permission groups removed in the SDK (i.e., if a feature flag is disabled), the
+          // constants should still remain so that code referencing it (e.g., within a feature
+          // flag check) will still compile. Therefore we use the manifest XML before the filter.
+          if (!WriteManifestJavaFile(pre_flags_filter_manifest_xml.get())) {
             error = true;
           }
         }
@@ -2530,7 +2552,7 @@ int LinkCommand::Action(const std::vector<std::string>& args) {
   }
 
   for (const std::string& arg : all_feature_flags_args) {
-    if (ParseFeatureFlagsParameter(arg, context.GetDiagnostics(), &options_.feature_flag_values)) {
+    if (!ParseFeatureFlagsParameter(arg, context.GetDiagnostics(), &options_.feature_flag_values)) {
       return 1;
     }
   }

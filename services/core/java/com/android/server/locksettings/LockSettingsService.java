@@ -16,6 +16,7 @@
 
 package com.android.server.locksettings;
 
+import static android.security.Flags.reportPrimaryAuthAttempts;
 import static android.Manifest.permission.ACCESS_KEYGUARD_SECURE_STORAGE;
 import static android.Manifest.permission.MANAGE_BIOMETRIC;
 import static android.Manifest.permission.SET_AND_VERIFY_LOCKSCREEN_CREDENTIALS;
@@ -103,7 +104,6 @@ import android.provider.DeviceConfig;
 import android.provider.Settings;
 import android.security.AndroidKeyStoreMaintenance;
 import android.security.Authorization;
-import android.security.KeyStore;
 import android.security.keystore.KeyProperties;
 import android.security.keystore.KeyProtection;
 import android.security.keystore.recovery.KeyChainProtectionParams;
@@ -139,6 +139,7 @@ import com.android.internal.widget.IWeakEscrowTokenActivatedListener;
 import com.android.internal.widget.IWeakEscrowTokenRemovedListener;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.internal.widget.LockSettingsInternal;
+import com.android.internal.widget.LockSettingsStateListener;
 import com.android.internal.widget.LockscreenCredential;
 import com.android.internal.widget.RebootEscrowListener;
 import com.android.internal.widget.VerifyCredentialResponse;
@@ -163,6 +164,7 @@ import java.io.PrintWriter;
 import java.security.GeneralSecurityException;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
+import java.security.KeyStore;
 import java.security.KeyStoreException;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
@@ -180,6 +182,7 @@ import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
 import java.util.StringJoiner;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -285,7 +288,7 @@ public class LockSettingsService extends ILockSettings.Stub {
     private final IActivityManager mActivityManager;
     private final SyntheticPasswordManager mSpManager;
 
-    private final java.security.KeyStore mJavaKeyStore;
+    private final KeyStore mKeyStore;
     private final RecoverableKeyStoreManager mRecoverableKeyStoreManager;
     private final UnifiedProfilePasswordCache mUnifiedProfilePasswordCache;
 
@@ -326,6 +329,9 @@ public class LockSettingsService extends ILockSettings.Stub {
             Process.VPN_UID, Process.ROOT_UID, Process.SYSTEM_UID};
 
     private HashMap<UserHandle, UserManager> mUserManagerCache = new HashMap<>();
+
+    private final CopyOnWriteArrayList<LockSettingsStateListener> mLockSettingsStateListeners =
+            new CopyOnWriteArrayList<>();
 
     // This class manages life cycle events for encrypted users on File Based Encryption (FBE)
     // devices. The most basic of these is to show/hide notifications about missing features until
@@ -554,10 +560,6 @@ public class LockSettingsService extends ILockSettings.Stub {
             return DeviceStateCache.getInstance();
         }
 
-        public KeyStore getKeyStore() {
-            return KeyStore.getInstance();
-        }
-
         public RecoverableKeyStoreManager getRecoverableKeyStoreManager() {
             return RecoverableKeyStoreManager.getInstance(mContext);
         }
@@ -609,9 +611,9 @@ public class LockSettingsService extends ILockSettings.Stub {
             return (BiometricManager) mContext.getSystemService(Context.BIOMETRIC_SERVICE);
         }
 
-        public java.security.KeyStore getJavaKeyStore() {
+        public KeyStore getKeyStore() {
             try {
-                java.security.KeyStore ks = java.security.KeyStore.getInstance(
+                KeyStore ks = KeyStore.getInstance(
                         SyntheticPasswordCrypto.androidKeystoreProviderName());
                 ks.load(new AndroidKeyStoreLoadStoreParameter(
                         SyntheticPasswordCrypto.keyNamespace()));
@@ -621,8 +623,7 @@ public class LockSettingsService extends ILockSettings.Stub {
             }
         }
 
-        public @NonNull UnifiedProfilePasswordCache getUnifiedProfilePasswordCache(
-                java.security.KeyStore ks) {
+        public @NonNull UnifiedProfilePasswordCache getUnifiedProfilePasswordCache(KeyStore ks) {
             return new UnifiedProfilePasswordCache(ks);
         }
 
@@ -644,7 +645,7 @@ public class LockSettingsService extends ILockSettings.Stub {
     protected LockSettingsService(Injector injector) {
         mInjector = injector;
         mContext = injector.getContext();
-        mJavaKeyStore = injector.getJavaKeyStore();
+        mKeyStore = injector.getKeyStore();
         mRecoverableKeyStoreManager = injector.getRecoverableKeyStoreManager();
         mHandler = injector.getHandler(injector.getServiceThread());
         mStrongAuth = injector.getStrongAuth();
@@ -666,7 +667,7 @@ public class LockSettingsService extends ILockSettings.Stub {
         mGatekeeperPasswords = new LongSparseArray<>();
 
         mSpManager = injector.getSyntheticPasswordManager(mStorage);
-        mUnifiedProfilePasswordCache = injector.getUnifiedProfilePasswordCache(mJavaKeyStore);
+        mUnifiedProfilePasswordCache = injector.getUnifiedProfilePasswordCache(mKeyStore);
         mBiometricDeferredQueue = new BiometricDeferredQueue(mSpManager, mHandler);
 
         mRebootEscrowManager = injector.getRebootEscrowManager(new RebootEscrowCallbacks(),
@@ -1451,7 +1452,7 @@ public class LockSettingsService extends ILockSettings.Stub {
         byte[] encryptedPassword = Arrays.copyOfRange(storedData, PROFILE_KEY_IV_SIZE,
                 storedData.length);
         byte[] decryptionResult;
-        SecretKey decryptionKey = (SecretKey) mJavaKeyStore.getKey(
+        SecretKey decryptionKey = (SecretKey) mKeyStore.getKey(
                 PROFILE_KEY_NAME_DECRYPT + userId, null);
 
         Cipher cipher = Cipher.getInstance(KeyProperties.KEY_ALGORITHM_AES + "/"
@@ -2045,16 +2046,16 @@ public class LockSettingsService extends ILockSettings.Stub {
             keyGenerator.init(new SecureRandom());
             SecretKey secretKey = keyGenerator.generateKey();
             try {
-                mJavaKeyStore.setEntry(
+                mKeyStore.setEntry(
                         PROFILE_KEY_NAME_ENCRYPT + profileUserId,
-                        new java.security.KeyStore.SecretKeyEntry(secretKey),
+                        new KeyStore.SecretKeyEntry(secretKey),
                         new KeyProtection.Builder(KeyProperties.PURPOSE_ENCRYPT)
                                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                                 .build());
-                mJavaKeyStore.setEntry(
+                mKeyStore.setEntry(
                         PROFILE_KEY_NAME_DECRYPT + profileUserId,
-                        new java.security.KeyStore.SecretKeyEntry(secretKey),
+                        new KeyStore.SecretKeyEntry(secretKey),
                         new KeyProtection.Builder(KeyProperties.PURPOSE_DECRYPT)
                                 .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                                 .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
@@ -2063,7 +2064,7 @@ public class LockSettingsService extends ILockSettings.Stub {
                                 .setUserAuthenticationValidityDurationSeconds(30)
                                 .build());
                 // Key imported, obtain a reference to it.
-                SecretKey keyStoreEncryptionKey = (SecretKey) mJavaKeyStore.getKey(
+                SecretKey keyStoreEncryptionKey = (SecretKey) mKeyStore.getKey(
                         PROFILE_KEY_NAME_ENCRYPT + profileUserId, null);
                 Cipher cipher = Cipher.getInstance(
                         KeyProperties.KEY_ALGORITHM_AES + "/" + KeyProperties.BLOCK_MODE_GCM + "/"
@@ -2073,7 +2074,7 @@ public class LockSettingsService extends ILockSettings.Stub {
                 iv = cipher.getIV();
             } finally {
                 // The original key can now be discarded.
-                mJavaKeyStore.deleteEntry(PROFILE_KEY_NAME_ENCRYPT + profileUserId);
+                mKeyStore.deleteEntry(PROFILE_KEY_NAME_ENCRYPT + profileUserId);
             }
         } catch (UnrecoverableKeyException
                 | BadPaddingException | IllegalBlockSizeException | KeyStoreException
@@ -2342,7 +2343,22 @@ public class LockSettingsService extends ILockSettings.Stub {
                 requireStrongAuth(STRONG_AUTH_REQUIRED_AFTER_LOCKOUT, userId);
             }
         }
+        if (reportPrimaryAuthAttempts()) {
+            final boolean success =
+                    response.getResponseCode() == VerifyCredentialResponse.RESPONSE_OK;
+            notifyLockSettingsStateListeners(success, userId);
+        }
         return response;
+    }
+
+    private void notifyLockSettingsStateListeners(boolean success, int userId) {
+        for (LockSettingsStateListener listener : mLockSettingsStateListeners) {
+            if (success) {
+                listener.onAuthenticationSucceeded(userId);
+            } else {
+                listener.onAuthenticationFailed(userId);
+            }
+        }
     }
 
     @Override
@@ -2505,11 +2521,10 @@ public class LockSettingsService extends ILockSettings.Stub {
         final String encryptAlias = PROFILE_KEY_NAME_ENCRYPT + targetUserId;
         final String decryptAlias = PROFILE_KEY_NAME_DECRYPT + targetUserId;
         try {
-            if (mJavaKeyStore.containsAlias(encryptAlias) ||
-                    mJavaKeyStore.containsAlias(decryptAlias)) {
+            if (mKeyStore.containsAlias(encryptAlias) || mKeyStore.containsAlias(decryptAlias)) {
                 Slogf.i(TAG, "Removing keystore profile key for user %d", targetUserId);
-                mJavaKeyStore.deleteEntry(encryptAlias);
-                mJavaKeyStore.deleteEntry(decryptAlias);
+                mKeyStore.deleteEntry(encryptAlias);
+                mKeyStore.deleteEntry(decryptAlias);
             }
         } catch (KeyStoreException e) {
             // We have tried our best to remove the key.
@@ -3387,7 +3402,7 @@ public class LockSettingsService extends ILockSettings.Stub {
 
     private void dumpKeystoreKeys(IndentingPrintWriter pw) {
         try {
-            final Enumeration<String> aliases = mJavaKeyStore.aliases();
+            final Enumeration<String> aliases = mKeyStore.aliases();
             while (aliases.hasMoreElements()) {
                 pw.println(aliases.nextElement());
             }
@@ -3661,6 +3676,18 @@ public class LockSettingsService extends ILockSettings.Stub {
         @Override
         public void refreshStrongAuthTimeout(int userId) {
             mStrongAuth.refreshStrongAuthTimeout(userId);
+        }
+
+        @Override
+        public void registerLockSettingsStateListener(@NonNull LockSettingsStateListener listener) {
+            Objects.requireNonNull(listener, "listener cannot be null");
+            mLockSettingsStateListeners.add(listener);
+        }
+
+        @Override
+        public void unregisterLockSettingsStateListener(
+                @NonNull LockSettingsStateListener listener) {
+            mLockSettingsStateListeners.remove(listener);
         }
     }
 

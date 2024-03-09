@@ -336,7 +336,10 @@ static int getFilePageAdvice(const Vma& vma) {
     return -1;
 }
 static int getAnonPageAdvice(const Vma& vma) {
-    if (vma.inode == 0 && !vma.is_shared) {
+    bool hasReadFlag = (vma.flags & PROT_READ) > 0;
+    bool hasWriteFlag = (vma.flags & PROT_WRITE) > 0;
+    bool hasExecuteFlag = (vma.flags & PROT_EXEC) > 0;
+    if ((hasReadFlag || hasWriteFlag) && !hasExecuteFlag && !vma.is_shared) {
         return MADV_PAGEOUT;
     }
     return -1;
@@ -379,6 +382,9 @@ static int64_t compactProcess(int pid, VmaToAdviseFunc vmaToAdviseFunc) {
                 ++coldVmaIndex;
                 break;
             case MADV_PAGEOUT:
+#ifdef DEBUG_COMPACTION
+                ALOGE("Adding to compact vma=%s", vma.name.c_str());
+#endif
                 if (pageoutVmaIndex < pageoutVmas.size()) {
                     pageoutVmas[pageoutVmaIndex] = vma;
                 } else {
@@ -387,6 +393,7 @@ static int64_t compactProcess(int pid, VmaToAdviseFunc vmaToAdviseFunc) {
                 ++pageoutVmaIndex;
                 break;
         }
+        return true;
     };
     meminfo.ForEachVmaFromMaps(vmaCollectorCb, mapsBuffer);
     ATRACE_END();
@@ -565,8 +572,8 @@ static jstring com_android_server_am_CachedAppOptimizer_getFreezerCheckPath(JNIE
 }
 
 static jboolean com_android_server_am_CachedAppOptimizer_isFreezerProfileValid(JNIEnv* env) {
-    int uid = getuid();
-    int pid = getpid();
+    uid_t uid = getuid();
+    pid_t pid = getpid();
 
     return isProfileValidForProcess("Frozen", uid, pid) &&
             isProfileValidForProcess("Unfrozen", uid, pid);

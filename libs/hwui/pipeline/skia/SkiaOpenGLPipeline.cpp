@@ -16,6 +16,9 @@
 
 #include "SkiaOpenGLPipeline.h"
 
+#include <include/gpu/ganesh/SkSurfaceGanesh.h>
+#include <include/gpu/ganesh/gl/GrGLBackendSurface.h>
+#include <include/gpu/gl/GrGLTypes.h>
 #include <GrBackendSurface.h>
 #include <SkBlendMode.h>
 #include <SkImageInfo.h>
@@ -115,7 +118,7 @@ IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
         const LightGeometry& lightGeometry, LayerUpdateQueue* layerUpdateQueue,
         const Rect& contentDrawBounds, bool opaque, const LightInfo& lightInfo,
         const std::vector<sp<RenderNode>>& renderNodes, FrameInfoVisualizer* profiler,
-        const HardwareBufferRenderParams& bufferParams) {
+        const HardwareBufferRenderParams& bufferParams, std::mutex& profilerLock) {
     if (!isCapturingSkp() && !mHardwareBuffer) {
         mEglManager.damageFrame(frame, dirty);
     }
@@ -138,7 +141,8 @@ IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
         LOG_ALWAYS_FATAL("Unsupported color type.");
     }
 
-    GrBackendRenderTarget backendRT(frame.width(), frame.height(), 0, STENCIL_BUFFER_SIZE, fboInfo);
+    auto backendRT = GrBackendRenderTargets::MakeGL(frame.width(), frame.height(), 0,
+                                                    STENCIL_BUFFER_SIZE, fboInfo);
 
     SkSurfaceProps props(mColorMode == ColorMode::Default ? 0 : SkSurfaceProps::kAlwaysDither_Flag,
                          kUnknown_SkPixelGeometry);
@@ -150,9 +154,9 @@ IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
         surface = getBufferSkSurface(bufferParams);
         preTransform = bufferParams.getTransform();
     } else {
-        surface = SkSurface::MakeFromBackendRenderTarget(mRenderThread.getGrContext(), backendRT,
-                                                         getSurfaceOrigin(), colorType,
-                                                         mSurfaceColorSpace, &props);
+        surface = SkSurfaces::WrapBackendRenderTarget(mRenderThread.getGrContext(), backendRT,
+                                                      getSurfaceOrigin(), colorType,
+                                                      mSurfaceColorSpace, &props);
         preTransform = SkMatrix::I();
     }
 
@@ -167,6 +171,7 @@ IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
     // Draw visual debugging features
     if (CC_UNLIKELY(Properties::showDirtyRegions ||
                     ProfileType::None != Properties::getProfileType())) {
+        std::scoped_lock lock(profilerLock);
         SkCanvas* profileCanvas = surface->getCanvas();
         SkiaProfileRenderer profileRenderer(profileCanvas, frame.width(), frame.height());
         profiler->draw(profileRenderer);
@@ -174,7 +179,7 @@ IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
 
     {
         ATRACE_NAME("flush commands");
-        surface->flushAndSubmit();
+        skgpu::ganesh::FlushAndSubmit(surface);
     }
     layerUpdateQueue->clear();
 
@@ -183,11 +188,12 @@ IRenderPipeline::DrawResult SkiaOpenGLPipeline::draw(
         dumpResourceCacheUsage();
     }
 
-    return {true, IRenderPipeline::DrawResult::kUnknownTime};
+    return {true, IRenderPipeline::DrawResult::kUnknownTime, android::base::unique_fd{}};
 }
 
-bool SkiaOpenGLPipeline::swapBuffers(const Frame& frame, bool drew, const SkRect& screenDirty,
-                                     FrameInfo* currentFrameInfo, bool* requireSwap) {
+bool SkiaOpenGLPipeline::swapBuffers(const Frame& frame, IRenderPipeline::DrawResult& drawResult,
+                                     const SkRect& screenDirty, FrameInfo* currentFrameInfo,
+                                     bool* requireSwap) {
     GL_CHECKPOINT(LOW);
 
     // Even if we decided to cancel the frame, from the perspective of jank
@@ -198,7 +204,7 @@ bool SkiaOpenGLPipeline::swapBuffers(const Frame& frame, bool drew, const SkRect
         return false;
     }
 
-    *requireSwap = drew || mEglManager.damageRequiresSwap();
+    *requireSwap = drawResult.success || mEglManager.damageRequiresSwap();
 
     if (*requireSwap && (CC_UNLIKELY(!mEglManager.swapBuffers(frame, screenDirty)))) {
         return false;
@@ -245,8 +251,7 @@ bool SkiaOpenGLPipeline::setSurface(ANativeWindow* surface, SwapBehavior swapBeh
 
     if (mEglSurface != EGL_NO_SURFACE) {
         const bool preserveBuffer = (swapBehavior != SwapBehavior::kSwap_discardBuffer);
-        const bool isPreserved = mEglManager.setPreserveBuffer(mEglSurface, preserveBuffer);
-        ALOGE_IF(preserveBuffer != isPreserved, "Unable to match the desired swap behavior.");
+        mEglManager.setPreserveBuffer(mEglSurface, preserveBuffer);
         return true;
     }
 

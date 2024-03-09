@@ -22,6 +22,8 @@ import android.annotation.TestApi;
 import android.os.Parcel;
 import android.os.Parcelable;
 
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.List;
 
 /**
@@ -54,6 +56,7 @@ public final class AudioHalVersionInfo implements Parcelable, Comparable<AudioHa
             flag = false,
             prefix = "AUDIO_HAL_TYPE_",
             value = {AUDIO_HAL_TYPE_HIDL, AUDIO_HAL_TYPE_AIDL})
+    @Retention(RetentionPolicy.SOURCE)
     public @interface AudioHalType {}
 
     /** AudioHalVersionInfo object of all valid Audio HAL versions. */
@@ -76,9 +79,12 @@ public final class AudioHalVersionInfo implements Parcelable, Comparable<AudioHa
     /**
      * List of all valid Audio HAL versions. This list need to be in sync with sAudioHALVersions
      * defined in frameworks/av/media/libaudiohal/FactoryHal.cpp.
+     *
+     * Note: update {@link android.media.audio.cts.AudioHalVersionInfoTest} CTS accordingly if
+     * there is a change to supported versions.
      */
     public static final @NonNull List<AudioHalVersionInfo> VERSIONS =
-            List.of(AIDL_1_0, HIDL_7_1, HIDL_7_0, HIDL_6_0, HIDL_5_0, HIDL_4_0);
+            List.of(AIDL_1_0, HIDL_7_1, HIDL_7_0, HIDL_6_0, HIDL_5_0);
 
     private static final String TAG = "AudioHalVersionInfo";
     private AudioHalVersion mHalVersion = new AudioHalVersion();

@@ -225,6 +225,7 @@ java_defaults {
     java_version: "1.8",
     compile_dex: true,
     visibility: ["//visibility:public"],
+    is_stubs_module: true,
 }
 
 java_defaults {
@@ -233,6 +234,7 @@ java_defaults {
     system_modules: "none",
     java_version: "1.8",
     compile_dex: true,
+    is_stubs_module: true,
 }
 
 java_defaults {
@@ -456,13 +458,21 @@ java_defaults {
     libs: ["stub-annotations"],
 }
 
+java_defaults {
+    name: "android-non-updatable_everything_from_text_defaults",
+    defaults: [
+        "android-non-updatable_from_text_defaults",
+    ],
+    stubs_type: "everything",
+}
+
 java_api_library {
     name: "android-non-updatable.stubs.from-text",
     api_surface: "public",
     api_contributions: [
         "api-stubs-docs-non-updatable.api.contribution",
     ],
-    defaults: ["android-non-updatable_from_text_defaults"],
+    defaults: ["android-non-updatable_everything_from_text_defaults"],
     full_api_surface_stub: "android_stubs_current.from-text",
 }
 
@@ -473,7 +483,7 @@ java_api_library {
         "api-stubs-docs-non-updatable.api.contribution",
         "system-api-stubs-docs-non-updatable.api.contribution",
     ],
-    defaults: ["android-non-updatable_from_text_defaults"],
+    defaults: ["android-non-updatable_everything_from_text_defaults"],
     full_api_surface_stub: "android_system_stubs_current.from-text",
 }
 
@@ -485,7 +495,7 @@ java_api_library {
         "system-api-stubs-docs-non-updatable.api.contribution",
         "test-api-stubs-docs-non-updatable.api.contribution",
     ],
-    defaults: ["android-non-updatable_from_text_defaults"],
+    defaults: ["android-non-updatable_everything_from_text_defaults"],
     full_api_surface_stub: "android_test_stubs_current.from-text",
 }
 
@@ -497,7 +507,7 @@ java_api_library {
         "system-api-stubs-docs-non-updatable.api.contribution",
         "module-lib-api-stubs-docs-non-updatable.api.contribution",
     ],
-    defaults: ["android-non-updatable_from_text_defaults"],
+    defaults: ["android-non-updatable_everything_from_text_defaults"],
     full_api_surface_stub: "android_module_lib_stubs_current_full.from-text",
 }
 
@@ -513,7 +523,7 @@ java_api_library {
         "test-api-stubs-docs-non-updatable.api.contribution",
         "module-lib-api-stubs-docs-non-updatable.api.contribution",
     ],
-    defaults: ["android-non-updatable_from_text_defaults"],
+    defaults: ["android-non-updatable_everything_from_text_defaults"],
     full_api_surface_stub: "android_test_module_lib_stubs_current.from-text",
 
     // This module is only used for hiddenapi, and other modules should not
@@ -716,6 +726,7 @@ java_library {
         // with its own package-private android.annotation.Nullable.
         "private-stub-annotations-jar",
     ],
+    is_stubs_module: true,
 }
 
 java_genrule {
@@ -770,6 +781,7 @@ java_defaults {
         // annotations found, thus should exist inside android.jar.
         "private-stub-annotations-jar",
     ],
+    is_stubs_module: true,
 }
 
 // Listing of API domains contribution and dependencies per API surfaces
@@ -779,7 +791,6 @@ java_defaults {
     api_contributions: [
         "framework-virtualization.stubs.source.test.api.contribution",
         "framework-location.stubs.source.test.api.contribution",
-        "framework-nfc.stubs.source.test.api.contribution",
     ],
 }
 
@@ -824,6 +835,7 @@ java_api_library {
     ],
     visibility: ["//visibility:public"],
     enable_validation: false,
+    stubs_type: "everything",
 }
 
 java_api_library {
@@ -840,6 +852,7 @@ java_api_library {
     ],
     visibility: ["//visibility:public"],
     enable_validation: false,
+    stubs_type: "everything",
 }
 
 java_api_library {
@@ -858,6 +871,7 @@ java_api_library {
     ],
     visibility: ["//visibility:public"],
     enable_validation: false,
+    stubs_type: "everything",
 }
 
 java_api_library {
@@ -876,6 +890,7 @@ java_api_library {
         "system-api-stubs-docs-non-updatable.api.contribution",
     ],
     enable_validation: false,
+    stubs_type: "everything",
 }
 
 java_api_library {
@@ -896,6 +911,7 @@ java_api_library {
     ],
     visibility: ["//visibility:public"],
     enable_validation: false,
+    stubs_type: "everything",
 }
 
 java_api_library {
@@ -910,6 +926,7 @@ java_api_library {
     ],
     visibility: ["//visibility:public"],
     enable_validation: false,
+    stubs_type: "everything",
 }
 
 java_api_library {
@@ -935,6 +952,7 @@ java_api_library {
         "//visibility:private",
     ],
     enable_validation: false,
+    stubs_type: "everything",
 }
 
 java_api_library {
@@ -952,6 +970,7 @@ java_api_library {
     ],
     visibility: ["//visibility:public"],
     enable_validation: false,
+    stubs_type: "everything",
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -962,7 +981,7 @@ java_api_library {
 java_library {
     name: "android_stubs_current_with_test_libs",
     static_libs: [
-        "android_stubs_current",
+        "android_stubs_current_exportable",
         "android.test.base.stubs",
         "android.test.mock.stubs",
         "android.test.runner.stubs",
@@ -977,7 +996,7 @@ java_library {
 java_library {
     name: "android_system_stubs_current_with_test_libs",
     static_libs: [
-        "android_system_stubs_current",
+        "android_system_stubs_current_exportable",
         "android.test.base.stubs.system",
         "android.test.mock.stubs.system",
         "android.test.runner.stubs.system",
@@ -992,7 +1011,7 @@ java_library {
 java_library {
     name: "android_module_stubs_current_with_test_libs",
     static_libs: [
-        "android_module_lib_stubs_current",
+        "android_module_lib_stubs_current_exportable",
         "android.test.base.stubs",
         "android.test.mock.stubs",
         "android.test.runner.stubs",
@@ -1007,7 +1026,7 @@ java_library {
 java_library {
     name: "android_system_server_stubs_current_with_test_libs",
     static_libs: [
-        "android_system_server_stubs_current",
+        "android_system_server_stubs_current_exportable",
         "android.test.base.stubs.system",
         "android.test.mock.stubs.system",
         "android.test.runner.stubs.system",

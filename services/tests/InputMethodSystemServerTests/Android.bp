@@ -13,6 +13,7 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_input_method_framework",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "frameworks_base_license"
@@ -41,6 +42,7 @@ android_test {
         "mockito-target-extended-minus-junit4",
         "platform-test-annotations",
         "services.core",
+        "service-permission.stubs.system_server",
         "servicestests-core-utils",
         "servicestests-utils-mockito-extended",
         "truth",
@@ -88,6 +90,7 @@ android_test {
         "mockito-target-extended-minus-junit4",
         "platform-test-annotations",
         "services.core",
+        "service-permission.stubs.system_server",
         "servicestests-core-utils",
         "servicestests-utils-mockito-extended",
         "truth",

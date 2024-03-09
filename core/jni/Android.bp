@@ -43,7 +43,10 @@ cc_library_shared_for_libandroid_runtime {
 
         "-Wall",
         "-Werror",
+        "-Wextra",
+        "-Wthread-safety",
         "-Wno-error=deprecated-declarations",
+        "-Wno-unused-parameter",
         "-Wunused",
         "-Wunreachable-code",
     ],
@@ -94,11 +97,13 @@ cc_library_shared_for_libandroid_runtime {
         "liblog",
         "libminikin",
         "libz",
+        "server_configurable_flags",
     ],
 
     static_libs: [
         "libnativehelper_lazy",
         "libziparchive_for_incfs",
+        "libguiflags",
     ],
 
     export_include_dirs: [
@@ -139,6 +144,7 @@ cc_library_shared_for_libandroid_runtime {
                 "android_database_SQLiteConnection.cpp",
                 "android_database_SQLiteGlobal.cpp",
                 "android_database_SQLiteDebug.cpp",
+                "android_database_SQLiteRawStatement.cpp",
                 "android_graphics_GraphicBuffer.cpp",
                 "android_graphics_SurfaceTexture.cpp",
                 "android_view_CompositionSamplingListener.cpp",
@@ -182,8 +188,6 @@ cc_library_shared_for_libandroid_runtime {
                 "android_os_SharedMemory.cpp",
                 "android_os_storage_StorageManager.cpp",
                 "android_os_UEventObserver.cpp",
-                "android_os_VintfObject.cpp",
-                "android_os_VintfRuntimeInfo.cpp",
                 "android_os_incremental_IncrementalManager.cpp",
                 "android_net_LocalSocketImpl.cpp",
                 "android_service_DataLoaderService.cpp",
@@ -271,6 +275,7 @@ cc_library_shared_for_libandroid_runtime {
                 "libdmabufinfo",
                 "libgif",
                 "libgui_window_info_static",
+                "libkernelconfigs",
                 "libseccomp_policy",
                 "libgrallocusage",
                 "libscrypt_static",
@@ -340,7 +345,6 @@ cc_library_shared_for_libandroid_runtime {
                 "libnativeloader_lazy",
                 "libmemunreachable",
                 "libhidlbase",
-                "libvintf",
                 "libnativedisplay",
                 "libnativewindow",
                 "libdl",
@@ -391,7 +395,6 @@ cc_library_shared_for_libandroid_runtime {
                 "libbinary_parse",
                 "libdng_sdk",
                 "libft2",
-                "libhostgraphics",
                 "libhwui",
                 "libimage_type_recognition",
                 "libjpeg",
@@ -448,8 +451,25 @@ cc_library_shared_for_libandroid_runtime {
                 // (e.g. gDefaultServiceManager)
                 "libbinder",
                 "libhidlbase", // libhwbinder is in here
-                "libvintf",
             ],
         },
     },
+}
+
+cc_library_shared {
+    name: "libvintf_jni",
+
+    cpp_std: "gnu++20",
+
+    srcs: [
+        "android_os_VintfObject.cpp",
+        "android_os_VintfRuntimeInfo.cpp",
+    ],
+
+    shared_libs: [
+        "libbase",
+        "liblog",
+        "libnativehelper",
+        "libvintf",
+    ],
 }

@@ -30,6 +30,18 @@ stubs_defaults {
         ":android-test-mock-sources",
         ":android-test-runner-sources",
     ],
+    flags: [
+        // These errors are suppressed in the doc stubs as it isn't easy to suppress them.
+        // They remain unsuppressed/active in the "main" stubs build (the jar stubs).
+        // These can be removed when either a) all the issues have been fixed or
+        // b) these reporting of these issues is gated behind api lint being enabled in metalava.
+        "--hide BroadcastBehavior",
+        "--hide DeprecationMismatch",
+        "--hide MissingPermission",
+        "--hide RequiresPermission",
+        "--hide SdkConstant",
+        "--hide Todo",
+    ],
     create_doc_stubs: true,
     write_sdk_values: true,
 }
@@ -51,6 +63,7 @@ stubs_defaults {
         ":framework-graphics-srcs",
         ":framework-mediaprovider-sources",
         ":framework-nearby-sources",
+        ":framework-nfc-updatable-sources",
         ":framework-ondevicepersonalization-sources",
         ":framework-permission-sources",
         ":framework-permission-s-sources",
@@ -207,7 +220,7 @@ droiddoc {
     name: "offline-sdk-docs",
     defaults: ["framework-docs-default"],
     srcs: [
-        ":framework-doc-stubs",
+        ":framework-doc-stubs{.exportable}",
     ],
     hdf: [
         "android.whichdoc offline",
@@ -228,7 +241,7 @@ droiddoc {
     name: "offline-sdk-referenceonly-docs",
     defaults: ["framework-docs-default"],
     srcs: [
-        ":framework-doc-stubs",
+        ":framework-doc-stubs{.exportable}",
     ],
     hdf: [
         "android.whichdoc offline",
@@ -272,7 +285,7 @@ droiddoc {
     name: "ds-docs-java",
     defaults: ["framework-docs-default"],
     srcs: [
-        ":framework-doc-stubs",
+        ":framework-doc-stubs{.exportable}",
     ],
     hdf: [
         "android.whichdoc online",
@@ -306,7 +319,7 @@ droiddoc {
 droiddoc {
     name: "ds-docs-kt",
     srcs: [
-        ":framework-doc-stubs",
+        ":framework-doc-stubs{.exportable}",
     ],
     flags: [
         "-noJdkLink",
@@ -360,7 +373,7 @@ droiddoc {
     name: "ds-static-docs",
     defaults: ["framework-docs-default"],
     srcs: [
-        ":framework-doc-stubs",
+        ":framework-doc-stubs{.exportable}",
     ],
     hdf: [
         "android.whichdoc online",
@@ -377,7 +390,7 @@ droiddoc {
     name: "ds-ref-navtree-docs",
     defaults: ["framework-docs-default"],
     srcs: [
-        ":framework-doc-stubs",
+        ":framework-doc-stubs{.exportable}",
     ],
     hdf: [
         "android.whichdoc online",

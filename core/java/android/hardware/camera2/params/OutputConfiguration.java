@@ -1193,12 +1193,12 @@ public final class OutputConfiguration implements Parcelable {
         String physicalCameraId = source.readString();
         boolean isMultiResolutionOutput = source.readInt() == 1;
         int[] sensorPixelModesUsed = source.createIntArray();
-        long streamUseCase = source.readLong();
 
         checkArgumentInRange(rotation, ROTATION_0, ROTATION_270, "Rotation constant");
         long dynamicRangeProfile = source.readLong();
         DynamicRangeProfiles.checkProfileValue(dynamicRangeProfile);
         int colorSpace = source.readInt();
+        long streamUseCase = source.readLong();
 
         int timestampBase = source.readInt();
         int mirrorMode = source.readInt();
@@ -1379,7 +1379,6 @@ public final class OutputConfiguration implements Parcelable {
                     mSurfaceType != other.mSurfaceType ||
                     mIsDeferredConfig != other.mIsDeferredConfig ||
                     mIsShared != other.mIsShared ||
-                    mConfiguredFormat != other.mConfiguredFormat ||
                     mConfiguredDataspace != other.mConfiguredDataspace ||
                     mConfiguredGenerationId != other.mConfiguredGenerationId ||
                     !Objects.equals(mPhysicalCameraId, other.mPhysicalCameraId) ||

@@ -17,7 +17,6 @@
 package android.security.keystore2;
 
 import android.annotation.NonNull;
-import android.security.KeyStore;
 import android.security.KeyStore2;
 import android.security.KeyStoreSecurityLevel;
 import android.security.keymaster.KeymasterDefs;
@@ -86,11 +85,14 @@ public class AndroidKeyStoreProvider extends Provider {
         put("KeyPairGenerator.EC", PACKAGE_NAME + ".AndroidKeyStoreKeyPairGeneratorSpi$EC");
         put("KeyPairGenerator.RSA", PACKAGE_NAME +  ".AndroidKeyStoreKeyPairGeneratorSpi$RSA");
         put("KeyPairGenerator.XDH", PACKAGE_NAME +  ".AndroidKeyStoreKeyPairGeneratorSpi$XDH");
+        put("KeyPairGenerator.ED25519", PACKAGE_NAME
+                +  ".AndroidKeyStoreKeyPairGeneratorSpi$ED25519");
 
         // java.security.KeyFactory
         putKeyFactoryImpl("EC");
         putKeyFactoryImpl("RSA");
         putKeyFactoryImpl("XDH");
+        putKeyFactoryImpl("ED25519");
 
         // javax.crypto.KeyGenerator
         put("KeyGenerator.AES", PACKAGE_NAME + ".AndroidKeyStoreKeyGeneratorSpi$AES");
@@ -158,13 +160,13 @@ public class AndroidKeyStoreProvider extends Provider {
     }
 
     /**
-     * Gets the {@link KeyStore} operation handle corresponding to the provided JCA crypto
+     * Gets the Android KeyStore operation handle corresponding to the provided JCA crypto
      * primitive.
      *
      * <p>The following primitives are supported: {@link Cipher}, {@link Signature} and {@link Mac}.
      *
-     * @return KeyStore operation handle or {@code 0} if the provided primitive's KeyStore operation
-     *         is not in progress.
+     * @return Android KeyStore operation handle or {@code 0} if the provided primitive's Android
+     *         KeyStore operation is not in progress.
      *
      * @throws IllegalArgumentException if the provided primitive is not supported or is not backed
      *         by AndroidKeyStore provider.
