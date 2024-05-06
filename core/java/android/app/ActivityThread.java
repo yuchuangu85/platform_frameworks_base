@@ -968,6 +968,7 @@ public final class ActivityThread extends ClientTransactionHandler
         boolean autoStopProfiler;
         boolean streamingOutput;
         int mClockType;
+        int mProfilerOutputVersion;
         boolean profiling;
         boolean handlingProfiling;
         public void setProfiler(ProfilerInfo profilerInfo) {
@@ -995,6 +996,7 @@ public final class ActivityThread extends ClientTransactionHandler
             autoStopProfiler = profilerInfo.autoStopProfiler;
             streamingOutput = profilerInfo.streamingOutput;
             mClockType = profilerInfo.clockType;
+            mProfilerOutputVersion = profilerInfo.profilerOutputVersion;
         }
         public void startProfiling() {
             if (profileFd == null || profiling) {
@@ -1002,9 +1004,11 @@ public final class ActivityThread extends ClientTransactionHandler
             }
             try {
                 int bufferSize = SystemProperties.getInt("debug.traceview-buffer-size-mb", 8);
+                int flags = 0;
+                flags = mClockType | ProfilerInfo.getFlagsForOutputVersion(mProfilerOutputVersion);
                 VMDebug.startMethodTracing(profileFile, profileFd.getFileDescriptor(),
-                        bufferSize * 1024 * 1024, mClockType, samplingInterval != 0,
-                        samplingInterval, streamingOutput);
+                        bufferSize * 1024 * 1024, flags, samplingInterval != 0, samplingInterval,
+                        streamingOutput);
                 profiling = true;
             } catch (RuntimeException e) {
                 Slog.w(TAG, "Profiling failed on path " + profileFile, e);
@@ -1050,6 +1054,8 @@ public final class ActivityThread extends ClientTransactionHandler
         public boolean managed;
         public boolean mallocInfo;
         public boolean runGc;
+        // compression format to dump bitmaps, null if no bitmaps to be dumped
+        public String dumpBitmaps;
         String path;
         ParcelFileDescriptor fd;
         RemoteCallback finishCallback;
@@ -1442,11 +1448,12 @@ public final class ActivityThread extends ClientTransactionHandler
         }
 
         @Override
-        public void dumpHeap(boolean managed, boolean mallocInfo, boolean runGc, String path,
-                ParcelFileDescriptor fd, RemoteCallback finishCallback) {
+        public void dumpHeap(boolean managed, boolean mallocInfo, boolean runGc, String dumpBitmaps,
+                String path, ParcelFileDescriptor fd, RemoteCallback finishCallback) {
             DumpHeapData dhd = new DumpHeapData();
             dhd.managed = managed;
             dhd.mallocInfo = mallocInfo;
+            dhd.dumpBitmaps = dumpBitmaps;
             dhd.runGc = runGc;
             dhd.path = path;
             try {
@@ -4022,6 +4029,13 @@ public final class ActivityThread extends ClientTransactionHandler
                     ActivityManager.getService().waitForNetworkStateUpdate(mNetworkBlockSeq);
                     mNetworkBlockSeq = INVALID_PROC_STATE_SEQ;
                 } catch (RemoteException ignored) {}
+                if (android.app.Flags.clearDnsCacheOnNetworkRulesUpdate()) {
+                    // InetAddress will cache UnknownHostException failures. If the rules got
+                    // updated and the app has network access now, we need to clear the negative
+                    // cache to ensure valid dns queries can work immediately.
+                    // TODO: b/329133769 - Clear only the negative cache once it is available.
+                    InetAddress.clearDnsCache();
+                }
             }
         }
     }
@@ -6724,6 +6738,9 @@ public final class ActivityThread extends ClientTransactionHandler
             System.runFinalization();
             System.gc();
         }
+        if (dhd.dumpBitmaps != null) {
+            Bitmap.dumpAll(dhd.dumpBitmaps);
+        }
         try (ParcelFileDescriptor fd = dhd.fd) {
             if (dhd.managed) {
                 Debug.dumpHprofData(dhd.path, fd.getFileDescriptor());
@@ -6750,6 +6767,9 @@ public final class ActivityThread extends ClientTransactionHandler
         }
         if (dhd.finishCallback != null) {
             dhd.finishCallback.sendResult(null);
+        }
+        if (dhd.dumpBitmaps != null) {
+            Bitmap.dumpAll(null); // clear dump
         }
     }
 
@@ -7036,6 +7056,7 @@ public final class ActivityThread extends ClientTransactionHandler
             mProfiler.autoStopProfiler = data.initProfilerInfo.autoStopProfiler;
             mProfiler.streamingOutput = data.initProfilerInfo.streamingOutput;
             mProfiler.mClockType = data.initProfilerInfo.clockType;
+            mProfiler.mProfilerOutputVersion = data.initProfilerInfo.profilerOutputVersion;
             if (data.initProfilerInfo.attachAgentDuringBind) {
                 agent = data.initProfilerInfo.agent;
             }

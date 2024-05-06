@@ -413,6 +413,7 @@ import com.android.internal.os.BackgroundThread;
 import com.android.internal.os.BinderCallHeavyHitterWatcher.BinderCallHeavyHitterListener;
 import com.android.internal.os.BinderCallHeavyHitterWatcher.HeavyHitterContainer;
 import com.android.internal.os.BinderInternal;
+import com.android.internal.os.BinderInternal.BinderProxyCountEventListener;
 import com.android.internal.os.BinderTransactionNameResolver;
 import com.android.internal.os.ByteTransferPipe;
 import com.android.internal.os.IResultReceiver;
@@ -610,8 +611,8 @@ public class ActivityManagerService extends IActivityManager.Stub
     private static final int MINIMUM_MEMORY_GROWTH_THRESHOLD = 10 * 1000; // 10 MB
 
     /**
-     * The number of binder proxies we need to have before we start warning and
-     * dumping debug info.
+     * The number of binder proxies we need to have before we start dumping debug info
+     * and kill the offenders.
      */
     private static final int BINDER_PROXY_HIGH_WATERMARK = 6000;
 
@@ -620,6 +621,11 @@ public class ActivityManagerService extends IActivityManager.Stub
      * after already hitting the high watermark.
      */
     private static final int BINDER_PROXY_LOW_WATERMARK = 5500;
+
+    /**
+     * The number of binder proxies we need to have before we start warning.
+     */
+    private static final int BINDER_PROXY_WARNING_WATERMARK = 5750;
 
     // Max character limit for a notification title. If the notification title is larger than this
     // the notification will not be legible to the user.
@@ -8926,33 +8932,10 @@ public class ActivityManagerService extends IActivityManager.Stub
 
             t.traceBegin("setBinderProxies");
             BinderInternal.nSetBinderProxyCountWatermarks(BINDER_PROXY_HIGH_WATERMARK,
-                    BINDER_PROXY_LOW_WATERMARK);
+                    BINDER_PROXY_LOW_WATERMARK, BINDER_PROXY_WARNING_WATERMARK);
             BinderInternal.nSetBinderProxyCountEnabled(true);
-            BinderInternal.setBinderProxyCountCallback(
-                    (uid) -> {
-                        Slog.wtf(TAG, "Uid " + uid + " sent too many Binders to uid "
-                                + Process.myUid());
-                        BinderProxy.dumpProxyDebugInfo();
-                        if (uid == Process.SYSTEM_UID) {
-                            Slog.i(TAG, "Skipping kill (uid is SYSTEM)");
-                        } else {
-                            killUid(UserHandle.getAppId(uid), UserHandle.getUserId(uid),
-                                    ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,
-                                    ApplicationExitInfo.SUBREASON_EXCESSIVE_BINDER_OBJECTS,
-                                    "Too many Binders sent to SYSTEM");
-                            // We need to run a GC here, because killing the processes involved
-                            // actually isn't guaranteed to free up the proxies; in fact, if the
-                            // GC doesn't run for a long time, we may even exceed the global
-                            // proxy limit for a process (20000), resulting in system_server itself
-                            // being killed.
-                            // Note that the GC here might not actually clean up all the proxies,
-                            // because the binder reference decrements will come in asynchronously;
-                            // but if new processes belonging to the UID keep adding proxies, we
-                            // will get another callback here, and run the GC again - this time
-                            // cleaning up the old proxies.
-                            VMRuntime.getRuntime().requestConcurrentGC();
-                        }
-                    }, BackgroundThread.getHandler());
+            BinderInternal.setBinderProxyCountCallback(new MyBinderProxyCountEventListener(),
+                    BackgroundThread.getHandler());
             t.traceEnd(); // setBinderProxies
 
             t.traceEnd(); // ActivityManagerStartApps
@@ -8964,6 +8947,45 @@ public class ActivityManagerService extends IActivityManager.Stub
             t.traceEnd(); // componentAlias
 
             t.traceEnd(); // PhaseActivityManagerReady
+        }
+    }
+
+    private class MyBinderProxyCountEventListener implements BinderProxyCountEventListener {
+        @Override
+        public void onLimitReached(int uid) {
+            Slog.wtf(TAG, "Uid " + uid + " sent too many Binders to uid "
+                    + Process.myUid());
+            BinderProxy.dumpProxyDebugInfo();
+            if (uid == Process.SYSTEM_UID) {
+                Slog.i(TAG, "Skipping kill (uid is SYSTEM)");
+            } else {
+                killUid(UserHandle.getAppId(uid), UserHandle.getUserId(uid),
+                        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,
+                        ApplicationExitInfo.SUBREASON_EXCESSIVE_BINDER_OBJECTS,
+                        "Too many Binders sent to SYSTEM");
+                // We need to run a GC here, because killing the processes involved
+                // actually isn't guaranteed to free up the proxies; in fact, if the
+                // GC doesn't run for a long time, we may even exceed the global
+                // proxy limit for a process (20000), resulting in system_server itself
+                // being killed.
+                // Note that the GC here might not actually clean up all the proxies,
+                // because the binder reference decrements will come in asynchronously;
+                // but if new processes belonging to the UID keep adding proxies, we
+                // will get another callback here, and run the GC again - this time
+                // cleaning up the old proxies.
+                VMRuntime.getRuntime().requestConcurrentGC();
+            }
+        }
+
+        @Override
+        public void onWarningThresholdReached(int uid) {
+            if (com.android.server.am.Flags.logExcessiveBinderProxies()) {
+                Slog.w(TAG, "Uid " + uid + " sent too many ("
+                        + BINDER_PROXY_WARNING_WATERMARK + ") Binders to uid " + Process.myUid());
+                FrameworkStatsLog.write(
+                        FrameworkStatsLog.EXCESSIVE_BINDER_PROXY_COUNT_REPORTED,
+                        uid);
+            }
         }
     }
 
@@ -13474,6 +13496,8 @@ public class ActivityManagerService extends IActivityManager.Stub
             // Goodbye!
             removePidLocked(pid, app);
             mHandler.removeMessages(PROC_START_TIMEOUT_MSG, app);
+            mHandler.removeMessages(BIND_APPLICATION_TIMEOUT_SOFT_MSG, app);
+            mHandler.removeMessages(BIND_APPLICATION_TIMEOUT_HARD_MSG, app);
             mBatteryStatsService.noteProcessFinish(app.processName, app.info.uid);
             if (app.isolated) {
                 mBatteryStatsService.removeIsolatedUid(app.uid, app.info.uid);
@@ -17297,7 +17321,8 @@ public class ActivityManagerService extends IActivityManager.Stub
 
     @Override
     public boolean dumpHeap(String process, int userId, boolean managed, boolean mallocInfo,
-            boolean runGc, String path, ParcelFileDescriptor fd, RemoteCallback finishCallback) {
+            boolean runGc, String dumpBitmaps,
+            String path, ParcelFileDescriptor fd, RemoteCallback finishCallback) {
         try {
             // note: hijacking SET_ACTIVITY_WATCHER, but should be changed to
             // its own permission (same as profileControl).
@@ -17331,7 +17356,8 @@ public class ActivityManagerService extends IActivityManager.Stub
                         }
                     }, null);
 
-                thread.dumpHeap(managed, mallocInfo, runGc, path, fd, intermediateCallback);
+                thread.dumpHeap(managed, mallocInfo, runGc, dumpBitmaps,
+                                path, fd, intermediateCallback);
                 fd = null;
                 return true;
             }
@@ -19423,7 +19449,7 @@ public class ActivityManagerService extends IActivityManager.Stub
                 record.procStateSeqWaitingForNetwork = 0;
                 final long totalTime = SystemClock.uptimeMillis() - startTime;
                 if (totalTime >= mConstants.mNetworkAccessTimeoutMs || DEBUG_NETWORK) {
-                    Slog.w(TAG_NETWORK, "Total time waited for network rules to get updated: "
+                    Slog.wtf(TAG_NETWORK, "Total time waited for network rules to get updated: "
                             + totalTime + ". Uid: " + callingUid + " procStateSeq: "
                             + procStateSeq + " UidRec: " + record
                             + " validateUidRec: "

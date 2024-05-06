@@ -1,4 +1,5 @@
 package: "com.android.server.am"
+container: "system"
 
 flag {
     name: "oomadjuster_correctness_rewrite"
@@ -27,4 +28,11 @@ flag {
     namespace: "backstage_power"
     description: "Restrict network access for certain applications in BFGS process state"
     bug: "304347838"
+}
+
+flag {
+    namespace: "backstage_power"
+    name: "log_excessive_binder_proxies"
+    description: "Log the excessive incoming binder proxies into statsd"
+    bug: "298263955"
 }

@@ -340,8 +340,6 @@ public class NetworkPolicyManagerService extends INetworkPolicyManager.Stub {
     static final String TAG = NetworkPolicyLogger.TAG;
     private static final boolean LOGD = NetworkPolicyLogger.LOGD;
     private static final boolean LOGV = NetworkPolicyLogger.LOGV;
-    // TODO: b/304347838 - Remove once the feature is in staging.
-    private static final boolean ALWAYS_RESTRICT_BACKGROUND_NETWORK = false;
 
     /**
      * No opportunistic quota could be calculated from user data plan or data settings.
@@ -1070,8 +1068,7 @@ public class NetworkPolicyManagerService extends INetworkPolicyManager.Stub {
                     }
 
                     // The flag is boot-stable.
-                    mBackgroundNetworkRestricted = ALWAYS_RESTRICT_BACKGROUND_NETWORK
-                            && Flags.networkBlockedForTopSleepingAndAbove();
+                    mBackgroundNetworkRestricted = Flags.networkBlockedForTopSleepingAndAbove();
                     if (mBackgroundNetworkRestricted) {
                         // Firewall rules and UidBlockedState will get updated in
                         // updateRulesForGlobalChangeAL below.
@@ -1217,22 +1214,26 @@ public class NetworkPolicyManagerService extends INetworkPolicyManager.Stub {
                 return false;
             }
             final int previousProcState = previousInfo.procState;
-            if (mBackgroundNetworkRestricted && (previousProcState >= BACKGROUND_THRESHOLD_STATE)
-                    != (newProcState >= BACKGROUND_THRESHOLD_STATE)) {
-                // Proc-state change crossed BACKGROUND_THRESHOLD_STATE: Network rules for the
-                // BACKGROUND chain may change.
-                return true;
-            }
             if ((previousProcState <= TOP_THRESHOLD_STATE)
-                    != (newProcState <= TOP_THRESHOLD_STATE)) {
-                // Proc-state change crossed TOP_THRESHOLD_STATE: Network rules for the
-                // LOW_POWER_STANDBY chain may change.
+                    || (newProcState <= TOP_THRESHOLD_STATE)) {
+                // If the proc-state change crossed TOP_THRESHOLD_STATE, network rules for the
+                // LOW_POWER_STANDBY chain may change, so we need to evaluate the transition.
+                // In addition, we always process changes when the new process state is
+                // TOP_THRESHOLD_STATE or below, to avoid situations where the TOP app ends up
+                // waiting for NPMS to finish processing newProcStateSeq, even when it was
+                // redundant (b/327303931).
                 return true;
             }
             if ((previousProcState <= FOREGROUND_THRESHOLD_STATE)
                     != (newProcState <= FOREGROUND_THRESHOLD_STATE)) {
                 // Proc-state change crossed FOREGROUND_THRESHOLD_STATE: Network rules for many
                 // different chains may change.
+                return true;
+            }
+            if (mBackgroundNetworkRestricted && (previousProcState >= BACKGROUND_THRESHOLD_STATE)
+                    != (newProcState >= BACKGROUND_THRESHOLD_STATE)) {
+                // Proc-state change crossed BACKGROUND_THRESHOLD_STATE: Network rules for the
+                // BACKGROUND chain may change.
                 return true;
             }
             final int networkCapabilities = PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK
@@ -4325,7 +4326,9 @@ public class NetworkPolicyManagerService extends INetworkPolicyManager.Stub {
     @GuardedBy("mUidRulesFirstLock")
     private boolean updateUidStateUL(int uid, int procState, long procStateSeq,
             @ProcessCapability int capability) {
-        Trace.traceBegin(Trace.TRACE_TAG_NETWORK, "updateUidStateUL");
+        Trace.traceBegin(Trace.TRACE_TAG_NETWORK, "updateUidStateUL: " + uid + "/"
+                + ActivityManager.procStateToString(procState) + "/" + procStateSeq + "/"
+                + ActivityManager.getCapabilitiesSummary(capability));
         try {
             final UidState oldUidState = mUidState.get(uid);
             if (oldUidState != null && procStateSeq < oldUidState.procStateSeq) {

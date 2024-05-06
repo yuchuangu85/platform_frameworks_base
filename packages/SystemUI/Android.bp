@@ -214,6 +214,8 @@ android_library {
 
     javacflags: [
         "-Adagger.fastInit=enabled",
+        "-Adagger.explicitBindingConflictsWithInject=ERROR",
+        "-Adagger.strictMultibindingValidation=enabled",
         "-Aroom.schemaLocation=frameworks/base/packages/SystemUI/schemas",
     ],
     kotlincflags: ["-Xjvm-default=all"],
@@ -227,7 +229,6 @@ android_library {
         extra_check_modules: ["SystemUILintChecker"],
         warning_checks: ["MissingApacheLicenseDetector"],
     },
-    skip_jarjar_repackage: true,
 }
 
 filegroup {
@@ -327,7 +328,7 @@ android_library {
         "WindowManager-Shell",
         "LowLightDreamLib",
         "motion_tool_lib",
-        "androidx.core_core-animation-testing-nodeps",
+        "androidx.core_core-animation-testing",
         "androidx.compose.ui_ui",
         "flag-junit",
         "platform-test-annotations",
@@ -419,6 +420,7 @@ android_app {
     kotlincflags: ["-Xjvm-default=all"],
     optimize: {
         shrink_resources: false,
+        optimized_shrink_resources: false,
         proguard_flags_files: ["proguard.flags"],
     },
 
@@ -476,6 +478,7 @@ systemui_optimized_java_defaults {
                 optimize: true,
                 shrink: true,
                 shrink_resources: true,
+                optimized_shrink_resources: true,
                 ignore_warnings: false,
                 proguard_compatibility: false,
             },

@@ -206,7 +206,6 @@ import libcore.io.Streams;
 import org.junit.After;
 import org.junit.Assume;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.MethodRule;
@@ -2151,14 +2150,12 @@ public class NetworkPolicyManagerServiceTest {
         assertFalse(mService.isUidNetworkingBlocked(UID_E, false));
     }
 
-    @Ignore("Temporarily disabled until the feature is enabled")
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testBackgroundChainEnabled() throws Exception {
         verify(mNetworkManager).setFirewallChainEnabled(FIREWALL_CHAIN_BACKGROUND, true);
     }
 
-    @Ignore("Temporarily disabled until the feature is enabled")
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testBackgroundChainOnProcStateChange() throws Exception {
@@ -2188,7 +2185,6 @@ public class NetworkPolicyManagerServiceTest {
         assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
     }
 
-    @Ignore("Temporarily disabled until the feature is enabled")
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testBackgroundChainOnAllowlistChange() throws Exception {
@@ -2227,7 +2223,6 @@ public class NetworkPolicyManagerServiceTest {
         assertFalse(mService.isUidNetworkingBlocked(UID_B, false));
     }
 
-    @Ignore("Temporarily disabled until the feature is enabled")
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testBackgroundChainOnTempAllowlistChange() throws Exception {
@@ -2266,7 +2261,6 @@ public class NetworkPolicyManagerServiceTest {
                 && uidState.procState == procState && uidState.capability == capability;
     }
 
-    @Ignore("Temporarily disabled until the feature is enabled")
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testUidObserverFiltersProcStateChanges() throws Exception {
@@ -2321,15 +2315,15 @@ public class NetworkPolicyManagerServiceTest {
         }
         waitForUidEventHandlerIdle();
         try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
-            // Doesn't cross any other threshold.
+            // Doesn't cross any threshold, but changes below TOP_THRESHOLD_STATE should always
+            // be processed
             callOnUidStatechanged(UID_A, TOP_THRESHOLD_STATE - 1, testProcStateSeq++,
                     PROCESS_CAPABILITY_NONE);
-            assertFalse(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
         }
         waitForUidEventHandlerIdle();
     }
 
-    @Ignore("Temporarily disabled until the feature is enabled")
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testUidObserverFiltersStaleChanges() throws Exception {
@@ -2350,28 +2344,27 @@ public class NetworkPolicyManagerServiceTest {
         waitForUidEventHandlerIdle();
     }
 
-    @Ignore("Temporarily disabled until the feature is enabled")
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testUidObserverFiltersCapabilityChanges() throws Exception {
         int testProcStateSeq = 0;
         try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
             // First callback for uid.
-            callOnUidStatechanged(UID_A, TOP_THRESHOLD_STATE, testProcStateSeq++,
+            callOnUidStatechanged(UID_A, FOREGROUND_THRESHOLD_STATE, testProcStateSeq++,
                     PROCESS_CAPABILITY_NONE);
             assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
         }
         waitForUidEventHandlerIdle();
         try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
             // The same process-state with one network capability added.
-            callOnUidStatechanged(UID_A, TOP_THRESHOLD_STATE, testProcStateSeq++,
+            callOnUidStatechanged(UID_A, FOREGROUND_THRESHOLD_STATE, testProcStateSeq++,
                     PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK);
             assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
         }
         waitForUidEventHandlerIdle();
         try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
             // The same process-state with another network capability added.
-            callOnUidStatechanged(UID_A, TOP_THRESHOLD_STATE, testProcStateSeq++,
+            callOnUidStatechanged(UID_A, FOREGROUND_THRESHOLD_STATE, testProcStateSeq++,
                     PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK
                             | PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK);
             assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
@@ -2379,9 +2372,19 @@ public class NetworkPolicyManagerServiceTest {
         waitForUidEventHandlerIdle();
         try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
             // The same process-state with all capabilities, but no change in network capabilities.
-            callOnUidStatechanged(UID_A, TOP_THRESHOLD_STATE, testProcStateSeq++,
+            callOnUidStatechanged(UID_A, FOREGROUND_THRESHOLD_STATE, testProcStateSeq++,
                     PROCESS_CAPABILITY_ALL);
             assertFalse(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
+        }
+        waitForUidEventHandlerIdle();
+
+        callAndWaitOnUidStateChanged(UID_A, TOP_THRESHOLD_STATE, testProcStateSeq++,
+                PROCESS_CAPABILITY_ALL);
+        try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
+            // No change in capabilities, but TOP_THRESHOLD_STATE change should always be processed.
+            callOnUidStatechanged(UID_A, TOP_THRESHOLD_STATE, testProcStateSeq++,
+                    PROCESS_CAPABILITY_ALL);
+            assertTrue(mService.mUidEventHandler.hasMessages(UID_MSG_STATE_CHANGED));
         }
         waitForUidEventHandlerIdle();
     }
@@ -2430,7 +2433,6 @@ public class NetworkPolicyManagerServiceTest {
         assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
     }
 
-    @Ignore("Temporarily disabled until the feature is enabled")
     @Test
     @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testObsoleteHandleUidChanged() throws Exception {

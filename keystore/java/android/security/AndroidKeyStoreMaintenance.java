@@ -175,20 +175,6 @@ public class AndroidKeyStoreMaintenance {
     }
 
     /**
-     * Informs Keystore 2.0 that an off body event was detected.
-     */
-    public static void onDeviceOffBody() {
-        StrictMode.noteDiskWrite();
-        try {
-            getService().onDeviceOffBody();
-        } catch (Exception e) {
-            // TODO This fails open. This is not a regression with respect to keystore1 but it
-            //      should get fixed.
-            Log.e(TAG, "Error while reporting device off body event.", e);
-        }
-    }
-
-    /**
      * Migrates a key given by the source descriptor to the location designated by the destination
      * descriptor.
      *
@@ -241,6 +227,26 @@ public class AndroidKeyStoreMaintenance {
         } catch (ServiceSpecificException e) {
             throw new KeyStoreException(e.errorCode,
                     "Keystore error while trying to get apps affected by SID.");
+        }
+    }
+
+    /**
+    * Deletes all keys in all KeyMint devices.
+    * Called by RecoverySystem before rebooting to recovery in order to delete all KeyMint keys,
+    * including synthetic password protector keys (used by LockSettingsService), as well as keys
+    * protecting DE and metadata encryption keys (used by vold). This ensures that FBE-encrypted
+    * data is unrecoverable even if the data wipe in recovery is interrupted or skipped.
+    */
+    public static void deleteAllKeys() throws KeyStoreException {
+        StrictMode.noteDiskWrite();
+        try {
+            getService().deleteAllKeys();
+        } catch (RemoteException | NullPointerException e) {
+            throw new KeyStoreException(SYSTEM_ERROR,
+                    "Failure to connect to Keystore while trying to delete all keys.");
+        } catch (ServiceSpecificException e) {
+            throw new KeyStoreException(e.errorCode,
+                    "Keystore error while trying to delete all keys.");
         }
     }
 }
