@@ -21,47 +21,56 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 
-interface EdgeDetector {
-    /**
-     * Return the [Edge] associated to [position] inside a layout of size [layoutSize], given
-     * [density] and [orientation].
-     */
-    fun edge(
-        layoutSize: IntSize,
-        position: IntOffset,
-        density: Density,
-        orientation: Orientation,
-    ): Edge?
+/** The edge of a [SceneTransitionLayout]. */
+enum class Edge(private val resolveEdge: (LayoutDirection) -> Resolved) : SwipeSource {
+    Top(resolveEdge = { Resolved.Top }),
+    Bottom(resolveEdge = { Resolved.Bottom }),
+    Left(resolveEdge = { Resolved.Left }),
+    Right(resolveEdge = { Resolved.Right }),
+    Start(resolveEdge = { if (it == LayoutDirection.Ltr) Resolved.Left else Resolved.Right }),
+    End(resolveEdge = { if (it == LayoutDirection.Ltr) Resolved.Right else Resolved.Left });
+
+    override fun resolve(layoutDirection: LayoutDirection): Resolved {
+        return resolveEdge(layoutDirection)
+    }
+
+    enum class Resolved : SwipeSource.Resolved {
+        Left,
+        Right,
+        Top,
+        Bottom,
+    }
 }
 
 val DefaultEdgeDetector = FixedSizeEdgeDetector(40.dp)
 
-/** An [EdgeDetector] that detects edges assuming a fixed edge size of [size]. */
-class FixedSizeEdgeDetector(val size: Dp) : EdgeDetector {
-    override fun edge(
+/** An [SwipeSourceDetector] that detects edges assuming a fixed edge size of [size]. */
+class FixedSizeEdgeDetector(val size: Dp) : SwipeSourceDetector {
+    override fun source(
         layoutSize: IntSize,
         position: IntOffset,
         density: Density,
         orientation: Orientation,
-    ): Edge? {
+    ): Edge.Resolved? {
         val axisSize: Int
         val axisPosition: Int
-        val topOrLeft: Edge
-        val bottomOrRight: Edge
+        val topOrLeft: Edge.Resolved
+        val bottomOrRight: Edge.Resolved
         when (orientation) {
             Orientation.Horizontal -> {
                 axisSize = layoutSize.width
                 axisPosition = position.x
-                topOrLeft = Edge.Left
-                bottomOrRight = Edge.Right
+                topOrLeft = Edge.Resolved.Left
+                bottomOrRight = Edge.Resolved.Right
             }
             Orientation.Vertical -> {
                 axisSize = layoutSize.height
                 axisPosition = position.y
-                topOrLeft = Edge.Top
-                bottomOrRight = Edge.Bottom
+                topOrLeft = Edge.Resolved.Top
+                bottomOrRight = Edge.Resolved.Bottom
             }
         }
 

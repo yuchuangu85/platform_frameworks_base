@@ -106,6 +106,15 @@ final class ViewState {
      */
     private FillResponse mSecondaryFillResponse;
     private AutofillValue mCurrentValue;
+
+    /**
+     * Some apps clear the form before navigating to another activity. The mCandidateSaveValue
+     * caches the value when a field with string longer than 2 characters are cleared.
+     *
+     * When showing save UI, if mCurrentValue of view state is empty, session would use
+     * mCandidateSaveValue to prompt save instead.
+     */
+    private AutofillValue mCandidateSaveValue;
     private AutofillValue mAutofilledValue;
     private AutofillValue mSanitizedValue;
     private Rect mVirtualBounds;
@@ -139,6 +148,18 @@ final class ViewState {
         mCurrentValue = value;
     }
 
+    /**
+     * Gets the candidate save value of the view.
+     */
+    @Nullable
+    AutofillValue getCandidateSaveValue() {
+        return mCandidateSaveValue;
+    }
+
+    void setCandidateSaveValue(AutofillValue value) {
+        mCandidateSaveValue = value;
+    }
+
     @Nullable
     AutofillValue getAutofilledValue() {
         return mAutofilledValue;
@@ -160,6 +181,11 @@ final class ViewState {
     @Nullable
     FillResponse getResponse() {
         return mPrimaryFillResponse;
+    }
+
+    @Nullable
+    FillResponse getSecondaryResponse() {
+        return mSecondaryFillResponse;
     }
 
     void setResponse(FillResponse response) {
@@ -263,6 +289,9 @@ final class ViewState {
         if (mCurrentValue != null) {
             builder.append(", currentValue:" ).append(mCurrentValue);
         }
+        if (mCandidateSaveValue != null) {
+            builder.append(", candidateSaveValue:").append(mCandidateSaveValue);
+        }
         if (mAutofilledValue != null) {
             builder.append(", autofilledValue:" ).append(mAutofilledValue);
         }
@@ -296,6 +325,9 @@ final class ViewState {
         }
         if (mAutofilledValue != null) {
             pw.print(prefix); pw.print("autofilledValue:" ); pw.println(mAutofilledValue);
+        }
+        if (mCandidateSaveValue != null) {
+            pw.print(prefix); pw.print("candidateSaveValue:"); pw.println(mCandidateSaveValue);
         }
         if (mSanitizedValue != null) {
             pw.print(prefix); pw.print("sanitizedValue:" ); pw.println(mSanitizedValue);

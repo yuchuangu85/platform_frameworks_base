@@ -17,19 +17,21 @@
 package com.android.systemui.qs.tiles
 
 import android.app.AlertDialog
+import android.app.BroadcastOptions
+import android.app.PendingIntent
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.service.quicksettings.Tile
 import android.text.TextUtils
-import android.view.View
 import android.widget.Switch
 import androidx.annotation.VisibleForTesting
 import com.android.internal.jank.InteractionJankMonitor.CUJ_SHADE_DIALOG_OPEN
 import com.android.internal.logging.MetricsLogger
 import com.android.systemui.Flags.recordIssueQsTile
 import com.android.systemui.animation.DialogCuj
-import com.android.systemui.animation.DialogLaunchAnimator
+import com.android.systemui.animation.DialogTransitionAnimator
+import com.android.systemui.animation.Expandable
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.plugins.ActivityStarter
@@ -39,20 +41,33 @@ import com.android.systemui.plugins.statusbar.StatusBarStateController
 import com.android.systemui.qs.QSHost
 import com.android.systemui.qs.QsEventLogger
 import com.android.systemui.qs.logging.QSLogger
+import com.android.systemui.qs.pipeline.domain.interactor.PanelInteractor
 import com.android.systemui.qs.tileimpl.QSTileImpl
+import com.android.systemui.recordissue.IssueRecordingService.Companion.getStartIntent
+import com.android.systemui.recordissue.IssueRecordingService.Companion.getStopIntent
+import com.android.systemui.recordissue.IssueRecordingServiceConnection
+import com.android.systemui.recordissue.IssueRecordingState
 import com.android.systemui.recordissue.RecordIssueDialogDelegate
+import com.android.systemui.recordissue.RecordIssueModule.Companion.TILE_SPEC
+import com.android.systemui.recordissue.TraceurConnection
 import com.android.systemui.res.R
+import com.android.systemui.screenrecord.RecordingController
+import com.android.systemui.screenrecord.RecordingService
+import com.android.systemui.settings.UserContextProvider
 import com.android.systemui.statusbar.phone.KeyguardDismissUtil
-import com.android.systemui.statusbar.phone.SystemUIDialog
 import com.android.systemui.statusbar.policy.KeyguardStateController
+import java.util.concurrent.Executor
 import javax.inject.Inject
+
+const val DELAY_MS: Long = 0
+const val INTERVAL_MS: Long = 1000
 
 class RecordIssueTile
 @Inject
 constructor(
     host: QSHost,
     uiEventLogger: QsEventLogger,
-    @Background backgroundLooper: Looper,
+    @Background private val backgroundLooper: Looper,
     @Main mainHandler: Handler,
     falsingManager: FalsingManager,
     metricsLogger: MetricsLogger,
@@ -61,8 +76,15 @@ constructor(
     qsLogger: QSLogger,
     private val keyguardDismissUtil: KeyguardDismissUtil,
     private val keyguardStateController: KeyguardStateController,
-    private val dialogLaunchAnimator: DialogLaunchAnimator,
-    private val sysuiDialogFactory: SystemUIDialog.Factory,
+    private val dialogTransitionAnimator: DialogTransitionAnimator,
+    private val panelInteractor: PanelInteractor,
+    private val userContextProvider: UserContextProvider,
+    irsConnProvider: IssueRecordingServiceConnection.Provider,
+    traceurConnProvider: TraceurConnection.Provider,
+    @Background private val bgExecutor: Executor,
+    private val issueRecordingState: IssueRecordingState,
+    private val delegateFactory: RecordIssueDialogDelegate.Factory,
+    private val recordingController: RecordingController,
 ) :
     QSTileImpl<QSTile.BooleanState>(
         host,
@@ -73,14 +95,45 @@ constructor(
         metricsLogger,
         statusBarStateController,
         activityStarter,
-        qsLogger
+        qsLogger,
     ) {
 
-    @VisibleForTesting var isRecording: Boolean = false
+    private val onRecordingChangeListener = Runnable { refreshState() }
+
+    private val irsConnection: IssueRecordingServiceConnection = irsConnProvider.create()
+    private val traceurConnection =
+        traceurConnProvider.create().apply {
+            onBound.add {
+                getTags(issueRecordingState)
+                doUnBind()
+            }
+        }
+
+    override fun handleSetListening(listening: Boolean) {
+        super.handleSetListening(listening)
+        bgExecutor.execute {
+            if (listening) {
+                issueRecordingState.addListener(onRecordingChangeListener)
+            } else {
+                issueRecordingState.removeListener(onRecordingChangeListener)
+            }
+        }
+    }
+
+    override fun handleDestroy() {
+        super.handleDestroy()
+        bgExecutor.execute { irsConnection.doUnBind() }
+    }
 
     override fun getTileLabel(): CharSequence = mContext.getString(R.string.qs_record_issue_label)
 
-    override fun isAvailable(): Boolean = recordIssueQsTile()
+    /**
+     * There are SELinux constraints that are stopping this tile from reaching production builds.
+     * Once those are resolved, this condition will be removed, but the solution (of properly
+     * creating a distince SELinux context for com.android.systemui) is complex and will take time
+     * to implement.
+     */
+    override fun isAvailable(): Boolean = android.os.Build.IS_DEBUGGABLE && recordIssueQsTile()
 
     override fun newTileState(): QSTile.BooleanState =
         QSTile.BooleanState().apply {
@@ -89,32 +142,67 @@ constructor(
         }
 
     @VisibleForTesting
-    public override fun handleClick(view: View?) {
-        if (isRecording) {
-            isRecording = false
+    public override fun handleClick(expandable: Expandable?) {
+        if (issueRecordingState.isRecording) {
+            stopIssueRecordingService()
         } else {
-            mUiHandler.post { showPrompt(view) }
+            mUiHandler.post { showPrompt(expandable) }
         }
-        refreshState()
     }
 
-    private fun showPrompt(view: View?) {
+    private fun startIssueRecordingService() =
+        recordingController.startCountdown(
+            DELAY_MS,
+            INTERVAL_MS,
+            pendingServiceIntent(
+                getStartIntent(
+                    userContextProvider.userContext,
+                    issueRecordingState.traceConfig,
+                    issueRecordingState.recordScreen,
+                    issueRecordingState.takeBugreport,
+                )
+            ),
+            pendingServiceIntent(getStopIntent(userContextProvider.userContext)),
+        )
+
+    private fun stopIssueRecordingService() =
+        pendingServiceIntent(getStopIntent(userContextProvider.userContext))
+            .send(BroadcastOptions.makeBasic().apply { isInteractive = true }.toBundle())
+
+    private fun pendingServiceIntent(action: Intent) =
+        PendingIntent.getService(
+            userContextProvider.userContext,
+            RecordingService.REQUEST_CODE,
+            action,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
+    private fun showPrompt(expandable: Expandable?) {
+        bgExecutor.execute {
+            // We only want to get the tags once per session, as this is not likely to change, if at
+            // all on a month to month basis. Using onBound's size is a way to verify if the tag
+            // retrieval has already happened or not.
+            if (traceurConnection.onBound.isNotEmpty()) {
+                traceurConnection.doBind()
+            }
+            irsConnection.doBind()
+        }
         val dialog: AlertDialog =
-            RecordIssueDialogDelegate(sysuiDialogFactory) {
-                    isRecording = true
-                    refreshState()
+            delegateFactory
+                .create {
+                    startIssueRecordingService()
+                    dialogTransitionAnimator.disableAllCurrentDialogsExitAnimations()
+                    panelInteractor.collapsePanels()
                 }
                 .createDialog()
         val dismissAction =
             ActivityStarter.OnDismissAction {
                 // We animate from the touched view only if we are not on the keyguard, given
                 // that if we are we will dismiss it which will also collapse the shade.
-                if (view != null && !keyguardStateController.isShowing) {
-                    dialogLaunchAnimator.showFromView(
-                        dialog,
-                        view,
-                        DialogCuj(CUJ_SHADE_DIALOG_OPEN, TILE_SPEC)
-                    )
+                if (expandable != null && !keyguardStateController.isShowing) {
+                    expandable
+                        .dialogTransitionController(DialogCuj(CUJ_SHADE_DIALOG_OPEN, TILE_SPEC))
+                        ?.let { dialogTransitionAnimator.show(dialog, it) } ?: dialog.show()
                 } else {
                     dialog.show()
                 }
@@ -128,27 +216,23 @@ constructor(
     @VisibleForTesting
     public override fun handleUpdateState(qsTileState: QSTile.BooleanState, arg: Any?) {
         qsTileState.apply {
-            if (isRecording) {
+            if (issueRecordingState.isRecording) {
                 value = true
                 state = Tile.STATE_ACTIVE
                 forceExpandIcon = false
                 secondaryLabel = mContext.getString(R.string.qs_record_issue_stop)
-                icon = ResourceIcon.get(R.drawable.qs_record_issue_icon_on)
+                icon = maybeLoadResourceIcon(R.drawable.qs_record_issue_icon_on)
             } else {
                 value = false
                 state = Tile.STATE_INACTIVE
                 forceExpandIcon = true
                 secondaryLabel = mContext.getString(R.string.qs_record_issue_start)
-                icon = ResourceIcon.get(R.drawable.qs_record_issue_icon_off)
+                icon = maybeLoadResourceIcon(R.drawable.qs_record_issue_icon_off)
             }
             label = tileLabel
             contentDescription =
                 if (TextUtils.isEmpty(secondaryLabel)) label else "$label, $secondaryLabel"
             expandedAccessibilityClassName = Switch::class.java.name
         }
-    }
-
-    companion object {
-        const val TILE_SPEC = "record_issue"
     }
 }

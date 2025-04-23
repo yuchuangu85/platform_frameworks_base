@@ -3,17 +3,18 @@ package com.android.systemui.screenshot
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
-import android.os.UserHandle
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.MarginLayoutParams
 import android.view.ViewTreeObserver
 import android.view.animation.AccelerateDecelerateInterpolator
 import androidx.constraintlayout.widget.Guideline
+import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.res.R
-import com.android.systemui.flags.FeatureFlags
-import com.android.systemui.flags.Flags
+import com.android.systemui.screenshot.message.ProfileMessageController
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import com.android.app.tracing.coroutines.launchTraced as launch
 
 /**
  * MessageContainerController controls the display of content in the screenshot message container.
@@ -22,8 +23,9 @@ class MessageContainerController
 @Inject
 constructor(
     private val workProfileMessageController: WorkProfileMessageController,
+    private val profileMessageController: ProfileMessageController,
     private val screenshotDetectionController: ScreenshotDetectionController,
-    private val featureFlags: FeatureFlags,
+    @Application private val mainScope: CoroutineScope,
 ) {
     private lateinit var container: ViewGroup
     private lateinit var guideline: Guideline
@@ -45,45 +47,27 @@ constructor(
         detectionNoticeView.visibility = View.GONE
     }
 
-    // Minimal implementation for use when Flags.SCREENSHOT_METADATA isn't turned on.
-    fun onScreenshotTaken(userHandle: UserHandle) {
-        val workProfileData = workProfileMessageController.onScreenshotTaken(userHandle)
-        if (workProfileData != null) {
-            workProfileFirstRunView.visibility = View.VISIBLE
-            detectionNoticeView.visibility = View.GONE
-
-            workProfileMessageController.populateView(
-                workProfileFirstRunView,
-                workProfileData,
-                this::animateOutMessageContainer
-            )
-            animateInMessageContainer()
-        }
-    }
-
     fun onScreenshotTaken(screenshot: ScreenshotData) {
-        val workProfileData = workProfileMessageController.onScreenshotTaken(screenshot.userHandle)
-        var notifiedApps: List<CharSequence> = listOf()
-        if (featureFlags.isEnabled(Flags.SCREENSHOT_DETECTION)) {
-            notifiedApps = screenshotDetectionController.maybeNotifyOfScreenshot(screenshot)
-        }
+        mainScope.launch {
+            val profileData = profileMessageController.onScreenshotTaken(screenshot.userHandle)
+            var notifiedApps: List<CharSequence> =
+                screenshotDetectionController.maybeNotifyOfScreenshot(screenshot)
 
-        // If work profile first run needs to show, bias towards that, otherwise show screenshot
-        // detection notification if needed.
-        if (workProfileData != null) {
-            workProfileFirstRunView.visibility = View.VISIBLE
-            detectionNoticeView.visibility = View.GONE
-            workProfileMessageController.populateView(
-                workProfileFirstRunView,
-                workProfileData,
-                this::animateOutMessageContainer
-            )
-            animateInMessageContainer()
-        } else if (notifiedApps.isNotEmpty()) {
-            detectionNoticeView.visibility = View.VISIBLE
-            workProfileFirstRunView.visibility = View.GONE
-            screenshotDetectionController.populateView(detectionNoticeView, notifiedApps)
-            animateInMessageContainer()
+            // If profile first run needs to show, bias towards that, otherwise show screenshot
+            // detection notification if needed.
+            if (profileData != null) {
+                workProfileFirstRunView.visibility = View.VISIBLE
+                detectionNoticeView.visibility = View.GONE
+                profileMessageController.bindView(workProfileFirstRunView, profileData) {
+                    animateOutMessageContainer()
+                }
+                animateInMessageContainer()
+            } else if (notifiedApps.isNotEmpty()) {
+                detectionNoticeView.visibility = View.VISIBLE
+                workProfileFirstRunView.visibility = View.GONE
+                screenshotDetectionController.populateView(detectionNoticeView, notifiedApps)
+                animateInMessageContainer()
+            }
         }
     }
 
@@ -127,7 +111,7 @@ constructor(
         val offset = container.height + params.topMargin + params.bottomMargin
         val anim = if (animateIn) ValueAnimator.ofFloat(0f, 1f) else ValueAnimator.ofFloat(1f, 0f)
         with(anim) {
-            duration = ScreenshotView.SCREENSHOT_ACTIONS_EXPANSION_DURATION_MS
+            duration = MESSAGE_EXPANSION_DURATION_MS
             interpolator = AccelerateDecelerateInterpolator()
             addUpdateListener { valueAnimator: ValueAnimator ->
                 val interpolation = valueAnimator.animatedValue as Float
@@ -136,5 +120,9 @@ constructor(
             }
         }
         return anim
+    }
+
+    companion object {
+        const val MESSAGE_EXPANSION_DURATION_MS: Long = 400
     }
 }

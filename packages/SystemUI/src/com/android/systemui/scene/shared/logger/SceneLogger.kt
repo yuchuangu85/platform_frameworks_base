@@ -16,10 +16,13 @@
 
 package com.android.systemui.scene.shared.logger
 
+import com.android.compose.animation.scene.ObservableTransitionState
+import com.android.compose.animation.scene.OverlayKey
+import com.android.compose.animation.scene.SceneKey
 import com.android.systemui.log.LogBuffer
 import com.android.systemui.log.core.LogLevel
 import com.android.systemui.log.dagger.SceneFrameworkLog
-import com.android.systemui.scene.shared.model.SceneKey
+import com.android.systemui.scene.data.model.SceneStack
 import javax.inject.Inject
 
 class SceneLogger @Inject constructor(@SceneFrameworkLog private val logBuffer: LogBuffer) {
@@ -38,49 +41,85 @@ class SceneLogger @Inject constructor(@SceneFrameworkLog private val logBuffer: 
             },
             messagePrinter = {
                 "Scene framework is ${asWord(bool1)}${if (str1 != null) " $str1" else ""}"
+            },
+        )
+    }
+
+    fun logSceneChanged(from: SceneKey, to: SceneKey, reason: String, isInstant: Boolean) {
+        logBuffer.log(
+            tag = TAG,
+            level = LogLevel.INFO,
+            messageInitializer = {
+                str1 = from.toString()
+                str2 = to.toString()
+                str3 = reason
+                bool1 = isInstant
+            },
+            messagePrinter = {
+                buildString {
+                    append("Scene changed: $str1 → $str2")
+                    if (isInstant) {
+                        append(" (instant)")
+                    }
+                    append(", reason: $str3")
+                }
+            },
+        )
+    }
+
+    fun logSceneTransition(transitionState: ObservableTransitionState) {
+        when (transitionState) {
+            is ObservableTransitionState.Transition -> {
+                logBuffer.log(
+                    tag = TAG,
+                    level = LogLevel.INFO,
+                    messageInitializer = {
+                        str1 = transitionState.fromContent.toString()
+                        str2 = transitionState.toContent.toString()
+                    },
+                    messagePrinter = { "Scene transition started: $str1 → $str2" },
+                )
             }
-        )
+            is ObservableTransitionState.Idle -> {
+                logBuffer.log(
+                    tag = TAG,
+                    level = LogLevel.INFO,
+                    messageInitializer = { str1 = transitionState.currentScene.toString() },
+                    messagePrinter = { "Scene transition idle on: $str1" },
+                )
+            }
+        }
     }
 
-    fun logSceneChangeRequested(
-        from: SceneKey,
-        to: SceneKey,
+    fun logOverlayChangeRequested(
+        from: OverlayKey? = null,
+        to: OverlayKey? = null,
         reason: String,
     ) {
         logBuffer.log(
             tag = TAG,
             level = LogLevel.INFO,
             messageInitializer = {
-                str1 = from.toString()
-                str2 = to.toString()
+                str1 = from?.toString()
+                str2 = to?.toString()
                 str3 = reason
             },
-            messagePrinter = { "Scene change requested: $str1 → $str2, reason: $str3" },
+            messagePrinter = {
+                buildString {
+                    append("Overlay change requested: ")
+                    if (str1 != null) {
+                        append(str1)
+                        append(if (str2 == null) " (hidden)" else " → $str2")
+                    } else {
+                        append("$str2 (shown)")
+                    }
+                    append(", reason: $str3")
+                }
+            },
         )
     }
 
-    fun logSceneChangeCommitted(
-        from: SceneKey,
-        to: SceneKey,
-        reason: String,
-    ) {
-        logBuffer.log(
-            tag = TAG,
-            level = LogLevel.INFO,
-            messageInitializer = {
-                str1 = from.toString()
-                str2 = to.toString()
-                str3 = reason
-            },
-            messagePrinter = { "Scene change committed: $str1 → $str2, reason: $str3" },
-        )
-    }
-
-    fun logVisibilityChange(
-        from: Boolean,
-        to: Boolean,
-        reason: String,
-    ) {
+    fun logVisibilityChange(from: Boolean, to: Boolean, reason: String) {
         fun asWord(isVisible: Boolean): String {
             return if (isVisible) "visible" else "invisible"
         }
@@ -94,6 +133,33 @@ class SceneLogger @Inject constructor(@SceneFrameworkLog private val logBuffer: 
                 str3 = reason
             },
             messagePrinter = { "$str1 → $str2, reason: $str3" },
+        )
+    }
+
+    fun logRemoteUserInputStarted(reason: String) {
+        logBuffer.log(
+            tag = TAG,
+            level = LogLevel.INFO,
+            messageInitializer = { str1 = reason },
+            messagePrinter = { "remote user interaction started, reason: $str1" },
+        )
+    }
+
+    fun logUserInputFinished() {
+        logBuffer.log(
+            tag = TAG,
+            level = LogLevel.INFO,
+            messageInitializer = {},
+            messagePrinter = { "user interaction finished" },
+        )
+    }
+
+    fun logSceneBackStack(backStack: SceneStack) {
+        logBuffer.log(
+            tag = TAG,
+            level = LogLevel.INFO,
+            messageInitializer = { str1 = backStack.toString() },
+            messagePrinter = { "back stack: $str1" },
         )
     }
 

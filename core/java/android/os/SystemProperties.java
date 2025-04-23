@@ -20,6 +20,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
 import android.util.Log;
 import android.util.MutableInt;
 
@@ -51,6 +52,7 @@ import java.util.HashMap;
  * {@hide}
  */
 @SystemApi
+@RavenwoodKeepWholeClass
 public class SystemProperties {
     private static final String TAG = "SystemProperties";
     private static final boolean TRACK_KEY_ACCESS = false;
@@ -290,6 +292,16 @@ public class SystemProperties {
             }
         } finally {
             Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    /**
+     * Clear all callback changes.
+     * @hide
+     */
+    public static void clearChangeCallbacksForTest() {
+        synchronized (sChangeCallbacks) {
+            sChangeCallbacks.clear();
         }
     }
 

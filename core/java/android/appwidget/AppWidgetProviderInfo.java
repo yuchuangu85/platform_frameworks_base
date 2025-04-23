@@ -16,6 +16,10 @@
 
 package android.appwidget;
 
+import static android.appwidget.flags.Flags.FLAG_GENERATED_PREVIEWS;
+import static android.appwidget.flags.Flags.generatedPreviews;
+
+import android.annotation.FlaggedApi;
 import android.annotation.IdRes;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
@@ -89,11 +93,26 @@ public class AppWidgetProviderInfo implements Parcelable {
      */
     public static final int WIDGET_CATEGORY_SEARCHBOX = 4;
 
+    /**
+     * Indicates that the widget should never be shown on the keyguard.
+     *
+     * <p>Some keyguard style features may decide that {@link #WIDGET_CATEGORY_KEYGUARD} isn't
+     * required to be added by an app to show on the feature when chosen by a user.
+     * This category allows for a stronger statement about placement of the widget that, even in the
+     * above case, this widget should not be offered on the keyguard.
+     *
+     * <p>Setting this category doesn't change the behavior of AppWidgetManager queries, it is the
+     * responsibility of the widget surface to respect this value.
+     */
+    @FlaggedApi(android.appwidget.flags.Flags.FLAG_NOT_KEYGUARD_CATEGORY)
+    public static final int WIDGET_CATEGORY_NOT_KEYGUARD = 8;
+
     /** @hide */
     @IntDef(flag = true, prefix = { "FLAG_" }, value = {
             WIDGET_CATEGORY_HOME_SCREEN,
             WIDGET_CATEGORY_KEYGUARD,
             WIDGET_CATEGORY_SEARCHBOX,
+            WIDGET_CATEGORY_NOT_KEYGUARD,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface CategoryFlags {}
@@ -358,6 +377,20 @@ public class AppWidgetProviderInfo implements Parcelable {
     /** @hide */
     public boolean isExtendedFromAppWidgetProvider;
 
+    /**
+     * Flags indicating the widget categories for which generated previews are available.
+     * These correspond to the previews set by this provider with
+     * {@link AppWidgetManager#setWidgetPreview}.
+     *
+     * @see #WIDGET_CATEGORY_HOME_SCREEN
+     * @see #WIDGET_CATEGORY_KEYGUARD
+     * @see #WIDGET_CATEGORY_SEARCHBOX
+     * @see AppWidgetManager#getWidgetPreview
+     */
+    @FlaggedApi(FLAG_GENERATED_PREVIEWS)
+    @SuppressLint("MutableBareField")
+    public int generatedPreviewCategories;
+
     public AppWidgetProviderInfo() {
 
     }
@@ -391,6 +424,9 @@ public class AppWidgetProviderInfo implements Parcelable {
         this.widgetFeatures = in.readInt();
         this.descriptionRes = in.readInt();
         this.isExtendedFromAppWidgetProvider = in.readBoolean();
+        if (generatedPreviews()) {
+            generatedPreviewCategories = in.readInt();
+        }
     }
 
     /**
@@ -515,6 +551,9 @@ public class AppWidgetProviderInfo implements Parcelable {
         out.writeInt(this.widgetFeatures);
         out.writeInt(this.descriptionRes);
         out.writeBoolean(this.isExtendedFromAppWidgetProvider);
+        if (generatedPreviews()) {
+            out.writeInt(this.generatedPreviewCategories);
+        }
     }
 
     @Override
@@ -545,6 +584,9 @@ public class AppWidgetProviderInfo implements Parcelable {
         that.widgetFeatures = this.widgetFeatures;
         that.descriptionRes = this.descriptionRes;
         that.isExtendedFromAppWidgetProvider = this.isExtendedFromAppWidgetProvider;
+        if (generatedPreviews()) {
+            that.generatedPreviewCategories = this.generatedPreviewCategories;
+        }
         return that;
     }
 

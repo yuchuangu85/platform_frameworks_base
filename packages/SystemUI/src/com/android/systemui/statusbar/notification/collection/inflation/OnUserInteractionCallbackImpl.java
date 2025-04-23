@@ -34,7 +34,7 @@ import com.android.systemui.statusbar.notification.collection.coordinator.Visual
 import com.android.systemui.statusbar.notification.collection.notifcollection.DismissedByUserStats;
 import com.android.systemui.statusbar.notification.collection.render.NotificationVisibilityProvider;
 import com.android.systemui.statusbar.notification.row.OnUserInteractionCallback;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager;
 
 import javax.inject.Inject;
 
@@ -68,7 +68,7 @@ public class OnUserInteractionCallbackImpl implements OnUserInteractionCallback 
     @NonNull
     private DismissedByUserStats getDismissedByUserStats(NotificationEntry entry) {
         int dismissalSurface = NotificationStats.DISMISSAL_SHADE;
-        if (mHeadsUpManager.isAlerting(entry.getKey())) {
+        if (mHeadsUpManager.isHeadsUpEntry(entry.getKey())) {
             dismissalSurface = NotificationStats.DISMISSAL_PEEK;
         } else if (mStatusBarStateController.isDozing()) {
             dismissalSurface = NotificationStats.DISMISSAL_AOD;

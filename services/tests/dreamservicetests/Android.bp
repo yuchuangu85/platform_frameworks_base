@@ -1,4 +1,5 @@
 package {
+    default_team: "trendy_team_system_ui_please_use_a_more_specific_subteam_if_possible_",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["frameworks_base_license"],
 }
@@ -17,6 +18,13 @@ android_test {
         "mockito-target-minus-junit4",
         "services.core",
         "mockingservicestests-utils-mockito",
+        "platform-test-annotations",
+        "servicestests-utils",
+        "testables",
+    ],
+
+    defaults: [
+        "modules-utils-testable-device-config-defaults",
     ],
 
     platform_apis: true,
@@ -33,4 +41,14 @@ android_test {
     optimize: {
         enabled: false,
     },
+}
+
+test_module_config {
+    name: "DreamServiceTests_server_dreams",
+    base: "DreamServiceTests",
+    test_suites: [
+        "automotive-tests",
+        "device-tests",
+    ],
+    include_filters: ["com.android.server.dreams"],
 }

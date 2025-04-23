@@ -33,6 +33,9 @@ import static android.media.MediaRoute2Info.TYPE_USB_DEVICE;
 import static android.media.MediaRoute2Info.TYPE_USB_HEADSET;
 import static android.media.MediaRoute2Info.TYPE_WIRED_HEADPHONES;
 import static android.media.MediaRoute2Info.TYPE_WIRED_HEADSET;
+import static android.media.MediaRoute2Info.TYPE_LINE_DIGITAL;
+import static android.media.MediaRoute2Info.TYPE_LINE_ANALOG;
+import static android.media.MediaRoute2Info.TYPE_AUX_LINE;
 import static android.media.RouteListingPreference.Item.FLAG_ONGOING_SESSION;
 import static android.media.RouteListingPreference.Item.FLAG_ONGOING_SESSION_MANAGED;
 import static android.media.RouteListingPreference.Item.FLAG_SUGGESTED;
@@ -49,6 +52,8 @@ import static android.media.RouteListingPreference.Item.SUBTEXT_UNAUTHORIZED;
 import static com.android.settingslib.media.LocalMediaManager.MediaDeviceState.STATE_SELECTED;
 import static com.android.settingslib.media.MediaDevice.SelectionBehavior.SELECTION_BEHAVIOR_TRANSFER;
 
+import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.SuppressLint;
 import android.content.Context;
 import android.graphics.drawable.Drawable;
@@ -121,16 +126,13 @@ public abstract class MediaDevice implements Comparable<MediaDevice> {
     protected final Context mContext;
     protected final MediaRoute2Info mRouteInfo;
     protected final RouteListingPreference.Item mItem;
-    protected final String mPackageName;
 
     MediaDevice(
-            Context context,
-            MediaRoute2Info info,
-            String packageName,
-            RouteListingPreference.Item item) {
+            @NonNull Context context,
+            @Nullable MediaRoute2Info info,
+            @Nullable RouteListingPreference.Item item) {
         mContext = context;
         mRouteInfo = info;
-        mPackageName = packageName;
         mItem = item;
         setType(info);
     }
@@ -151,6 +153,9 @@ public abstract class MediaDevice implements Comparable<MediaDevice> {
                 break;
             case TYPE_WIRED_HEADSET:
             case TYPE_WIRED_HEADPHONES:
+            case TYPE_LINE_DIGITAL:
+            case TYPE_LINE_ANALOG:
+            case TYPE_AUX_LINE:
                 mType = MediaDeviceType.TYPE_3POINT5_MM_AUDIO_DEVICE;
                 break;
             case TYPE_USB_DEVICE:
@@ -385,6 +390,16 @@ public abstract class MediaDevice implements Comparable<MediaDevice> {
     }
 
     /**
+     * Get the {@link MediaRoute2Info.Type} of the device.
+     */
+    public int getRouteType() {
+        if (mRouteInfo == null) {
+            return TYPE_UNKNOWN;
+        }
+        return mRouteInfo.getType();
+    }
+
+    /**
      * Checks if route's volume is fixed, if true, we should disable volume control for the device.
      *
      * @return route for this device is fixed.
@@ -396,12 +411,6 @@ public abstract class MediaDevice implements Comparable<MediaDevice> {
             return true;
         }
         return mRouteInfo.getVolumeHandling() == MediaRoute2Info.PLAYBACK_VOLUME_FIXED;
-    }
-
-    /**
-     * Stop transfer MediaDevice
-     */
-    public void disconnect() {
     }
 
     /**

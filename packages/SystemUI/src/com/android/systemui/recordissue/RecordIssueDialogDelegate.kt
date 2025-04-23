@@ -17,70 +17,191 @@
 package com.android.systemui.recordissue
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog.BUTTON_POSITIVE
 import android.content.Context
+import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.os.Bundle
+import android.os.UserHandle
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.PopupMenu
 import android.widget.Switch
+import androidx.annotation.MainThread
+import androidx.annotation.WorkerThread
+import com.android.systemui.dagger.qualifiers.Background
+import com.android.systemui.dagger.qualifiers.Main
+import com.android.systemui.flags.FeatureFlagsClassic
+import com.android.systemui.mediaprojection.MediaProjectionMetricsLogger
+import com.android.systemui.mediaprojection.SessionCreationSource
+import com.android.systemui.mediaprojection.devicepolicy.ScreenCaptureDevicePolicyResolver
+import com.android.systemui.mediaprojection.devicepolicy.ScreenCaptureDisabledDialogDelegate
+import com.android.systemui.recordissue.IssueRecordingState.Companion.ALL_ISSUE_TYPES
+import com.android.systemui.recordissue.IssueRecordingState.Companion.ISSUE_TYPE_NOT_SET
 import com.android.systemui.res.R
+import com.android.systemui.settings.UserTracker
 import com.android.systemui.statusbar.phone.SystemUIDialog
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedFactory
+import dagger.assisted.AssistedInject
+import java.util.concurrent.Executor
 
-class RecordIssueDialogDelegate(
+private const val EXTRA_ISSUE_TYPE_RES = "extra_issueTypeRes"
+
+class RecordIssueDialogDelegate
+@AssistedInject
+constructor(
     private val factory: SystemUIDialog.Factory,
-    private val onStarted: Runnable
+    private val userTracker: UserTracker,
+    private val flags: FeatureFlagsClassic,
+    @Background private val bgExecutor: Executor,
+    @Main private val mainExecutor: Executor,
+    private val devicePolicyResolver: dagger.Lazy<ScreenCaptureDevicePolicyResolver>,
+    private val mediaProjectionMetricsLogger: MediaProjectionMetricsLogger,
+    private val screenCaptureDisabledDialogDelegate: ScreenCaptureDisabledDialogDelegate,
+    private val state: IssueRecordingState,
+    @Assisted private val onStarted: Runnable,
 ) : SystemUIDialog.Delegate {
+
+    /** To inject dependencies and allow for easier testing */
+    @AssistedFactory
+    interface Factory {
+        /** Create a dialog object */
+        fun create(onStarted: Runnable): RecordIssueDialogDelegate
+    }
 
     @SuppressLint("UseSwitchCompatOrMaterialCode") private lateinit var screenRecordSwitch: Switch
     private lateinit var issueTypeButton: Button
 
+    @MainThread
     override fun beforeCreate(dialog: SystemUIDialog, savedInstanceState: Bundle?) {
         dialog.apply {
             setView(LayoutInflater.from(context).inflate(R.layout.record_issue_dialog, null))
             setTitle(context.getString(R.string.qs_record_issue_label))
             setIcon(R.drawable.qs_record_issue_icon_off)
-            setNegativeButton(R.string.cancel) { _, _ -> dismiss() }
-            setPositiveButton(R.string.qs_record_issue_start) { _, _ ->
-                onStarted.run()
-                dismiss()
-            }
+            setNegativeButton(R.string.cancel) { _, _ -> }
+            setPositiveButton(R.string.qs_record_issue_start) { _, _ -> onStarted.run() }
         }
     }
 
     override fun createDialog(): SystemUIDialog = factory.create(this)
 
+    @MainThread
     override fun onCreate(dialog: SystemUIDialog, savedInstanceState: Bundle?) {
         dialog.apply {
-            window?.addPrivateFlags(WindowManager.LayoutParams.SYSTEM_FLAG_SHOW_FOR_ALL_USERS)
-            window?.setGravity(Gravity.CENTER)
+            window?.apply {
+                addPrivateFlags(WindowManager.LayoutParams.SYSTEM_FLAG_SHOW_FOR_ALL_USERS)
+                setGravity(Gravity.CENTER)
+            }
 
-            screenRecordSwitch = requireViewById(R.id.screenrecord_switch)
-            issueTypeButton = requireViewById(R.id.issue_type_button)
-            issueTypeButton.setOnClickListener { onIssueTypeClicked(context) }
+            screenRecordSwitch =
+                requireViewById<Switch>(R.id.screenrecord_switch).apply {
+                    isChecked = state.recordScreen
+                    setOnCheckedChangeListener { _, isChecked ->
+                        state.recordScreen = isChecked
+                        if (isChecked) {
+                            bgExecutor.execute { onScreenRecordSwitchClicked() }
+                        }
+                    }
+                }
+
+            requireViewById<Switch>(R.id.bugreport_switch).apply {
+                isChecked = state.takeBugreport
+                setOnCheckedChangeListener { _, isChecked -> state.takeBugreport = isChecked }
+            }
+
+            issueTypeButton =
+                requireViewById<Button>(R.id.issue_type_button).apply {
+                    val startButton = dialog.getButton(BUTTON_POSITIVE)
+                    if (state.issueTypeRes != ISSUE_TYPE_NOT_SET) {
+                        setText(state.issueTypeRes)
+                    } else {
+                        startButton.isEnabled = false
+                    }
+                    setOnClickListener {
+                        onIssueTypeClicked(context) { startButton.isEnabled = true }
+                    }
+                }
         }
     }
 
-    private fun onIssueTypeClicked(context: Context) {
-        val selectedCategory = issueTypeButton.text.toString()
-        val popupMenu = PopupMenu(context, issueTypeButton)
+    @WorkerThread
+    private fun onScreenRecordSwitchClicked() {
+        if (
+            devicePolicyResolver
+                .get()
+                .isScreenCaptureCompletelyDisabled(UserHandle.of(userTracker.userId))
+        ) {
+            mainExecutor.execute {
+                screenCaptureDisabledDialogDelegate.createSysUIDialog().show()
+                screenRecordSwitch.isChecked = false
+            }
+            return
+        }
 
-        context.resources.getStringArray(R.array.qs_record_issue_types).forEachIndexed { i, cat ->
-            popupMenu.menu.add(0, 0, i, cat).apply {
+        mediaProjectionMetricsLogger.notifyProjectionInitiated(
+            userTracker.userId,
+            SessionCreationSource.SYSTEM_UI_SCREEN_RECORDER,
+        )
+
+        if (!state.hasUserApprovedScreenRecording) {
+            mainExecutor.execute {
+                ScreenCapturePermissionDialogDelegate(factory, state).createDialog().apply {
+                    setOnCancelListener { screenRecordSwitch.isChecked = false }
+                    show()
+                }
+            }
+        }
+    }
+
+    @MainThread
+    private fun onIssueTypeClicked(context: Context, onIssueTypeSelected: Runnable) {
+        val popupMenu = PopupMenu(context, issueTypeButton)
+        val onMenuItemClickListener =
+            PopupMenu.OnMenuItemClickListener {
+                issueTypeButton.text = it.title
+                state.issueTypeRes =
+                    it.intent?.getIntExtra(EXTRA_ISSUE_TYPE_RES, ISSUE_TYPE_NOT_SET)
+                        ?: ISSUE_TYPE_NOT_SET
+                onIssueTypeSelected.run()
+                true
+            }
+        ALL_ISSUE_TYPES.keys.forEach {
+            popupMenu.menu.add(it).apply {
+                // Set this for every item in the list to ensure equal spacing. Set it to
+                // transparent for non-selected items so icon is only visible for selected element.
                 setIcon(R.drawable.arrow_pointing_down)
-                if (selectedCategory != cat) {
+                if (it != state.issueTypeRes) {
                     iconTintList = ColorStateList.valueOf(Color.TRANSPARENT)
+                } else {
+                    contentDescription =
+                        context.getString(com.android.internal.R.string.selected) +
+                            " " +
+                            context.getString(it)
+                }
+                intent = Intent().putExtra(EXTRA_ISSUE_TYPE_RES, it)
+
+                if (it == R.string.custom) {
+                    setOnMenuItemClickListener {
+                        CustomTraceSettingsDialogDelegate(
+                                factory,
+                                state.customTraceState,
+                                state.tagTitles,
+                            ) {
+                                onMenuItemClickListener.onMenuItemClick(it)
+                            }
+                            .createDialog()
+                            .show()
+                        true
+                    }
                 }
             }
         }
         popupMenu.apply {
-            setOnMenuItemClickListener {
-                issueTypeButton.text = it.title
-                true
-            }
+            setOnMenuItemClickListener(onMenuItemClickListener)
             setForceShowIcon(true)
             show()
         }

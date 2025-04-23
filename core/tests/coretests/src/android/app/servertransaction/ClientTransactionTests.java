@@ -16,15 +16,15 @@
 
 package android.app.servertransaction;
 
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 import android.app.ClientTransactionHandler;
 import android.platform.test.annotations.Presubmit;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -48,38 +48,19 @@ public class ClientTransactionTests {
         final ClientTransactionItem callback1 = mock(ClientTransactionItem.class);
         final ClientTransactionItem callback2 = mock(ClientTransactionItem.class);
         final ActivityLifecycleItem stateRequest = mock(ActivityLifecycleItem.class);
+        doReturn(true).when(stateRequest).isActivityLifecycleItem();
         final ClientTransactionHandler clientTransactionHandler =
                 mock(ClientTransactionHandler.class);
 
-        final ClientTransaction transaction = ClientTransaction.obtain(null /* client */);
-        transaction.addCallback(callback1);
-        transaction.addCallback(callback2);
-        transaction.setLifecycleStateRequest(stateRequest);
-
-        transaction.preExecute(clientTransactionHandler);
-
-        verify(callback1, times(1)).preExecute(clientTransactionHandler);
-        verify(callback2, times(1)).preExecute(clientTransactionHandler);
-        verify(stateRequest, times(1)).preExecute(clientTransactionHandler);
-    }
-
-    @Test
-    public void testPreExecuteTransactionItems() {
-        final ClientTransactionItem callback1 = mock(ClientTransactionItem.class);
-        final ClientTransactionItem callback2 = mock(ClientTransactionItem.class);
-        final ActivityLifecycleItem stateRequest = mock(ActivityLifecycleItem.class);
-        final ClientTransactionHandler clientTransactionHandler =
-                mock(ClientTransactionHandler.class);
-
-        final ClientTransaction transaction = ClientTransaction.obtain(null /* client */);
+        final ClientTransaction transaction = new ClientTransaction();
         transaction.addTransactionItem(callback1);
         transaction.addTransactionItem(callback2);
         transaction.addTransactionItem(stateRequest);
 
         transaction.preExecute(clientTransactionHandler);
 
-        verify(callback1, times(1)).preExecute(clientTransactionHandler);
-        verify(callback2, times(1)).preExecute(clientTransactionHandler);
-        verify(stateRequest, times(1)).preExecute(clientTransactionHandler);
+        verify(callback1).preExecute(clientTransactionHandler);
+        verify(callback2).preExecute(clientTransactionHandler);
+        verify(stateRequest).preExecute(clientTransactionHandler);
     }
 }

@@ -23,15 +23,15 @@ import android.util.SparseArray;
 import android.view.SurfaceControl;
 
 import com.android.wm.shell.common.ShellExecutor;
-import com.android.wm.shell.common.TransactionPool;
+import com.android.wm.shell.shared.TransactionPool;
 import com.android.wm.shell.sysui.ShellInit;
 import com.android.wm.shell.unfold.ShellUnfoldProgressProvider.UnfoldListener;
 import com.android.wm.shell.unfold.animation.UnfoldTaskAnimator;
 
+import dagger.Lazy;
+
 import java.util.List;
 import java.util.Optional;
-
-import dagger.Lazy;
 
 /**
  * Manages fold/unfold animations of tasks on foldable devices.

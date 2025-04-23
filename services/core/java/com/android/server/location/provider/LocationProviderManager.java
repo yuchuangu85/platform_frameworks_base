@@ -16,6 +16,7 @@
 
 package com.android.server.location.provider;
 
+import static android.Manifest.permission.LOCATION_BYPASS;
 import static android.app.AppOpsManager.OP_MONITOR_HIGH_POWER_LOCATION;
 import static android.app.AppOpsManager.OP_MONITOR_LOCATION;
 import static android.app.compat.CompatChanges.isChangeEnabled;
@@ -47,10 +48,12 @@ import static com.android.server.location.eventlog.LocationEventLog.EVENT_LOG;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.Nullable;
 import android.annotation.SuppressLint;
 import android.app.AlarmManager.OnAlarmListener;
+import android.app.AppOpsManager;
 import android.app.BroadcastOptions;
 import android.app.PendingIntent;
 import android.content.Context;
@@ -64,7 +67,9 @@ import android.location.LocationManagerInternal;
 import android.location.LocationManagerInternal.ProviderEnabledListener;
 import android.location.LocationRequest;
 import android.location.LocationResult;
+import android.location.LocationResult.BadLocationException;
 import android.location.altitude.AltitudeConverter;
+import android.location.flags.Flags;
 import android.location.provider.IProviderRequestListener;
 import android.location.provider.ProviderProperties;
 import android.location.provider.ProviderRequest;
@@ -101,10 +106,12 @@ import com.android.server.LocalServices;
 import com.android.server.location.LocationPermissions;
 import com.android.server.location.LocationPermissions.PermissionLevel;
 import com.android.server.location.fudger.LocationFudger;
+import com.android.server.location.fudger.LocationFudgerCache;
 import com.android.server.location.injector.AlarmHelper;
 import com.android.server.location.injector.AppForegroundHelper;
 import com.android.server.location.injector.AppForegroundHelper.AppForegroundListener;
 import com.android.server.location.injector.AppOpsHelper;
+import com.android.server.location.injector.EmergencyHelper;
 import com.android.server.location.injector.Injector;
 import com.android.server.location.injector.LocationPermissionsHelper;
 import com.android.server.location.injector.LocationPermissionsHelper.LocationPermissionsListener;
@@ -374,8 +381,13 @@ public class LocationProviderManager extends
         // we cache these values because checking/calculating on the fly is more expensive
         @GuardedBy("mMultiplexerLock")
         private boolean mPermitted;
+
+        @GuardedBy("mMultiplexerLock")
+        private boolean mBypassPermitted;
+
         @GuardedBy("mMultiplexerLock")
         private boolean mForeground;
+
         @GuardedBy("mMultiplexerLock")
         private LocationRequest mProviderLocationRequest;
         @GuardedBy("mMultiplexerLock")
@@ -420,8 +432,8 @@ public class LocationProviderManager extends
             EVENT_LOG.logProviderClientRegistered(mName, getIdentity(), mBaseRequest);
 
             // initialization order is important as there are ordering dependencies
-            mPermitted = mLocationPermissionsHelper.hasLocationPermissions(mPermissionLevel,
-                    getIdentity());
+            onLocationPermissionsChanged();
+            onBypassLocationPermissionsChanged(mEmergencyHelper.isInEmergency(0));
             mForeground = mAppForegroundHelper.isAppForeground(getIdentity().getUid());
             mProviderLocationRequest = calculateProviderLocationRequest();
             mIsUsingHighPower = isUsingHighPower();
@@ -490,7 +502,13 @@ public class LocationProviderManager extends
 
         public final boolean isPermitted() {
             synchronized (mMultiplexerLock) {
-                return mPermitted;
+                return mPermitted || mBypassPermitted;
+            }
+        }
+
+        public final boolean isOnlyBypassPermitted() {
+            synchronized (mMultiplexerLock) {
+                return mBypassPermitted && !mPermitted;
             }
         }
 
@@ -555,6 +573,33 @@ public class LocationProviderManager extends
             synchronized (mMultiplexerLock) {
                 if (getIdentity().getUid() == uid) {
                     return onLocationPermissionsChanged();
+                }
+
+                return false;
+            }
+        }
+
+        boolean onBypassLocationPermissionsChanged(boolean isInEmergency) {
+            synchronized (mMultiplexerLock) {
+                boolean bypassPermitted =
+                        Flags.enableLocationBypass() && isInEmergency
+                                && mContext.checkPermission(
+                                LOCATION_BYPASS, mIdentity.getPid(), mIdentity.getUid())
+                                == PERMISSION_GRANTED;
+                if (mBypassPermitted != bypassPermitted) {
+                    if (D) {
+                        Log.v(
+                                TAG,
+                                mName
+                                        + " provider package "
+                                        + getIdentity().getPackageName()
+                                        + " bypass permitted = "
+                                        + bypassPermitted);
+                    }
+
+                    mBypassPermitted = bypassPermitted;
+
+                    return true;
                 }
 
                 return false;
@@ -910,7 +955,8 @@ public class LocationProviderManager extends
                                         < getRequest().getMinUpdateIntervalMillis() - maxJitterMs) {
                                     if (D) {
                                         Log.v(TAG, mName + " provider registration " + getIdentity()
-                                                + " dropped delivery - too fast");
+                                                + " dropped delivery - too fast (deltaMs="
+                                                + deltaMs + ").");
                                     }
                                     return false;
                                 }
@@ -939,8 +985,11 @@ public class LocationProviderManager extends
             }
 
             // note app ops
-            if (!mAppOpsHelper.noteOpNoThrow(LocationPermissions.asAppOp(getPermissionLevel()),
-                    getIdentity())) {
+            int op =
+                    Flags.enableLocationBypass() && isOnlyBypassPermitted()
+                            ? AppOpsManager.OP_EMERGENCY_LOCATION
+                            : LocationPermissions.asAppOp(getPermissionLevel());
+            if (!mAppOpsHelper.noteOpNoThrow(op, getIdentity())) {
                 if (D) {
                     Log.w(TAG,
                             mName + " provider registration " + getIdentity() + " noteOp denied");
@@ -1290,12 +1339,17 @@ public class LocationProviderManager extends
             }
 
             // lastly - note app ops
-            if (fineLocationResult != null && !mAppOpsHelper.noteOpNoThrow(
-                    LocationPermissions.asAppOp(getPermissionLevel()), getIdentity())) {
-                if (D) {
-                    Log.w(TAG, "noteOp denied for " + getIdentity());
+            if (fineLocationResult != null) {
+                int op =
+                        Flags.enableLocationBypass() && isOnlyBypassPermitted()
+                                ? AppOpsManager.OP_EMERGENCY_LOCATION
+                                : LocationPermissions.asAppOp(getPermissionLevel());
+                if (!mAppOpsHelper.noteOpNoThrow(op, getIdentity())) {
+                    if (D) {
+                        Log.w(TAG, "noteOp denied for " + getIdentity());
+                    }
+                    fineLocationResult = null;
                 }
-                fineLocationResult = null;
             }
 
             if (fineLocationResult != null) {
@@ -1397,6 +1451,7 @@ public class LocationProviderManager extends
     protected final ScreenInteractiveHelper mScreenInteractiveHelper;
     protected final LocationUsageLogger mLocationUsageLogger;
     protected final LocationFudger mLocationFudger;
+    protected final EmergencyHelper mEmergencyHelper;
     private final PackageResetHelper mPackageResetHelper;
 
     private final UserListener mUserChangedListener = this::onUserChanged;
@@ -1432,6 +1487,8 @@ public class LocationProviderManager extends
             this::onLocationPowerSaveModeChanged;
     private final ScreenInteractiveChangedListener mScreenInteractiveChangedListener =
             this::onScreenInteractiveChanged;
+    private final EmergencyHelper.EmergencyStateChangedListener mEmergencyStateChangedListener =
+            this::onEmergencyStateChanged;
     private final PackageResetHelper.Responder mPackageResetResponder =
             new PackageResetHelper.Responder() {
                 @Override
@@ -1505,6 +1562,7 @@ public class LocationProviderManager extends
         mScreenInteractiveHelper = injector.getScreenInteractiveHelper();
         mLocationUsageLogger = injector.getLocationUsageLogger();
         mLocationFudger = new LocationFudger(mSettingsHelper.getCoarseLocationAccuracyM());
+        mEmergencyHelper = injector.getEmergencyHelper();
         mPackageResetHelper = injector.getPackageResetHelper();
 
         mProvider = new MockableLocationProvider(mMultiplexerLock);
@@ -1607,6 +1665,18 @@ public class LocationProviderManager extends
     }
 
     /**
+     * Provides the optional {@link LocationFudgerCache} for coarsening based on population density.
+     */
+    @FlaggedApi(Flags.FLAG_DENSITY_BASED_COARSE_LOCATIONS)
+    public void setLocationFudgerCache(LocationFudgerCache cache) {
+        if (!Flags.densityBasedCoarseLocations()) {
+            return;
+        }
+
+        mLocationFudger.setLocationFudgerCache(cache);
+    }
+
+    /**
      * Returns true if this provider is visible to the current caller (whether called from a binder
      * thread or not). If a provider isn't visible, then all APIs return the same data they would if
      * the provider didn't exist (i.e. the caller can't see or use the provider).
@@ -1616,6 +1686,17 @@ public class LocationProviderManager extends
      */
     @SuppressLint("AndroidFrameworkRequiresPermission")
     public boolean isVisibleToCaller() {
+        // Anything sharing the system's UID can view all providers
+        if (Binder.getCallingUid() == Process.SYSTEM_UID) {
+            return true;
+        }
+
+        // If an app mocked this provider, anybody can access it (the goal is
+        // to behave as if this provider didn't naturally exist).
+        if (mProvider.isMock()) {
+            return true;
+        }
+
         for (String permission : mRequiredPermissions) {
             if (mContext.checkCallingOrSelfPermission(permission) != PERMISSION_GRANTED) {
                 return false;
@@ -1734,12 +1815,6 @@ public class LocationProviderManager extends
             return null;
         }
 
-        // lastly - note app ops
-        if (!mAppOpsHelper.noteOpNoThrow(LocationPermissions.asAppOp(permissionLevel),
-                identity)) {
-            return null;
-        }
-
         Location location = getPermittedLocation(
                 getLastLocationUnsafe(
                         identity.getUserId(),
@@ -1748,10 +1823,27 @@ public class LocationProviderManager extends
                         Long.MAX_VALUE),
                 permissionLevel);
 
-        if (location != null && identity.getPid() == Process.myPid()) {
+        if (location != null) {
+            // lastly - note app ops
+            int op =
+                    (Flags.enableLocationBypass()
+                            && !mLocationPermissionsHelper.hasLocationPermissions(
+                                    permissionLevel, identity)
+                            && mEmergencyHelper.isInEmergency(0)
+                            && mContext.checkPermission(
+                                    LOCATION_BYPASS, identity.getPid(), identity.getUid())
+                            == PERMISSION_GRANTED)
+                            ? AppOpsManager.OP_EMERGENCY_LOCATION
+                            : LocationPermissions.asAppOp(permissionLevel);
+            if (!mAppOpsHelper.noteOpNoThrow(op, identity)) {
+                return null;
+            }
+
             // if delivering to the same process, make a copy of the location first (since
             // location is mutable)
-            location = new Location(location);
+            if (identity.getPid() == Process.myPid()) {
+                location = new Location(location);
+            }
         }
 
         return location;
@@ -2054,6 +2146,9 @@ public class LocationProviderManager extends
         mAppForegroundHelper.addListener(mAppForegroundChangedListener);
         mLocationPowerSaveModeHelper.addListener(mLocationPowerSaveModeChangedListener);
         mScreenInteractiveHelper.addListener(mScreenInteractiveChangedListener);
+        if (Flags.enableLocationBypass()) {
+            mEmergencyHelper.addOnEmergencyStateChangedListener(mEmergencyStateChangedListener);
+        }
         mPackageResetHelper.register(mPackageResetResponder);
     }
 
@@ -2073,6 +2168,9 @@ public class LocationProviderManager extends
         mAppForegroundHelper.removeListener(mAppForegroundChangedListener);
         mLocationPowerSaveModeHelper.removeListener(mLocationPowerSaveModeChangedListener);
         mScreenInteractiveHelper.removeListener(mScreenInteractiveChangedListener);
+        if (Flags.enableLocationBypass()) {
+            mEmergencyHelper.removeOnEmergencyStateChangedListener(mEmergencyStateChangedListener);
+        }
         mPackageResetHelper.unregister(mPackageResetResponder);
     }
 
@@ -2451,6 +2549,12 @@ public class LocationProviderManager extends
         }
     }
 
+    private void onEmergencyStateChanged() {
+        boolean inEmergency = mEmergencyHelper.isInEmergency(0);
+        updateRegistrations(
+                registration -> registration.onBypassLocationPermissionsChanged(inEmergency));
+    }
+
     private void onBackgroundThrottlePackageWhitelistChanged() {
         updateRegistrations(Registration::onProviderLocationRequestChanged);
     }
@@ -2494,6 +2598,9 @@ public class LocationProviderManager extends
                 registration -> {
                     if (registration.getIdentity().getPackageName().equals(
                             packageName)) {
+                        if (D) {
+                            Log.d(TAG, "package reset remove registration " + registration);
+                        }
                         registration.remove();
                     }
 
@@ -2572,33 +2679,21 @@ public class LocationProviderManager extends
     @GuardedBy("mMultiplexerLock")
     @Nullable
     private LocationResult processReportedLocation(LocationResult locationResult) {
-        LocationResult processed = locationResult.filter(location -> {
-            if (!location.isMock()) {
-                if (location.getLatitude() == 0 && location.getLongitude() == 0) {
-                    Log.e(TAG, "blocking 0,0 location from " + mName + " provider");
-                    return false;
-                }
-            }
-
-            if (!location.isComplete()) {
-                Log.e(TAG, "blocking incomplete location from " + mName + " provider");
-                return false;
-            }
-
-            return true;
-        });
-        if (processed == null) {
+        try {
+            locationResult.validate();
+        } catch (BadLocationException e) {
+            Log.e(TAG, "Dropping invalid locations: " + e);
             return null;
         }
 
         // Attempt to add a missing MSL altitude on behalf of the provider.
         if (DeviceConfig.getBoolean(DeviceConfig.NAMESPACE_LOCATION,
                 "enable_location_provider_manager_msl", true)) {
-            return processed.map(location -> {
+            return locationResult.map(location -> {
                 if (!location.hasMslAltitude() && location.hasAltitude()) {
                     try {
                         Location locationCopy = new Location(location);
-                        if (mAltitudeConverter.addMslAltitudeToLocation(locationCopy)) {
+                        if (mAltitudeConverter.tryAddMslAltitudeToLocation(locationCopy)) {
                             return locationCopy;
                         }
                         // Only queue up one IO thread runnable.
@@ -2624,7 +2719,7 @@ public class LocationProviderManager extends
                 return location;
             });
         }
-        return processed;
+        return locationResult;
     }
 
     @GuardedBy("mMultiplexerLock")

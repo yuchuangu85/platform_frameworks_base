@@ -565,7 +565,9 @@ public class Dialog implements DialogInterface, Window.Callback,
      * @see View#findViewById(int)
      * @see Dialog#requireViewById(int)
      */
-    @Nullable
+    // Strictly speaking this should be marked as @Nullable but the nullability of the return value
+    // is deliberately left unspecified as idiomatically correct code can make assumptions either
+    // way based on local context, e.g. layout specification.
     public <T extends View> T findViewById(@IdRes int id) {
         return mWindow.findViewById(id);
     }
@@ -672,9 +674,20 @@ public class Dialog implements DialogInterface, Window.Callback,
      */
     @Override
     public boolean onKeyDown(int keyCode, @NonNull KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
             event.startTracking();
             return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            if (mCancelable) {
+                cancel();
+                event.startTracking();
+                return true;
+            } else if (mWindow.shouldCloseOnTouchOutside()) {
+                dismiss();
+                event.startTracking();
+                return true;
+            }
         }
 
         return false;
@@ -712,11 +725,6 @@ public class Dialog implements DialogInterface, Window.Callback,
                     }
                     break;
                 case KeyEvent.KEYCODE_ESCAPE:
-                    if (mCancelable) {
-                        cancel();
-                    } else {
-                        dismiss();
-                    }
                     return true;
             }
         }

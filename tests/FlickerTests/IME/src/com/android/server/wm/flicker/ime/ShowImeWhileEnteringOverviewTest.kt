@@ -17,17 +17,18 @@
 package com.android.server.wm.flicker.ime
 
 import android.platform.test.annotations.Presubmit
-import android.tools.common.traces.ConditionsFactory
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
-import android.tools.device.traces.parsers.WindowManagerStateHelper
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.traces.ConditionsFactory
+import android.tools.traces.component.ComponentNameMatcher
+import android.tools.traces.parsers.WindowManagerStateHelper
 import com.android.server.wm.flicker.BaseTest
 import com.android.server.wm.flicker.helpers.ImeShownOnAppStartHelper
 import com.android.server.wm.flicker.navBarLayerIsVisibleAtStartAndEnd
 import com.android.server.wm.flicker.statusBarLayerIsVisibleAtStartAndEnd
+import com.android.server.wm.flicker.taskBarLayerIsVisibleAtStartAndEnd
 import org.junit.Assume
 import org.junit.FixMethodOrder
 import org.junit.Ignore
@@ -37,8 +38,8 @@ import org.junit.runners.MethodSorters
 import org.junit.runners.Parameterized
 
 /**
- * Test IME window layer will be associated with the app task when going to the overview screen. To
- * run this test: `atest FlickerTests:OpenImeWindowToOverViewTest`
+ * Test IME window layer will be associated with the app task when going to the overview screen.
+ * To run this test: `atest FlickerTestsIme:ShowImeWhileEnteringOverviewTest`
  */
 @RunWith(Parameterized::class)
 @Parameterized.UseParametersRunnerFactory(FlickerParametersRunnerFactory::class)
@@ -93,7 +94,7 @@ class ShowImeWhileEnteringOverviewTest(flicker: LegacyFlickerTest) : BaseTest(fl
     @Presubmit
     @Test
     fun navBarLayerIsVisibleAtStartAndEnd3Button() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         Assume.assumeFalse(flicker.scenario.isGesturalNavigation)
         flicker.navBarLayerIsVisibleAtStartAndEnd()
     }
@@ -105,7 +106,7 @@ class ShowImeWhileEnteringOverviewTest(flicker: LegacyFlickerTest) : BaseTest(fl
     @Presubmit
     @Test
     fun navBarLayerIsInvisibleInLandscapeGestural() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         Assume.assumeTrue(flicker.scenario.isLandscapeOrSeascapeAtStart)
         Assume.assumeTrue(flicker.scenario.isGesturalNavigation)
         flicker.assertLayersStart { this.isVisible(ComponentNameMatcher.NAV_BAR) }
@@ -114,7 +115,7 @@ class ShowImeWhileEnteringOverviewTest(flicker: LegacyFlickerTest) : BaseTest(fl
 
     /**
      * In the legacy transitions, the nav bar is not marked as invisible. In the new transitions
-     * this is fixed and the nav bar shows as invisible
+     * this is fixed and the status bar shows as invisible
      */
     @Presubmit
     @Test
@@ -128,7 +129,7 @@ class ShowImeWhileEnteringOverviewTest(flicker: LegacyFlickerTest) : BaseTest(fl
 
     /**
      * In the legacy transitions, the nav bar is not marked as invisible. In the new transitions
-     * this is fixed and the nav bar shows as invisible
+     * this is fixed and the status bar shows as invisible
      */
     @Presubmit
     @Test
@@ -149,6 +150,10 @@ class ShowImeWhileEnteringOverviewTest(flicker: LegacyFlickerTest) : BaseTest(fl
     @Ignore("Visibility changes depending on orientation and navigation mode")
     override fun navBarLayerPositionAtStartAndEnd() {}
 
+    @Test
+    @Ignore("Visibility changes depending on orientation and navigation mode")
+    override fun taskBarLayerIsVisibleAtStartAndEnd() {}
+
     /** {@inheritDoc} */
     @Test
     @Ignore("Visibility changes depending on orientation and navigation mode")
@@ -161,7 +166,10 @@ class ShowImeWhileEnteringOverviewTest(flicker: LegacyFlickerTest) : BaseTest(fl
 
     @Presubmit
     @Test
-    override fun taskBarLayerIsVisibleAtStartAndEnd() = super.taskBarLayerIsVisibleAtStartAndEnd()
+    fun taskBarLayerIsVisibleAtStartAndEndForTablets() {
+        Assume.assumeTrue(flicker.scenario.isTablet)
+        flicker.taskBarLayerIsVisibleAtStartAndEnd()
+    }
 
     @Presubmit
     @Test
@@ -174,7 +182,7 @@ class ShowImeWhileEnteringOverviewTest(flicker: LegacyFlickerTest) : BaseTest(fl
     @Test
     fun statusBarLayerIsInvisibleInLandscape() {
         Assume.assumeTrue(flicker.scenario.isLandscapeOrSeascapeAtStart)
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         flicker.assertLayersStart { this.isVisible(ComponentNameMatcher.STATUS_BAR) }
         flicker.assertLayersEnd { this.isInvisible(ComponentNameMatcher.STATUS_BAR) }
     }
@@ -191,7 +199,7 @@ class ShowImeWhileEnteringOverviewTest(flicker: LegacyFlickerTest) : BaseTest(fl
             this.invoke("imeLayerIsVisibleAndAlignAppWidow") {
                 val imeVisibleRegion = it.visibleRegion(ComponentNameMatcher.IME)
                 val appVisibleRegion = it.visibleRegion(imeTestApp)
-                if (imeVisibleRegion.region.isNotEmpty) {
+                if (!imeVisibleRegion.region.isEmpty) {
                     it.isVisible(ComponentNameMatcher.IME)
                     imeVisibleRegion.coversAtMost(appVisibleRegion.region)
                 }

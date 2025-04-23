@@ -18,6 +18,7 @@
 
 #include <SkString.h>
 #include <SkTraceMemoryDump.h>
+#include <include/gpu/ganesh/GrDirectContext.h>
 
 #include <string>
 #include <unordered_map>
@@ -50,7 +51,7 @@ public:
 
     void startFrame();
 
-    void logTraces();
+    void logTraces(bool gpuMemoryIsAlreadyInDump, GrDirectContext* grContext);
 
 private:
     std::string mLastDumpName;

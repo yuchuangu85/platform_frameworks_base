@@ -16,6 +16,7 @@
 
 package android.animation;
 
+import android.annotation.CallSuper;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
@@ -23,9 +24,11 @@ import android.compat.annotation.UnsupportedAppUsage;
 import android.content.pm.ActivityInfo.Config;
 import android.content.res.ConstantState;
 import android.os.Build;
+import android.os.Trace;
 import android.util.LongArray;
 
 import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * This is the superclass for classes which provide basic support for animations which can be
@@ -72,11 +75,18 @@ public abstract class Animator implements Cloneable {
     private static long sBackgroundPauseDelay = 1000;
 
     /**
+     * If true, when the animation plays normally to the end, the callback
+     * {@link AnimatorListener#onAnimationEnd(Animator)} will be scheduled on the next frame.
+     * It is to avoid the last animation frame being delayed by the implementation of listeners.
+     */
+    static boolean sPostNotifyEndListenerEnabled;
+
+    /**
      * A cache of the values in a list. Used so that when calling the list, we have a copy
      * of it in case the list is modified while iterating. The array can be reused to avoid
      * allocation on every notification.
      */
-    private Object[] mCachedList;
+    private AtomicReference<Object[]> mCachedList = new AtomicReference<>();
 
     /**
      * Tracks whether we've notified listeners of the onAnimationStart() event. This can be
@@ -120,6 +130,22 @@ public abstract class Animator implements Cloneable {
     public static void setAnimatorPausingEnabled(boolean enable) {
         AnimationHandler.setAnimatorPausingEnabled(enable);
         AnimationHandler.setOverrideAnimatorPausingSystemProperty(!enable);
+    }
+
+    /**
+     * @see #sPostNotifyEndListenerEnabled
+     * @hide
+     */
+    public static void setPostNotifyEndListenerEnabled(boolean enable) {
+        sPostNotifyEndListenerEnabled = enable;
+    }
+
+    /**
+     * @see #sPostNotifyEndListenerEnabled
+     * @hide
+     */
+    public static boolean isPostNotifyEndListenerEnabled() {
+        return sPostNotifyEndListenerEnabled;
     }
 
     /**
@@ -452,7 +478,7 @@ public abstract class Animator implements Cloneable {
             if (mPauseListeners != null) {
                 anim.mPauseListeners = new ArrayList<AnimatorPauseListener>(mPauseListeners);
             }
-            anim.mCachedList = null;
+            anim.mCachedList.set(null);
             anim.mStartListenersCalled = false;
             return anim;
         } catch (CloneNotSupportedException e) {
@@ -634,6 +660,28 @@ public abstract class Animator implements Cloneable {
         }
     }
 
+    void notifyEndListenersFromEndAnimation(boolean isReversing, boolean postNotifyEndListener) {
+        if (postNotifyEndListener) {
+            AnimationHandler.getInstance().postEndAnimationCallback(
+                    () -> completeEndAnimation(isReversing, "postNotifyAnimEnd"));
+        } else {
+            completeEndAnimation(isReversing, "notifyAnimEnd");
+        }
+    }
+
+    @CallSuper
+    void completeEndAnimation(boolean isReversing, String notifyListenerTraceName) {
+        final boolean useTrace = mListeners != null && Trace.isTagEnabled(Trace.TRACE_TAG_VIEW);
+        if (useTrace) {
+            Trace.traceBegin(Trace.TRACE_TAG_VIEW, notifyListenerTraceName
+                    + "-" + getClass().getSimpleName());
+        }
+        notifyEndListeners(isReversing);
+        if (useTrace) {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW);
+        }
+    }
+
     /**
      * Calls <code>call</code> for every item in <code>list</code> with <code>animator</code> and
      * <code>isReverse</code> as parameters.
@@ -654,13 +702,9 @@ public abstract class Animator implements Cloneable {
         int size = list == null ? 0 : list.size();
         if (size > 0) {
             // Try to reuse mCacheList to store the items of list.
-            Object[] array;
-            if (mCachedList == null || mCachedList.length < size) {
+            Object[] array = mCachedList.getAndSet(null);
+            if (array == null || array.length < size) {
                 array = new Object[size];
-            } else {
-                array = mCachedList;
-                // Clear it in case there is some reentrancy
-                mCachedList = null;
             }
             list.toArray(array);
             for (int i = 0; i < size; i++) {
@@ -670,7 +714,7 @@ public abstract class Animator implements Cloneable {
                 array[i] = null;
             }
             // Store it for the next call so we can reuse this array, if needed.
-            mCachedList = array;
+            mCachedList.compareAndSet(null, array);
         }
     }
 

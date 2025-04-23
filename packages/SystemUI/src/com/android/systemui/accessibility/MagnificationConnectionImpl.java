@@ -32,7 +32,7 @@ import com.android.systemui.dagger.qualifiers.Main;
  *
  * @see IMagnificationConnection
  */
-class MagnificationConnectionImpl extends IMagnificationConnection.Stub {
+public class MagnificationConnectionImpl extends IMagnificationConnection.Stub {
 
     private static final String TAG = "WindowMagnificationConnectionImpl";
 
@@ -40,10 +40,16 @@ class MagnificationConnectionImpl extends IMagnificationConnection.Stub {
     private final Magnification mMagnification;
     private final Handler mHandler;
 
-    MagnificationConnectionImpl(@NonNull Magnification magnification,
+    public MagnificationConnectionImpl(@NonNull Magnification magnification,
             @Main Handler mainHandler) {
         mMagnification = magnification;
         mHandler = mainHandler;
+    }
+
+    @Override
+    public void onFullscreenMagnificationActivationChanged(int displayId, boolean activated) {
+        mHandler.post(() -> mMagnification
+                .onFullscreenMagnificationActivationChanged(displayId, activated));
     }
 
     @Override
@@ -77,7 +83,7 @@ class MagnificationConnectionImpl extends IMagnificationConnection.Stub {
     @Override
     public void moveWindowMagnifierToPosition(int displayId, float positionX, float positionY,
             IRemoteMagnificationAnimationCallback callback) {
-        mHandler.post(() -> mMagnification.moveWindowMagnifierToPositionInternal(
+        mHandler.post(() -> mMagnification.moveWindowMagnifierToPosition(
                 displayId, positionX, positionY, callback));
     }
 

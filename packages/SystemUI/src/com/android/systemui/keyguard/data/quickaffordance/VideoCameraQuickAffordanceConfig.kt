@@ -32,6 +32,7 @@ import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.settings.UserTracker
+import com.android.systemui.shade.ShadeDisplayAware
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
@@ -42,7 +43,7 @@ import kotlinx.coroutines.withContext
 class VideoCameraQuickAffordanceConfig
 @Inject
 constructor(
-    @Application private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     private val cameraIntents: CameraIntentsWrapper,
     private val activityIntentHelper: ActivityIntentHelper,
     private val userTracker: UserTracker,
@@ -50,14 +51,13 @@ constructor(
     @Background private val backgroundDispatcher: CoroutineDispatcher,
 ) : KeyguardQuickAffordanceConfig {
 
-    private val intent: Intent by lazy {
-        cameraIntents.getVideoCameraIntent().apply {
+    private val intent: Intent
+        get() = cameraIntents.getVideoCameraIntent(userTracker.userId).apply {
             putExtra(
                 CameraIntents.EXTRA_LAUNCH_SOURCE,
                 StatusBarManager.CAMERA_LAUNCH_SOURCE_QUICK_AFFORDANCE,
             )
         }
-    }
 
     override val key: String
         get() = BuiltInKeyguardQuickAffordanceKeys.VIDEO_CAMERA

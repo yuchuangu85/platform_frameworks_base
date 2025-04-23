@@ -33,8 +33,8 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Oplader"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Oplader hurtigt"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Oplader langsomt"</string>
-    <string name="keyguard_plugged_in_charging_limited" msgid="1053130519456324630">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Opladning er optimeret for at beskytte batteriet"</string>
-    <string name="keyguard_plugged_in_incompatible_charger" msgid="3687961801947819076">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Problem med opladertilbehør"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="5369697538556777542">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Opladningen er sat på pause for at beskytte batteriet"</string>
+    <string name="keyguard_plugged_in_incompatible_charger" msgid="6384203333154532125">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Tjek opladningstilbehøret"</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"Netværket er låst"</string>
     <string name="keyguard_missing_sim_message_short" msgid="685029586173458728">"Intet SIM-kort"</string>
     <string name="keyguard_permanent_disabled_sim_message_short" msgid="3955052454216046100">"Deaktiveret SIM-kort."</string>
@@ -111,6 +111,9 @@
     <string name="kg_prompt_reason_timeout_pattern" msgid="5514969660010197363">"Øg sikkerheden ved at bruge dit oplåsningsmønter i stedet"</string>
     <string name="kg_prompt_reason_timeout_pin" msgid="4227962059353859376">"Øg sikkerheden ved at bruge din pinkode i stedet"</string>
     <string name="kg_prompt_reason_timeout_password" msgid="8810879144143933690">"Øg sikkerheden ved at bruge din adgangskode i stedet"</string>
+    <string name="kg_prompt_added_security_pin" msgid="5487992065995475528">"Der kræves en pinkode som ekstra beskyttelse"</string>
+    <string name="kg_prompt_added_security_pattern" msgid="1017068086102168544">"Der kræves et mønster som ekstra beskyttelse"</string>
+    <string name="kg_prompt_added_security_password" msgid="6053156069765029006">"Der kræves en adgangskode som ekstra beskyttelse"</string>
     <string name="kg_prompt_reason_device_admin" msgid="6961159596224055685">"Enheden er blevet låst af administratoren"</string>
     <string name="kg_prompt_reason_user_request" msgid="6015774877733717904">"Enheden blev låst manuelt"</string>
     <string name="kg_face_not_recognized" msgid="7903950626744419160">"Ikke genkendt"</string>

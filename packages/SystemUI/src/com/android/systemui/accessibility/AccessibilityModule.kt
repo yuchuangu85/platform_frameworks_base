@@ -16,8 +16,14 @@
 
 package com.android.systemui.accessibility
 
+import com.android.systemui.accessibility.data.repository.AccessibilityQsShortcutsRepository
+import com.android.systemui.accessibility.data.repository.AccessibilityQsShortcutsRepositoryImpl
 import com.android.systemui.accessibility.data.repository.ColorCorrectionRepository
 import com.android.systemui.accessibility.data.repository.ColorCorrectionRepositoryImpl
+import com.android.systemui.accessibility.data.repository.ColorInversionRepository
+import com.android.systemui.accessibility.data.repository.ColorInversionRepositoryImpl
+import com.android.systemui.accessibility.data.repository.OneHandedModeRepository
+import com.android.systemui.accessibility.data.repository.OneHandedModeRepositoryImpl
 import com.android.systemui.accessibility.qs.QSAccessibilityModule
 import dagger.Binds
 import dagger.Module
@@ -25,7 +31,18 @@ import dagger.Module
 @Module(includes = [QSAccessibilityModule::class])
 interface AccessibilityModule {
     @Binds
-    abstract fun colorCorrectionRepository(
-        impl: ColorCorrectionRepositoryImpl
-    ): ColorCorrectionRepository
+    fun colorCorrectionRepository(impl: ColorCorrectionRepositoryImpl): ColorCorrectionRepository
+
+    @Binds
+    fun colorInversionRepository(impl: ColorInversionRepositoryImpl): ColorInversionRepository
+
+    @Binds fun oneHandedModeRepository(impl: OneHandedModeRepositoryImpl): OneHandedModeRepository
+
+    @Binds
+    fun accessibilityQsShortcutsRepository(
+        impl: AccessibilityQsShortcutsRepositoryImpl
+    ): AccessibilityQsShortcutsRepository
+
+    @Binds
+    fun magnification(impl: MagnificationImpl): Magnification
 }

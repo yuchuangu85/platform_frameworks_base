@@ -16,20 +16,36 @@
 
 package com.android.systemui.bouncer.domain.interactor
 
+import android.content.testableContext
+import android.provider.Settings.Global.ONE_HANDED_KEYGUARD_SIDE
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
+import com.android.internal.logging.uiEventLoggerFake
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.authentication.data.repository.FakeAuthenticationRepository
+import com.android.systemui.authentication.data.repository.fakeAuthenticationRepository
 import com.android.systemui.authentication.domain.interactor.AuthenticationResult
-import com.android.systemui.authentication.shared.model.AuthenticationLockoutModel
+import com.android.systemui.authentication.domain.interactor.authenticationInteractor
 import com.android.systemui.authentication.shared.model.AuthenticationMethodModel
 import com.android.systemui.authentication.shared.model.AuthenticationPatternCoordinate
+import com.android.systemui.authentication.shared.model.BouncerInputSide
+import com.android.systemui.bouncer.data.repository.bouncerRepository
+import com.android.systemui.bouncer.shared.logging.BouncerUiEvent
+import com.android.systemui.common.ui.data.repository.fakeConfigurationRepository
 import com.android.systemui.coroutines.collectLastValue
-import com.android.systemui.keyguard.domain.interactor.KeyguardFaceAuthInteractor
+import com.android.systemui.coroutines.collectValues
+import com.android.systemui.deviceentry.domain.interactor.deviceEntryFaceAuthInteractor
+import com.android.systemui.flags.EnableSceneContainer
+import com.android.systemui.flags.Flags.FULL_SCREEN_USER_SWITCHER
+import com.android.systemui.flags.fakeFeatureFlagsClassic
+import com.android.systemui.keyguard.data.repository.fakeDeviceEntryFaceAuthRepository
+import com.android.systemui.kosmos.testScope
+import com.android.systemui.power.data.repository.fakePowerRepository
 import com.android.systemui.res.R
-import com.android.systemui.scene.SceneTestUtils
+import com.android.systemui.testKosmos
+import com.android.systemui.util.settings.fakeGlobalSettings
 import com.google.common.truth.Truth.assertThat
-import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -37,70 +53,40 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mockito.Mock
-import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWith(AndroidJUnit4::class)
+@EnableSceneContainer
 class BouncerInteractorTest : SysuiTestCase() {
 
-    @Mock private lateinit var keyguardFaceAuthInteractor: KeyguardFaceAuthInteractor
+    private val kosmos = testKosmos()
+    private val testScope = kosmos.testScope
+    private val authenticationInteractor = kosmos.authenticationInteractor
+    private val uiEventLoggerFake = kosmos.uiEventLoggerFake
 
-    private val utils = SceneTestUtils(this)
-    private val testScope = utils.testScope
-    private val authenticationInteractor = utils.authenticationInteractor()
-
-    private lateinit var underTest: BouncerInteractor
+    private val underTest: BouncerInteractor by lazy { kosmos.bouncerInteractor }
+    private val testableResources by lazy { kosmos.testableContext.orCreateTestableResources }
 
     @Before
     fun setUp() {
         MockitoAnnotations.initMocks(this)
+
         overrideResource(R.string.keyguard_enter_your_pin, MESSAGE_ENTER_YOUR_PIN)
         overrideResource(R.string.keyguard_enter_your_password, MESSAGE_ENTER_YOUR_PASSWORD)
         overrideResource(R.string.keyguard_enter_your_pattern, MESSAGE_ENTER_YOUR_PATTERN)
         overrideResource(R.string.kg_wrong_pin, MESSAGE_WRONG_PIN)
         overrideResource(R.string.kg_wrong_password, MESSAGE_WRONG_PASSWORD)
         overrideResource(R.string.kg_wrong_pattern, MESSAGE_WRONG_PATTERN)
-
-        underTest =
-            utils.bouncerInteractor(
-                authenticationInteractor = authenticationInteractor,
-                keyguardFaceAuthInteractor = keyguardFaceAuthInteractor,
-            )
     }
-
-    @Test
-    fun pinAuthMethod() =
-        testScope.runTest {
-            val message by collectLastValue(underTest.message)
-
-            utils.authenticationRepository.setAuthenticationMethod(AuthenticationMethodModel.Pin)
-            runCurrent()
-            underTest.clearMessage()
-            assertThat(message).isEmpty()
-
-            underTest.resetMessage()
-            assertThat(message).isEqualTo(MESSAGE_ENTER_YOUR_PIN)
-
-            // Wrong input.
-            assertThat(underTest.authenticate(listOf(9, 8, 7)))
-                .isEqualTo(AuthenticationResult.FAILED)
-            assertThat(message).isEqualTo(MESSAGE_WRONG_PIN)
-
-            underTest.resetMessage()
-            assertThat(message).isEqualTo(MESSAGE_ENTER_YOUR_PIN)
-
-            // Correct input.
-            assertThat(underTest.authenticate(FakeAuthenticationRepository.DEFAULT_PIN))
-                .isEqualTo(AuthenticationResult.SUCCEEDED)
-        }
 
     @Test
     fun pinAuthMethod_sim_skipsAuthentication() =
         testScope.runTest {
-            utils.authenticationRepository.setAuthenticationMethod(AuthenticationMethodModel.Sim)
+            kosmos.fakeAuthenticationRepository.setAuthenticationMethod(
+                AuthenticationMethodModel.Sim
+            )
             runCurrent()
 
             // We rely on TelephonyManager to authenticate the sim card.
@@ -108,6 +94,7 @@ class BouncerInteractorTest : SysuiTestCase() {
             // Thus, when auth method is sim, we expect to skip here.
             assertThat(underTest.authenticate(FakeAuthenticationRepository.DEFAULT_PIN))
                 .isEqualTo(AuthenticationResult.SKIPPED)
+            assertThat(uiEventLoggerFake.numLogs()).isEqualTo(0)
         }
 
     @Test
@@ -115,9 +102,11 @@ class BouncerInteractorTest : SysuiTestCase() {
         testScope.runTest {
             val isAutoConfirmEnabled by collectLastValue(underTest.isAutoConfirmEnabled)
 
-            utils.authenticationRepository.setAuthenticationMethod(AuthenticationMethodModel.Pin)
+            kosmos.fakeAuthenticationRepository.setAuthenticationMethod(
+                AuthenticationMethodModel.Pin
+            )
             runCurrent()
-            utils.authenticationRepository.setAutoConfirmFeatureEnabled(true)
+            kosmos.fakeAuthenticationRepository.setAutoConfirmFeatureEnabled(true)
             assertThat(isAutoConfirmEnabled).isTrue()
 
             // Incomplete input.
@@ -127,89 +116,86 @@ class BouncerInteractorTest : SysuiTestCase() {
             // Wrong 6-digit pin
             assertThat(underTest.authenticate(listOf(1, 2, 3, 5, 5, 6), tryAutoConfirm = true))
                 .isEqualTo(AuthenticationResult.FAILED)
+            assertThat(uiEventLoggerFake[0].eventId)
+                .isEqualTo(BouncerUiEvent.BOUNCER_PASSWORD_FAILURE.id)
 
             // Correct input.
             assertThat(
                     underTest.authenticate(
                         FakeAuthenticationRepository.DEFAULT_PIN,
-                        tryAutoConfirm = true
+                        tryAutoConfirm = true,
                     )
                 )
                 .isEqualTo(AuthenticationResult.SUCCEEDED)
+            assertThat(uiEventLoggerFake[1].eventId)
+                .isEqualTo(BouncerUiEvent.BOUNCER_PASSWORD_SUCCESS.id)
+            assertThat(uiEventLoggerFake.numLogs()).isEqualTo(2)
         }
 
     @Test
     fun pinAuthMethod_tryAutoConfirm_withoutAutoConfirmPin() =
         testScope.runTest {
-            val message by collectLastValue(underTest.message)
-
-            utils.authenticationRepository.setAuthenticationMethod(AuthenticationMethodModel.Pin)
+            kosmos.fakeAuthenticationRepository.setAuthenticationMethod(
+                AuthenticationMethodModel.Pin
+            )
             runCurrent()
 
             // Incomplete input.
             assertThat(underTest.authenticate(listOf(1, 2), tryAutoConfirm = true))
                 .isEqualTo(AuthenticationResult.SKIPPED)
-            assertThat(message).isEmpty()
 
             // Correct input.
             assertThat(
                     underTest.authenticate(
                         FakeAuthenticationRepository.DEFAULT_PIN,
-                        tryAutoConfirm = true
+                        tryAutoConfirm = true,
                     )
                 )
                 .isEqualTo(AuthenticationResult.SKIPPED)
-            assertThat(message).isEmpty()
         }
 
     @Test
     fun passwordAuthMethod() =
         testScope.runTest {
-            val message by collectLastValue(underTest.message)
-            utils.authenticationRepository.setAuthenticationMethod(
+            kosmos.fakeAuthenticationRepository.setAuthenticationMethod(
                 AuthenticationMethodModel.Password
             )
             runCurrent()
 
-            underTest.resetMessage()
-            assertThat(message).isEqualTo(MESSAGE_ENTER_YOUR_PASSWORD)
-
             // Wrong input.
             assertThat(underTest.authenticate("alohamora".toList()))
                 .isEqualTo(AuthenticationResult.FAILED)
-            assertThat(message).isEqualTo(MESSAGE_WRONG_PASSWORD)
-
-            underTest.resetMessage()
-            assertThat(message).isEqualTo(MESSAGE_ENTER_YOUR_PASSWORD)
+            assertThat(uiEventLoggerFake[0].eventId)
+                .isEqualTo(BouncerUiEvent.BOUNCER_PASSWORD_FAILURE.id)
 
             // Too short input.
             assertThat(
                     underTest.authenticate(
                         buildList {
-                            repeat(utils.authenticationRepository.minPasswordLength - 1) { time ->
+                            repeat(kosmos.fakeAuthenticationRepository.minPasswordLength - 1) { time
+                                ->
                                 add("$time")
                             }
                         }
                     )
                 )
                 .isEqualTo(AuthenticationResult.SKIPPED)
-            assertThat(message).isEqualTo(MESSAGE_WRONG_PASSWORD)
 
             // Correct input.
             assertThat(underTest.authenticate("password".toList()))
                 .isEqualTo(AuthenticationResult.SUCCEEDED)
+            assertThat(uiEventLoggerFake[1].eventId)
+                .isEqualTo(BouncerUiEvent.BOUNCER_PASSWORD_SUCCESS.id)
+            assertThat(uiEventLoggerFake.numLogs()).isEqualTo(2)
         }
 
     @Test
     fun patternAuthMethod() =
         testScope.runTest {
-            val message by collectLastValue(underTest.message)
-            utils.authenticationRepository.setAuthenticationMethod(
+            kosmos.fakeAuthenticationRepository.setAuthenticationMethod(
                 AuthenticationMethodModel.Pattern
             )
             runCurrent()
-            underTest.resetMessage()
-            assertThat(message).isEqualTo(MESSAGE_ENTER_YOUR_PATTERN)
 
             // Wrong input.
             val wrongPattern =
@@ -220,83 +206,62 @@ class BouncerInteractorTest : SysuiTestCase() {
                     AuthenticationPatternCoordinate(0, 1),
                 )
             assertThat(wrongPattern).isNotEqualTo(FakeAuthenticationRepository.PATTERN)
-            assertThat(wrongPattern.size).isAtLeast(utils.authenticationRepository.minPatternLength)
+            assertThat(wrongPattern.size)
+                .isAtLeast(kosmos.fakeAuthenticationRepository.minPatternLength)
             assertThat(underTest.authenticate(wrongPattern)).isEqualTo(AuthenticationResult.FAILED)
-            assertThat(message).isEqualTo(MESSAGE_WRONG_PATTERN)
-
-            underTest.resetMessage()
-            assertThat(message).isEqualTo(MESSAGE_ENTER_YOUR_PATTERN)
+            assertThat(uiEventLoggerFake[0].eventId)
+                .isEqualTo(BouncerUiEvent.BOUNCER_PASSWORD_FAILURE.id)
 
             // Too short input.
             val tooShortPattern =
                 FakeAuthenticationRepository.PATTERN.subList(
                     0,
-                    utils.authenticationRepository.minPatternLength - 1
+                    kosmos.fakeAuthenticationRepository.minPatternLength - 1,
                 )
             assertThat(underTest.authenticate(tooShortPattern))
                 .isEqualTo(AuthenticationResult.SKIPPED)
-            assertThat(message).isEqualTo(MESSAGE_WRONG_PATTERN)
-
-            underTest.resetMessage()
-            assertThat(message).isEqualTo(MESSAGE_ENTER_YOUR_PATTERN)
 
             // Correct input.
             assertThat(underTest.authenticate(FakeAuthenticationRepository.PATTERN))
                 .isEqualTo(AuthenticationResult.SUCCEEDED)
+            assertThat(uiEventLoggerFake[1].eventId)
+                .isEqualTo(BouncerUiEvent.BOUNCER_PASSWORD_SUCCESS.id)
+            assertThat(uiEventLoggerFake.numLogs()).isEqualTo(2)
         }
 
     @Test
-    fun lockout() =
+    fun lockoutStarted() =
         testScope.runTest {
-            val lockout by collectLastValue(underTest.lockout)
-            val message by collectLastValue(underTest.message)
-            utils.authenticationRepository.setAuthenticationMethod(AuthenticationMethodModel.Pin)
-            assertThat(lockout).isNull()
+            val lockoutStartedEvents by collectValues(underTest.onLockoutStarted)
+
+            kosmos.fakeAuthenticationRepository.setAuthenticationMethod(
+                AuthenticationMethodModel.Pin
+            )
+            assertThat(lockoutStartedEvents).isEmpty()
+
+            // Try the wrong PIN repeatedly, until lockout is triggered:
             repeat(FakeAuthenticationRepository.MAX_FAILED_AUTH_TRIES_BEFORE_LOCKOUT) { times ->
                 // Wrong PIN.
                 assertThat(underTest.authenticate(listOf(6, 7, 8, 9)))
                     .isEqualTo(AuthenticationResult.FAILED)
                 if (times < FakeAuthenticationRepository.MAX_FAILED_AUTH_TRIES_BEFORE_LOCKOUT - 1) {
-                    assertThat(message).isEqualTo(MESSAGE_WRONG_PIN)
+                    assertThat(lockoutStartedEvents).isEmpty()
                 }
             }
-            assertThat(lockout)
-                .isEqualTo(
-                    AuthenticationLockoutModel(
-                        failedAttemptCount =
-                            FakeAuthenticationRepository.MAX_FAILED_AUTH_TRIES_BEFORE_LOCKOUT,
-                        remainingSeconds = FakeAuthenticationRepository.LOCKOUT_DURATION_SECONDS,
-                    )
-                )
-            assertTryAgainMessage(
-                message,
-                FakeAuthenticationRepository.LOCKOUT_DURATION_MS.milliseconds.inWholeSeconds.toInt()
-            )
+            assertThat(authenticationInteractor.lockoutEndTimestamp).isNotNull()
+            assertThat(lockoutStartedEvents.size).isEqualTo(1)
 
-            // Correct PIN, but locked out, so doesn't change away from the bouncer scene:
-            assertThat(underTest.authenticate(FakeAuthenticationRepository.DEFAULT_PIN))
-                .isEqualTo(AuthenticationResult.SKIPPED)
-            assertTryAgainMessage(
-                message,
-                FakeAuthenticationRepository.LOCKOUT_DURATION_MS.milliseconds.inWholeSeconds.toInt()
-            )
+            // Advance the time to finish the lockout:
+            advanceTimeBy(FakeAuthenticationRepository.LOCKOUT_DURATION_SECONDS.seconds)
+            assertThat(authenticationInteractor.lockoutEndTimestamp).isNull()
+            assertThat(lockoutStartedEvents.size).isEqualTo(1)
 
-            lockout?.remainingSeconds?.let { seconds ->
-                repeat(seconds) { time ->
-                    advanceTimeBy(1000)
-                    val remainingTimeSec = seconds - time - 1
-                    if (remainingTimeSec > 0) {
-                        assertTryAgainMessage(message, remainingTimeSec)
-                    }
-                }
+            // Trigger lockout again:
+            repeat(FakeAuthenticationRepository.MAX_FAILED_AUTH_TRIES_BEFORE_LOCKOUT) {
+                // Wrong PIN.
+                underTest.authenticate(listOf(6, 7, 8, 9))
             }
-            assertThat(message).isEqualTo("")
-            assertThat(lockout).isNull()
-
-            // Correct PIN and no longer locked out so changes to the Gone scene:
-            assertThat(underTest.authenticate(FakeAuthenticationRepository.DEFAULT_PIN))
-                .isEqualTo(AuthenticationResult.SUCCEEDED)
-            assertThat(lockout).isNull()
+            assertThat(lockoutStartedEvents.size).isEqualTo(2)
         }
 
     @Test
@@ -314,24 +279,96 @@ class BouncerInteractorTest : SysuiTestCase() {
     @Test
     fun intentionalUserInputEvent_registersTouchEvent() =
         testScope.runTest {
-            assertThat(utils.powerRepository.userTouchRegistered).isFalse()
+            assertThat(kosmos.fakePowerRepository.userTouchRegistered).isFalse()
             underTest.onIntentionalUserInput()
-            assertThat(utils.powerRepository.userTouchRegistered).isTrue()
+            assertThat(kosmos.fakePowerRepository.userTouchRegistered).isTrue()
         }
 
     @Test
     fun intentionalUserInputEvent_notifiesFaceAuthInteractor() =
         testScope.runTest {
+            val isFaceAuthRunning by
+                collectLastValue(kosmos.fakeDeviceEntryFaceAuthRepository.isAuthRunning)
+            kosmos.deviceEntryFaceAuthInteractor.onDeviceLifted()
+            runCurrent()
+            assertThat(isFaceAuthRunning).isTrue()
+
             underTest.onIntentionalUserInput()
-            verify(keyguardFaceAuthInteractor).onPrimaryBouncerUserInput()
+            runCurrent()
+
+            assertThat(isFaceAuthRunning).isFalse()
         }
 
-    private fun assertTryAgainMessage(
-        message: String?,
-        time: Int,
-    ) {
-        assertThat(message).isEqualTo("Try again in $time seconds.")
-    }
+    @Test
+    fun verifyOneHandedModeUsesTheConfigValue() =
+        testScope.runTest {
+            kosmos.fakeAuthenticationRepository.setAuthenticationMethod(
+                AuthenticationMethodModel.Pin
+            )
+            testableResources.addOverride(R.bool.can_use_one_handed_bouncer, false)
+            val oneHandedModelSupported by collectLastValue(underTest.isOneHandedModeSupported)
+
+            assertThat(oneHandedModelSupported).isFalse()
+
+            testableResources.addOverride(R.bool.can_use_one_handed_bouncer, true)
+            kosmos.fakeConfigurationRepository.onAnyConfigurationChange()
+            runCurrent()
+
+            assertThat(oneHandedModelSupported).isTrue()
+
+            testableResources.removeOverride(R.bool.can_use_one_handed_bouncer)
+        }
+
+    @Test
+    fun verifyPreferredInputSideUsesTheSettingValue_Left() =
+        testScope.runTest {
+            val preferredInputSide by collectLastValue(underTest.preferredBouncerInputSide)
+            kosmos.bouncerRepository.setPreferredBouncerInputSide(BouncerInputSide.LEFT)
+            runCurrent()
+
+            assertThat(preferredInputSide).isEqualTo(BouncerInputSide.LEFT)
+        }
+
+    @Test
+    fun verifyPreferredInputSideUsesTheSettingValue_Right() =
+        testScope.runTest {
+            val preferredInputSide by collectLastValue(underTest.preferredBouncerInputSide)
+            underTest.setPreferredBouncerInputSide(BouncerInputSide.RIGHT)
+            runCurrent()
+
+            assertThat(preferredInputSide).isEqualTo(BouncerInputSide.RIGHT)
+
+            underTest.setPreferredBouncerInputSide(BouncerInputSide.LEFT)
+            runCurrent()
+
+            assertThat(preferredInputSide).isEqualTo(BouncerInputSide.LEFT)
+        }
+
+    @Test
+    fun preferredInputSide_defaultsToRight_whenUserSwitcherIsEnabled() =
+        testScope.runTest {
+            testableResources.addOverride(R.bool.config_enableBouncerUserSwitcher, true)
+            kosmos.fakeFeatureFlagsClassic.set(FULL_SCREEN_USER_SWITCHER, true)
+            kosmos.bouncerRepository.preferredBouncerInputSide.value = null
+            val preferredInputSide by collectLastValue(underTest.preferredBouncerInputSide)
+
+            assertThat(preferredInputSide).isEqualTo(BouncerInputSide.RIGHT)
+            testableResources.removeOverride(R.bool.config_enableBouncerUserSwitcher)
+        }
+
+    @Test
+    fun preferredInputSide_defaultsToLeft_whenUserSwitcherIsNotEnabledAndOneHandedModeIsEnabled() =
+        testScope.runTest {
+            testableResources.addOverride(R.bool.config_enableBouncerUserSwitcher, false)
+            kosmos.fakeFeatureFlagsClassic.set(FULL_SCREEN_USER_SWITCHER, true)
+            testableResources.addOverride(R.bool.can_use_one_handed_bouncer, true)
+            kosmos.fakeGlobalSettings.putInt(ONE_HANDED_KEYGUARD_SIDE, -1)
+            val preferredInputSide by collectLastValue(underTest.preferredBouncerInputSide)
+
+            assertThat(preferredInputSide).isEqualTo(BouncerInputSide.LEFT)
+            testableResources.removeOverride(R.bool.config_enableBouncerUserSwitcher)
+            testableResources.removeOverride(R.bool.can_use_one_handed_bouncer)
+        }
 
     companion object {
         private const val MESSAGE_ENTER_YOUR_PIN = "Enter your PIN"

@@ -29,6 +29,7 @@ import android.annotation.ColorRes;
 import android.annotation.DimenRes;
 import android.annotation.Discouraged;
 import android.annotation.DrawableRes;
+import android.annotation.FlaggedApi;
 import android.annotation.FontRes;
 import android.annotation.FractionRes;
 import android.annotation.IntegerRes;
@@ -42,10 +43,12 @@ import android.annotation.StyleRes;
 import android.annotation.StyleableRes;
 import android.annotation.XmlRes;
 import android.app.Application;
+import android.app.ResourcesManager;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ActivityInfo.Config;
+import android.content.pm.ApplicationInfo;
 import android.content.res.loader.ResourcesLoader;
 import android.graphics.Movie;
 import android.graphics.Typeface;
@@ -55,6 +58,8 @@ import android.graphics.drawable.DrawableInflater;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodThrow;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.AttributeSet;
@@ -87,7 +92,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
 
@@ -122,6 +126,7 @@ import java.util.WeakHashMap;
  * <p>For more information about using resources, see the documentation about <a
  * href="{@docRoot}guide/topics/resources/index.html">Application Resources</a>.</p>
  */
+@RavenwoodKeepWholeClass
 public class Resources {
     /**
      * The {@code null} resource ID. This denotes an invalid resource ID that is returned by the
@@ -186,7 +191,7 @@ public class Resources {
     private int mBaseApkAssetsSize;
 
     /** @hide */
-    private static Set<Resources> sResourcesHistory = Collections.synchronizedSet(
+    private static final Set<Resources> sResourcesHistory = Collections.synchronizedSet(
             Collections.newSetFromMap(
                     new WeakHashMap<>()));
 
@@ -337,14 +342,17 @@ public class Resources {
     public Resources(@Nullable ClassLoader classLoader) {
         mClassLoader = classLoader == null ? ClassLoader.getSystemClassLoader() : classLoader;
         sResourcesHistory.add(this);
+        ResourcesManager.getInstance().registerAllResourcesReference(this);
     }
 
     /**
-     * Only for creating the System resources.
+     * Only for creating the System resources. This is the only constructor that doesn't add
+     * Resources itself to the ResourcesManager list of all Resources references.
      */
     @UnsupportedAppUsage
     private Resources() {
-        this(null);
+        mClassLoader = ClassLoader.getSystemClassLoader();
+        sResourcesHistory.add(this);
 
         final DisplayMetrics metrics = new DisplayMetrics();
         metrics.setToDefaults();
@@ -412,6 +420,7 @@ public class Resources {
      * @hide Pending API finalization.
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
+    @RavenwoodThrow(blockedBy = DrawableInflater.class)
     public final DrawableInflater getDrawableInflater() {
         if (mDrawableInflater == null) {
             mDrawableInflater = new DrawableInflater(this, mClassLoader);
@@ -473,6 +482,7 @@ public class Resources {
      *
      * @return Typeface The Typeface data associated with the resource.
      */
+    @RavenwoodThrow(blockedBy = Typeface.class)
     @NonNull public Typeface getFont(@FontRes int id) throws NotFoundException {
         final TypedValue value = obtainTempTypedValue();
         try {
@@ -497,6 +507,7 @@ public class Resources {
     /**
      * @hide
      */
+    @RavenwoodThrow(blockedBy = Typeface.class)
     public void preloadFonts(@ArrayRes int id) {
         final TypedArray array = obtainTypedArray(id);
         try {
@@ -910,6 +921,7 @@ public class Resources {
      * @deprecated Use {@link #getDrawable(int, Theme)} instead.
      */
     @Deprecated
+    @RavenwoodThrow(blockedBy = Drawable.class)
     public Drawable getDrawable(@DrawableRes int id) throws NotFoundException {
         final Drawable d = getDrawable(id, null);
         if (d != null && d.canApplyTheme()) {
@@ -934,6 +946,7 @@ public class Resources {
      * @throws NotFoundException Throws NotFoundException if the given ID does
      *         not exist.
      */
+    @RavenwoodThrow(blockedBy = Drawable.class)
     public Drawable getDrawable(@DrawableRes int id, @Nullable Theme theme)
             throws NotFoundException {
         return getDrawableForDensity(id, 0, theme);
@@ -969,6 +982,7 @@ public class Resources {
      */
     @Nullable
     @Deprecated
+    @RavenwoodThrow(blockedBy = Drawable.class)
     public Drawable getDrawableForDensity(@DrawableRes int id, int density)
             throws NotFoundException {
         return getDrawableForDensity(id, density, null);
@@ -992,6 +1006,7 @@ public class Resources {
      *             not exist.
      */
     @Nullable
+    @RavenwoodThrow(blockedBy = Drawable.class)
     public Drawable getDrawableForDensity(@DrawableRes int id, int density, @Nullable Theme theme) {
         final TypedValue value = obtainTempTypedValue();
         try {
@@ -1020,6 +1035,7 @@ public class Resources {
      * @deprecated Prefer {@link android.graphics.drawable.AnimatedImageDrawable}.
      */
     @Deprecated
+    @RavenwoodThrow(blockedBy = Movie.class)
     public Movie getMovie(@RawRes int id) throws NotFoundException {
         final InputStream is = openRawResource(id);
         final Movie movie = Movie.decodeStream(is);
@@ -1778,6 +1794,7 @@ public class Resources {
          * @throws NotFoundException Throws NotFoundException if the given ID
          *         does not exist.
          */
+        @RavenwoodThrow(blockedBy = Drawable.class)
         public Drawable getDrawable(@DrawableRes int id) throws NotFoundException {
             return Resources.this.getDrawable(id, this);
         }
@@ -2740,17 +2757,6 @@ public class Resources {
                 ar.recycle();
                 Log.i(TAG, "...preloaded " + numberOfEntries + " resources in "
                         + (SystemClock.uptimeMillis() - startTime) + "ms.");
-
-                if (sysRes.getBoolean(
-                        com.android.internal.R.bool.config_freeformWindowManagement)) {
-                    startTime = SystemClock.uptimeMillis();
-                    ar = sysRes.obtainTypedArray(
-                            com.android.internal.R.array.preloaded_freeform_multi_window_drawables);
-                    numberOfEntries = preloadDrawables(sysRes, ar);
-                    ar.recycle();
-                    Log.i(TAG, "...preloaded " + numberOfEntries + " resource in "
-                            + (SystemClock.uptimeMillis() - startTime) + "ms.");
-                }
             }
             sysRes.finishPreloading();
         } catch (RuntimeException e) {
@@ -2806,7 +2812,12 @@ public class Resources {
     public void dump(PrintWriter pw, String prefix) {
         pw.println(prefix + "class=" + getClass());
         pw.println(prefix + "resourcesImpl");
-        mResourcesImpl.dump(pw, prefix + "  ");
+        final var impl = mResourcesImpl;
+        if (impl != null) {
+            impl.dump(pw, prefix + "  ");
+        } else {
+            pw.println(prefix + "  " + "null");
+        }
     }
 
     /** @hide */
@@ -2814,15 +2825,46 @@ public class Resources {
         pw.println(prefix + "history");
         // Putting into a map keyed on the apk assets to deduplicate resources that are different
         // objects but ultimately represent the same assets
-        Map<List<ApkAssets>, Resources> history = new ArrayMap<>();
+        ArrayMap<List<ApkAssets>, Resources> history = new ArrayMap<>();
         sResourcesHistory.forEach(
-                r -> history.put(Arrays.asList(r.mResourcesImpl.mAssets.getApkAssets()), r));
+                r -> {
+                    if (r != null) {
+                        final var impl = r.mResourcesImpl;
+                        if (impl != null) {
+                            history.put(Arrays.asList(impl.mAssets.getApkAssets()), r);
+                        } else {
+                            history.put(null, r);
+                        }
+                    }
+                });
         int i = 0;
         for (Resources r : history.values()) {
-            if (r != null) {
-                pw.println(prefix + i++);
-                r.dump(pw, prefix + "  ");
-            }
+            pw.println(prefix + i++);
+            r.dump(pw, prefix + "  ");
+        }
+    }
+
+    /**
+     * Register the resources paths of a package (e.g. a shared library). This will collect the
+     * package resources' paths from its ApplicationInfo and add them to all existing and future
+     * contexts while the application is running.
+     * A second call with the same uniqueId is a no-op.
+     * The paths are not persisted during application restarts. The application is responsible for
+     * calling the API again if this happens.
+     *
+     * @param uniqueId The unique id for the ApplicationInfo object, to detect and ignore repeated
+     *                 API calls.
+     * @param appInfo The ApplicationInfo that contains resources paths of the package.
+     */
+    @FlaggedApi(android.content.res.Flags.FLAG_REGISTER_RESOURCE_PATHS)
+    @RavenwoodThrow(reason = "FLAG_REGISTER_RESOURCE_PATHS is unsupported")
+    public static void registerResourcePaths(@NonNull String uniqueId,
+            @NonNull ApplicationInfo appInfo) {
+        if (Flags.registerResourcePaths()) {
+            ResourcesManager.getInstance().registerResourcePaths(uniqueId, appInfo);
+        } else {
+            throw new UnsupportedOperationException("Flag " + Flags.FLAG_REGISTER_RESOURCE_PATHS
+                    + " is disabled.");
         }
     }
 }

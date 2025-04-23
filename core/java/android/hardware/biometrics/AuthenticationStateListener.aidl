@@ -15,6 +15,14 @@
  */
 package android.hardware.biometrics;
 
+import android.hardware.biometrics.events.AuthenticationAcquiredInfo;
+import android.hardware.biometrics.events.AuthenticationErrorInfo;
+import android.hardware.biometrics.events.AuthenticationFailedInfo;
+import android.hardware.biometrics.events.AuthenticationHelpInfo;
+import android.hardware.biometrics.events.AuthenticationStartedInfo;
+import android.hardware.biometrics.events.AuthenticationStoppedInfo;
+import android.hardware.biometrics.events.AuthenticationSucceededInfo;
+
 /**
  * Low-level callback interface between <Biometric>Manager and <Auth>Service. Allows core system
  * services (e.g. SystemUI) to register a listener for updates about the current state of biometric
@@ -23,14 +31,44 @@ package android.hardware.biometrics;
  */
 oneway interface AuthenticationStateListener {
     /**
-     * Defines behavior in response to authentication starting
-     * @param requestReason reason from [BiometricRequestConstants.RequestReason] for requesting
-     * authentication starting
+     * Defines behavior in response to biometric authentication being acquired.
+     * @param authInfo information related to the biometric authentication acquired.
      */
-    void onAuthenticationStarted(int requestReason);
+    void onAuthenticationAcquired(in AuthenticationAcquiredInfo authInfo);
+
+    /**
+     * Defines behavior in response to an unrecoverable error encountered during authentication.
+     * @param authInfo information related to the unrecoverable auth error encountered
+     */
+    void onAuthenticationError(in AuthenticationErrorInfo authInfo);
+
+    /**
+     * Defines behavior in response to a failed authentication
+     * @param authInfo information related to the failed authentication
+     */
+    void onAuthenticationFailed(in AuthenticationFailedInfo authInfo);
+
+    /**
+     * Defines behavior in response to a recoverable error encountered during authentication.
+     * @param authInfo information related to the recoverable auth error encountered
+     */
+    void onAuthenticationHelp(in AuthenticationHelpInfo authInfo);
+
+    /**
+     * Defines behavior in response to authentication starting
+     * @param authInfo information related to the authentication starting
+     */
+    void onAuthenticationStarted(in AuthenticationStartedInfo authInfo);
 
     /**
      * Defines behavior in response to authentication stopping
+     * @param authInfo information related to the authentication stopping
      */
-    void onAuthenticationStopped();
+    void onAuthenticationStopped(in AuthenticationStoppedInfo authInfo);
+
+    /**
+     * Defines behavior in response to a successful authentication
+     * @param authInfo information related to the successful authentication
+     */
+    void onAuthenticationSucceeded(in AuthenticationSucceededInfo authInfo);
 }

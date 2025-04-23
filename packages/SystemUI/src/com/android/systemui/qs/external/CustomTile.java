@@ -41,8 +41,8 @@ import android.service.quicksettings.TileService;
 import android.text.format.DateUtils;
 import android.util.Log;
 import android.view.IWindowManager;
-import android.view.View;
 import android.view.WindowManagerGlobal;
+import android.widget.Button;
 import android.widget.Switch;
 
 import androidx.annotation.Nullable;
@@ -51,7 +51,8 @@ import androidx.annotation.WorkerThread;
 import com.android.internal.jank.InteractionJankMonitor;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
-import com.android.systemui.animation.ActivityLaunchAnimator;
+import com.android.systemui.animation.ActivityTransitionAnimator;
+import com.android.systemui.animation.Expandable;
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.plugins.ActivityStarter;
@@ -65,13 +66,13 @@ import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.qs.tileimpl.QSTileImpl;
 import com.android.systemui.settings.DisplayTracker;
 
-import java.util.Objects;
-import java.util.concurrent.atomic.AtomicBoolean;
-
 import dagger.Lazy;
 import dagger.assisted.Assisted;
 import dagger.assisted.AssistedFactory;
 import dagger.assisted.AssistedInject;
+
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
         CustomTileInterface {
@@ -99,7 +100,7 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
     @Nullable
     private CharSequence mDefaultLabel;
     @Nullable
-    private View mViewClicked;
+    private Expandable mExpandableClicked;
 
     private final Context mUserContext;
 
@@ -347,7 +348,7 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
                     mService.onStartListening();
                 }
             } else {
-                mViewClicked = null;
+                mExpandableClicked = null;
                 mService.onStopListening();
                 if (mIsTokenGranted && !mIsShowingDialog) {
                     try {
@@ -409,11 +410,11 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
     }
 
     @Override
-    protected void handleClick(@Nullable View view) {
+    protected void handleClick(@Nullable Expandable expandable) {
         if (mTile.getState() == Tile.STATE_UNAVAILABLE) {
             return;
         }
-        mViewClicked = view;
+        mExpandableClicked = expandable;
         try {
             if (DEBUG) Log.d(TAG, "Adding token");
             mWindowManager.addWindowToken(mToken, TYPE_QS_DIALOG,
@@ -502,6 +503,8 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
         if (state instanceof BooleanState) {
             state.expandedAccessibilityClassName = Switch.class.getName();
             ((BooleanState) state).value = (state.state == Tile.STATE_ACTIVE);
+        } else {
+            state.expandedAccessibilityClassName = Button.class.getName();
         }
 
     }
@@ -540,12 +543,10 @@ public class CustomTile extends QSTileImpl<State> implements TileChangeListener,
         } else {
             Log.i(TAG, "The activity is starting");
 
-            ActivityLaunchAnimator.Controller controller =
-                    mViewClicked == null ? null :
-                    ActivityLaunchAnimator.Controller.fromView(
-                            mViewClicked,
-                            InteractionJankMonitor.CUJ_SHADE_APP_LAUNCH_FROM_QS_TILE
-                    );
+            ActivityTransitionAnimator.Controller controller =
+                    mExpandableClicked == null ? null :
+                            mExpandableClicked.activityTransitionController(
+                                    InteractionJankMonitor.CUJ_SHADE_APP_LAUNCH_FROM_QS_TILE);
             mActivityStarter.startPendingIntentMaybeDismissingKeyguard(
                     pendingIntent,
                     /* intentSentUiThreadCallback= */ null,

@@ -16,11 +16,12 @@
 
 package com.android.settingslib.media;
 
-import android.app.Notification;
 import android.content.Context;
 import android.media.MediaRoute2Info;
 import android.media.RouteListingPreference;
 import android.media.RoutingSessionInfo;
+import android.media.session.MediaController;
+import android.os.UserHandle;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -38,18 +39,31 @@ import java.util.List;
  */
 // TODO - b/293578081: Remove once PackageNotAvailableException is propagated to library clients.
 /* package */ final class NoOpInfoMediaManager extends InfoMediaManager {
+    /**
+     * Placeholder routing session to return as active session of {@link NoOpInfoMediaManager}.
+     *
+     * <p>Returning this routing session avoids crashes in {@link InfoMediaManager} and maintains
+     * the same client-facing behaviour as if no routing session was found for the target package
+     * name.
+     *
+     * <p>Volume and max volume are set to {@code -1} to emulate a non-existing routing session in
+     * {@link #getSessionVolume()} and {@link #getSessionVolumeMax()}.
+     */
+    private static final RoutingSessionInfo PLACEHOLDER_SESSION =
+            new RoutingSessionInfo.Builder(
+                            /* id */ "FAKE_ROUTING_SESSION", /* clientPackageName */ "")
+                    .addSelectedRoute(/* routeId */ "FAKE_SELECTED_ROUTE_ID")
+                    .setVolumeMax(-1)
+                    .setVolume(-1)
+                    .build();
 
     NoOpInfoMediaManager(
             Context context,
-            String packageName,
-            Notification notification,
-            LocalBluetoothManager localBluetoothManager) {
-        super(context, packageName, notification, localBluetoothManager);
-    }
-
-    @Override
-    public void stopScan() {
-        // Do nothing.
+            @NonNull String packageName,
+            @NonNull UserHandle userHandle,
+            LocalBluetoothManager localBluetoothManager,
+            @Nullable MediaController mediaController) {
+        super(context, packageName, userHandle, localBluetoothManager, mediaController);
     }
 
     @Override
@@ -58,8 +72,18 @@ import java.util.List;
     }
 
     @Override
-    protected boolean connectDeviceWithoutPackageName(@NonNull MediaDevice device) {
-        return false;
+    protected void registerRouter() {
+        // Do nothing.
+    }
+
+    @Override
+    protected void stopScanOnRouter() {
+        // Do nothing.
+    }
+
+    @Override
+    protected void unregisterRouter() {
+        // Do nothing.
     }
 
     @Override
@@ -125,19 +149,13 @@ import java.util.List;
     @NonNull
     @Override
     protected List<RoutingSessionInfo> getRoutingSessionsForPackage() {
-        return Collections.emptyList();
+        return List.of(PLACEHOLDER_SESSION);
     }
 
     @Nullable
     @Override
     protected RoutingSessionInfo getRoutingSessionById(@NonNull String sessionId) {
         return null;
-    }
-
-    @NonNull
-    @Override
-    protected List<MediaRoute2Info> getAllRoutes() {
-        return Collections.emptyList();
     }
 
     @NonNull

@@ -20,6 +20,7 @@ import static android.app.NotificationManager.IMPORTANCE_DEFAULT;
 import static android.app.NotificationManager.IMPORTANCE_HIGH;
 import static android.app.NotificationManager.IMPORTANCE_LOW;
 import static android.app.NotificationManager.IMPORTANCE_UNSPECIFIED;
+import static android.media.AudioAttributes.USAGE_ALARM;
 import static android.service.notification.Adjustment.KEY_IMPORTANCE;
 import static android.service.notification.Adjustment.KEY_NOT_CONVERSATION;
 import static android.service.notification.NotificationListenerService.FLAG_FILTER_TYPE_ALERTING;
@@ -61,12 +62,17 @@ import android.content.res.Resources;
 import android.graphics.Color;
 import android.graphics.drawable.Icon;
 import android.media.AudioAttributes;
+import android.media.RingtoneManager;
+import android.media.Utils;
 import android.metrics.LogMaker;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.UserHandle;
+import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.os.VibratorInfo;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.flag.junit.SetFlagsRule;
 import android.provider.Settings;
 import android.service.notification.Adjustment;
@@ -90,6 +96,9 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
 import java.util.ArrayList;
 
 @SmallTest
@@ -114,11 +123,13 @@ public class NotificationRecordTest extends UiServiceTestCase {
                     NotificationManager.IMPORTANCE_UNSPECIFIED);
     private android.os.UserHandle mUser = UserHandle.of(ActivityManager.getCurrentUser());
 
-    private static final long[] CUSTOM_VIBRATION = new long[] {
+    private static final long[] CUSTOM_NOTIFICATION_VIBRATION = new long[] {
             300, 400, 300, 400, 300, 400, 300, 400, 300, 400, 300, 400,
             300, 400, 300, 400, 300, 400, 300, 400, 300, 400, 300, 400,
             300, 400, 300, 400, 300, 400, 300, 400, 300, 400, 300, 400 };
-    private static final long[] CUSTOM_CHANNEL_VIBRATION = new long[] {300, 400, 300, 400 };
+    private static final long[] CUSTOM_CHANNEL_VIBRATION_PATTERN = new long[] {300, 400, 300, 400 };
+    private static final VibrationEffect CUSTOM_CHANNEL_VIBRATION_EFFECT =
+            VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK);
     private static final Uri CUSTOM_SOUND = Settings.System.DEFAULT_ALARM_ALERT_URI;
     private static final AudioAttributes CUSTOM_ATTRIBUTES = new AudioAttributes.Builder()
             .setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN)
@@ -135,6 +146,8 @@ public class NotificationRecordTest extends UiServiceTestCase {
         MockitoAnnotations.initMocks(this);
 
         when(mMockContext.getSystemService(eq(Vibrator.class))).thenReturn(mVibrator);
+        when(mVibrator.areVibrationFeaturesSupported(any())).thenReturn(true);
+        when(mVibrator.getInfo()).thenReturn(VibratorInfo.EMPTY_VIBRATOR_INFO);
         final Resources res = mContext.getResources();
         when(mMockContext.getResources()).thenReturn(res);
         when(mMockContext.getPackageManager()).thenReturn(mPm);
@@ -168,8 +181,8 @@ public class NotificationRecordTest extends UiServiceTestCase {
             if (defaultVibration) {
                 defaults |= Notification.DEFAULT_VIBRATE;
             } else {
-                builder.setVibrate(CUSTOM_VIBRATION);
-                channel.setVibrationPattern(CUSTOM_CHANNEL_VIBRATION);
+                builder.setVibrate(CUSTOM_NOTIFICATION_VIBRATION);
+                channel.setVibrationPattern(CUSTOM_CHANNEL_VIBRATION_PATTERN);
             }
         }
         if (lights) {
@@ -217,24 +230,37 @@ public class NotificationRecordTest extends UiServiceTestCase {
         return new StatusBarNotification(mPkg, mPkg, id1, tag1, uid, uid, n, mUser, null, uid);
     }
 
+    private StatusBarNotification getNotification(
+            long[] channelVibrationPattern,
+            VibrationEffect channelVibrationEffect,
+            boolean insistent) {
+        if (channelVibrationPattern != null) {
+            channel.setVibrationPattern(channelVibrationPattern);
+        } else if (channelVibrationEffect != null) {
+            channel.setVibrationEffect(channelVibrationEffect);
+        }
 
-    private StatusBarNotification getInsistentNotification(boolean defaultVibration) {
         final Builder builder = new Builder(mMockContext)
                 .setContentTitle("foo")
                 .setSmallIcon(android.R.drawable.sym_def_app_icon)
-                .setPriority(Notification.PRIORITY_HIGH);
-        int defaults = 0;
-        if (defaultVibration) {
-            defaults |= Notification.DEFAULT_VIBRATE;
-        } else {
-            builder.setVibrate(CUSTOM_VIBRATION);
-            channel.setVibrationPattern(CUSTOM_CHANNEL_VIBRATION);
-        }
-        builder.setDefaults(defaults);
-        builder.setFlag(Notification.FLAG_INSISTENT, true);
+                .setPriority(Notification.PRIORITY_HIGH)
+                .setVibrate(CUSTOM_NOTIFICATION_VIBRATION)
+                .setFlag(Notification.FLAG_INSISTENT, insistent);
 
         Notification n = builder.build();
         return new StatusBarNotification(mPkg, mPkg, id1, tag1, uid, uid, n, mUser, null, uid);
+    }
+
+    private StatusBarNotification getNotification(
+            VibrationEffect channelVibrationEffect, boolean insistent) {
+        return getNotification(
+                /* channelVibrationPattern= */ null, channelVibrationEffect, insistent);
+    }
+
+    private StatusBarNotification getNotification(
+            long[] channelVibrationPattern, boolean insistent) {
+        return getNotification(
+                channelVibrationPattern, /* channelVibrationEffect= */ null, insistent);
     }
 
     private StatusBarNotification getMessagingStyleNotification() {
@@ -344,7 +370,7 @@ public class NotificationRecordTest extends UiServiceTestCase {
 
         NotificationRecord record = new NotificationRecord(mMockContext, sbn, defaultChannel);
         assertEquals(VibratorHelper.createWaveformVibration(
-                CUSTOM_VIBRATION, /* insistent= */ false), record.getVibration());
+                CUSTOM_NOTIFICATION_VIBRATION, /* insistent= */ false), record.getVibration());
     }
 
     @Test
@@ -358,30 +384,183 @@ public class NotificationRecordTest extends UiServiceTestCase {
 
         NotificationRecord record = new NotificationRecord(mMockContext, sbn, defaultChannel);
         assertNotEquals(VibratorHelper.createWaveformVibration(
-                CUSTOM_VIBRATION, /* insistent= */ false), record.getVibration());
+                CUSTOM_NOTIFICATION_VIBRATION, /* insistent= */ false), record.getVibration());
     }
 
     @Test
-    public void testVibration_custom_upgradeUsesChannel() {
+    public void testVibration_customPattern_nonInsistent_usesCustomPattern() {
         channel.enableVibration(true);
-        // post upgrade, custom vibration.
-        StatusBarNotification sbn = getNotification(PKG_O, false /* noisy */,
-                false /* defaultSound */, true /* buzzy */, false /* defaultBuzz */,
-                false /* lights */, false /* defaultLights */, null /* group */);
+        StatusBarNotification sbn = getNotification(
+                CUSTOM_CHANNEL_VIBRATION_PATTERN, /* insistent= */ false);
 
         NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
         assertEquals(VibratorHelper.createWaveformVibration(
-                CUSTOM_CHANNEL_VIBRATION, /* insistent= */ false), record.getVibration());
+                CUSTOM_CHANNEL_VIBRATION_PATTERN, /* insistent= */ false), record.getVibration());
     }
 
     @Test
-    public void testVibration_insistent_createsInsistentVibrationEffect() {
+    public void testVibration_customPattern_insistent_createsInsistentEffect() {
         channel.enableVibration(true);
-        StatusBarNotification sbn = getInsistentNotification(false /* defaultBuzz */);
+        StatusBarNotification sbn = getNotification(
+                CUSTOM_CHANNEL_VIBRATION_PATTERN, /* insistent= */ true);
 
         NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
         assertEquals(VibratorHelper.createWaveformVibration(
-                CUSTOM_CHANNEL_VIBRATION, /* insistent= */ true), record.getVibration());
+                CUSTOM_CHANNEL_VIBRATION_PATTERN, /* insistent= */ true), record.getVibration());
+    }
+
+    @Test
+    public void testVibration_customEffect_flagNotEnabled_usesDefaultEffect() {
+        mSetFlagsRule.disableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        channel.enableVibration(true);
+        StatusBarNotification sbn = getNotification(
+                CUSTOM_CHANNEL_VIBRATION_EFFECT, /* insistent= */ false);
+
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+        VibrationEffect effect = record.getVibration();
+        assertNotEquals(effect, CUSTOM_CHANNEL_VIBRATION_EFFECT);
+        assertNotNull(effect);
+    }
+
+    @Test
+    public void testVibration_customEffect_effectNotSupported_usesDefaultEffect() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        when(mVibrator.areVibrationFeaturesSupported(any())).thenReturn(false);
+        StatusBarNotification sbn = getNotification(
+                CUSTOM_CHANNEL_VIBRATION_EFFECT, /* insistent= */ false);
+
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+        VibrationEffect effect = record.getVibration();
+        assertNotEquals(effect, CUSTOM_CHANNEL_VIBRATION_EFFECT);
+        assertNotNull(effect);
+    }
+
+    @Test
+    public void testVibration_customNonRepeatingEffect_nonInsistent_usesCustomEffect() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        StatusBarNotification sbn = getNotification(
+                CUSTOM_CHANNEL_VIBRATION_EFFECT, /* insistent= */ false);
+
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+        assertEquals(CUSTOM_CHANNEL_VIBRATION_EFFECT, record.getVibration());
+    }
+
+    @Test
+    public void testVibration_customNonRepeatingEffect_insistent_createsInsistentEffect() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        StatusBarNotification sbn = getNotification(
+                CUSTOM_CHANNEL_VIBRATION_EFFECT, /* insistent= */ true);
+
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+        VibrationEffect repeatingEffect =
+                CUSTOM_CHANNEL_VIBRATION_EFFECT
+                        .applyRepeatingIndefinitely(true, /* loopDelayMs= */ 0);
+        assertEquals(repeatingEffect, record.getVibration());
+    }
+
+    @Test
+    public void testVibration_customRepeatingEffect_nonInsistent_createsNonRepeatingCustomEffect() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        VibrationEffect repeatingEffect =
+                CUSTOM_CHANNEL_VIBRATION_EFFECT
+                        .applyRepeatingIndefinitely(true, /* loopDelayMs= */ 0);
+        StatusBarNotification sbn = getNotification(repeatingEffect, /* insistent= */ false);
+
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+        assertEquals(CUSTOM_CHANNEL_VIBRATION_EFFECT, record.getVibration());
+    }
+
+    @Test
+    public void testVibration_customRepeatingEffect_insistent_usesCustomEffect() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        VibrationEffect repeatingEffect =
+                CUSTOM_CHANNEL_VIBRATION_EFFECT
+                        .applyRepeatingIndefinitely(true, /* loopDelayMs= */ 0);
+        StatusBarNotification sbn = getNotification(repeatingEffect, /* insistent= */ true);
+
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+        assertEquals(repeatingEffect, record.getVibration());
+    }
+
+    @Test
+    public void testVibration_noCustomVibration_vibrationEnabled_usesDefaultVibration() {
+        channel.enableVibration(true);
+        StatusBarNotification sbn = getNotification(
+                /* channelVibrationPattern= */ null,
+                /* channelVibrationEffect= */ null,
+                /* insistent= */ false);
+
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+        assertNotNull(record.getVibration());
+    }
+
+    @Test
+    public void testVibration_noCustomVibration_vibrationNotEnabled_usesNoVibration() {
+        channel.enableVibration(false);
+        StatusBarNotification sbn = getNotification(
+                /* channelVibrationPattern= */ null,
+                /* channelVibrationEffect= */ null,
+                /* insistent= */ false);
+
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+        assertNull(record.getVibration());
+    }
+
+    @Test
+    public void testVibration_customVibration_vibrationNotEnabled_usesNoVibration() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        StatusBarNotification sbn = getNotification(
+                CUSTOM_CHANNEL_VIBRATION_PATTERN, /* insistent= */ false);
+        channel.enableVibration(false);
+
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+        assertNull(record.getVibration());
+    }
+
+    @Test
+    @EnableFlags(com.android.server.notification.Flags.FLAG_NOTIFICATION_VIBRATION_IN_SOUND_URI)
+    public void testVibration_customVibrationForSound_withoutVibrationUri() {
+        // prepare testing data
+        Uri backupDefaultUri = RingtoneManager.getActualDefaultRingtoneUri(mMockContext,
+                RingtoneManager.TYPE_NOTIFICATION);
+        RingtoneManager.setActualDefaultRingtoneUri(mMockContext, RingtoneManager.TYPE_NOTIFICATION,
+                Settings.System.DEFAULT_NOTIFICATION_URI);
+        defaultChannel.enableVibration(true);
+        defaultChannel.setSound(Settings.System.DEFAULT_NOTIFICATION_URI, CUSTOM_ATTRIBUTES);
+        StatusBarNotification sbn = getNotification(
+                /* channelVibrationPattern= */ null,
+                /* channelVibrationEffect= */ null,
+                /* insistent= */ false);
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, defaultChannel);
+
+        try {
+            assertEquals(
+                    new VibratorHelper(mMockContext).createDefaultVibration(false),
+                    record.getVibration());
+        } finally {
+            // restore the data
+            RingtoneManager.setActualDefaultRingtoneUri(mMockContext,
+                    RingtoneManager.TYPE_NOTIFICATION,
+                    backupDefaultUri);
+        }
+    }
+
+    @Test
+    @EnableFlags(com.android.server.notification.Flags
+            .FLAG_NOTIFICATION_VIBRATION_IN_SOUND_URI_FOR_CHANNEL)
+    public void testVibration_customVibrationForSound_withVibrationUri() throws IOException {
+        defaultChannel.enableVibration(true);
+        VibrationInfo vibration = getTestingVibration(mVibrator);
+        Uri uriWithVibration = getVibrationUriAppended(
+                Settings.System.DEFAULT_NOTIFICATION_URI, vibration.mUri);
+        defaultChannel.setSound(uriWithVibration, CUSTOM_ATTRIBUTES);
+        StatusBarNotification sbn = getNotification(
+                /* channelVibrationPattern= */ null,
+                /* channelVibrationEffect= */ null,
+                /* insistent= */ false);
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, defaultChannel);
+
+        assertEquals(vibration.mVibrationEffect, record.getVibration());
     }
 
     @Test
@@ -1440,5 +1619,67 @@ public class NotificationRecordTest extends UiServiceTestCase {
         assertTrue(record.getPhoneNumbers().contains("16175551212"));
         assertTrue(record.getPhoneNumbers().contains("16175552121"));
         assertTrue(record.getPhoneNumbers().contains("16175553434"));
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_RESTRICT_AUDIO_ATTRIBUTES_ALARM)
+    public void updateChannel_nullAudioAttributes() {
+        StatusBarNotification sbn = getStyledNotification(true, true, true,
+                new Notification.DecoratedCustomViewStyle());
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+
+        record.updateNotificationChannel(new NotificationChannel("new", "new", 3));
+
+        assertThat(record.getAudioAttributes()).isNotNull();
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_RESTRICT_AUDIO_ATTRIBUTES_ALARM)
+    public void updateChannel_nonNullAudioAttributes() {
+        StatusBarNotification sbn = getStyledNotification(true, true, true,
+                new Notification.DecoratedCustomViewStyle());
+        NotificationRecord record = new NotificationRecord(mMockContext, sbn, channel);
+
+        NotificationChannel update = new NotificationChannel("new", "new", 3);
+        update.setSound(Uri.EMPTY,
+                new AudioAttributes.Builder().setUsage(USAGE_ALARM).build());
+        record.updateNotificationChannel(update);
+
+        assertThat(record.getAudioAttributes().getUsage()).isEqualTo(USAGE_ALARM);
+    }
+
+    static class VibrationInfo {
+        public VibrationEffect mVibrationEffect;
+        public Uri mUri;
+        VibrationInfo(VibrationEffect vibrationEffect, Uri uri) {
+            mVibrationEffect = vibrationEffect;
+            mUri = uri;
+        }
+    }
+
+    private static VibrationInfo getTestingVibration(Vibrator vibrator) throws IOException {
+        File tempVibrationFile = File.createTempFile("test_vibration_file", ".xml");
+        FileWriter writer = new FileWriter(tempVibrationFile);
+        writer.write("<vibration-effect>\n"
+                + "    <waveform-effect>\n"
+                + "        <!-- PRIMING -->\n"
+                + "        <waveform-entry durationMs=\"0\" amplitude=\"0\"/>\n"
+                + "        <waveform-entry durationMs=\"12\" amplitude=\"255\"/>\n"
+                + "        <waveform-entry durationMs=\"250\" amplitude=\"0\"/>\n"
+                + "        <waveform-entry durationMs=\"12\" amplitude=\"255\"/>\n"
+                + "        <waveform-entry durationMs=\"500\" amplitude=\"0\"/>\n"
+                + "    </waveform-effect>\n"
+                + "</vibration-effect>"); // Your test XML content
+        writer.close();
+        Uri vibrationUri = Uri.parse(tempVibrationFile.toURI().toString());
+
+        VibrationEffect vibrationEffect = Utils.parseVibrationEffect(vibrator, vibrationUri);
+        return new VibrationInfo(vibrationEffect, vibrationUri);
+    }
+
+    private static Uri getVibrationUriAppended(Uri audioUri, Uri vibrationUri) {
+        Uri.Builder builder = audioUri.buildUpon();
+        builder.appendQueryParameter(Utils.VIBRATION_URI_PARAM, vibrationUri.toString());
+        return builder.build();
     }
 }

@@ -23,8 +23,6 @@ import android.companion.virtual.IVirtualDeviceSoundEffectListener;
 import android.companion.virtual.VirtualDevice;
 import android.companion.virtual.VirtualDeviceParams;
 import android.content.AttributionSource;
-import android.hardware.display.IVirtualDisplayCallback;
-import android.hardware.display.VirtualDisplayConfig;
 
 /**
  * Interface for communication between VirtualDeviceManager and VirtualDeviceManagerService.
@@ -78,6 +76,11 @@ interface IVirtualDeviceManager {
     int getDeviceIdForDisplayId(int displayId);
 
     /**
+     * Returns the display name corresponding to the given persistent device ID, if any.
+     */
+    CharSequence getDisplayNameForPersistentDeviceId(in String persistentDeviceId);
+
+    /**
      * Checks whether the passed {@code deviceId} is a valid virtual device ID or not.
      * {@link VirtualDeviceManager#DEVICE_ID_DEFAULT} is not valid as it is the ID of the default
      * device which is not a virtual device. {@code deviceId} must correspond to a virtual device
@@ -89,18 +92,6 @@ interface IVirtualDeviceManager {
      * Returns the device policy for the given virtual device and policy type.
      */
     int getDevicePolicy(int deviceId, int policyType);
-
-    /**
-     * Creates a virtual display owned by a particular virtual device.
-     *
-     * @param virtualDisplayConfig The configuration used in creating the display
-     * @param callback A callback that receives display lifecycle events
-     * @param virtualDevice The device that will own this display
-     * @param packageName The package name of the calling app
-     */
-    int createVirtualDisplay(in VirtualDisplayConfig virtualDisplayConfig,
-            in IVirtualDisplayCallback callback, in IVirtualDevice virtualDevice,
-            String packageName);
 
     /**
      * Returns device-specific session id for playback, or AUDIO_SESSION_ID_GENERATE
@@ -128,4 +119,10 @@ interface IVirtualDeviceManager {
      * device.
      */
     boolean isVirtualDeviceOwnedMirrorDisplay(int displayId);
+
+    /**
+     * Returns all current persistent device IDs, including the ones for which no virtual device
+     * exists, as long as one may have existed or can be created.
+     */
+    List<String> getAllPersistentDeviceIds();
 }

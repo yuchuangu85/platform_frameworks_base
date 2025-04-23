@@ -17,8 +17,8 @@
 package com.android.settingslib.spa.gallery.editor
 
 import android.os.Bundle
+import androidx.compose.runtime.Composable
 import com.android.settingslib.spa.framework.common.SettingsEntry
-import com.android.settingslib.spa.framework.common.SettingsEntryBuilder
 import com.android.settingslib.spa.framework.common.SettingsPageProvider
 import com.android.settingslib.spa.framework.common.createSettingsPage
 import com.android.settingslib.spa.framework.compose.navigator
@@ -35,23 +35,21 @@ object EditorMainPageProvider : SettingsPageProvider {
         return listOf(
             SettingsOutlinedTextFieldPageProvider.buildInjectEntry().setLink(fromPage = owner)
                 .build(),
-            SettingsExposedDropdownMenuBoxPageProvider.buildInjectEntry().setLink(fromPage = owner)
+            SettingsDropdownBoxPageProvider.buildInjectEntry().setLink(fromPage = owner)
                 .build(),
-            SettingsExposedDropdownMenuCheckBoxProvider.buildInjectEntry().setLink(fromPage = owner)
+            SettingsDropdownCheckBoxProvider.buildInjectEntry().setLink(fromPage = owner)
                 .build(),
             SettingsTextFieldPasswordPageProvider.buildInjectEntry().setLink(fromPage = owner)
                 .build(),
         )
     }
 
-    fun buildInjectEntry(): SettingsEntryBuilder {
-        return SettingsEntryBuilder.createInject(owner = owner)
-            .setUiLayoutFn {
-                Preference(object : PreferenceModel {
-                    override val title = TITLE
-                    override val onClick = navigator(name)
-                })
-            }
+    @Composable
+    fun Entry() {
+        Preference(object : PreferenceModel {
+            override val title = TITLE
+            override val onClick = navigator(name)
+        })
     }
 
     override fun getTitle(arguments: Bundle?): String {

@@ -33,15 +33,16 @@ import com.android.systemui.plugins.clocks.ClockEvents
 import com.android.systemui.plugins.clocks.ClockFaceConfig
 import com.android.systemui.plugins.clocks.ClockFaceController
 import com.android.systemui.plugins.clocks.ClockFaceEvents
+import com.android.systemui.plugins.clocks.ClockFontAxisSetting
+import com.android.systemui.plugins.clocks.ClockMessageBuffers
 import com.android.systemui.plugins.clocks.ClockSettings
 import com.android.systemui.plugins.clocks.DefaultClockFaceLayout
+import com.android.systemui.plugins.clocks.ThemeConfig
 import com.android.systemui.plugins.clocks.WeatherData
 import com.android.systemui.plugins.clocks.ZenData
 import java.io.PrintWriter
 import java.util.Locale
 import java.util.TimeZone
-
-private val TAG = DefaultClockController::class.simpleName
 
 /**
  * Controls the default clock visuals.
@@ -50,12 +51,12 @@ private val TAG = DefaultClockController::class.simpleName
  * existing lockscreen clock.
  */
 class DefaultClockController(
-    ctx: Context,
+    private val ctx: Context,
     private val layoutInflater: LayoutInflater,
     private val resources: Resources,
     private val settings: ClockSettings?,
-    private val hasStepClockAnimation: Boolean = false,
     private val migratedClocks: Boolean = false,
+    messageBuffers: ClockMessageBuffers? = null,
 ) : ClockController {
     override val smallClock: DefaultClockFaceController
     override val largeClock: LargeClockFaceController
@@ -73,7 +74,7 @@ class DefaultClockController(
         ClockConfig(
             DEFAULT_CLOCK_ID,
             resources.getString(R.string.clock_default_name),
-            resources.getString(R.string.clock_default_description)
+            resources.getString(R.string.clock_default_description),
         )
     }
 
@@ -83,13 +84,15 @@ class DefaultClockController(
             DefaultClockFaceController(
                 layoutInflater.inflate(R.layout.clock_default_small, parent, false)
                     as AnimatableClockView,
-                settings?.seedColor
+                settings?.seedColor,
+                messageBuffers?.smallClockMessageBuffer,
             )
         largeClock =
             LargeClockFaceController(
                 layoutInflater.inflate(R.layout.clock_default_large, parent, false)
                     as AnimatableClockView,
-                settings?.seedColor
+                settings?.seedColor,
+                messageBuffers?.largeClockMessageBuffer,
             )
         clocks = listOf(smallClock.view, largeClock.view)
 
@@ -97,52 +100,69 @@ class DefaultClockController(
         events.onLocaleChanged(Locale.getDefault())
     }
 
-    override fun initialize(resources: Resources, dozeFraction: Float, foldFraction: Float) {
+    override fun initialize(isDarkTheme: Boolean, dozeFraction: Float, foldFraction: Float) {
         largeClock.recomputePadding(null)
+
         largeClock.animations = LargeClockAnimations(largeClock.view, dozeFraction, foldFraction)
         smallClock.animations = DefaultClockAnimations(smallClock.view, dozeFraction, foldFraction)
-        events.onColorPaletteChanged(resources)
+
+        largeClock.events.onThemeChanged(largeClock.theme.copy(isDarkTheme = isDarkTheme))
+        smallClock.events.onThemeChanged(smallClock.theme.copy(isDarkTheme = isDarkTheme))
         events.onTimeZoneChanged(TimeZone.getDefault())
+
         smallClock.events.onTimeTick()
         largeClock.events.onTimeTick()
     }
 
     open inner class DefaultClockFaceController(
         override val view: AnimatableClockView,
-        var seedColor: Int?,
+        seedColor: Int?,
+        messageBuffer: MessageBuffer?,
     ) : ClockFaceController {
-
         // MAGENTA is a placeholder, and will be assigned correctly in initialize
-        private var currentColor = Color.MAGENTA
-        private var isRegionDark = false
+        private var currentColor = seedColor ?: Color.MAGENTA
         protected var targetRegion: Rect? = null
 
         override val config = ClockFaceConfig()
-        override val layout = DefaultClockFaceLayout(view)
-
-        override var messageBuffer: MessageBuffer?
-            get() = view.messageBuffer
-            set(value) {
-                view.messageBuffer = value
+        override var theme = ThemeConfig(true, seedColor)
+        override val layout =
+            DefaultClockFaceLayout(view).apply {
+                views[0].id =
+                    resources.getIdentifier("lockscreen_clock_view", "id", ctx.packageName)
             }
 
         override var animations: DefaultClockAnimations = DefaultClockAnimations(view, 0f, 0f)
             internal set
 
         init {
-            if (seedColor != null) {
-                currentColor = seedColor!!
-            }
             view.setColors(DOZE_COLOR, currentColor)
+            messageBuffer?.let { view.messageBuffer = it }
         }
 
         override val events =
             object : ClockFaceEvents {
                 override fun onTimeTick() = view.refreshTime()
 
-                override fun onRegionDarknessChanged(isRegionDark: Boolean) {
-                    this@DefaultClockFaceController.isRegionDark = isRegionDark
-                    updateColor()
+                override fun onThemeChanged(theme: ThemeConfig) {
+                    this@DefaultClockFaceController.theme = theme
+
+                    val color =
+                        when {
+                            theme.seedColor != null -> theme.seedColor!!
+                            theme.isDarkTheme ->
+                                resources.getColor(android.R.color.system_accent1_100)
+                            else -> resources.getColor(android.R.color.system_accent2_600)
+                        }
+
+                    if (currentColor == color) {
+                        return
+                    }
+
+                    currentColor = color
+                    view.setColors(DOZE_COLOR, color)
+                    if (!animations.dozeState.isActive) {
+                        view.animateColorChange()
+                    }
                 }
 
                 override fun onTargetRegionChanged(targetRegion: Rect?) {
@@ -162,38 +182,23 @@ class DefaultClockController(
             }
 
         open fun recomputePadding(targetRegion: Rect?) {}
-
-        fun updateColor() {
-            val color =
-                if (seedColor != null) {
-                    seedColor!!
-                } else if (isRegionDark) {
-                    resources.getColor(android.R.color.system_accent1_100)
-                } else {
-                    resources.getColor(android.R.color.system_accent2_600)
-                }
-
-            if (currentColor == color) {
-                return
-            }
-
-            currentColor = color
-            view.setColors(DOZE_COLOR, color)
-            if (!animations.dozeState.isActive) {
-                view.animateColorChange()
-            }
-        }
     }
 
     inner class LargeClockFaceController(
         view: AnimatableClockView,
         seedColor: Int?,
-    ) : DefaultClockFaceController(view, seedColor) {
-        override val layout = DefaultClockFaceLayout(view)
-        override val config =
-            ClockFaceConfig(hasCustomPositionUpdatedAnimation = hasStepClockAnimation)
+        messageBuffer: MessageBuffer?,
+    ) : DefaultClockFaceController(view, seedColor, messageBuffer) {
+        override val layout =
+            DefaultClockFaceLayout(view).apply {
+                views[0].id =
+                    resources.getIdentifier("lockscreen_clock_view_large", "id", ctx.packageName)
+            }
+        override val config = ClockFaceConfig(hasCustomPositionUpdatedAnimation = true)
 
         init {
+            view.migratedClocks = migratedClocks
+            view.hasCustomPositionUpdatedAnimation = true
             animations = LargeClockAnimations(view, 0f, 0f)
         }
 
@@ -223,27 +228,20 @@ class DefaultClockController(
         fun offsetGlyphsForStepClockAnimation(fromLeft: Int, direction: Int, fraction: Float) {
             view.offsetGlyphsForStepClockAnimation(fromLeft, direction, fraction)
         }
+
+        fun offsetGlyphsForStepClockAnimation(distance: Float, fraction: Float) {
+            view.offsetGlyphsForStepClockAnimation(distance, fraction)
+        }
     }
 
     inner class DefaultClockEvents : ClockEvents {
+        override var isReactiveTouchInteractionEnabled: Boolean = false
+
         override fun onTimeFormatChanged(is24Hr: Boolean) =
             clocks.forEach { it.refreshFormat(is24Hr) }
 
         override fun onTimeZoneChanged(timeZone: TimeZone) =
             clocks.forEach { it.onTimeZoneChanged(timeZone) }
-
-        override fun onColorPaletteChanged(resources: Resources) {
-            largeClock.updateColor()
-            smallClock.updateColor()
-        }
-
-        override fun onSeedColorChanged(seedColor: Int?) {
-            largeClock.seedColor = seedColor
-            smallClock.seedColor = seedColor
-
-            largeClock.updateColor()
-            smallClock.updateColor()
-        }
 
         override fun onLocaleChanged(locale: Locale) {
             val nf = NumberFormat.getInstance(locale)
@@ -257,8 +255,12 @@ class DefaultClockController(
         }
 
         override fun onWeatherDataChanged(data: WeatherData) {}
+
         override fun onAlarmDataChanged(data: AlarmData) {}
+
         override fun onZenDataChanged(data: ZenData) {}
+
+        override fun onFontAxesChanged(axes: List<ClockFontAxisSetting>) {}
     }
 
     open inner class DefaultClockAnimations(
@@ -307,6 +309,8 @@ class DefaultClockController(
         }
 
         override fun onPositionUpdated(fromLeft: Int, direction: Int, fraction: Float) {}
+
+        override fun onPositionUpdated(distance: Float, fraction: Float) {}
     }
 
     inner class LargeClockAnimations(
@@ -317,12 +321,15 @@ class DefaultClockController(
         override fun onPositionUpdated(fromLeft: Int, direction: Int, fraction: Float) {
             largeClock.offsetGlyphsForStepClockAnimation(fromLeft, direction, fraction)
         }
+
+        override fun onPositionUpdated(distance: Float, fraction: Float) {
+            largeClock.offsetGlyphsForStepClockAnimation(distance, fraction)
+        }
     }
 
-    class AnimationState(
-        var fraction: Float,
-    ) {
+    class AnimationState(var fraction: Float) {
         var isActive: Boolean = fraction > 0.5f
+
         fun update(newFraction: Float): Pair<Boolean, Boolean> {
             if (newFraction == fraction) {
                 return Pair(isActive, false)

@@ -38,14 +38,27 @@
             android:src="@drawable/add_a_photo_circled"
             android:layout_gravity="bottom|right"/>
     </FrameLayout>
+    <TextView
+        android:id="@+id/edit_user_info_message"
+        android:gravity="center"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="6dp"
+        android:layout_marginEnd="6dp"
+        android:layout_marginTop="24dp"
+        android:textAppearance="@style/android:TextAppearance.Material.Body1"
+        android:text="@string/edit_user_info_message"
+        />
 
     <EditText
         android:id="@+id/user_name"
         android:layout_width="match_parent"
-        android:layout_height="@dimen/user_name_height_in_user_info_dialog"
+        android:layout_height="wrap_content"
         android:layout_gravity="center"
         android:minWidth="200dp"
         android:layout_marginStart="6dp"
+        android:layout_marginEnd="6dp"
+        android:layout_marginTop="24dp"
         android:minHeight="@dimen/min_tap_target_size"
         android:ellipsize="end"
         android:singleLine="true"

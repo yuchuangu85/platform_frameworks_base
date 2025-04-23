@@ -27,6 +27,7 @@ import android.util.ArrayMap;
 import android.util.AtomicFile;
 import android.util.Slog;
 import android.util.Xml;
+import android.view.inputmethod.Flags;
 import android.view.inputmethod.InputMethodInfo;
 import android.view.inputmethod.InputMethodSubtype;
 
@@ -59,8 +60,14 @@ final class AdditionalSubtypeUtils {
     private static final String NODE_SUBTYPE = "subtype";
     private static final String NODE_IMI = "imi";
     private static final String ATTR_ID = "id";
+    /** The resource ID of the subtype name. */
     private static final String ATTR_LABEL = "label";
+    /** The untranslatable name of the subtype. */
     private static final String ATTR_NAME_OVERRIDE = "nameOverride";
+    /** The layout label string resource identifier. */
+    private static final String ATTR_LAYOUT_LABEL = "layoutLabel";
+    /** The non-localized layout label. */
+    private static final String ATTR_LAYOUT_LABEL_NON_LOCALIZED = "layoutLabelNonLocalized";
     private static final String ATTR_NAME_PK_LANGUAGE_TAG = "pkLanguageTag";
     private static final String ATTR_NAME_PK_LAYOUT_TYPE = "pkLayoutType";
     private static final String ATTR_ICON = "icon";
@@ -108,13 +115,13 @@ final class AdditionalSubtypeUtils {
      * multiple threads are not calling this method at the same time for the same {@code userId}.
      * </p>
      *
-     * @param allSubtypes {@link ArrayMap} from IME ID to additional subtype list. Passing an empty
-     *                    map deletes the file.
+     * @param allSubtypes {@link AdditionalSubtypeMap} from IME ID to additional subtype list.
+     *                    Passing an empty map deletes the file.
      * @param methodMap   {@link ArrayMap} from IME ID to {@link InputMethodInfo}.
      * @param userId      The user ID to be associated with.
      */
-    static void save(ArrayMap<String, List<InputMethodSubtype>> allSubtypes,
-            ArrayMap<String, InputMethodInfo> methodMap, @UserIdInt int userId) {
+    static void save(AdditionalSubtypeMap allSubtypes,
+            InputMethodMap methodMap, @UserIdInt int userId) {
         final File inputMethodDir = getInputMethodDir(userId);
 
         if (allSubtypes.isEmpty()) {
@@ -142,8 +149,8 @@ final class AdditionalSubtypeUtils {
     }
 
     @VisibleForTesting
-    static void saveToFile(ArrayMap<String, List<InputMethodSubtype>> allSubtypes,
-            ArrayMap<String, InputMethodInfo> methodMap, AtomicFile subtypesFile) {
+    static void saveToFile(AdditionalSubtypeMap allSubtypes,
+            InputMethodMap methodMap, AtomicFile subtypesFile) {
         // Safety net for the case that this function is called before methodMap is set.
         final boolean isSetMethodMap = methodMap != null && methodMap.size() > 0;
         FileOutputStream fos = null;
@@ -173,6 +180,11 @@ final class AdditionalSubtypeUtils {
                     out.attributeInt(null, ATTR_ICON, subtype.getIconResId());
                     out.attributeInt(null, ATTR_LABEL, subtype.getNameResId());
                     out.attribute(null, ATTR_NAME_OVERRIDE, subtype.getNameOverride().toString());
+                    if (Flags.imeSwitcherRevampApi()) {
+                        out.attributeInt(null, ATTR_LAYOUT_LABEL, subtype.getLayoutLabelResource());
+                        out.attribute(null, ATTR_LAYOUT_LABEL_NON_LOCALIZED,
+                                subtype.getLayoutLabelNonLocalized().toString());
+                    }
                     ULocale pkLanguageTag = subtype.getPhysicalKeyboardHintLanguageTag();
                     if (pkLanguageTag != null) {
                         out.attribute(null, ATTR_NAME_PK_LANGUAGE_TAG,
@@ -212,24 +224,21 @@ final class AdditionalSubtypeUtils {
      * multiple threads are not calling this method at the same time for the same {@code userId}.
      * </p>
      *
-     * @param allSubtypes {@link ArrayMap} from IME ID to additional subtype list. This parameter
-     *                    will be used to return the result.
-     * @param userId      The user ID to be associated with.
+     * @param userId The user ID to be associated with.
+     * @return {@link AdditionalSubtypeMap} that contains the additional {@link InputMethodSubtype}.
      */
-    static void load(@NonNull ArrayMap<String, List<InputMethodSubtype>> allSubtypes,
-            @UserIdInt int userId) {
-        allSubtypes.clear();
-
+    static AdditionalSubtypeMap load(@UserIdInt int userId) {
         final AtomicFile subtypesFile = getAdditionalSubtypeFile(getInputMethodDir(userId));
         // Not having the file means there is no additional subtype.
         if (subtypesFile.exists()) {
-            loadFromFile(allSubtypes, subtypesFile);
+            return loadFromFile(subtypesFile);
         }
+        return AdditionalSubtypeMap.EMPTY_MAP;
     }
 
     @VisibleForTesting
-    static void loadFromFile(@NonNull ArrayMap<String, List<InputMethodSubtype>> allSubtypes,
-            AtomicFile subtypesFile) {
+    static AdditionalSubtypeMap loadFromFile(AtomicFile subtypesFile) {
+        final ArrayMap<String, List<InputMethodSubtype>> allSubtypes = new ArrayMap<>();
         try (FileInputStream fis = subtypesFile.openRead()) {
             final TypedXmlPullParser parser = Xml.resolvePullParser(fis);
             int type = parser.next();
@@ -267,6 +276,16 @@ final class AdditionalSubtypeUtils {
                     final int label = parser.getAttributeInt(null, ATTR_LABEL);
                     final String untranslatableName = parser.getAttributeValue(null,
                             ATTR_NAME_OVERRIDE);
+                    final int layoutLabelResource;
+                    final String layoutLabelNonLocalized;
+                    if (Flags.imeSwitcherRevampApi()) {
+                        layoutLabelResource = parser.getAttributeInt(null, ATTR_LAYOUT_LABEL);
+                        layoutLabelNonLocalized = parser.getAttributeValue(null,
+                                ATTR_LAYOUT_LABEL_NON_LOCALIZED);
+                    } else {
+                        layoutLabelResource = 0;
+                        layoutLabelNonLocalized = null;
+                    }
                     final String pkLanguageTag = parser.getAttributeValue(null,
                             ATTR_NAME_PK_LANGUAGE_TAG);
                     final String pkLayoutType = parser.getAttributeValue(null,
@@ -286,6 +305,7 @@ final class AdditionalSubtypeUtils {
                     final InputMethodSubtype.InputMethodSubtypeBuilder
                             builder = new InputMethodSubtype.InputMethodSubtypeBuilder()
                             .setSubtypeNameResId(label)
+                            .setLayoutLabelResource(layoutLabelResource)
                             .setPhysicalKeyboardHint(
                                     pkLanguageTag == null ? null : new ULocale(pkLanguageTag),
                                     pkLayoutType == null ? "" : pkLayoutType)
@@ -304,11 +324,15 @@ final class AdditionalSubtypeUtils {
                     if (untranslatableName != null) {
                         builder.setSubtypeNameOverride(untranslatableName);
                     }
+                    if (layoutLabelNonLocalized != null) {
+                        builder.setLayoutLabelNonLocalized(layoutLabelNonLocalized);
+                    }
                     tempSubtypesArray.add(builder.build());
                 }
             }
         } catch (XmlPullParserException | IOException | NumberFormatException e) {
             Slog.w(TAG, "Error reading subtypes", e);
         }
+        return AdditionalSubtypeMap.of(allSubtypes);
     }
 }

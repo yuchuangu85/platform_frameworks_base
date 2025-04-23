@@ -23,15 +23,20 @@ import android.annotation.Hide;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresFeature;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemService;
 import android.annotation.TestApi;
+import android.app.ActivityOptions;
 import android.app.PendingIntent;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.IntentSender;
+import android.content.pm.PackageManager;
 import android.os.Binder;
+import android.os.Bundle;
 import android.os.CancellationSignal;
+import android.os.IBinder;
 import android.os.ICancellationSignal;
 import android.os.OutcomeReceiver;
 import android.os.RemoteException;
@@ -54,8 +59,14 @@ import java.util.concurrent.Executor;
  * to authenticate to the app.
  */
 @SystemService(Context.CREDENTIAL_SERVICE)
+@RequiresFeature(PackageManager.FEATURE_CREDENTIALS)
 public final class CredentialManager {
-    private static final String TAG = "CredentialManager";
+    /** @hide **/
+    @Hide
+    public static final String TAG = "CredentialManager";
+    private static final Bundle OPTIONS_SENDER_BAL_OPTIN = ActivityOptions.makeBasic()
+            .setPendingIntentBackgroundActivityStartMode(
+                    ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED).toBundle();
 
     /** @hide */
     @IntDef(
@@ -65,6 +76,11 @@ public final class CredentialManager {
                 PROVIDER_FILTER_ALL_PROVIDERS,
                 PROVIDER_FILTER_SYSTEM_PROVIDERS_ONLY,
                 PROVIDER_FILTER_USER_PROVIDERS_ONLY,
+                // By default the returned list of providers will not include any providers that
+                // have been hidden by device policy. However, there are some cases where we want
+                // them to show up (e.g. settings) so this will return the list of providers with
+                // the hidden ones included.
+                PROVIDER_FILTER_USER_PROVIDERS_INCLUDING_HIDDEN,
             })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ProviderFilter {}
@@ -90,6 +106,14 @@ public final class CredentialManager {
      */
     @TestApi public static final int PROVIDER_FILTER_USER_PROVIDERS_ONLY = 2;
 
+    /**
+     * Returns user credential providers only. This will include providers that
+     * have been disabled by the device policy.
+     *
+     * @hide
+     */
+    public static final int PROVIDER_FILTER_USER_PROVIDERS_INCLUDING_HIDDEN = 3;
+
     private final Context mContext;
     private final ICredentialManager mService;
 
@@ -108,6 +132,13 @@ public final class CredentialManager {
      */
     private static final String DEVICE_CONFIG_ENABLE_CREDENTIAL_DESC_API =
             "enable_credential_description_api";
+
+    /**
+     * @hide
+     */
+    @Hide
+    public static final String EXTRA_AUTOFILL_RESULT_RECEIVER =
+            "android.credentials.AUTOFILL_RESULT_RECEIVER";
 
     /**
      * @hide instantiated by ContextImpl.
@@ -135,7 +166,8 @@ public final class CredentialManager {
             @Nullable CancellationSignal cancellationSignal,
             @CallbackExecutor @NonNull Executor executor,
             @NonNull OutcomeReceiver<GetCandidateCredentialsResponse,
-                    GetCandidateCredentialsException> callback
+                    GetCandidateCredentialsException> callback,
+            @NonNull IBinder clientCallback
     ) {
         requireNonNull(request, "request must not be null");
         requireNonNull(callingPackage, "callingPackage must not be null");
@@ -153,6 +185,7 @@ public final class CredentialManager {
                     mService.getCandidateCredentials(
                             request,
                             new GetCandidateCredentialsTransport(executor, callback),
+                            clientCallback,
                             callingPackage);
         } catch (RemoteException e) {
             e.rethrowFromSystemServer();
@@ -437,8 +470,8 @@ public final class CredentialManager {
      * Returns {@code true} if the calling application provides a CredentialProviderService that is
      * enabled for the current user, or {@code false} otherwise. CredentialProviderServices are
      * enabled on a per-service basis so the individual component name of the service should be
-     * passed in here. <strong>Usage of this API is discouraged as it is not fully functional, and
-     * may throw a NullPointerException on certain devices and/or API versions.</strong>
+     * passed in here. <strong>Usage of this API is encouraged in API level 35 and above. It
+     * may throw a NullPointerException on certain devices running other API versions.</strong>
      *
      * @throws IllegalArgumentException if the componentName package does not match the calling
      * package name this call will throw an exception
@@ -752,7 +785,8 @@ public final class CredentialManager {
         @Override
         public void onPendingIntent(PendingIntent pendingIntent) {
             try {
-                mContext.startIntentSender(pendingIntent.getIntentSender(), null, 0, 0, 0);
+                mContext.startIntentSender(pendingIntent.getIntentSender(), null, 0, 0, 0,
+                        OPTIONS_SENDER_BAL_OPTIN);
             } catch (IntentSender.SendIntentException e) {
                 Log.e(
                         TAG,
@@ -810,7 +844,8 @@ public final class CredentialManager {
         @Override
         public void onPendingIntent(PendingIntent pendingIntent) {
             try {
-                mContext.startIntentSender(pendingIntent.getIntentSender(), null, 0, 0, 0);
+                mContext.startIntentSender(pendingIntent.getIntentSender(), null, 0, 0, 0,
+                        OPTIONS_SENDER_BAL_OPTIN);
             } catch (IntentSender.SendIntentException e) {
                 Log.e(
                         TAG,

@@ -28,13 +28,10 @@
 #include "pipeline/skia/AnimatedDrawables.h"
 #include "utils/Macros.h"
 
-class SkAnimatedImage;
 enum class SkBlendMode;
 class SkCanvasState;
 class SkRRect;
-class SkRuntimeShaderBuilder;
 class SkVertices;
-class Mesh;
 
 namespace minikin {
 class Font;
@@ -61,6 +58,7 @@ typedef std::function<void(uint16_t* text, float* positions)> ReadGlyphFunc;
 
 class AnimatedImageDrawable;
 class Bitmap;
+class Mesh;
 class Paint;
 struct Typeface;
 
@@ -175,6 +173,7 @@ public:
     virtual void setMatrix(const SkMatrix& matrix) = 0;
 
     virtual void concat(const SkMatrix& matrix) = 0;
+    virtual void concat(const SkM44& matrix) = 0;
     virtual void rotate(float degrees) = 0;
     virtual void scale(float sx, float sy) = 0;
     virtual void skew(float sx, float sy) = 0;
@@ -187,6 +186,7 @@ public:
 
     virtual bool clipRect(float left, float top, float right, float bottom, SkClipOp op) = 0;
     virtual bool clipPath(const SkPath* path, SkClipOp op) = 0;
+    virtual void clipShader(sk_sp<SkShader> shader, SkClipOp op) = 0;
     // Resets clip to wide open, used to emulate the now-removed SkClipOp::kReplace on
     // apps with compatibility < P. Canvases for version P and later are restricted to
     // intersect and difference at the Java level, matching SkClipOp's definition.

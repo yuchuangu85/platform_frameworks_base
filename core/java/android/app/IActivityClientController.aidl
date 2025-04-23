@@ -17,12 +17,12 @@
 package android.app;
 
 import android.app.ActivityManager;
-import android.app.ICompatCameraControlCallback;
 import android.app.IRequestFinishCallback;
 import android.app.PictureInPictureParams;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.res.Configuration;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.IRemoteCallback;
 import android.os.PersistableBundle;
@@ -89,7 +89,12 @@ interface IActivityClientController {
     ComponentName getCallingActivity(in IBinder token);
     String getCallingPackage(in IBinder token);
     int getLaunchedFromUid(in IBinder token);
+    int getActivityCallerUid(in IBinder activityToken, in IBinder callerToken);
     String getLaunchedFromPackage(in IBinder token);
+    String getActivityCallerPackage(in IBinder activityToken, in IBinder callerToken);
+
+    int checkActivityCallerContentUriPermission(in IBinder activityToken, in IBinder callerToken,
+            in Uri uri, int modeFlags, int userId);
 
     void setRequestedOrientation(in IBinder token, int requestedOrientation);
     int getRequestedOrientation(in IBinder token);
@@ -107,8 +112,8 @@ interface IActivityClientController {
     oneway void requestMultiwindowFullscreen(in IBinder token, in int request,
             in IRemoteCallback callback);
 
-    oneway void startLockTaskModeByToken(in IBinder token);
-    oneway void stopLockTaskModeByToken(in IBinder token);
+    void startLockTaskModeByToken(in IBinder token);
+    void stopLockTaskModeByToken(in IBinder token);
     oneway void showLockTaskEscapeMessage(in IBinder token);
     void setTaskDescription(in IBinder token, in ActivityManager.TaskDescription values);
 
@@ -119,7 +124,7 @@ interface IActivityClientController {
 
     oneway void setShowWhenLocked(in IBinder token, boolean showWhenLocked);
     oneway void setInheritShowWhenLocked(in IBinder token, boolean setInheritShownWhenLocked);
-    oneway void setTurnScreenOn(in IBinder token, boolean turnScreenOn);
+    void setTurnScreenOn(in IBinder token, boolean turnScreenOn);
     oneway void setAllowCrossUidActivitySwitchFromBelow(in IBinder token, boolean allowed);
     oneway void reportActivityFullyDrawn(in IBinder token, boolean restoredFromBundle);
     oneway void overrideActivityTransition(IBinder token, boolean open, int enterAnim, int exitAnim,
@@ -164,17 +169,6 @@ interface IActivityClientController {
 
     /** Reports that the splash screen view has attached to activity.  */
     oneway void splashScreenAttached(in IBinder token);
-
-    /**
-     * Shows or hides a Camera app compat toggle for stretched issues with the requested state.
-     *
-     * @param token The token for the window that needs a control.
-     * @param showControl Whether the control should be shown or hidden.
-     * @param transformationApplied Whether the treatment is already applied.
-     * @param callback The callback executed when the user clicks on a control.
-     */
-    oneway void requestCompatCameraControl(in IBinder token, boolean showControl,
-            boolean transformationApplied, in ICompatCameraControlCallback callback);
 
     /**
      * If set, any activity launch in the same task will be overridden to the locale of activity

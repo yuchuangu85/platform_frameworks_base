@@ -15,23 +15,32 @@
  *
  */
 
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
 package com.android.systemui.keyguard.domain.interactor
 
-import android.content.Context
+import com.android.app.tracing.coroutines.launchTraced as launch
+import com.android.systemui.CoreStartable
+import com.android.systemui.biometrics.domain.interactor.FingerprintPropertyInteractor
+import com.android.systemui.common.ui.domain.interactor.ConfigurationInteractor
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.keyguard.data.repository.KeyguardBlueprintRepository
 import com.android.systemui.keyguard.shared.model.KeyguardBlueprint
 import com.android.systemui.keyguard.ui.view.layout.blueprints.DefaultKeyguardBlueprint
 import com.android.systemui.keyguard.ui.view.layout.blueprints.SplitShadeKeyguardBlueprint
-import com.android.systemui.statusbar.policy.SplitShadeStateController
+import com.android.systemui.keyguard.ui.view.layout.blueprints.transitions.IntraBlueprintTransition.Config
+import com.android.systemui.keyguard.ui.view.layout.blueprints.transitions.IntraBlueprintTransition.Type
+import com.android.systemui.keyguard.ui.view.layout.sections.SmartspaceSection
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
+import com.android.systemui.shade.ShadeDisplayAware
+import com.android.systemui.shade.domain.interactor.ShadeInteractor
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.merge
-import kotlinx.coroutines.flow.onStart
-import kotlinx.coroutines.launch
 
 @SysUISingleton
 class KeyguardBlueprintInteractor
@@ -39,47 +48,59 @@ class KeyguardBlueprintInteractor
 constructor(
     private val keyguardBlueprintRepository: KeyguardBlueprintRepository,
     @Application private val applicationScope: CoroutineScope,
-    private val context: Context,
-    private val splitShadeStateController: SplitShadeStateController,
-) {
+    shadeInteractor: ShadeInteractor,
+    @ShadeDisplayAware private val configurationInteractor: ConfigurationInteractor,
+    private val fingerprintPropertyInteractor: FingerprintPropertyInteractor,
+    private val smartspaceSection: SmartspaceSection,
+) : CoreStartable {
+    /** The current blueprint for the lockscreen. */
+    val blueprint: StateFlow<KeyguardBlueprint> = keyguardBlueprintRepository.blueprint
 
     /**
-     * The current blueprint for the lockscreen.
-     *
-     * This flow can also emit the same blueprint value if refreshBlueprint is emitted.
+     * Triggered when the blueprint isn't changed, but the ConstraintSet should be rebuilt and
+     * optionally a transition should be fired to move to the rebuilt ConstraintSet.
      */
-    val blueprint: Flow<KeyguardBlueprint> =
-        merge(
-            keyguardBlueprintRepository.blueprint,
-            keyguardBlueprintRepository.refreshBluePrint.map {
-                keyguardBlueprintRepository.blueprint.value
-            }
-        )
+    val refreshTransition = keyguardBlueprintRepository.refreshTransition
 
-    init {
+    /** Current BlueprintId */
+    val blueprintId =
+        shadeInteractor.isShadeLayoutWide.map { isShadeLayoutWide ->
+            val useSplitShade = isShadeLayoutWide && !SceneContainerFlag.isEnabled
+            when {
+                useSplitShade -> SplitShadeKeyguardBlueprint.ID
+                else -> DefaultKeyguardBlueprint.DEFAULT
+            }
+        }
+
+    override fun start() {
+        applicationScope.launch { blueprintId.collect { transitionToBlueprint(it) } }
         applicationScope.launch {
-            keyguardBlueprintRepository.configurationChange
-                .onStart { emit(Unit) }
-                .collect { updateBlueprint() }
+            fingerprintPropertyInteractor.propertiesInitialized
+                .filter { it }
+                .collect { refreshBlueprint() }
+        }
+        applicationScope.launch {
+            val refreshConfig =
+                Config(Type.NoTransition, rebuildSections = listOf(smartspaceSection))
+            configurationInteractor.onAnyConfigurationChange.collect {
+                refreshBlueprint(refreshConfig)
+            }
         }
     }
 
     /**
-     * Detects when a new blueprint should be applied and calls [transitionToBlueprint]. This may
-     * end up reapplying the same blueprint, which is fine as configuration may have changed.
+     * Transitions to a blueprint, or refreshes it if already applied.
+     *
+     * @param blueprintId
+     * @return whether the transition has succeeded.
      */
-    private fun updateBlueprint() {
-        val useSplitShade =
-            splitShadeStateController.shouldUseSplitNotificationShade(context.resources)
+    fun transitionOrRefreshBlueprint(blueprintId: String): Boolean {
+        if (blueprintId == blueprint.value.id) {
+            refreshBlueprint()
+            return true
+        }
 
-        val blueprintId =
-            if (useSplitShade) {
-                SplitShadeKeyguardBlueprint.ID
-            } else {
-                DefaultKeyguardBlueprint.DEFAULT
-            }
-
-        transitionToBlueprint(blueprintId)
+        return keyguardBlueprintRepository.applyBlueprint(blueprintId)
     }
 
     /**
@@ -92,22 +113,17 @@ constructor(
         return keyguardBlueprintRepository.applyBlueprint(blueprintId)
     }
 
-    /**
-     * Transitions to a blueprint.
-     *
-     * @param blueprintId
-     * @return whether the transition has succeeded.
-     */
-    fun transitionToBlueprint(blueprintId: Int): Boolean {
-        return keyguardBlueprintRepository.applyBlueprint(blueprintId)
-    }
+    /** Emits a value to refresh the blueprint with the appropriate transition. */
+    fun refreshBlueprint(type: Type = Type.NoTransition) = refreshBlueprint(Config(type))
 
-    /** Re-emits the blueprint value to the collectors. */
-    fun refreshBlueprint() {
-        keyguardBlueprintRepository.refreshBlueprint()
-    }
+    /** Emits a value to refresh the blueprint with the appropriate transition. */
+    fun refreshBlueprint(config: Config) = keyguardBlueprintRepository.refreshBlueprint(config)
 
     fun getCurrentBlueprint(): KeyguardBlueprint {
         return keyguardBlueprintRepository.blueprint.value
+    }
+
+    companion object {
+        private val TAG = "KeyguardBlueprintInteractor"
     }
 }

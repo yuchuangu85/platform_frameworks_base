@@ -29,12 +29,14 @@ import android.content.pm.parsing.result.ParseResult;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.content.res.XmlResourceParser;
+import android.multiuser.Flags;
 import android.os.Build;
 import android.os.PatternMatcher;
 import android.util.Slog;
 
 import com.android.internal.R;
 import com.android.internal.pm.pkg.parsing.ParsingPackage;
+import com.android.internal.pm.pkg.parsing.ParsingPackageUtils;
 import com.android.internal.pm.pkg.parsing.ParsingUtils;
 
 import org.xmlpull.v1.XmlPullParser;
@@ -77,7 +79,8 @@ public class ParsedProviderUtils {
                             R.styleable.AndroidManifestProvider_process,
                             R.styleable.AndroidManifestProvider_roundIcon,
                             R.styleable.AndroidManifestProvider_splitName,
-                            R.styleable.AndroidManifestProvider_attributionTags);
+                            R.styleable.AndroidManifestProvider_attributionTags,
+                            R.styleable.AndroidManifestProvider_intentMatchingFlags);
             if (result.isError()) {
                 return input.error(result);
             }
@@ -126,6 +129,10 @@ public class ParsedProviderUtils {
                     .setFlags(provider.getFlags() | flag(ProviderInfo.FLAG_SINGLE_USER,
                             R.styleable.AndroidManifestProvider_singleUser, sa));
 
+            if (Flags.enableSystemUserOnlyForServicesAndProviders()) {
+                provider.setFlags(provider.getFlags() | flag(ProviderInfo.FLAG_SYSTEM_USER_ONLY,
+                        R.styleable.AndroidManifestProvider_systemUserOnly, sa));
+            }
             visibleToEphemeral = sa.getBoolean(
                     R.styleable.AndroidManifestProvider_visibleToInstantApps, false);
             if (visibleToEphemeral) {
@@ -166,6 +173,9 @@ public class ParsedProviderUtils {
                 && (type != XmlPullParser.END_TAG
                 || parser.getDepth() > depth)) {
             if (type != XmlPullParser.START_TAG) {
+                continue;
+            }
+            if (ParsingPackageUtils.getAconfigFlags().skipCurrentElement(pkg, parser)) {
                 continue;
             }
 

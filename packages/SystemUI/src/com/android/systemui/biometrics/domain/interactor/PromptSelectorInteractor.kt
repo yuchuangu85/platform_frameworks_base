@@ -32,6 +32,7 @@ import com.android.systemui.biometrics.shared.model.PromptKind
 import com.android.systemui.dagger.SysUISingleton
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
@@ -52,12 +53,16 @@ interface PromptSelectorInteractor {
     /** Static metadata about the current prompt. */
     val prompt: Flow<BiometricPromptRequest.Biometric?>
 
+    /** The kind of prompt to use (biometric, pin, pattern, etc.). */
+    val promptKind: StateFlow<PromptKind>
+
     /** If using a credential is allowed. */
     val isCredentialAllowed: Flow<Boolean>
 
     /**
-     * The kind of credential the user may use as a fallback or [PromptKind.Biometric] if unknown or
-     * not [isCredentialAllowed].
+     * The kind of credential the user may use as a fallback or [PromptKind.None] if unknown or not
+     * [isCredentialAllowed]. This is separate from [promptKind], even if [promptKind] is
+     * [PromptKind.Biometric], [credentialKind] should still be one of pin/pattern/password.
      */
     val credentialKind: Flow<PromptKind>
 
@@ -68,26 +73,28 @@ interface PromptSelectorInteractor {
     val isConfirmationRequired: Flow<Boolean>
 
     /** Fingerprint sensor type */
-    val sensorType: Flow<FingerprintSensorType>
+    val fingerprintSensorType: Flow<FingerprintSensorType>
 
-    /** Use biometrics for authentication. */
-    fun useBiometricsForAuthentication(
+    /** Switch to the credential view. */
+    fun onSwitchToCredential()
+
+    /**
+     * Update the kind of prompt (biometric prompt w/ or w/o sensor icon, pin view, pattern view,
+     * etc).
+     */
+    fun setPrompt(
         promptInfo: PromptInfo,
-        userId: Int,
-        challenge: Long,
+        effectiveUserId: Int,
+        requestId: Long,
         modalities: BiometricModalities,
-    )
-
-    /** Use credential-based authentication instead of biometrics. */
-    fun useCredentialsForAuthentication(
-        promptInfo: PromptInfo,
-        @Utils.CredentialType kind: Int,
-        userId: Int,
         challenge: Long,
+        opPackageName: String,
+        onSwitchToCredential: Boolean,
+        isLandscape: Boolean,
     )
 
     /** Unset the current authentication request. */
-    fun resetPrompt()
+    fun resetPrompt(requestId: Long)
 }
 
 @SysUISingleton
@@ -95,8 +102,10 @@ class PromptSelectorInteractorImpl
 @Inject
 constructor(
     fingerprintPropertyRepository: FingerprintPropertyRepository,
+    private val displayStateInteractor: DisplayStateInteractor,
+    private val credentialInteractor: CredentialInteractor,
     private val promptRepository: PromptRepository,
-    lockPatternUtils: LockPatternUtils,
+    private val lockPatternUtils: LockPatternUtils,
 ) : PromptSelectorInteractor {
 
     override val prompt: Flow<BiometricPromptRequest.Biometric?> =
@@ -104,9 +113,12 @@ constructor(
             promptRepository.promptInfo,
             promptRepository.challenge,
             promptRepository.userId,
-            promptRepository.kind
-        ) { promptInfo, challenge, userId, kind ->
-            if (promptInfo == null || userId == null || challenge == null) {
+            promptRepository.promptKind,
+            promptRepository.opPackageName,
+        ) { promptInfo, challenge, userId, kind, opPackageName ->
+            if (
+                promptInfo == null || userId == null || challenge == null || opPackageName == null
+            ) {
                 return@combine null
             }
 
@@ -117,10 +129,13 @@ constructor(
                         userInfo = BiometricUserInfo(userId = userId),
                         operationInfo = BiometricOperationInfo(gatekeeperChallenge = challenge),
                         modalities = kind.activeModalities,
+                        opPackageName = opPackageName,
                     )
                 else -> null
             }
         }
+
+    override val promptKind: StateFlow<PromptKind> = promptRepository.promptKind
 
     override val isConfirmationRequired: Flow<Boolean> =
         promptRepository.isConfirmationRequired.distinctUntilChanged()
@@ -133,60 +148,88 @@ constructor(
     override val credentialKind: Flow<PromptKind> =
         combine(prompt, isCredentialAllowed) { prompt, isAllowed ->
             if (prompt != null && isAllowed) {
-                when (
-                    getCredentialType(lockPatternUtils, prompt.userInfo.deviceCredentialOwnerId)
-                ) {
-                    Utils.CREDENTIAL_PIN -> PromptKind.Pin
-                    Utils.CREDENTIAL_PASSWORD -> PromptKind.Password
-                    Utils.CREDENTIAL_PATTERN -> PromptKind.Pattern
-                    else -> PromptKind.Biometric()
-                }
+                getCredentialType(lockPatternUtils, prompt.userInfo.deviceCredentialOwnerId)
             } else {
-                PromptKind.Biometric()
+                PromptKind.None
             }
         }
 
-    override val sensorType: Flow<FingerprintSensorType> = fingerprintPropertyRepository.sensorType
+    override val fingerprintSensorType: Flow<FingerprintSensorType> =
+        fingerprintPropertyRepository.sensorType
 
-    override fun useBiometricsForAuthentication(
-        promptInfo: PromptInfo,
-        userId: Int,
-        challenge: Long,
-        modalities: BiometricModalities
-    ) {
-        promptRepository.setPrompt(
-            promptInfo = promptInfo,
-            userId = userId,
-            gatekeeperChallenge = challenge,
-            kind = PromptKind.Biometric(modalities),
+    override fun onSwitchToCredential() {
+        val modalities: BiometricModalities =
+            if (promptRepository.promptKind.value.isBiometric())
+                (promptRepository.promptKind.value as PromptKind.Biometric).activeModalities
+            else BiometricModalities()
+        setPrompt(
+            promptRepository.promptInfo.value!!,
+            promptRepository.userId.value!!,
+            promptRepository.requestId.value!!,
+            modalities,
+            promptRepository.challenge.value!!,
+            promptRepository.opPackageName.value!!,
+            onSwitchToCredential = true,
+            // isLandscape value is not important when onSwitchToCredential is true
+            isLandscape = false,
         )
     }
 
-    override fun useCredentialsForAuthentication(
+    override fun setPrompt(
         promptInfo: PromptInfo,
-        @Utils.CredentialType kind: Int,
         userId: Int,
+        requestId: Long,
+        modalities: BiometricModalities,
         challenge: Long,
+        opPackageName: String,
+        onSwitchToCredential: Boolean,
+        isLandscape: Boolean,
     ) {
+        val effectiveUserId = credentialInteractor.getCredentialOwnerOrSelfId(userId)
+        val hasCredentialViewShown = promptKind.value.isCredential()
+        val showBpForCredential =
+            !Utils.isBiometricAllowed(promptInfo) &&
+                isDeviceCredentialAllowed(promptInfo) &&
+                promptInfo.contentView != null &&
+                !promptInfo.isContentViewMoreOptionsButtonUsed
+        val showBpWithoutIconForCredential = showBpForCredential && !hasCredentialViewShown
+        var kind: PromptKind = PromptKind.None
+
+        if (onSwitchToCredential) {
+            kind = getCredentialType(lockPatternUtils, effectiveUserId)
+        } else if (Utils.isBiometricAllowed(promptInfo) || showBpWithoutIconForCredential) {
+            // TODO(b/330908557): Subscribe to
+            // displayStateInteractor.currentRotation.value.isDefaultOrientation() for checking
+            // `isLandscape` after removing AuthContinerView.
+            kind =
+                if (isLandscape) {
+                    val paneType =
+                        when {
+                            displayStateInteractor.isLargeScreen.value ->
+                                PromptKind.Biometric.PaneType.ONE_PANE_LARGE_SCREEN_LANDSCAPE
+                            showBpWithoutIconForCredential ->
+                                PromptKind.Biometric.PaneType.ONE_PANE_NO_SENSOR_LANDSCAPE
+                            else -> PromptKind.Biometric.PaneType.TWO_PANE_LANDSCAPE
+                        }
+                    PromptKind.Biometric(modalities, paneType = paneType)
+                } else {
+                    PromptKind.Biometric(modalities)
+                }
+        } else if (isDeviceCredentialAllowed(promptInfo)) {
+            kind = getCredentialType(lockPatternUtils, effectiveUserId)
+        }
+
         promptRepository.setPrompt(
             promptInfo = promptInfo,
             userId = userId,
+            requestId = requestId,
             gatekeeperChallenge = challenge,
-            kind = kind.asBiometricPromptCredential(),
+            kind = kind,
+            opPackageName = opPackageName,
         )
     }
 
-    override fun resetPrompt() {
-        promptRepository.unsetPrompt()
+    override fun resetPrompt(requestId: Long) {
+        promptRepository.unsetPrompt(requestId)
     }
 }
-
-// TODO(b/251476085): remove along with Utils.CredentialType
-/** Convert a [Utils.CredentialType] to the corresponding [PromptKind]. */
-private fun @receiver:Utils.CredentialType Int.asBiometricPromptCredential(): PromptKind =
-    when (this) {
-        Utils.CREDENTIAL_PIN -> PromptKind.Pin
-        Utils.CREDENTIAL_PASSWORD -> PromptKind.Password
-        Utils.CREDENTIAL_PATTERN -> PromptKind.Pattern
-        else -> PromptKind.Biometric()
-    }

@@ -17,10 +17,10 @@
 package com.android.credentialmanager.common.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.graphics.Color
 import com.android.compose.SystemUiController
 import com.android.credentialmanager.common.material.ModalBottomSheetDefaults
-import com.android.credentialmanager.ui.theme.LocalAndroidColorScheme
 
 @Composable
 fun setTransparentSystemBarsColor(sysUiController: SystemUiController) {
@@ -34,7 +34,7 @@ fun setBottomSheetSystemBarsColor(sysUiController: SystemUiController) {
         darkIcons = false
     )
     sysUiController.setNavigationBarColor(
-        color = LocalAndroidColorScheme.current.colorSurfaceBright,
+        color = MaterialTheme.colorScheme.surfaceBright,
         darkIcons = false
     )
 }

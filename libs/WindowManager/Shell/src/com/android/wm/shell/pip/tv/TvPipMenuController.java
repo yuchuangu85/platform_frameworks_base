@@ -37,10 +37,10 @@ import android.window.SurfaceSyncGroup;
 import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.protolog.common.ProtoLog;
+import com.android.internal.protolog.ProtoLog;
 import com.android.wm.shell.R;
 import com.android.wm.shell.common.SystemWindows;
-import com.android.wm.shell.pip.PipMenuController;
+import com.android.wm.shell.common.pip.PipMenuController;
 import com.android.wm.shell.protolog.ShellProtoLogGroup;
 
 import java.util.List;
@@ -62,6 +62,10 @@ public class TvPipMenuController implements PipMenuController, TvPipMenuView.Lis
     private SurfaceControl mLeash;
     private TvPipMenuView mPipMenuView;
     private TvPipBackgroundView mPipBackgroundView;
+
+    private boolean mIsReloading;
+    private static final int PIP_MENU_FORCE_CLOSE_DELAY_MS = 10_000;
+    private final Runnable mClosePipMenuRunnable = this::closeMenu;
 
     @TvPipMenuMode
     private int mCurrentMenuMode = MODE_NO_MENU;
@@ -134,6 +138,18 @@ public class TvPipMenuController implements PipMenuController, TvPipMenuView.Lis
         mTvPipActionsProvider = tvPipActionsProvider;
     }
 
+    void reloadMenu() {
+        if (mLeash == null) {
+            return;
+        }
+        mPrevMenuMode = mCurrentMenuMode;
+        detachPipMenu();
+        mCurrentMenuMode = MODE_NO_MENU;
+        attachPipMenu(/* showEduText */ false);
+        mPipMenuView.onCloseEduTextAnimationEnd();
+        mIsReloading = true;
+    }
+
     @Override
     public void attach(SurfaceControl leash) {
         if (mDelegate == null) {
@@ -141,10 +157,10 @@ public class TvPipMenuController implements PipMenuController, TvPipMenuView.Lis
         }
 
         mLeash = leash;
-        attachPipMenu();
+        attachPipMenu(/* showEduText */ true);
     }
 
-    private void attachPipMenu() {
+    private void attachPipMenu(boolean showEduText) {
         ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
                 "%s: attachPipMenu()", TAG);
 
@@ -155,13 +171,17 @@ public class TvPipMenuController implements PipMenuController, TvPipMenuView.Lis
         attachPipBackgroundView();
         attachPipMenuView();
 
-        int pipEduTextHeight = mContext.getResources()
-                .getDimensionPixelSize(R.dimen.pip_menu_edu_text_view_height);
         int pipMenuBorderWidth = mContext.getResources()
                 .getDimensionPixelSize(R.dimen.pip_menu_border_width);
         mTvPipBoundsState.setPipMenuPermanentDecorInsets(Insets.of(-pipMenuBorderWidth,
                 -pipMenuBorderWidth, -pipMenuBorderWidth, -pipMenuBorderWidth));
-        mTvPipBoundsState.setPipMenuTemporaryDecorInsets(Insets.of(0, 0, 0, -pipEduTextHeight));
+        if (showEduText) {
+            int pipEduTextHeight = mContext.getResources()
+                    .getDimensionPixelSize(R.dimen.pip_menu_edu_text_view_height);
+            mTvPipBoundsState.setPipMenuTemporaryDecorInsets(Insets.of(0, 0, 0, -pipEduTextHeight));
+        } else {
+            mTvPipBoundsState.setPipMenuTemporaryDecorInsets(Insets.NONE);
+        }
     }
 
     private void attachPipMenuView() {
@@ -223,6 +243,10 @@ public class TvPipMenuController implements PipMenuController, TvPipMenuView.Lis
         mMainHandler.post(() -> {
             if (mPipMenuView != null) {
                 mPipMenuView.onPipTransitionFinished(enterTransition);
+                if (mIsReloading) {
+                    requestMenuMode(mPrevMenuMode);
+                    mIsReloading = false;
+                }
             }
         });
     }
@@ -258,6 +282,7 @@ public class TvPipMenuController implements PipMenuController, TvPipMenuView.Lis
         ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
                 "%s: closeMenu()", TAG);
         requestMenuMode(MODE_NO_MENU);
+        mMainHandler.removeCallbacks(mClosePipMenuRunnable);
     }
 
     @Override
@@ -466,13 +491,17 @@ public class TvPipMenuController implements PipMenuController, TvPipMenuView.Lis
 
     private void requestMenuMode(@TvPipMenuMode int menuMode) {
         if (isMenuOpen() == isMenuOpen(menuMode)) {
+            if (mMainHandler.hasCallbacks(mClosePipMenuRunnable)) {
+                mMainHandler.removeCallbacks(mClosePipMenuRunnable);
+                mMainHandler.postDelayed(mClosePipMenuRunnable, PIP_MENU_FORCE_CLOSE_DELAY_MS);
+            }
             // No need to request a focus change. We can directly switch to the new mode.
             switchToMenuMode(menuMode);
         } else {
             if (isMenuOpen(menuMode)) {
+                mMainHandler.postDelayed(mClosePipMenuRunnable, PIP_MENU_FORCE_CLOSE_DELAY_MS);
                 mMenuModeOnFocus = menuMode;
             }
-
             // Send a request to gain window focus if the menu is open, or lose window focus
             // otherwise. Once the focus change happens, we will request the new mode in the
             // callback {@link #onPipWindowFocusChanged}.
@@ -561,6 +590,14 @@ public class TvPipMenuController implements PipMenuController, TvPipMenuView.Lis
         requestMenuMode(isInMoveMode() ? mPrevMenuMode : MODE_NO_MENU);
     }
 
+    @Override
+    public void onUserInteracting() {
+        ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,
+                "%s: onUserInteracting - mCurrentMenuMode=%s", TAG, getMenuModeString());
+        mMainHandler.removeCallbacks(mClosePipMenuRunnable);
+        mMainHandler.postDelayed(mClosePipMenuRunnable, PIP_MENU_FORCE_CLOSE_DELAY_MS);
+
+    }
     @Override
     public void onPipMovement(int keycode) {
         ProtoLog.d(ShellProtoLogGroup.WM_SHELL_PICTURE_IN_PICTURE,

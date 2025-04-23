@@ -17,10 +17,12 @@
 package com.android.wm.shell.flicker.pip
 
 import android.platform.test.annotations.Presubmit
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import androidx.test.filters.RequiresDevice
+import android.platform.test.annotations.RequiresDevice
+import android.platform.test.annotations.RequiresFlagsDisabled
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import com.android.wm.shell.Flags
 import com.android.wm.shell.flicker.pip.common.MovePipShelfHeightTransition
 import com.android.wm.shell.flicker.utils.Direction
 import org.junit.FixMethodOrder
@@ -32,7 +34,7 @@ import org.junit.runners.Parameterized
 /**
  * Test Pip movement with Launcher shelf height change (increase).
  *
- * To run this test: `atest WMShellFlickerTests:MovePipUpShelfHeightChangeTest`
+ * To run this test: `atest WMShellFlickerTestsPip:MovePipDownOnShelfHeightChange`
  *
  * Actions:
  * ```
@@ -47,7 +49,7 @@ import org.junit.runners.Parameterized
  *     1. Some default assertions (e.g., nav bar, status bar and screen covered)
  *        are inherited [PipTransition]
  *     2. Part of the test setup occurs automatically via
- *        [android.tools.device.flicker.legacy.runner.TransitionRunner],
+ *        [android.tools.flicker.legacy.runner.TransitionRunner],
  *        including configuring navigation mode, initial orientation and ensuring no
  *        apps are running before setup
  * ```
@@ -56,6 +58,7 @@ import org.junit.runners.Parameterized
 @RunWith(Parameterized::class)
 @Parameterized.UseParametersRunnerFactory(FlickerParametersRunnerFactory::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
+@RequiresFlagsDisabled(Flags.FLAG_ENABLE_PIP2)
 class MovePipDownOnShelfHeightChange(flicker: LegacyFlickerTest) :
     MovePipShelfHeightTransition(flicker) {
     override val thisTransition: FlickerBuilder.() -> Unit = {

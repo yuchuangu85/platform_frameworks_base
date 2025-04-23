@@ -16,11 +16,21 @@
 
 package android.graphics;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.junit.Assert.assertNotEquals;
 
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.test.InstrumentationTestCase;
+import android.text.TextUtils;
 
 import androidx.test.filters.SmallTest;
+
+import com.android.text.flags.Flags;
+
+import org.junit.Rule;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -29,6 +39,9 @@ import java.util.HashSet;
  * PaintTest tests {@link Paint}.
  */
 public class PaintTest extends InstrumentationTestCase {
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
+
     private static final String FONT_PATH = "fonts/HintedAdvanceWidthTest-Regular.ttf";
 
     static void assertEquals(String message, float[] expected, float[] actual) {
@@ -361,5 +374,74 @@ public class PaintTest extends InstrumentationTestCase {
         //    × 100 (text size)
         //    = 30
         assertEquals(30.0f, p.getUnderlineThickness(), 0.5f);
+    }
+
+    private int getClusterCount(Paint p, String text) {
+        Paint.RunInfo runInfo = new Paint.RunInfo();
+        p.getRunCharacterAdvance(text, 0, text.length(), 0, text.length(), false, 0, null, 0, null,
+                runInfo);
+        int ccByString = runInfo.getClusterCount();
+        runInfo.setClusterCount(0);
+        char[] buf = new char[text.length()];
+        TextUtils.getChars(text, 0, text.length(), buf, 0);
+        p.getRunCharacterAdvance(buf, 0, buf.length, 0, buf.length, false, 0, null, 0, null,
+                runInfo);
+        int ccByChars = runInfo.getClusterCount();
+        assertEquals(ccByChars, ccByString);
+        return ccByChars;
+    }
+
+    public void testCluster() {
+        final Paint p = new Paint();
+        p.setTextSize(100);
+
+        // Regular String
+        assertEquals(1, getClusterCount(p, "A"));
+        assertEquals(2, getClusterCount(p, "AB"));
+
+        // Ligature is in the same cluster
+        assertEquals(1, getClusterCount(p, "fi"));  // Ligature
+        p.setFontFeatureSettings("'liga' off");
+        assertEquals(2, getClusterCount(p, "fi"));  // Ligature is disabled
+        p.setFontFeatureSettings("");
+
+        // Combining character
+        assertEquals(1, getClusterCount(p, "\u0061\u0300"));  // A + COMBINING GRAVE ACCENT
+
+        // BiDi
+        final String rtlStr = "\u05D0\u05D1\u05D2";
+        final String ltrStr = "abc";
+        assertEquals(3, getClusterCount(p, rtlStr));
+        assertEquals(6, getClusterCount(p, rtlStr + ltrStr));
+        assertEquals(9, getClusterCount(p, ltrStr + rtlStr + ltrStr));
+    }
+
+    @RequiresFlagsEnabled(Flags.FLAG_TYPEFACE_CACHE_FOR_VAR_SETTINGS)
+    public void testDerivedFromSameTypeface() {
+        final Paint p = new Paint();
+
+        p.setTypeface(Typeface.SANS_SERIF);
+        assertThat(p.setFontVariationSettings("'wght' 450")).isTrue();
+        Typeface first = p.getTypeface();
+
+        p.setTypeface(Typeface.SANS_SERIF);
+        assertThat(p.setFontVariationSettings("'wght' 480")).isTrue();
+        Typeface second = p.getTypeface();
+
+        assertThat(first.getDerivedFrom()).isSameInstanceAs(second.getDerivedFrom());
+    }
+
+    @RequiresFlagsEnabled(Flags.FLAG_TYPEFACE_CACHE_FOR_VAR_SETTINGS)
+    public void testDerivedFromChained() {
+        final Paint p = new Paint();
+
+        p.setTypeface(Typeface.SANS_SERIF);
+        assertThat(p.setFontVariationSettings("'wght' 450")).isTrue();
+        Typeface first = p.getTypeface();
+
+        assertThat(p.setFontVariationSettings("'wght' 480")).isTrue();
+        Typeface second = p.getTypeface();
+
+        assertThat(first.getDerivedFrom()).isSameInstanceAs(second.getDerivedFrom());
     }
 }

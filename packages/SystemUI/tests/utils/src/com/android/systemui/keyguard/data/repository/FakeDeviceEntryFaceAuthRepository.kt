@@ -16,17 +16,17 @@
 
 package com.android.systemui.keyguard.data.repository
 
-import com.android.keyguard.FaceAuthUiEvent
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.keyguard.shared.model.FaceAuthenticationStatus
-import com.android.systemui.keyguard.shared.model.FaceDetectionStatus
+import com.android.systemui.deviceentry.data.repository.DeviceEntryFaceAuthRepository
+import com.android.systemui.deviceentry.shared.FaceAuthUiEvent
+import com.android.systemui.deviceentry.shared.model.FaceAuthenticationStatus
+import com.android.systemui.deviceentry.shared.model.FaceDetectionStatus
 import dagger.Binds
 import dagger.Module
 import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 
 @SysUISingleton
@@ -36,38 +36,41 @@ class FakeDeviceEntryFaceAuthRepository @Inject constructor() : DeviceEntryFaceA
     private val _authenticationStatus = MutableStateFlow<FaceAuthenticationStatus?>(null)
     override val authenticationStatus: Flow<FaceAuthenticationStatus> =
         _authenticationStatus.filterNotNull()
+
     fun setAuthenticationStatus(status: FaceAuthenticationStatus) {
         _authenticationStatus.value = status
     }
+
     private val _detectionStatus = MutableStateFlow<FaceDetectionStatus?>(null)
     override val detectionStatus: Flow<FaceDetectionStatus>
         get() = _detectionStatus.filterNotNull()
+
     fun setDetectionStatus(status: FaceDetectionStatus) {
         _detectionStatus.value = status
     }
 
     private val _isLockedOut = MutableStateFlow(false)
     override val isLockedOut = _isLockedOut
-    private val _runningAuthRequest = MutableStateFlow<Pair<FaceAuthUiEvent, Boolean>?>(null)
-    val runningAuthRequest: StateFlow<Pair<FaceAuthUiEvent, Boolean>?> =
-        _runningAuthRequest.asStateFlow()
+    val runningAuthRequest: MutableStateFlow<Pair<FaceAuthUiEvent, Boolean>?> =
+        MutableStateFlow(null)
 
     private val _isAuthRunning = MutableStateFlow(false)
     override val isAuthRunning: StateFlow<Boolean> = _isAuthRunning
 
     override val isBypassEnabled = MutableStateFlow(false)
+
     override fun setLockedOut(isLockedOut: Boolean) {
         _isLockedOut.value = isLockedOut
     }
 
     override fun requestAuthenticate(uiEvent: FaceAuthUiEvent, fallbackToDetection: Boolean) {
-        _runningAuthRequest.value = uiEvent to fallbackToDetection
+        runningAuthRequest.value = uiEvent to fallbackToDetection
         _isAuthRunning.value = true
     }
 
     override fun cancel() {
         _isAuthRunning.value = false
-        _runningAuthRequest.value = null
+        runningAuthRequest.value = null
     }
 }
 

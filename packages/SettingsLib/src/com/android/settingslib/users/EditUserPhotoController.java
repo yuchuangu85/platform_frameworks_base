@@ -32,6 +32,7 @@ import androidx.annotation.Nullable;
 
 import com.android.internal.util.UserIcons;
 import com.android.settingslib.drawable.CircleFramedDrawable;
+import com.android.settingslib.R;
 import com.android.settingslib.utils.ThreadUtils;
 
 import com.google.common.util.concurrent.FutureCallback;
@@ -62,6 +63,10 @@ public class EditUserPhotoController {
 
     private static final String AVATAR_PICKER_ACTION = "com.android.avatarpicker"
             + ".FULL_SCREEN_ACTIVITY";
+    private static final String EXTRA_FILE_AUTHORITY = "file_authority";
+    private static final String EXTRA_DEFAULT_ICON_TINT_COLOR = "default_icon_tint_color";
+
+    static final String EXTRA_IS_USER_NEW = "is_user_new";
 
     private final Activity mActivity;
     private final ActivityStarter mActivityStarter;
@@ -75,6 +80,12 @@ public class EditUserPhotoController {
 
     public EditUserPhotoController(Activity activity, ActivityStarter activityStarter,
             ImageView view, Bitmap savedBitmap, Drawable savedDrawable, String fileAuthority) {
+        this(activity, activityStarter, view, savedBitmap, savedDrawable, fileAuthority, true);
+    }
+
+    public EditUserPhotoController(Activity activity, ActivityStarter activityStarter,
+            ImageView view, Bitmap savedBitmap, Drawable savedDrawable, String fileAuthority,
+            boolean isUserNew) {
         mActivity = activity;
         mActivityStarter = activityStarter;
         mFileAuthority = fileAuthority;
@@ -82,7 +93,7 @@ public class EditUserPhotoController {
         mImagesDir = new File(activity.getCacheDir(), IMAGES_DIR);
         mImagesDir.mkdir();
         mImageView = view;
-        mImageView.setOnClickListener(v -> showAvatarPicker());
+        mImageView.setOnClickListener(v -> showAvatarPicker(isUserNew));
 
         mNewUserPhotoBitmap = savedBitmap;
         mNewUserPhotoDrawable = savedDrawable;
@@ -99,9 +110,9 @@ public class EditUserPhotoController {
         }
 
         if (requestCode == REQUEST_CODE_PICK_AVATAR) {
-            if (data.hasExtra(AvatarPickerActivity.EXTRA_DEFAULT_ICON_TINT_COLOR)) {
+            if (data.hasExtra(EXTRA_DEFAULT_ICON_TINT_COLOR)) {
                 int tintColor =
-                        data.getIntExtra(AvatarPickerActivity.EXTRA_DEFAULT_ICON_TINT_COLOR, -1);
+                        data.getIntExtra(EXTRA_DEFAULT_ICON_TINT_COLOR, -1);
                 onDefaultIconSelected(tintColor);
                 return true;
             }
@@ -117,15 +128,24 @@ public class EditUserPhotoController {
         return mNewUserPhotoDrawable;
     }
 
-    private void showAvatarPicker() {
-        Intent intent;
+    private void showAvatarPicker(boolean isUserNew) {
+        Intent intent = new Intent(AVATAR_PICKER_ACTION);
+        intent.addCategory(Intent.CATEGORY_DEFAULT);
         if (Flags.avatarSync()) {
-            intent = new Intent(AVATAR_PICKER_ACTION);
-            intent.addCategory(Intent.CATEGORY_DEFAULT);
+            intent.putExtra(EXTRA_IS_USER_NEW, isUserNew);
+            // Fix vulnerability b/341688848 by explicitly set the class name of avatar picker.
+            if (Flags.fixAvatarCrossUserLeak()) {
+                final String packageName =
+                        mActivity.getString(R.string.config_avatar_picker_package);
+                final String className = mActivity.getString(R.string.config_avatar_picker_class);
+                intent.setClassName(packageName, className);
+            }
         } else {
-            intent = new Intent(mImageView.getContext(), AvatarPickerActivity.class);
+            // SettingsLib is used by multiple apps therefore we need to know out of all apps
+            // using settingsLib which one is the one we return value to.
+            intent.setPackage(mImageView.getContext().getApplicationContext().getPackageName());
         }
-        intent.putExtra(AvatarPickerActivity.EXTRA_FILE_AUTHORITY, mFileAuthority);
+        intent.putExtra(EXTRA_FILE_AUTHORITY, mFileAuthority);
         mActivityStarter.startActivityForResult(intent, REQUEST_CODE_PICK_AVATAR);
     }
 
@@ -177,7 +197,8 @@ public class EditUserPhotoController {
             }
 
             @Override
-            public void onFailure(Throwable t) {}
+            public void onFailure(Throwable t) {
+            }
         }, mImageView.getContext().getMainExecutor());
     }
 

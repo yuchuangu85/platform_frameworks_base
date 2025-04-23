@@ -20,7 +20,8 @@ import static com.android.server.am.ActivityManagerDebugConfig.TAG_AM;
 import static com.android.server.am.ActivityManagerDebugConfig.TAG_WITH_CLASS_NAME;
 
 import android.content.pm.ApplicationInfo;
-import android.os.Process;
+import android.os.ProfilingServiceHelper;
+import android.os.ProfilingTrigger;
 import android.os.SystemClock;
 import android.os.Trace;
 import android.util.ArraySet;
@@ -61,6 +62,11 @@ class AnrHelper {
      * If the last ANR occurred within this given time, consider it's anomaly.
      */
     private static final long CONSECUTIVE_ANR_TIME_MS = TimeUnit.MINUTES.toMillis(2);
+
+    /**
+     * Time to wait before taking dumps for other processes to reduce load at boot time.
+     */
+    private static final long SELF_ONLY_AFTER_BOOT_MS = TimeUnit.MINUTES.toMillis(10);
 
     /**
      * The keep alive time for the threads in the helper threadpool executor
@@ -231,9 +237,19 @@ class AnrHelper {
                 // If there are many ANR at the same time, the latency may be larger.
                 // If the latency is too large, the stack trace might not be meaningful.
                 final long reportLatency = startTime - r.mTimestamp;
-                final boolean onlyDumpSelf = reportLatency > EXPIRED_REPORT_TIME_MS;
+                final boolean onlyDumpSelf = reportLatency > EXPIRED_REPORT_TIME_MS
+                        || startTime < SELF_ONLY_AFTER_BOOT_MS;
                 r.appNotResponding(onlyDumpSelf);
                 final long endTime = SystemClock.uptimeMillis();
+
+                if (android.os.profiling.Flags.systemTriggeredProfilingNew() && r.mAppInfo != null
+                        && r.mAppInfo.packageName != null) {
+                    ProfilingServiceHelper.getInstance().onProfilingTriggerOccurred(
+                            r.mUid,
+                            r.mAppInfo.packageName,
+                            ProfilingTrigger.TRIGGER_TYPE_ANR);
+                }
+
                 Slog.d(TAG, "Completed ANR of " + r.mApp.processName + " in "
                         + (endTime - startTime) + "ms, latency " + reportLatency
                         + (onlyDumpSelf ? "ms (expired, only dump ANR app)" : "ms"));

@@ -16,6 +16,8 @@
 
 package com.android.server.backup.fullbackup;
 
+import static android.app.backup.BackupAnnotations.OperationType.BACKUP;
+
 import static com.android.server.backup.BackupManagerService.DEBUG;
 import static com.android.server.backup.BackupManagerService.DEBUG_SCHEDULING;
 import static com.android.server.backup.BackupManagerService.MORE_DEBUG;
@@ -34,14 +36,15 @@ import android.content.pm.PackageManager;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
+import android.util.ArraySet;
 import android.util.EventLog;
 import android.util.Log;
 import android.util.Slog;
 
 import com.android.server.EventLogTags;
 import com.android.server.backup.BackupAgentTimeoutParameters;
-import com.android.server.backup.BackupAndRestoreFeatureFlags;
 import com.android.server.backup.BackupRestoreTask;
+import com.android.server.backup.Flags;
 import com.android.server.backup.FullBackupJob;
 import com.android.server.backup.OperationStorage;
 import com.android.server.backup.OperationStorage.OpState;
@@ -269,8 +272,6 @@ public class PerformFullTransportBackupTask extends FullBackupTask implements Ba
             }
         }
 
-        mPackages = backupManagerService.filterUserFacingPackages(mPackages);
-
         Set<String> packageNames = Sets.newHashSet();
         for (PackageInfo pkgInfo : mPackages) {
             packageNames.add(pkgInfo.packageName);
@@ -388,10 +389,17 @@ public class PerformFullTransportBackupTask extends FullBackupTask implements Ba
                 }
             }
 
+            // We ask the transport which packages should not be put in restricted mode and cache
+            // the result in UBMS to be used later when the apps are started for backup.
+            setNoRestrictedModePackages(transport, mPackages);
+
             // Set up to send data to the transport
             final int N = mPackages.size();
-            final int chunkSizeInBytes =
-                    BackupAndRestoreFeatureFlags.getFullBackupWriteToTransportBufferSizeBytes();
+            int chunkSizeInBytes = 8 * 1024; // 8KB
+            if (Flags.enableMaxSizeWritesToPipes()) {
+                // Linux pipe capacity (buffer size) is 16 pages where each page is 4KB
+                chunkSizeInBytes = 64 * 1024; // 64KB
+            }
             final byte[] buffer = new byte[chunkSizeInBytes];
             for (int i = 0; i < N; i++) {
                 mBackupRunner = null;
@@ -586,8 +594,8 @@ public class PerformFullTransportBackupTask extends FullBackupTask implements Ba
                     // from the preflight pass.  If we got as far as preflight, we now need
                     // to tear down the target process.
                     if (mBackupRunner != null) {
-                        mUserBackupManagerService.tearDownAgentAndKill(
-                                currentPackage.applicationInfo);
+                        mUserBackupManagerService.getBackupAgentConnectionManager().unbindAgent(
+                                currentPackage.applicationInfo, /* allowKill= */ true);
                     }
                     // ... and continue looping.
                 } else if (backupPackageStatus == BackupTransport.TRANSPORT_QUOTA_EXCEEDED) {
@@ -599,7 +607,8 @@ public class PerformFullTransportBackupTask extends FullBackupTask implements Ba
                         EventLog.writeEvent(EventLogTags.FULL_BACKUP_QUOTA_EXCEEDED,
                                 packageName);
                     }
-                    mUserBackupManagerService.tearDownAgentAndKill(currentPackage.applicationInfo);
+                    mUserBackupManagerService.getBackupAgentConnectionManager().unbindAgent(
+                            currentPackage.applicationInfo, /* allowKill= */ true);
                     // Do nothing, clean up, and continue looping.
                 } else if (backupPackageStatus == BackupTransport.AGENT_ERROR) {
                     BackupObserverUtils
@@ -607,7 +616,8 @@ public class PerformFullTransportBackupTask extends FullBackupTask implements Ba
                                     BackupManager.ERROR_AGENT_FAILURE);
                     Slog.w(TAG, "Application failure for package: " + packageName);
                     EventLog.writeEvent(EventLogTags.BACKUP_AGENT_FAILURE, packageName);
-                    mUserBackupManagerService.tearDownAgentAndKill(currentPackage.applicationInfo);
+                    mUserBackupManagerService.getBackupAgentConnectionManager().unbindAgent(
+                            currentPackage.applicationInfo, /* allowKill= */ true);
                     // Do nothing, clean up, and continue looping.
                 } else if (backupPackageStatus == BackupManager.ERROR_BACKUP_CANCELLED) {
                     BackupObserverUtils
@@ -616,7 +626,8 @@ public class PerformFullTransportBackupTask extends FullBackupTask implements Ba
                     Slog.w(TAG, "Backup cancelled. package=" + packageName +
                             ", cancelAll=" + mCancelAll);
                     EventLog.writeEvent(EventLogTags.FULL_BACKUP_CANCELLED, packageName);
-                    mUserBackupManagerService.tearDownAgentAndKill(currentPackage.applicationInfo);
+                    mUserBackupManagerService.getBackupAgentConnectionManager().unbindAgent(
+                            currentPackage.applicationInfo, /* allowKill= */ true);
                     // Do nothing, clean up, and continue looping.
                 } else if (backupPackageStatus != BackupTransport.TRANSPORT_OK) {
                     BackupObserverUtils
@@ -626,7 +637,8 @@ public class PerformFullTransportBackupTask extends FullBackupTask implements Ba
                     EventLog.writeEvent(EventLogTags.FULL_BACKUP_TRANSPORT_FAILURE);
                     // Abort entire backup pass.
                     backupRunStatus = BackupManager.ERROR_TRANSPORT_ABORTED;
-                    mUserBackupManagerService.tearDownAgentAndKill(currentPackage.applicationInfo);
+                    mUserBackupManagerService.getBackupAgentConnectionManager().unbindAgent(
+                            currentPackage.applicationInfo, /* allowKill= */ true);
                     return;
                 } else {
                     // Success!
@@ -691,6 +703,10 @@ public class PerformFullTransportBackupTask extends FullBackupTask implements Ba
                 mUserBackupManagerService.scheduleNextFullBackupJob(backoff);
             }
 
+            // Clear this to avoid using the memory until reboot.
+            mUserBackupManagerService
+                    .getBackupAgentConnectionManager().clearNoRestrictedModePackages();
+
             Slog.i(TAG, "Full data backup pass finished.");
             mUserBackupManagerService.getWakelock().release();
         }
@@ -716,6 +732,22 @@ public class PerformFullTransportBackupTask extends FullBackupTask implements Ba
                     Slog.w(TAG, "Unable to close pipe!");
                 }
             }
+        }
+    }
+
+    private void setNoRestrictedModePackages(BackupTransportClient transport,
+            List<PackageInfo> packages) {
+        try {
+            Set<String> packageNames = new ArraySet<>();
+            for (int i = 0; i < packages.size(); i++) {
+                packageNames.add(packages.get(i).packageName);
+            }
+            packageNames = transport.getPackagesThatShouldNotUseRestrictedMode(packageNames,
+                    BACKUP);
+            mUserBackupManagerService.getBackupAgentConnectionManager().setNoRestrictedModePackages(
+                    packageNames, BACKUP);
+        } catch (RemoteException e) {
+            Slog.i(TAG, "Failed to retrieve no restricted mode packages from transport");
         }
     }
 
@@ -975,7 +1007,8 @@ public class PerformFullTransportBackupTask extends FullBackupTask implements Ba
             mIsCancelled = true;
             // Cancel tasks spun off by this task.
             mUserBackupManagerService.handleCancel(mEphemeralToken, cancelAll);
-            mUserBackupManagerService.tearDownAgentAndKill(mTarget.applicationInfo);
+            mUserBackupManagerService.getBackupAgentConnectionManager().unbindAgent(
+                    mTarget.applicationInfo, /* allowKill= */ true);
             // Free up everyone waiting on this task and its children.
             mPreflightLatch.countDown();
             mBackupLatch.countDown();

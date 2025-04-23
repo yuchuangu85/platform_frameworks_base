@@ -40,20 +40,21 @@ ApkAssets::ApkAssets(PrivateConstructorUtil, std::unique_ptr<Asset> resources_as
 }
 
 ApkAssetsPtr ApkAssets::Load(const std::string& path, package_property_t flags) {
-  return Load(ZipAssetsProvider::Create(path, flags), flags);
+  return LoadImpl(ZipAssetsProvider::Create(path, flags), flags);
 }
 
 ApkAssetsPtr ApkAssets::LoadFromFd(base::unique_fd fd, const std::string& debug_name,
                                    package_property_t flags, off64_t offset, off64_t len) {
-  return Load(ZipAssetsProvider::Create(std::move(fd), debug_name, offset, len), flags);
+  return LoadImpl(ZipAssetsProvider::Create(std::move(fd), debug_name, offset, len), flags);
 }
 
-ApkAssetsPtr ApkAssets::Load(std::unique_ptr<AssetsProvider> assets, package_property_t flags) {
+ApkAssetsPtr ApkAssets::LoadImpl(std::unique_ptr<AssetsProvider>&& assets,
+                                 package_property_t flags) {
   return LoadImpl(std::move(assets), flags, nullptr /* idmap_asset */, nullptr /* loaded_idmap */);
 }
 
-ApkAssetsPtr ApkAssets::LoadTable(std::unique_ptr<Asset> resources_asset,
-                                  std::unique_ptr<AssetsProvider> assets,
+ApkAssetsPtr ApkAssets::LoadTable(std::unique_ptr<Asset>&& resources_asset,
+                                  std::unique_ptr<AssetsProvider>&& assets,
                                   package_property_t flags) {
   if (resources_asset == nullptr) {
     return {};
@@ -81,7 +82,7 @@ ApkAssetsPtr ApkAssets::LoadOverlay(const std::string& idmap_path, package_prope
   std::string overlay_path(loaded_idmap->OverlayApkPath());
   auto fd = unique_fd(base::utf8::open(overlay_path.c_str(), O_RDONLY | O_CLOEXEC));
   std::unique_ptr<AssetsProvider> overlay_assets;
-  if (IsFabricatedOverlay(fd)) {
+  if (IsFabricatedOverlayName(overlay_path) && IsFabricatedOverlay(fd)) {
     // Fabricated overlays do not contain resource definitions. All of the overlay resource values
     // are defined inline in the idmap.
     overlay_assets = EmptyAssetsProvider::Create(std::move(overlay_path));
@@ -97,10 +98,10 @@ ApkAssetsPtr ApkAssets::LoadOverlay(const std::string& idmap_path, package_prope
                   std::move(loaded_idmap));
 }
 
-ApkAssetsPtr ApkAssets::LoadImpl(std::unique_ptr<AssetsProvider> assets,
+ApkAssetsPtr ApkAssets::LoadImpl(std::unique_ptr<AssetsProvider>&& assets,
                                  package_property_t property_flags,
-                                 std::unique_ptr<Asset> idmap_asset,
-                                 std::unique_ptr<LoadedIdmap> loaded_idmap) {
+                                 std::unique_ptr<Asset>&& idmap_asset,
+                                 std::unique_ptr<LoadedIdmap>&& loaded_idmap) {
   if (assets == nullptr) {
     return {};
   }
@@ -119,11 +120,11 @@ ApkAssetsPtr ApkAssets::LoadImpl(std::unique_ptr<AssetsProvider> assets,
                   std::move(idmap_asset), std::move(loaded_idmap));
 }
 
-ApkAssetsPtr ApkAssets::LoadImpl(std::unique_ptr<Asset> resources_asset,
-                                 std::unique_ptr<AssetsProvider> assets,
+ApkAssetsPtr ApkAssets::LoadImpl(std::unique_ptr<Asset>&& resources_asset,
+                                 std::unique_ptr<AssetsProvider>&& assets,
                                  package_property_t property_flags,
-                                 std::unique_ptr<Asset> idmap_asset,
-                                 std::unique_ptr<LoadedIdmap> loaded_idmap) {
+                                 std::unique_ptr<Asset>&& idmap_asset,
+                                 std::unique_ptr<LoadedIdmap>&& loaded_idmap) {
   if (assets == nullptr ) {
     return {};
   }
@@ -137,8 +138,7 @@ ApkAssetsPtr ApkAssets::LoadImpl(std::unique_ptr<Asset> resources_asset,
       return {};
     }
     loaded_arsc = LoadedArsc::Load(data, length, loaded_idmap.get(), property_flags);
-  } else if (loaded_idmap != nullptr &&
-      IsFabricatedOverlay(std::string(loaded_idmap->OverlayApkPath()))) {
+  } else if (loaded_idmap != nullptr && IsFabricatedOverlay(loaded_idmap->OverlayApkPath())) {
     loaded_arsc = LoadedArsc::Load(loaded_idmap.get());
   } else {
     loaded_arsc = LoadedArsc::CreateEmpty();

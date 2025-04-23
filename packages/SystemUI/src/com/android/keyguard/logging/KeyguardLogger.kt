@@ -80,6 +80,23 @@ constructor(
         )
     }
 
+    fun delayShowingTrustAgentError(
+        msg: CharSequence,
+        fpEngaged: Boolean,
+        faceRunning: Boolean,
+    ) {
+        buffer.log(
+            BIO_TAG,
+            LogLevel.DEBUG,
+            {
+                str1 = msg.toString()
+                bool1 = fpEngaged
+                bool2 = faceRunning
+            },
+            { "Delay showing trustAgentError:$str1. fpEngaged:$bool1 faceRunning:$bool2 " }
+        )
+    }
+
     fun logUpdateDeviceEntryIndication(
         animate: Boolean,
         visible: Boolean,
@@ -94,6 +111,41 @@ constructor(
                 bool3 = dozing
             },
             { "updateDeviceEntryIndication animate:$bool1 visible:$bool2 dozing $bool3" }
+        )
+    }
+
+    fun logUpdateLockScreenUserLockedMsg(
+        userId: Int,
+        userStorageUnlocked: Boolean,
+        encryptedOrLockdown: Boolean,
+    ) {
+        buffer.log(
+            KeyguardIndicationController.TAG,
+            LogLevel.DEBUG,
+            {
+                int1 = userId
+                bool1 = userStorageUnlocked
+                bool2 = encryptedOrLockdown
+            },
+            {
+                "updateLockScreenUserLockedMsg userId=$int1 " +
+                    "userStorageUnlocked:$bool1 encryptedOrLockdown:$bool2"
+            }
+        )
+    }
+
+    fun logDropFaceMessage(
+        message: CharSequence,
+        followUpMessage: CharSequence?,
+    ) {
+        buffer.log(
+            KeyguardIndicationController.TAG,
+            LogLevel.DEBUG,
+            {
+                str1 = message.toString()
+                str2 = followUpMessage?.toString()
+            },
+            { "droppingFaceMessage message=$str1 followUpMessage:$str2" }
         )
     }
 

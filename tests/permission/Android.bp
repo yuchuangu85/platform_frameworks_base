@@ -12,15 +12,23 @@ android_test {
     // Include all test java files.
     srcs: ["src/**/*.java"],
     libs: [
-        "android.test.runner",
-        "android.test.base",
+        "android.test.runner.stubs.system",
+        "android.test.base.stubs.system",
         "telephony-common",
     ],
     static_libs: [
         "androidx.test.runner",
         "junit",
         "platform-test-annotations",
+        "androidx.test.rules",
     ],
     platform_apis: true,
     test_suites: ["device-tests"],
+}
+
+test_module_config {
+    name: "FrameworkPermissionTests_Presubmit",
+    base: "FrameworkPermissionTests",
+    test_suites: ["device-tests"],
+    include_annotations: ["android.platform.test.annotations.Presubmit"],
 }

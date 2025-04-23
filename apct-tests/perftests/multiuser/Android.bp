@@ -13,6 +13,7 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_input_framework",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "frameworks_base_license"
@@ -36,4 +37,16 @@ android_test {
         "trace_configs/*",
     ],
     certificate: "platform",
+}
+
+filegroup {
+    name: "multi_user_trace_config",
+    srcs: [
+        "trace_configs/trace_config_multi_user.textproto",
+    ],
+}
+
+prebuilt_etc {
+    name: "trace_config_multi_user.textproto",
+    src: ":multi_user_trace_config",
 }

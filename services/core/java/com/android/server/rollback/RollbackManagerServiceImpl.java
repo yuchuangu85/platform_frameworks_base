@@ -163,6 +163,7 @@ class RollbackManagerServiceImpl extends IRollbackManager.Stub implements Rollba
     private final RollbackPackageHealthObserver mPackageHealthObserver;
     private final AppDataRollbackHelper mAppDataRollbackHelper;
     private final Runnable mRunExpiration = this::runExpiration;
+    private final PackageWatchdog mPackageWatchdog;
 
     // The # of milli-seconds to sleep for each received ACTION_PACKAGE_ENABLE_ROLLBACK.
     // Used by #blockRollbackManager to test timeout in enabling rollbacks.
@@ -190,6 +191,7 @@ class RollbackManagerServiceImpl extends IRollbackManager.Stub implements Rollba
 
         mPackageHealthObserver = new RollbackPackageHealthObserver(mContext);
         mAppDataRollbackHelper = new AppDataRollbackHelper(mInstaller);
+        mPackageWatchdog = PackageWatchdog.getInstance(mContext);
 
         // Kick off and start monitoring the handler thread.
         HandlerThread handlerThread = new HandlerThread("RollbackManagerServiceHandler");
@@ -926,7 +928,9 @@ class RollbackManagerServiceImpl extends IRollbackManager.Stub implements Rollba
         }
         Slog.i(TAG, "Enabling rollback for install of " + packageName
                 + ", session:" + session.sessionId
-                + ", rollbackDataPolicy=" + rollbackDataPolicy);
+                + ", rollbackDataPolicy=" + rollbackDataPolicy
+                + ", rollbackId:" + rollback.info.getRollbackId()
+                + ", originalSessionId:" + rollback.getOriginalSessionId());
 
         final String installerPackageName = session.getInstallerPackageName();
         if (!enableRollbackAllowed(installerPackageName, packageName)) {
@@ -1247,12 +1251,12 @@ class RollbackManagerServiceImpl extends IRollbackManager.Stub implements Rollba
                 // should document in PackageInstaller.SessionParams#setEnableRollback
                 // After enabling and committing any rollback, observe packages and
                 // prepare to rollback if packages crashes too frequently.
-                mPackageHealthObserver.startObservingHealth(rollback.getPackageNames(),
-                        mRollbackLifetimeDurationInMillis);
+                mPackageWatchdog.startExplicitHealthCheck(mPackageHealthObserver,
+                        rollback.getPackageNames(), mRollbackLifetimeDurationInMillis);
             }
         } else {
-            mPackageHealthObserver.startObservingHealth(rollback.getPackageNames(),
-                    mRollbackLifetimeDurationInMillis);
+            mPackageWatchdog.startExplicitHealthCheck(mPackageHealthObserver,
+                    rollback.getPackageNames(), mRollbackLifetimeDurationInMillis);
         }
         runExpiration();
     }
@@ -1315,7 +1319,7 @@ class RollbackManagerServiceImpl extends IRollbackManager.Stub implements Rollba
             }
 
         });
-        PackageWatchdog.getInstance(mContext).dump(ipw);
+        mPackageWatchdog.dump(ipw);
     }
 
     @AnyThread

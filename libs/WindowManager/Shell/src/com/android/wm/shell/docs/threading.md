@@ -36,14 +36,15 @@ the product.
   thread)
   - This is always another thread even if config_enableShellMainThread is not set true
   - **Note**:
-    - This thread runs with `THREAD_PRIORITY_BACKGROUND` priority
+    - This thread runs with `THREAD_PRIORITY_BACKGROUND` priority but can be requested to be boosted
+      to `THREAD_PRIORITY_FOREGROUND`
 - `ShellAnimationThread` (currently only used for Transitions and Splitscreen, but potentially all
   animations could be offloaded here)
 - `ShellSplashScreenThread` (only for use with splashscreens)
 
 ## Dagger setup
 
-The threading-related components are provided by the [WMShellConcurrencyModule](frameworks/base/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellConcurrencyModule.java),
+The threading-related components are provided by the [WMShellConcurrencyModule](/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellConcurrencyModule.java),
 for example, the Executors and Handlers for the various threads that are used.  You can request
 an executor of the necessary type by using the appropriate annotation for each of the threads (ie.
 `@ShellMainThread Executor`) when injecting into your Shell component.
@@ -76,7 +77,7 @@ To get the SysUI main thread, you can use the `@Main` annotation.
   want to dedupe multiple messages
   - In such cases inject `@ShellMainThread Handler` or use view.getHandler() which should be OK
     assuming that the view root was initialized on the main Shell thread
-- **Never use Looper.getMainLooper()**
+- <u>**Never</u> use Looper.getMainLooper()**
   - It's likely going to be wrong, you can inject `@Main ShellExecutor` to get the SysUI main thread
 
 ### Testing

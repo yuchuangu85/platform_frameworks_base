@@ -19,49 +19,47 @@ package com.android.systemui.qs.tiles.impl.flashlight.domain
 import android.content.res.Resources
 import android.content.res.Resources.Theme
 import com.android.systemui.common.shared.model.Icon
-import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.qs.tiles.base.interactor.QSTileDataToStateMapper
 import com.android.systemui.qs.tiles.impl.flashlight.domain.model.FlashlightTileModel
 import com.android.systemui.qs.tiles.viewmodel.QSTileConfig
 import com.android.systemui.qs.tiles.viewmodel.QSTileState
 import com.android.systemui.res.R
+import com.android.systemui.shade.ShadeDisplayAware
 import javax.inject.Inject
 
 /** Maps [FlashlightTileModel] to [QSTileState]. */
 class FlashlightMapper
 @Inject
-constructor(
-    @Main private val resources: Resources,
-    private val theme: Theme,
-) : QSTileDataToStateMapper<FlashlightTileModel> {
+constructor(@ShadeDisplayAware private val resources: Resources, private val theme: Theme) :
+    QSTileDataToStateMapper<FlashlightTileModel> {
 
     override fun map(config: QSTileConfig, data: FlashlightTileModel): QSTileState =
         QSTileState.build(resources, theme, config.uiConfig) {
-            val icon =
-                Icon.Loaded(
-                    resources.getDrawable(
-                        if (data.isEnabled) {
-                            R.drawable.qs_flashlight_icon_on
-                        } else {
-                            R.drawable.qs_flashlight_icon_off
-                        },
-                        theme,
-                    ),
-                    contentDescription = null
-                )
-            this.icon = { icon }
+            iconRes =
+                if (data is FlashlightTileModel.FlashlightAvailable && data.isEnabled) {
+                    R.drawable.qs_flashlight_icon_on
+                } else {
+                    R.drawable.qs_flashlight_icon_off
+                }
 
-            if (data.isEnabled) {
+            icon = Icon.Loaded(resources.getDrawable(iconRes!!, theme), null)
+
+            contentDescription = label
+
+            if (data is FlashlightTileModel.FlashlightTemporarilyUnavailable) {
+                activationState = QSTileState.ActivationState.UNAVAILABLE
+                secondaryLabel =
+                    resources.getString(R.string.quick_settings_flashlight_camera_in_use)
+                stateDescription = secondaryLabel
+                supportedActions = setOf()
+                return@build
+            } else if (data is FlashlightTileModel.FlashlightAvailable && data.isEnabled) {
                 activationState = QSTileState.ActivationState.ACTIVE
                 secondaryLabel = resources.getStringArray(R.array.tile_states_flashlight)[2]
             } else {
                 activationState = QSTileState.ActivationState.INACTIVE
                 secondaryLabel = resources.getStringArray(R.array.tile_states_flashlight)[1]
             }
-            contentDescription = label
-            supportedActions =
-                setOf(
-                    QSTileState.UserAction.CLICK,
-                )
+            supportedActions = setOf(QSTileState.UserAction.CLICK)
         }
 }

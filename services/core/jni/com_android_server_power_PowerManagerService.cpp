@@ -31,6 +31,7 @@
 #include <android_runtime/AndroidRuntime.h>
 #include <android_runtime/Log.h>
 #include <binder/IServiceManager.h>
+#include <com_android_input_flags.h>
 #include <gui/SurfaceComposerClient.h>
 #include <hardware_legacy/power.h>
 #include <hidl/ServiceManagement.h>
@@ -98,7 +99,7 @@ static bool setPowerMode(Mode mode, bool enabled) {
 }
 
 void android_server_PowerManagerService_userActivity(nsecs_t eventTime, int32_t eventType,
-                                                     int32_t displayId) {
+                                                     ui::LogicalDisplayId displayId) {
     if (gPowerManagerServiceObj) {
         // Throttle calls into user activity by event type.
         // We're a little conservative about argument checking here in case the caller
@@ -109,20 +110,20 @@ void android_server_PowerManagerService_userActivity(nsecs_t eventTime, int32_t 
                 eventTime = now;
             }
 
-            if (gLastEventTime[eventType] + MIN_TIME_BETWEEN_USERACTIVITIES > eventTime) {
-                return;
+            if (!com::android::input::flags::rate_limit_user_activity_poke_in_dispatcher()) {
+                if (gLastEventTime[eventType] + MIN_TIME_BETWEEN_USERACTIVITIES > eventTime) {
+                    return;
+                }
+                gLastEventTime[eventType] = eventTime;
             }
-            gLastEventTime[eventType] = eventTime;
-
-            // Tell the power HAL when user activity occurs.
-            setPowerBoost(Boost::INTERACTION, 0);
         }
+        // Note that the below PowerManagerService method may call setPowerBoost.
 
         JNIEnv* env = AndroidRuntime::getJNIEnv();
 
         env->CallVoidMethod(gPowerManagerServiceObj,
-                gPowerManagerServiceClassInfo.userActivityFromNative,
-                nanoseconds_to_milliseconds(eventTime), eventType, displayId, 0);
+                            gPowerManagerServiceClassInfo.userActivityFromNative,
+                            nanoseconds_to_milliseconds(eventTime), eventType, displayId.val(), 0);
         checkAndClearExceptionFromCallback(env, "userActivityFromNative");
     }
 }
@@ -285,9 +286,11 @@ int register_android_server_PowerManagerService(JNIEnv* env) {
     GET_METHOD_ID(gPowerManagerServiceClassInfo.userActivityFromNative, clazz,
             "userActivityFromNative", "(JIII)V");
 
-    // Initialize
-    for (int i = 0; i <= USER_ACTIVITY_EVENT_LAST; i++) {
-        gLastEventTime[i] = LLONG_MIN;
+    if (!com::android::input::flags::rate_limit_user_activity_poke_in_dispatcher()) {
+        // Initialize
+        for (int i = 0; i <= USER_ACTIVITY_EVENT_LAST; i++) {
+            gLastEventTime[i] = LLONG_MIN;
+        }
     }
     gPowerManagerServiceObj = NULL;
     return 0;

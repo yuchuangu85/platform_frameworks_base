@@ -840,7 +840,20 @@ interface IPackageManager {
 
     ArchivedPackageParcel getArchivedPackage(in String packageName, int userId);
 
-    Bitmap getArchivedAppIcon(String packageName, in UserHandle user);
+    Bitmap getArchivedAppIcon(String packageName, in UserHandle user, String callingPackageName);
 
     boolean isAppArchivable(String packageName, in UserHandle user);
+
+    @EnforcePermission("GET_APP_METADATA")
+    int getAppMetadataSource(String packageName, int userId);
+
+    ComponentName getDomainVerificationAgent(int userId);
+
+    void setPageSizeAppCompatFlagsSettingsOverride(in String packageName, boolean enabled);
+
+    boolean isPageSizeCompatEnabled(in String packageName);
+
+    String getPageSizeCompatWarningMessage(in String packageName);
+
+    List<String> getAllApexDirectories();
 }

@@ -1,125 +1,188 @@
-/*
- * Copyright (C) 2020 The Android Open Source Project
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *      http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 package com.android.internal.protolog;
 
+import static android.internal.perfetto.protos.Protolog.ProtoLogViewerConfig.GROUPS;
+import static android.internal.perfetto.protos.Protolog.ProtoLogViewerConfig.Group.ID;
+import static android.internal.perfetto.protos.Protolog.ProtoLogViewerConfig.Group.NAME;
+import static android.internal.perfetto.protos.Protolog.ProtoLogViewerConfig.MESSAGES;
+import static android.internal.perfetto.protos.Protolog.ProtoLogViewerConfig.MessageData.MESSAGE;
+import static android.internal.perfetto.protos.Protolog.ProtoLogViewerConfig.MessageData.MESSAGE_ID;
+import static android.internal.perfetto.protos.Protolog.ProtoLogViewerConfig.MessageData.GROUP_ID;
+
+import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.util.Slog;
+import android.util.LongSparseArray;
+import android.util.proto.ProtoInputStream;
 
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.android.internal.protolog.common.ILogger;
 
-import java.io.BufferedReader;
-import java.io.FileInputStream;
-import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
-import java.util.Iterator;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.TreeMap;
-import java.util.zip.GZIPInputStream;
 
-/**
- * Handles loading and parsing of ProtoLog viewer configuration.
- */
 public class ProtoLogViewerConfigReader {
-    private static final String TAG = "ProtoLogViewerConfigReader";
-    private Map<Integer, String> mLogMessageMap = null;
+    @NonNull
+    private final ViewerConfigInputStreamProvider mViewerConfigInputStreamProvider;
+    @NonNull
+    private final Map<String, Set<Long>> mGroupHashes = new TreeMap<>();
+    @NonNull
+    private final LongSparseArray<String> mLogMessageMap = new LongSparseArray<>();
 
-    /** Returns message format string for its hash or null if unavailable. */
-    public synchronized String getViewerString(int messageHash) {
-        if (mLogMessageMap != null) {
-            return mLogMessageMap.get(messageHash);
-        } else {
-            return null;
-        }
+    public ProtoLogViewerConfigReader(
+            @NonNull ViewerConfigInputStreamProvider viewerConfigInputStreamProvider) {
+        this.mViewerConfigInputStreamProvider = viewerConfigInputStreamProvider;
     }
 
     /**
-     * Reads the specified viewer configuration file. Does nothing if the config is already loaded.
+     * Returns message format string for its hash or null if unavailable
+     * or the viewer config is not loaded into memory.
      */
-    public synchronized void loadViewerConfig(PrintWriter pw, String viewerConfigFilename) {
-        try {
-            loadViewerConfig(new GZIPInputStream(new FileInputStream(viewerConfigFilename)));
-            logAndPrintln(pw, "Loaded " + mLogMessageMap.size()
-                    + " log definitions from " + viewerConfigFilename);
-        } catch (FileNotFoundException e) {
-            logAndPrintln(pw, "Unable to load log definitions: File "
-                    + viewerConfigFilename + " not found." + e);
-        } catch (IOException e) {
-            logAndPrintln(pw, "Unable to load log definitions: IOException while reading "
-                    + viewerConfigFilename + ". " + e);
-        } catch (JSONException e) {
-            logAndPrintln(pw, "Unable to load log definitions: JSON parsing exception while reading "
-                    + viewerConfigFilename + ". " + e);
-        }
+    @Nullable
+    public String getViewerString(long messageHash) {
+        return mLogMessageMap.get(messageHash);
     }
 
     /**
-     * Reads the specified viewer configuration input stream.
-     * Does nothing if the config is already loaded.
+     * Load the viewer configs for the target groups into memory.
+     * Only viewer configs loaded into memory can be required. So this must be called for all groups
+     * we want to query before we query their viewer config.
+     *
+     * @param groups Groups to load the viewer configs from file into memory.
      */
-    public synchronized void loadViewerConfig(InputStream viewerConfigInputStream)
-            throws IOException, JSONException {
-        if (mLogMessageMap != null) {
-            return;
-        }
-        InputStreamReader config = new InputStreamReader(viewerConfigInputStream);
-        BufferedReader reader = new BufferedReader(config);
-        StringBuilder builder = new StringBuilder();
-        String line;
-        while ((line = reader.readLine()) != null) {
-            builder.append(line).append('\n');
-        }
-        reader.close();
-        JSONObject json = new JSONObject(builder.toString());
-        JSONObject messages = json.getJSONObject("messages");
+    public synchronized void loadViewerConfig(@NonNull String[] groups) {
+        loadViewerConfig(groups, (message) -> {});
+    }
 
-        mLogMessageMap = new TreeMap<>();
-        Iterator it = messages.keys();
-        while (it.hasNext()) {
-            String key = (String) it.next();
+    /**
+     * Loads the viewer config into memory. No-op if already loaded in memory.
+     */
+    public synchronized void loadViewerConfig(@NonNull String[] groups, @NonNull ILogger logger) {
+        for (String group : groups) {
+            if (mGroupHashes.containsKey(group)) {
+                continue;
+            }
+
             try {
-                int hash = Integer.parseInt(key);
-                JSONObject val = messages.getJSONObject(key);
-                String msg = val.getString("message");
-                mLogMessageMap.put(hash, msg);
-            } catch (NumberFormatException expected) {
-                // Not a messageHash - skip it
+                Map<Long, String> mappings = loadViewerConfigMappingForGroup(group);
+                mGroupHashes.put(group, mappings.keySet());
+                for (Long key : mappings.keySet()) {
+                    mLogMessageMap.put(key, mappings.get(key));
+                }
+
+                logger.log("Loaded " + mLogMessageMap.size() + " log definitions");
+            } catch (IOException e) {
+                logger.log("Unable to load log definitions: "
+                        + "IOException while processing viewer config" + e);
             }
         }
     }
 
-    /**
-     * Returns the number of loaded log definitions kept in memory.
-     */
-    public synchronized int knownViewerStringsNumber() {
-        if (mLogMessageMap != null) {
-            return mLogMessageMap.size();
-        }
-        return 0;
+    public synchronized void unloadViewerConfig(@NonNull String[] groups) {
+        unloadViewerConfig(groups, (message) -> {});
     }
 
-    static void logAndPrintln(@Nullable PrintWriter pw, String msg) {
-        Slog.i(TAG, msg);
-        if (pw != null) {
-            pw.println(msg);
-            pw.flush();
+    /**
+     * Unload the viewer config from memory.
+     */
+    public synchronized void unloadViewerConfig(@NonNull String[] groups, @NonNull ILogger logger) {
+        for (String group : groups) {
+            if (!mGroupHashes.containsKey(group)) {
+                continue;
+            }
+
+            final Set<Long> hashes = mGroupHashes.get(group);
+            for (Long hash : hashes) {
+                logger.log("Unloading viewer config hash " + hash);
+                mLogMessageMap.remove(hash);
+            }
+            mGroupHashes.remove(group);
         }
+    }
+
+    @NonNull
+    private Map<Long, String> loadViewerConfigMappingForGroup(@NonNull String group)
+            throws IOException {
+        long targetGroupId = loadGroupId(group);
+
+        final Map<Long, String> hashesForGroup = new TreeMap<>();
+        try (var pisWrapper = mViewerConfigInputStreamProvider.getInputStream()) {
+            final var pis = pisWrapper.get();
+            while (pis.nextField() != ProtoInputStream.NO_MORE_FIELDS) {
+                if (pis.getFieldNumber() == (int) MESSAGES) {
+                    final long inMessageToken = pis.start(MESSAGES);
+
+                    long messageId = 0;
+                    String message = null;
+                    int groupId = 0;
+                    while (pis.nextField() != ProtoInputStream.NO_MORE_FIELDS) {
+                        switch (pis.getFieldNumber()) {
+                            case (int) MESSAGE_ID:
+                                messageId = pis.readLong(MESSAGE_ID);
+                                break;
+                            case (int) MESSAGE:
+                                message = pis.readString(MESSAGE);
+                                break;
+                            case (int) GROUP_ID:
+                                groupId = pis.readInt(GROUP_ID);
+                                break;
+                        }
+                    }
+
+                    if (groupId == 0) {
+                        throw new IOException("Failed to get group id");
+                    }
+
+                    if (messageId == 0) {
+                        throw new IOException("Failed to get message id");
+                    }
+
+                    if (message == null) {
+                        throw new IOException("Failed to get message string");
+                    }
+
+                    if (groupId == targetGroupId) {
+                        hashesForGroup.put(messageId, message);
+                    }
+
+                    pis.end(inMessageToken);
+                }
+            }
+        }
+
+        return hashesForGroup;
+    }
+
+    private long loadGroupId(@NonNull String group) throws IOException {
+        try (var pisWrapper = mViewerConfigInputStreamProvider.getInputStream()) {
+            final var pis = pisWrapper.get();
+
+            while (pis.nextField() != ProtoInputStream.NO_MORE_FIELDS) {
+                if (pis.getFieldNumber() == (int) GROUPS) {
+                    final long inMessageToken = pis.start(GROUPS);
+
+                    long groupId = 0;
+                    String groupName = null;
+                    while (pis.nextField() != ProtoInputStream.NO_MORE_FIELDS) {
+                        switch (pis.getFieldNumber()) {
+                            case (int) ID:
+                                groupId = pis.readInt(ID);
+                                break;
+                            case (int) NAME:
+                                groupName = pis.readString(NAME);
+                                break;
+                        }
+                    }
+
+                    if (Objects.equals(groupName, group)) {
+                        return groupId;
+                    }
+
+                    pis.end(inMessageToken);
+                }
+            }
+        }
+
+        throw new RuntimeException("Group " + group + " not found in viewer config");
     }
 }

@@ -14,74 +14,235 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
 package com.android.systemui.scene.domain.interactor
 
+import android.app.StatusBarManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
+import com.android.compose.animation.scene.ObservableTransitionState
+import com.android.compose.animation.scene.ObservableTransitionState.Transition.ShowOrHideOverlay
+import com.android.compose.animation.scene.SceneKey
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.coroutines.collectLastValue
-import com.android.systemui.scene.SceneTestUtils
-import com.android.systemui.scene.shared.model.ObservableTransitionState
-import com.android.systemui.scene.shared.model.SceneKey
-import com.android.systemui.scene.shared.model.SceneModel
+import com.android.systemui.deviceentry.domain.interactor.deviceUnlockedInteractor
+import com.android.systemui.flags.EnableSceneContainer
+import com.android.systemui.keyguard.data.repository.fakeDeviceEntryFingerprintAuthRepository
+import com.android.systemui.keyguard.domain.interactor.keyguardEnabledInteractor
+import com.android.systemui.keyguard.shared.model.SuccessFingerprintAuthenticationStatus
+import com.android.systemui.kosmos.collectLastValue
+import com.android.systemui.kosmos.runTest
+import com.android.systemui.kosmos.testScope
+import com.android.systemui.scene.data.repository.Idle
+import com.android.systemui.scene.data.repository.Transition
+import com.android.systemui.scene.data.repository.sceneContainerRepository
+import com.android.systemui.scene.data.repository.setSceneTransition
+import com.android.systemui.scene.domain.resolver.homeSceneFamilyResolver
+import com.android.systemui.scene.overlayKeys
+import com.android.systemui.scene.sceneContainerConfig
+import com.android.systemui.scene.sceneKeys
+import com.android.systemui.scene.shared.model.Overlays
+import com.android.systemui.scene.shared.model.SceneFamilies
+import com.android.systemui.scene.shared.model.Scenes
+import com.android.systemui.scene.shared.model.fakeSceneDataSource
+import com.android.systemui.statusbar.disableflags.data.repository.fakeDisableFlagsRepository
+import com.android.systemui.statusbar.disableflags.shared.model.DisableFlagsModel
+import com.android.systemui.testKosmos
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @SmallTest
 @RunWith(AndroidJUnit4::class)
+@EnableSceneContainer
 class SceneInteractorTest : SysuiTestCase() {
 
-    private val utils = SceneTestUtils(this)
-    private val testScope = utils.testScope
-    private val repository = utils.fakeSceneContainerRepository()
-    private val underTest = utils.sceneInteractor(repository = repository)
+    private val kosmos = testKosmos()
+    private val testScope = kosmos.testScope
+    private val fakeSceneDataSource = kosmos.fakeSceneDataSource
+
+    private val underTest = kosmos.sceneInteractor
+
+    @Before
+    fun setUp() {
+        // Init lazy Fixtures. Accessing them once makes sure that the singletons are initialized
+        // and therefore starts to collect StateFlows eagerly (when there are any).
+        kosmos.deviceUnlockedInteractor
+        kosmos.keyguardEnabledInteractor
+    }
+
+    // TODO(b/356596436): Add tests for showing, hiding, and replacing overlays after we've defined
+    //  them.
+    @Test
+    fun allContentKeys() {
+        assertThat(underTest.allContentKeys).isEqualTo(kosmos.sceneKeys + kosmos.overlayKeys)
+    }
 
     @Test
-    fun allSceneKeys() {
-        assertThat(underTest.allSceneKeys()).isEqualTo(utils.fakeSceneKeys())
-    }
+    fun changeScene_toUnknownScene_doesNothing() =
+        testScope.runTest {
+            val currentScene by collectLastValue(underTest.currentScene)
+            val unknownScene = SceneKey("UNKNOWN")
+            val previousScene = currentScene
+            assertThat(previousScene).isNotEqualTo(unknownScene)
+            underTest.changeScene(unknownScene, "reason")
+            assertThat(currentScene).isEqualTo(previousScene)
+        }
 
     @Test
     fun changeScene() =
         testScope.runTest {
-            val desiredScene by collectLastValue(underTest.desiredScene)
-            assertThat(desiredScene).isEqualTo(SceneModel(SceneKey.Lockscreen))
+            val currentScene by collectLastValue(underTest.currentScene)
+            assertThat(currentScene).isEqualTo(Scenes.Lockscreen)
 
-            underTest.changeScene(SceneModel(SceneKey.Shade), "reason")
-            assertThat(desiredScene).isEqualTo(SceneModel(SceneKey.Shade))
+            underTest.changeScene(Scenes.Shade, "reason")
+            assertThat(currentScene).isEqualTo(Scenes.Shade)
         }
 
     @Test
-    fun onSceneChanged() =
+    fun changeScene_toGoneWhenUnl_doesNotThrow() =
         testScope.runTest {
-            val desiredScene by collectLastValue(underTest.desiredScene)
-            assertThat(desiredScene).isEqualTo(SceneModel(SceneKey.Lockscreen))
+            val currentScene by collectLastValue(underTest.currentScene)
+            assertThat(currentScene).isEqualTo(Scenes.Lockscreen)
 
-            underTest.onSceneChanged(SceneModel(SceneKey.Shade), "reason")
-            assertThat(desiredScene).isEqualTo(SceneModel(SceneKey.Shade))
+            kosmos.fakeDeviceEntryFingerprintAuthRepository.setAuthenticationStatus(
+                SuccessFingerprintAuthenticationStatus(0, true)
+            )
+            runCurrent()
+
+            underTest.changeScene(Scenes.Gone, "reason")
+            assertThat(currentScene).isEqualTo(Scenes.Gone)
+        }
+
+    @Test(expected = IllegalStateException::class)
+    fun changeScene_toGoneWhenStillLocked_throws() =
+        testScope.runTest { underTest.changeScene(Scenes.Gone, "reason") }
+
+    @Test
+    fun changeScene_toGoneWhenTransitionToLockedFromGone() =
+        testScope.runTest {
+            val currentScene by collectLastValue(underTest.currentScene)
+            val transitionTo by collectLastValue(underTest.transitioningTo)
+            kosmos.sceneContainerRepository.setTransitionState(
+                flowOf(
+                    ObservableTransitionState.Transition(
+                        fromScene = Scenes.Gone,
+                        toScene = Scenes.Lockscreen,
+                        currentScene = flowOf(Scenes.Lockscreen),
+                        progress = flowOf(.5f),
+                        isInitiatedByUserInput = true,
+                        isUserInputOngoing = flowOf(false),
+                    )
+                )
+            )
+            assertThat(currentScene).isEqualTo(Scenes.Lockscreen)
+            assertThat(transitionTo).isEqualTo(Scenes.Lockscreen)
+
+            underTest.changeScene(Scenes.Gone, "simulate double tap power")
+            assertThat(currentScene).isEqualTo(Scenes.Gone)
+        }
+
+    @Test
+    fun changeScene_toHomeSceneFamily() =
+        testScope.runTest {
+            val currentScene by collectLastValue(underTest.currentScene)
+
+            underTest.changeScene(SceneFamilies.Home, "reason")
+            runCurrent()
+
+            assertThat(currentScene).isEqualTo(kosmos.homeSceneFamilyResolver.resolvedScene.value)
+        }
+
+    @Test
+    fun snapToScene_toUnknownScene_doesNothing() =
+        testScope.runTest {
+            val currentScene by collectLastValue(underTest.currentScene)
+            val previousScene = currentScene
+            val unknownScene = SceneKey("UNKNOWN")
+            assertThat(previousScene).isNotEqualTo(unknownScene)
+            underTest.snapToScene(unknownScene, "reason")
+            assertThat(currentScene).isEqualTo(previousScene)
+        }
+
+    @Test
+    fun snapToScene() =
+        testScope.runTest {
+            val currentScene by collectLastValue(underTest.currentScene)
+            assertThat(currentScene).isEqualTo(Scenes.Lockscreen)
+
+            underTest.snapToScene(Scenes.Shade, "reason")
+            assertThat(currentScene).isEqualTo(Scenes.Shade)
+        }
+
+    @Test
+    fun snapToScene_toGoneWhenUnl_doesNotThrow() =
+        testScope.runTest {
+            val currentScene by collectLastValue(underTest.currentScene)
+            assertThat(currentScene).isEqualTo(Scenes.Lockscreen)
+
+            kosmos.fakeDeviceEntryFingerprintAuthRepository.setAuthenticationStatus(
+                SuccessFingerprintAuthenticationStatus(0, true)
+            )
+            runCurrent()
+
+            underTest.snapToScene(Scenes.Gone, "reason")
+            assertThat(currentScene).isEqualTo(Scenes.Gone)
+        }
+
+    @Test(expected = IllegalStateException::class)
+    fun snapToScene_toGoneWhenStillLocked_throws() =
+        testScope.runTest { underTest.snapToScene(Scenes.Gone, "reason") }
+
+    @Test
+    fun snapToScene_toHomeSceneFamily() =
+        testScope.runTest {
+            val currentScene by collectLastValue(underTest.currentScene)
+
+            underTest.snapToScene(SceneFamilies.Home, "reason")
+            runCurrent()
+
+            assertThat(currentScene).isEqualTo(kosmos.homeSceneFamilyResolver.resolvedScene.value)
+        }
+
+    @Test
+    fun sceneChanged_inDataSource() =
+        testScope.runTest {
+            val currentScene by collectLastValue(underTest.currentScene)
+            assertThat(currentScene).isEqualTo(Scenes.Lockscreen)
+
+            fakeSceneDataSource.changeScene(Scenes.Shade)
+
+            assertThat(currentScene).isEqualTo(Scenes.Shade)
         }
 
     @Test
     fun transitionState() =
         testScope.runTest {
-            val underTest = utils.fakeSceneContainerRepository()
+            val sceneContainerRepository = kosmos.sceneContainerRepository
             val transitionState =
                 MutableStateFlow<ObservableTransitionState>(
-                    ObservableTransitionState.Idle(SceneKey.Lockscreen)
+                    ObservableTransitionState.Idle(Scenes.Lockscreen)
                 )
-            underTest.setTransitionState(transitionState)
-            val reflectedTransitionState by collectLastValue(underTest.transitionState)
+            sceneContainerRepository.setTransitionState(transitionState)
+            val reflectedTransitionState by
+                collectLastValue(sceneContainerRepository.transitionState)
             assertThat(reflectedTransitionState).isEqualTo(transitionState.value)
 
             val progress = MutableStateFlow(1f)
             transitionState.value =
                 ObservableTransitionState.Transition(
-                    fromScene = SceneKey.Lockscreen,
-                    toScene = SceneKey.Shade,
+                    fromScene = Scenes.Lockscreen,
+                    toScene = Scenes.Shade,
+                    currentScene = flowOf(Scenes.Shade),
                     progress = progress,
                     isInitiatedByUserInput = false,
                     isUserInputOngoing = flowOf(false),
@@ -94,146 +255,93 @@ class SceneInteractorTest : SysuiTestCase() {
             progress.value = 0.9f
             assertThat(reflectedTransitionState).isEqualTo(transitionState.value)
 
-            underTest.setTransitionState(null)
+            sceneContainerRepository.setTransitionState(null)
             assertThat(reflectedTransitionState)
                 .isEqualTo(
-                    ObservableTransitionState.Idle(utils.fakeSceneContainerConfig().initialSceneKey)
+                    ObservableTransitionState.Idle(kosmos.sceneContainerConfig.initialSceneKey)
                 )
         }
 
     @Test
-    fun transitioningTo() =
+    fun transitioningTo_sceneChange() =
         testScope.runTest {
             val transitionState =
                 MutableStateFlow<ObservableTransitionState>(
-                    ObservableTransitionState.Idle(underTest.desiredScene.value.key)
+                    ObservableTransitionState.Idle(underTest.currentScene.value)
                 )
             underTest.setTransitionState(transitionState)
 
             val transitionTo by collectLastValue(underTest.transitioningTo)
             assertThat(transitionTo).isNull()
 
-            underTest.changeScene(SceneModel(SceneKey.Shade), "reason")
+            underTest.changeScene(Scenes.Shade, "reason")
             assertThat(transitionTo).isNull()
 
             val progress = MutableStateFlow(0f)
             transitionState.value =
                 ObservableTransitionState.Transition(
-                    fromScene = underTest.desiredScene.value.key,
-                    toScene = SceneKey.Shade,
+                    fromScene = underTest.currentScene.value,
+                    toScene = Scenes.Shade,
+                    currentScene = flowOf(Scenes.Shade),
                     progress = progress,
                     isInitiatedByUserInput = false,
                     isUserInputOngoing = flowOf(false),
                 )
-            assertThat(transitionTo).isEqualTo(SceneKey.Shade)
+            assertThat(transitionTo).isEqualTo(Scenes.Shade)
 
             progress.value = 0.5f
-            assertThat(transitionTo).isEqualTo(SceneKey.Shade)
+            assertThat(transitionTo).isEqualTo(Scenes.Shade)
 
             progress.value = 1f
-            assertThat(transitionTo).isEqualTo(SceneKey.Shade)
+            assertThat(transitionTo).isEqualTo(Scenes.Shade)
 
-            transitionState.value = ObservableTransitionState.Idle(SceneKey.Shade)
+            transitionState.value = ObservableTransitionState.Idle(Scenes.Shade)
             assertThat(transitionTo).isNull()
         }
 
     @Test
-    fun transitioning_idle_false() =
+    fun transitioningTo_overlayChange() =
         testScope.runTest {
             val transitionState =
                 MutableStateFlow<ObservableTransitionState>(
-                    ObservableTransitionState.Idle(SceneKey.Shade)
-                )
-            val transitioning by
-                collectLastValue(underTest.transitioning(SceneKey.Shade, SceneKey.Lockscreen))
-            underTest.setTransitionState(transitionState)
-
-            assertThat(transitioning).isFalse()
-        }
-
-    @Test
-    fun transitioning_wrongFromScene_false() =
-        testScope.runTest {
-            val transitionState =
-                MutableStateFlow<ObservableTransitionState>(
-                    ObservableTransitionState.Transition(
-                        fromScene = SceneKey.Gone,
-                        toScene = SceneKey.Lockscreen,
-                        progress = flowOf(0.5f),
-                        isInitiatedByUserInput = false,
-                        isUserInputOngoing = flowOf(false),
-                    )
-                )
-            val transitioning by
-                collectLastValue(underTest.transitioning(SceneKey.Shade, SceneKey.Lockscreen))
-            underTest.setTransitionState(transitionState)
-
-            assertThat(transitioning).isFalse()
-        }
-
-    @Test
-    fun transitioning_wrongToScene_false() =
-        testScope.runTest {
-            val transitionState =
-                MutableStateFlow<ObservableTransitionState>(
-                    ObservableTransitionState.Transition(
-                        fromScene = SceneKey.Shade,
-                        toScene = SceneKey.QuickSettings,
-                        progress = flowOf(0.5f),
-                        isInitiatedByUserInput = false,
-                        isUserInputOngoing = flowOf(false),
-                    )
+                    ObservableTransitionState.Idle(underTest.currentScene.value)
                 )
             underTest.setTransitionState(transitionState)
 
-            assertThat(underTest.transitioning(SceneKey.Shade, SceneKey.Lockscreen).value).isFalse()
-        }
+            val transitionTo by collectLastValue(underTest.transitioningTo)
+            assertThat(transitionTo).isNull()
 
-    @Test
-    fun transitioning_correctFromAndToScenes_true() =
-        testScope.runTest {
-            val transitionState =
-                MutableStateFlow<ObservableTransitionState>(
-                    ObservableTransitionState.Transition(
-                        fromScene = SceneKey.Shade,
-                        toScene = SceneKey.Lockscreen,
-                        progress = flowOf(0.5f),
-                        isInitiatedByUserInput = false,
-                        isUserInputOngoing = flowOf(false),
-                    )
+            underTest.showOverlay(Overlays.NotificationsShade, "reason")
+            assertThat(transitionTo).isNull()
+
+            val progress = MutableStateFlow(0f)
+            transitionState.value =
+                ShowOrHideOverlay(
+                    overlay = Overlays.NotificationsShade,
+                    fromContent = underTest.currentScene.value,
+                    toContent = Overlays.NotificationsShade,
+                    currentScene = underTest.currentScene.value,
+                    currentOverlays = underTest.currentOverlays,
+                    progress = progress,
+                    isInitiatedByUserInput = true,
+                    isUserInputOngoing = flowOf(true),
+                    previewProgress = flowOf(0f),
+                    isInPreviewStage = flowOf(false),
                 )
-            val transitioning by
-                collectLastValue(underTest.transitioning(SceneKey.Shade, SceneKey.Lockscreen))
-            underTest.setTransitionState(transitionState)
+            assertThat(transitionTo).isEqualTo(Overlays.NotificationsShade)
 
-            assertThat(transitioning).isTrue()
-        }
+            progress.value = 0.5f
+            assertThat(transitionTo).isEqualTo(Overlays.NotificationsShade)
 
-    @Test
-    fun transitioning_updates() =
-        testScope.runTest {
-            val transitionState =
-                MutableStateFlow<ObservableTransitionState>(
-                    ObservableTransitionState.Idle(SceneKey.Shade)
-                )
-            val transitioning by
-                collectLastValue(underTest.transitioning(SceneKey.Shade, SceneKey.Lockscreen))
-            underTest.setTransitionState(transitionState)
-
-            assertThat(transitioning).isFalse()
+            progress.value = 1f
+            assertThat(transitionTo).isEqualTo(Overlays.NotificationsShade)
 
             transitionState.value =
-                ObservableTransitionState.Transition(
-                    fromScene = SceneKey.Shade,
-                    toScene = SceneKey.Lockscreen,
-                    progress = flowOf(0.5f),
-                    isInitiatedByUserInput = false,
-                    isUserInputOngoing = flowOf(false),
+                ObservableTransitionState.Idle(
+                    currentScene = underTest.currentScene.value,
+                    currentOverlays = setOf(Overlays.NotificationsShade),
                 )
-            assertThat(transitioning).isTrue()
-
-            transitionState.value = ObservableTransitionState.Idle(SceneKey.Lockscreen)
-            assertThat(transitioning).isFalse()
+            assertThat(transitionTo).isNull()
         }
 
     @Test
@@ -241,7 +349,7 @@ class SceneInteractorTest : SysuiTestCase() {
         testScope.runTest {
             val transitionState =
                 MutableStateFlow<ObservableTransitionState>(
-                    ObservableTransitionState.Idle(SceneKey.Shade)
+                    ObservableTransitionState.Idle(Scenes.Shade)
                 )
             val isTransitionUserInputOngoing by
                 collectLastValue(underTest.isTransitionUserInputOngoing)
@@ -256,8 +364,9 @@ class SceneInteractorTest : SysuiTestCase() {
             val transitionState =
                 MutableStateFlow<ObservableTransitionState>(
                     ObservableTransitionState.Transition(
-                        fromScene = SceneKey.Shade,
-                        toScene = SceneKey.Lockscreen,
+                        fromScene = Scenes.Shade,
+                        toScene = Scenes.Lockscreen,
+                        currentScene = flowOf(Scenes.Shade),
                         progress = flowOf(0.5f),
                         isInitiatedByUserInput = true,
                         isUserInputOngoing = flowOf(true),
@@ -276,8 +385,9 @@ class SceneInteractorTest : SysuiTestCase() {
             val transitionState =
                 MutableStateFlow<ObservableTransitionState>(
                     ObservableTransitionState.Transition(
-                        fromScene = SceneKey.Shade,
-                        toScene = SceneKey.Lockscreen,
+                        fromScene = Scenes.Shade,
+                        toScene = Scenes.Lockscreen,
+                        currentScene = flowOf(Scenes.Shade),
                         progress = flowOf(0.5f),
                         isInitiatedByUserInput = true,
                         isUserInputOngoing = flowOf(true),
@@ -291,8 +401,9 @@ class SceneInteractorTest : SysuiTestCase() {
 
             transitionState.value =
                 ObservableTransitionState.Transition(
-                    fromScene = SceneKey.Shade,
-                    toScene = SceneKey.Lockscreen,
+                    fromScene = Scenes.Shade,
+                    toScene = Scenes.Lockscreen,
+                    currentScene = flowOf(Scenes.Lockscreen),
                     progress = flowOf(0.6f),
                     isInitiatedByUserInput = true,
                     isUserInputOngoing = flowOf(false),
@@ -307,8 +418,9 @@ class SceneInteractorTest : SysuiTestCase() {
             val transitionState =
                 MutableStateFlow<ObservableTransitionState>(
                     ObservableTransitionState.Transition(
-                        fromScene = SceneKey.Shade,
-                        toScene = SceneKey.Lockscreen,
+                        fromScene = Scenes.Shade,
+                        toScene = Scenes.Lockscreen,
+                        currentScene = flowOf(Scenes.Shade),
                         progress = flowOf(0.5f),
                         isInitiatedByUserInput = true,
                         isUserInputOngoing = flowOf(true),
@@ -320,7 +432,7 @@ class SceneInteractorTest : SysuiTestCase() {
 
             assertThat(isTransitionUserInputOngoing).isTrue()
 
-            transitionState.value = ObservableTransitionState.Idle(scene = SceneKey.Lockscreen)
+            transitionState.value = ObservableTransitionState.Idle(currentScene = Scenes.Lockscreen)
 
             assertThat(isTransitionUserInputOngoing).isFalse()
         }
@@ -339,10 +451,128 @@ class SceneInteractorTest : SysuiTestCase() {
         }
 
     @Test
-    fun userInput() =
+    fun isVisible_duringRemoteUserInteraction_forcedVisible() =
         testScope.runTest {
-            assertThat(utils.powerRepository.userTouchRegistered).isFalse()
-            underTest.onUserInput()
-            assertThat(utils.powerRepository.userTouchRegistered).isTrue()
+            underTest.setVisible(false, "reason")
+            val isVisible by collectLastValue(underTest.isVisible)
+            assertThat(isVisible).isFalse()
+            underTest.onRemoteUserInputStarted("reason")
+            assertThat(isVisible).isTrue()
+
+            underTest.onUserInputFinished()
+
+            assertThat(isVisible).isFalse()
+        }
+
+    @Test
+    fun resolveSceneFamily_home() =
+        testScope.runTest {
+            assertThat(underTest.resolveSceneFamily(SceneFamilies.Home).first())
+                .isEqualTo(kosmos.homeSceneFamilyResolver.resolvedScene.value)
+        }
+
+    @Test
+    fun resolveSceneFamily_nonFamily() =
+        testScope.runTest {
+            val resolved = underTest.resolveSceneFamily(Scenes.Gone).toList()
+            assertThat(resolved).containsExactly(Scenes.Gone).inOrder()
+        }
+
+    @Test
+    fun transitionValue_test_idle() =
+        testScope.runTest {
+            val transitionValue by collectLastValue(underTest.transitionProgress(Scenes.Gone))
+
+            kosmos.setSceneTransition(Idle(Scenes.Gone))
+            assertThat(transitionValue).isEqualTo(1f)
+
+            kosmos.setSceneTransition(Idle(Scenes.Lockscreen))
+            assertThat(transitionValue).isEqualTo(0f)
+        }
+
+    @Test
+    fun transitionValue_test_transitions() =
+        testScope.runTest {
+            val transitionValue by collectLastValue(underTest.transitionProgress(Scenes.Gone))
+            val progress = MutableStateFlow(0f)
+
+            kosmos.setSceneTransition(
+                Transition(from = Scenes.Lockscreen, to = Scenes.Gone, progress = progress)
+            )
+            assertThat(transitionValue).isEqualTo(0f)
+
+            progress.value = 0.4f
+            assertThat(transitionValue).isEqualTo(0.4f)
+
+            kosmos.setSceneTransition(
+                Transition(from = Scenes.Gone, to = Scenes.Lockscreen, progress = progress)
+            )
+            progress.value = 0.7f
+            assertThat(transitionValue).isEqualTo(0.3f)
+
+            kosmos.setSceneTransition(
+                Transition(from = Scenes.Lockscreen, to = Scenes.Shade, progress = progress)
+            )
+            progress.value = 0.9f
+            assertThat(transitionValue).isEqualTo(0f)
+        }
+
+    @Test
+    fun changeScene_toGone_whenKeyguardDisabled_doesNotThrow() =
+        testScope.runTest {
+            val currentScene by collectLastValue(underTest.currentScene)
+            assertThat(currentScene).isEqualTo(Scenes.Lockscreen)
+            kosmos.keyguardEnabledInteractor.notifyKeyguardEnabled(false)
+
+            underTest.changeScene(Scenes.Gone, "")
+
+            assertThat(currentScene).isEqualTo(Scenes.Gone)
+        }
+
+    @Test
+    fun showOverlay_overlayDisabled_doesNothing() =
+        kosmos.runTest {
+            val currentOverlays by collectLastValue(underTest.currentOverlays)
+            val disabledOverlay = Overlays.QuickSettingsShade
+            fakeDisableFlagsRepository.disableFlags.value =
+                DisableFlagsModel(disable2 = StatusBarManager.DISABLE2_QUICK_SETTINGS)
+            assertThat(disabledContentInteractor.isDisabled(disabledOverlay)).isTrue()
+            assertThat(currentOverlays).doesNotContain(disabledOverlay)
+
+            underTest.showOverlay(disabledOverlay, "reason")
+
+            assertThat(currentOverlays).doesNotContain(disabledOverlay)
+        }
+
+    @Test
+    fun replaceOverlay_withDisabledOverlay_doesNothing() =
+        kosmos.runTest {
+            val currentOverlays by collectLastValue(underTest.currentOverlays)
+            val showingOverlay = Overlays.NotificationsShade
+            underTest.showOverlay(showingOverlay, "reason")
+            assertThat(currentOverlays).isEqualTo(setOf(showingOverlay))
+            val disabledOverlay = Overlays.QuickSettingsShade
+            fakeDisableFlagsRepository.disableFlags.value =
+                DisableFlagsModel(disable2 = StatusBarManager.DISABLE2_QUICK_SETTINGS)
+            assertThat(disabledContentInteractor.isDisabled(disabledOverlay)).isTrue()
+
+            underTest.replaceOverlay(showingOverlay, disabledOverlay, "reason")
+
+            assertThat(currentOverlays).isEqualTo(setOf(showingOverlay))
+        }
+
+    @Test
+    fun changeScene_toDisabledScene_doesNothing() =
+        kosmos.runTest {
+            val currentScene by collectLastValue(underTest.currentScene)
+            val disabledScene = Scenes.Shade
+            fakeDisableFlagsRepository.disableFlags.value =
+                DisableFlagsModel(disable2 = StatusBarManager.DISABLE2_NOTIFICATION_SHADE)
+            assertThat(disabledContentInteractor.isDisabled(disabledScene)).isTrue()
+            assertThat(currentScene).isNotEqualTo(disabledScene)
+
+            underTest.changeScene(disabledScene, "reason")
+
+            assertThat(currentScene).isNotEqualTo(disabledScene)
         }
 }

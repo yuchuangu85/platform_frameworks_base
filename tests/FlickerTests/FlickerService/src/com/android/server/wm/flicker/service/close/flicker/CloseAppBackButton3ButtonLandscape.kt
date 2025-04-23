@@ -16,14 +16,14 @@
 
 package com.android.server.wm.flicker.service.close.flicker
 
-import android.tools.common.NavBar
-import android.tools.common.Rotation
-import android.tools.common.flicker.FlickerConfig
-import android.tools.common.flicker.annotation.ExpectedScenarios
-import android.tools.common.flicker.annotation.FlickerConfigProvider
-import android.tools.common.flicker.config.FlickerConfig
-import android.tools.common.flicker.config.FlickerServiceConfig
-import android.tools.device.flicker.junit.FlickerServiceJUnit4ClassRunner
+import android.tools.NavBar
+import android.tools.Rotation
+import android.tools.flicker.FlickerConfig
+import android.tools.flicker.annotation.ExpectedScenarios
+import android.tools.flicker.annotation.FlickerConfigProvider
+import android.tools.flicker.config.FlickerConfig
+import android.tools.flicker.config.FlickerServiceConfig
+import android.tools.flicker.junit.FlickerServiceJUnit4ClassRunner
 import com.android.server.wm.flicker.service.close.scenarios.CloseAppBackButton
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -31,8 +31,7 @@ import org.junit.runner.RunWith
 @RunWith(FlickerServiceJUnit4ClassRunner::class)
 class CloseAppBackButton3ButtonLandscape :
     CloseAppBackButton(NavBar.MODE_3BUTTON, Rotation.ROTATION_90) {
-    // TODO: Missing CUJ (b/300078127)
-    @ExpectedScenarios(["ENTIRE_TRACE"])
+    @ExpectedScenarios(["APP_CLOSE_TO_HOME"])
     @Test
     override fun closeAppBackButtonTest() = super.closeAppBackButtonTest()
 

@@ -20,6 +20,9 @@ import static android.app.ActivityManagerInternal.OOM_ADJ_REASON_START_RECEIVER;
 import static android.os.Process.ZYGOTE_POLICY_FLAG_EMPTY;
 import static android.os.Process.ZYGOTE_POLICY_FLAG_LATENCY_SENSITIVE;
 
+import static com.android.internal.util.FrameworkStatsLog.BOOT_COMPLETED_BROADCAST_COMPLETION_LATENCY_REPORTED;
+import static com.android.internal.util.FrameworkStatsLog.BOOT_COMPLETED_BROADCAST_COMPLETION_LATENCY_REPORTED__EVENT__BOOT_COMPLETED;
+import static com.android.internal.util.FrameworkStatsLog.BOOT_COMPLETED_BROADCAST_COMPLETION_LATENCY_REPORTED__EVENT__LOCKED_BOOT_COMPLETED;
 import static com.android.internal.util.FrameworkStatsLog.BROADCAST_DELIVERY_EVENT_REPORTED;
 import static com.android.internal.util.FrameworkStatsLog.BROADCAST_DELIVERY_EVENT_REPORTED__PROC_START_TYPE__PROCESS_START_TYPE_COLD;
 import static com.android.internal.util.FrameworkStatsLog.BROADCAST_DELIVERY_EVENT_REPORTED__PROC_START_TYPE__PROCESS_START_TYPE_UNKNOWN;
@@ -29,6 +32,7 @@ import static com.android.internal.util.FrameworkStatsLog.BROADCAST_DELIVERY_EVE
 import static com.android.internal.util.FrameworkStatsLog.SERVICE_REQUEST_EVENT_REPORTED__PACKAGE_STOPPED_STATE__PACKAGE_STATE_NORMAL;
 import static com.android.internal.util.FrameworkStatsLog.SERVICE_REQUEST_EVENT_REPORTED__PACKAGE_STOPPED_STATE__PACKAGE_STATE_STOPPED;
 import static com.android.server.am.ActivityManagerDebugConfig.DEBUG_BROADCAST;
+import static com.android.server.am.ActivityManagerDebugConfig.DEBUG_PROCESSES;
 import static com.android.server.am.ActivityManagerDebugConfig.LOG_WRITER_INFO;
 import static com.android.server.am.BroadcastProcessQueue.insertIntoRunnableList;
 import static com.android.server.am.BroadcastProcessQueue.reasonToString;
@@ -59,6 +63,7 @@ import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.content.pm.UserInfo;
 import android.os.Bundle;
 import android.os.BundleMerger;
 import android.os.Handler;
@@ -85,9 +90,13 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.os.SomeArgs;
 import com.android.internal.os.TimeoutRecord;
 import com.android.internal.util.FrameworkStatsLog;
+import com.android.server.LocalServices;
 import com.android.server.am.BroadcastProcessQueue.BroadcastConsumer;
 import com.android.server.am.BroadcastProcessQueue.BroadcastPredicate;
+import com.android.server.am.BroadcastProcessQueue.BroadcastRecordConsumer;
 import com.android.server.am.BroadcastRecord.DeliveryState;
+import com.android.server.pm.UserJourneyLogger;
+import com.android.server.pm.UserManagerInternal;
 import com.android.server.utils.AnrTimer;
 
 import dalvik.annotation.optimization.NeverCompile;
@@ -157,7 +166,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     /**
      * Map from UID to per-process broadcast queues. If a UID hosts more than
      * one process, each additional process is stored as a linked list using
-     * {@link BroadcastProcessQueue#next}.
+     * {@link BroadcastProcessQueue#processNameNext}.
      *
      * @see #getProcessQueue
      * @see #getOrCreateProcessQueue
@@ -325,9 +334,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
                 return true;
             }
             case MSG_PROCESS_FREEZABLE_CHANGED: {
-                synchronized (mService) {
-                    refreshProcessQueueLocked((ProcessRecord) msg.obj);
-                }
+                handleProcessFreezableChanged((ProcessRecord) msg.obj);
                 return true;
             }
             case MSG_UID_STATE_CHANGED: {
@@ -351,6 +358,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Return the total number of active queues contained inside
      * {@link #mRunning}.
      */
+    @GuardedBy("mService")
     private int getRunningSize() {
         int size = 0;
         for (int i = 0; i < mRunning.length; i++) {
@@ -362,6 +370,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     /**
      * Return the number of active queues that are delivering "urgent" broadcasts
      */
+    @GuardedBy("mService")
     private int getRunningUrgentCount() {
         int count = 0;
         for (int i = 0; i < mRunning.length; i++) {
@@ -376,6 +385,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Return the first index of the given value contained inside
      * {@link #mRunning}, otherwise {@code -1}.
      */
+    @GuardedBy("mService")
     private int getRunningIndexOf(@Nullable BroadcastProcessQueue test) {
         for (int i = 0; i < mRunning.length; i++) {
             if (mRunning[i] == test) return i;
@@ -428,7 +438,8 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         }
 
         // If app isn't running, and there's nothing in the queue, clean up
-        if (queue.isEmpty() && !queue.isActive() && !queue.isProcessWarm()) {
+        if (queue.isEmpty() && queue.isOutgoingEmpty() && !queue.isActive()
+                && !queue.isProcessWarm()) {
             removeProcessQueue(queue.processName, queue.uid);
         }
     }
@@ -542,8 +553,8 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
                 updateOomAdj |= queue.runningOomAdjusted;
                 try {
                     completed = scheduleReceiverWarmLocked(queue);
-                } catch (BroadcastDeliveryFailedException e) {
-                    reEnqueueActiveBroadcast(queue);
+                } catch (BroadcastRetryException e) {
+                    finishOrReEnqueueActiveBroadcast(queue);
                     completed = true;
                 }
             } else {
@@ -574,6 +585,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         traceEnd(cookie);
     }
 
+    @GuardedBy("mService")
     private boolean isPendingColdStartValid() {
         if (mRunningColdStart.app.getPid() > 0) {
             // If the process has already started, check if it wasn't killed.
@@ -584,9 +596,15 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         }
     }
 
+    @GuardedBy("mService")
     private void clearInvalidPendingColdStart() {
         logw("Clearing invalid pending cold start: " + mRunningColdStart);
-        mRunningColdStart.reEnqueueActiveBroadcast();
+        if (mRunningColdStart.wasActiveBroadcastReEnqueued()) {
+            finishReceiverActiveLocked(mRunningColdStart, BroadcastRecord.DELIVERY_FAILURE,
+                    "invalid start with re-enqueued broadcast");
+        } else {
+            mRunningColdStart.reEnqueueActiveBroadcast();
+        }
         demoteFromRunningLocked(mRunningColdStart);
         clearRunningColdStart();
         enqueueUpdateRunningList();
@@ -613,19 +631,28 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         }
     }
 
-    private void reEnqueueActiveBroadcast(@NonNull BroadcastProcessQueue queue) {
+    @GuardedBy("mService")
+    private void finishOrReEnqueueActiveBroadcast(@NonNull BroadcastProcessQueue queue) {
         checkState(queue.isActive(), "isActive");
 
-        final BroadcastRecord record = queue.getActive();
-        final int index = queue.getActiveIndex();
-        setDeliveryState(queue, queue.app, record, index, record.receivers.get(index),
-                BroadcastRecord.DELIVERY_PENDING, "reEnqueueActiveBroadcast");
-        queue.reEnqueueActiveBroadcast();
+        if (queue.wasActiveBroadcastReEnqueued()) {
+            // If the broadcast was already re-enqueued previously, finish it to avoid repeated
+            // delivery attempts
+            finishReceiverActiveLocked(queue, BroadcastRecord.DELIVERY_FAILURE,
+                    "re-enqueued broadcast delivery failed");
+        } else {
+            final BroadcastRecord record = queue.getActive();
+            final int index = queue.getActiveIndex();
+            setDeliveryState(queue, queue.app, record, index, record.receivers.get(index),
+                    BroadcastRecord.DELIVERY_PENDING, "reEnqueueActiveBroadcast");
+            queue.reEnqueueActiveBroadcast();
+        }
     }
 
+    @GuardedBy("mService")
     @Override
     public boolean onApplicationAttachedLocked(@NonNull ProcessRecord app)
-            throws BroadcastDeliveryFailedException {
+            throws BroadcastRetryException {
         if (DEBUG_BROADCAST) {
             logv("Process " + app + " is attached");
         }
@@ -634,6 +661,10 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         final BroadcastProcessQueue queue = getProcessQueue(app);
         if (queue != null) {
             setQueueProcess(queue, app);
+            // Outgoing broadcasts should be cleared when the process dies but there have been
+            // issues due to AMS not always informing the BroadcastQueue of process deaths.
+            // So, clear them when a new process starts as well.
+            queue.clearOutgoingBroadcasts();
         }
 
         boolean didSomething = false;
@@ -653,8 +684,8 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
                 if (scheduleReceiverWarmLocked(queue)) {
                     demoteFromRunningLocked(queue);
                 }
-            } catch (BroadcastDeliveryFailedException e) {
-                reEnqueueActiveBroadcast(queue);
+            } catch (BroadcastRetryException e) {
+                finishOrReEnqueueActiveBroadcast(queue);
                 demoteFromRunningLocked(queue);
                 throw e;
             }
@@ -666,16 +697,19 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         return didSomething;
     }
 
+    @GuardedBy("mService")
     @Override
     public void onApplicationTimeoutLocked(@NonNull ProcessRecord app) {
         onApplicationCleanupLocked(app);
     }
 
+    @GuardedBy("mService")
     @Override
     public void onApplicationProblemLocked(@NonNull ProcessRecord app) {
         onApplicationCleanupLocked(app);
     }
 
+    @GuardedBy("mService")
     @Override
     public void onApplicationCleanupLocked(@NonNull ProcessRecord app) {
         if (DEBUG_BROADCAST) {
@@ -700,6 +734,8 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
                 demoteFromRunningLocked(queue);
             }
 
+            queue.clearOutgoingBroadcasts();
+
             // Skip any pending registered receivers, since the old process
             // would never be around to receive them
             boolean didSomething = queue.forEachMatchingBroadcast((r, i) -> {
@@ -712,6 +748,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         }
     }
 
+    @GuardedBy("mService")
     private void clearRunningColdStart() {
         mRunningColdStart.traceProcessEnd();
 
@@ -723,12 +760,14 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         enqueueUpdateRunningList();
     }
 
+    @GuardedBy("mService")
     @Override
     public void onProcessFreezableChangedLocked(@NonNull ProcessRecord app) {
         mLocalHandler.removeMessages(MSG_PROCESS_FREEZABLE_CHANGED, app);
         mLocalHandler.obtainMessage(MSG_PROCESS_FREEZABLE_CHANGED, app).sendToTarget();
     }
 
+    @GuardedBy("mService")
     @Override
     public int getPreferredSchedulingGroupLocked(@NonNull ProcessRecord app) {
         final BroadcastProcessQueue queue = getProcessQueue(app);
@@ -738,8 +777,27 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         return ProcessList.SCHED_GROUP_UNDEFINED;
     }
 
+    @GuardedBy("mService")
     @Override
     public void enqueueBroadcastLocked(@NonNull BroadcastRecord r) {
+        // TODO: Apply delivery group policies and FLAG_REPLACE_PENDING to collapse the
+        // outgoing broadcasts.
+        // TODO: Add traces/logs for the enqueueing outgoing broadcasts logic.
+        if (Flags.deferOutgoingBroadcasts() && isProcessFreezable(r.callerApp)) {
+            final BroadcastProcessQueue queue = getOrCreateProcessQueue(
+                    r.callerApp.processName, r.callerApp.uid);
+            if (queue.getOutgoingBroadcastCount() >= mConstants.MAX_FROZEN_OUTGOING_BROADCASTS) {
+                r.callerApp.killLocked("Too many outgoing broadcasts in cached state",
+                        ApplicationExitInfo.REASON_OTHER,
+                        ApplicationExitInfo.SUBREASON_EXCESSIVE_OUTGOING_BROADCASTS_WHILE_CACHED,
+                        true /* noisy */);
+                return;
+            }
+            queue.enqueueOutgoingBroadcast(r);
+            mHistory.onBroadcastFrozenLocked(r);
+            mService.mOomAdjuster.mCachedAppOptimizer.freezeAppAsyncImmediateLSP(r.callerApp);
+            return;
+        }
         if (DEBUG_BROADCAST) logv("Enqueuing " + r + " for " + r.receivers.size() + " receivers");
 
         final int cookie = traceBegin("enqueueBroadcast");
@@ -808,6 +866,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         traceEnd(cookie);
     }
 
+    @GuardedBy("mService")
     private void skipAndCancelReplacedBroadcasts(ArraySet<BroadcastRecord> replacedBroadcasts) {
         for (int i = 0; i < replacedBroadcasts.size(); ++i) {
             final BroadcastRecord r = replacedBroadcasts.valueAt(i);
@@ -820,6 +879,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         }
     }
 
+    @GuardedBy("mService")
     private void applyDeliveryGroupPolicy(@NonNull BroadcastRecord r) {
         if (mService.shouldIgnoreDeliveryGroupPolicy(r.intent.getAction())) {
             return;
@@ -869,9 +929,9 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
             // For ordered broadcast, check if the receivers for the new broadcast is a superset
             // of those for the previous one as skipping and removing only one of them could result
             // in an inconsistent state.
-            if (testRecord.ordered || testRecord.prioritized) {
+            if (testRecord.ordered) {
                 return containsAllReceivers(r, testRecord, recordsLookupCache);
-            } else if (testRecord.resultTo != null) {
+            } else if (testRecord.prioritized || testRecord.resultTo != null) {
                 return testRecord.getDeliveryState(testIndex) == DELIVERY_DEFERRED
                         ? r.containsReceiver(testRecord.receivers.get(testIndex))
                         : containsAllReceivers(r, testRecord, recordsLookupCache);
@@ -883,6 +943,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         mRecordsLookupCache.compareAndSet(null, recordsLookupCache);
     }
 
+    @GuardedBy("mService")
     @NonNull
     private ArrayMap<BroadcastRecord, Boolean> getRecordsLookupCache() {
         ArrayMap<BroadcastRecord, Boolean> recordsLookupCache =
@@ -893,6 +954,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         return recordsLookupCache;
     }
 
+    @GuardedBy("mService")
     private boolean containsAllReceivers(@NonNull BroadcastRecord record,
             @NonNull BroadcastRecord testRecord,
             @NonNull ArrayMap<BroadcastRecord, Boolean> recordsLookupCache) {
@@ -943,9 +1005,9 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         final ApplicationInfo info = ((ResolveInfo) receiver).activityInfo.applicationInfo;
         final ComponentName component = ((ResolveInfo) receiver).activityInfo.getComponentName();
 
-        if ((info.flags & ApplicationInfo.FLAG_STOPPED) != 0) {
-            queue.setActiveWasStopped(true);
-        }
+        queue.setActiveWasStopped(info.isStopped());
+        queue.setActiveFirstLaunch(info.isNotLaunched());
+
         final int intentFlags = r.intent.getFlags() | Intent.FLAG_FROM_BACKGROUND;
         final HostingRecord hostingRecord = new HostingRecord(HostingRecord.HOSTING_TYPE_BROADCAST,
                 component, r.intent.getAction(), r.getHostingRecordTriggerType());
@@ -956,6 +1018,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         final boolean allowWhileBooting = (r.intent.getFlags()
                 & Intent.FLAG_RECEIVER_BOOT_UPGRADE) != 0;
 
+        long startTimeNs = SystemClock.uptimeNanos();
         if (DEBUG_BROADCAST) logv("Scheduling " + r + " to cold " + queue);
         queue.app = mService.startProcessLocked(queue.processName, info, true, intentFlags,
                 hostingRecord, zygotePolicyFlags, allowWhileBooting, false);
@@ -965,6 +1028,9 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
                     "startProcessLocked failed");
             return true;
         }
+        // TODO: b/335420031 - cache receiver intent to avoid multiple calls to getReceiverIntent.
+        mService.mProcessList.getAppStartInfoTracker().handleProcessBroadcastStart(
+                startTimeNs, queue.app, r.getReceiverIntent(receiver), r.alarm /* isAlarm */);
         return false;
     }
 
@@ -983,7 +1049,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     @CheckResult
     @GuardedBy("mService")
     private boolean scheduleReceiverWarmLocked(@NonNull BroadcastProcessQueue queue)
-            throws BroadcastDeliveryFailedException {
+            throws BroadcastRetryException {
         checkState(queue.isActive(), "isActive");
 
         final int cookie = traceBegin("scheduleReceiverWarmLocked");
@@ -1023,6 +1089,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Consults {@link BroadcastSkipPolicy} and the receiver process state to decide whether or
      * not the broadcast to a receiver can be skipped.
      */
+    @GuardedBy("mService")
     private String shouldSkipReceiver(@NonNull BroadcastProcessQueue queue,
             @NonNull BroadcastRecord r, int index) {
         final int oldDeliveryState = getDeliveryState(r, index);
@@ -1063,9 +1130,10 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      *         finishReceiver() to be called before moving to the next broadcast. Otherwise,
      *         {@code false}.
      */
+    @GuardedBy("mService")
     @CheckResult
     private boolean dispatchReceivers(@NonNull BroadcastProcessQueue queue,
-            @NonNull BroadcastRecord r, int index) throws BroadcastDeliveryFailedException {
+            @NonNull BroadcastRecord r, int index) throws BroadcastRetryException {
         final ProcessRecord app = queue.app;
         final Object receiver = r.receivers.get(index);
 
@@ -1157,7 +1225,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
                 // to try redelivering the broadcast to this receiver.
                 if (receiver instanceof ResolveInfo) {
                     cancelDeliveryTimeoutLocked(queue);
-                    throw new BroadcastDeliveryFailedException(e);
+                    throw new BroadcastRetryException(e);
                 }
                 finishReceiverActiveLocked(queue, BroadcastRecord.DELIVERY_FAILURE,
                         "remote app");
@@ -1174,6 +1242,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Schedule the final {@link BroadcastRecord#resultTo} delivery for an
      * ordered broadcast; assumes the sender is still a warm process.
      */
+    @GuardedBy("mService")
     private void scheduleResultTo(@NonNull BroadcastRecord r) {
         if (r.resultTo == null) return;
         final ProcessRecord app = r.resultToApp;
@@ -1207,6 +1276,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
 
     // Required when Flags.anrTimerServiceEnabled is false.  This function can be replaced with a
     // single call to {@code mAnrTimer.start()} if and when the flag is fused on.
+    @GuardedBy("mService")
     private void startDeliveryTimeoutLocked(@NonNull BroadcastProcessQueue queue,
             int softTimeoutMillis) {
         if (mAnrTimer.serviceEnabled()) {
@@ -1220,6 +1290,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
 
     // Required when Flags.anrTimerServiceEnabled is false. This function can be replaced with a
     // single call to {@code mAnrTimer.cancel()} if and when the flag is fused on.
+    @GuardedBy("mService")
     private void cancelDeliveryTimeoutLocked(@NonNull BroadcastProcessQueue queue) {
         mAnrTimer.cancel(queue);
         if (!mAnrTimer.serviceEnabled()) {
@@ -1229,6 +1300,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
 
     // Required when Flags.anrTimerServiceEnabled is false.  This function can be deleted entirely
     // if and when the flag is fused on.
+    @GuardedBy("mService")
     private void deliveryTimeoutSoftLocked(@NonNull BroadcastProcessQueue queue,
             int softTimeoutMillis) {
         if (queue.app != null) {
@@ -1244,11 +1316,14 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     }
 
     private void deliveryTimeout(@NonNull BroadcastProcessQueue queue) {
+        final int cookie = traceBegin("deliveryTimeout");
         synchronized (mService) {
             deliveryTimeoutLocked(queue);
         }
+        traceEnd(cookie);
     }
 
+    @GuardedBy("mService")
     private void deliveryTimeoutLocked(@NonNull BroadcastProcessQueue queue) {
         finishReceiverActiveLocked(queue, BroadcastRecord.DELIVERY_TIMEOUT,
                 "deliveryTimeoutLocked");
@@ -1258,14 +1333,22 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     private class BroadcastAnrTimer extends AnrTimer<BroadcastProcessQueue> {
         BroadcastAnrTimer(@NonNull Handler handler) {
             super(Objects.requireNonNull(handler),
-                    MSG_DELIVERY_TIMEOUT, "BROADCAST_TIMEOUT", true);
+                    MSG_DELIVERY_TIMEOUT, "BROADCAST_TIMEOUT",
+                    new AnrTimer.Args().extend(true).freeze(true));
         }
 
-        void start(@NonNull BroadcastProcessQueue queue, long timeoutMillis) {
-            start(queue, queue.app.getPid(), queue.app.uid, timeoutMillis);
+        @Override
+        public int getPid(@NonNull BroadcastProcessQueue queue) {
+            return (queue.app != null) ? queue.app.getPid() : 0;
+        }
+
+        @Override
+        public int getUid(@NonNull BroadcastProcessQueue queue) {
+            return (queue.app != null) ? queue.app.uid : 0;
         }
     }
 
+    @GuardedBy("mService")
     @Override
     public boolean finishReceiverLocked(@NonNull ProcessRecord app, int resultCode,
             @Nullable String resultData, @Nullable Bundle resultExtras, boolean resultAbort,
@@ -1314,8 +1397,8 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
                 demoteFromRunningLocked(queue);
                 return true;
             }
-        } catch (BroadcastDeliveryFailedException e) {
-            reEnqueueActiveBroadcast(queue);
+        } catch (BroadcastRetryException e) {
+            finishOrReEnqueueActiveBroadcast(queue);
             demoteFromRunningLocked(queue);
             return true;
         }
@@ -1326,6 +1409,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     /**
      * Return true if there are no more broadcasts in the queue or if the queue is not runnable.
      */
+    @GuardedBy("mService")
     private boolean shouldRetire(@NonNull BroadcastProcessQueue queue) {
         // If we've made reasonable progress, periodically retire ourselves to
         // avoid starvation of other processes and stack overflow when a
@@ -1349,6 +1433,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     /**
      * Terminate all active broadcasts on the queue.
      */
+    @GuardedBy("mService")
     private void finishReceiverActiveLocked(@NonNull BroadcastProcessQueue queue,
             @DeliveryState int deliveryState, @NonNull String reason) {
         if (!queue.isActive()) {
@@ -1367,11 +1452,12 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         if (deliveryState == BroadcastRecord.DELIVERY_TIMEOUT) {
             r.anrCount++;
             if (app != null && !app.isDebugging()) {
-                mAnrTimer.accept(queue);
+                final AutoCloseable timer = mAnrTimer.accept(queue);
                 final String packageName = getReceiverPackageName(receiver);
                 final String className = getReceiverClassName(receiver);
-                mService.appNotResponding(queue.app,
-                        TimeoutRecord.forBroadcastReceiver(r.intent, packageName, className));
+                TimeoutRecord tr = TimeoutRecord.forBroadcastReceiver(r.intent, packageName,
+                        className).setExpiredTimer(timer);
+                mService.appNotResponding(queue.app, tr);
             } else {
                 mAnrTimer.discard(queue);
             }
@@ -1450,6 +1536,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Set the delivery state on the given broadcast, then apply any additional
      * bookkeeping related to ordered broadcasts.
      */
+    @GuardedBy("mService")
     private void setDeliveryState(@Nullable BroadcastProcessQueue queue,
             @Nullable ProcessRecord app, @NonNull BroadcastRecord r, int index,
             @NonNull Object receiver, @DeliveryState int newDeliveryState,
@@ -1515,10 +1602,12 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         traceEnd(cookie);
     }
 
+    @GuardedBy("mService")
     private @DeliveryState int getDeliveryState(@NonNull BroadcastRecord r, int index) {
         return r.getDeliveryState(index);
     }
 
+    @GuardedBy("mService")
     @Override
     public boolean cleanupDisabledPackageReceiversLocked(@Nullable String packageName,
             @Nullable Set<String> filterByClasses, int userId) {
@@ -1584,6 +1673,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Typical consumer that will skip the given broadcast, usually as a result
      * of it matching a predicate.
      */
+    @GuardedBy("mService")
     private final BroadcastConsumer mBroadcastConsumerSkip = (r, i) -> {
         setDeliveryState(null, null, r, i, r.receivers.get(i), BroadcastRecord.DELIVERY_SKIPPED,
                 "mBroadcastConsumerSkip");
@@ -1593,6 +1683,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Typical consumer that will both skip the given broadcast and mark it as
      * cancelled, usually as a result of it matching a predicate.
      */
+    @GuardedBy("mService")
     private final BroadcastConsumer mBroadcastConsumerSkipAndCanceled = (r, i) -> {
         setDeliveryState(null, null, r, i, r.receivers.get(i), BroadcastRecord.DELIVERY_SKIPPED,
                 "mBroadcastConsumerSkipAndCanceled");
@@ -1602,21 +1693,27 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     };
 
     @VisibleForTesting
+    @GuardedBy("mService")
     final BroadcastConsumer mBroadcastConsumerDeferApply = (r, i) -> {
         setDeliveryState(null, null, r, i, r.receivers.get(i), BroadcastRecord.DELIVERY_DEFERRED,
                 "mBroadcastConsumerDeferApply");
     };
 
     @VisibleForTesting
+    @GuardedBy("mService")
     final BroadcastConsumer mBroadcastConsumerDeferClear = (r, i) -> {
         setDeliveryState(null, null, r, i, r.receivers.get(i), BroadcastRecord.DELIVERY_PENDING,
                 "mBroadcastConsumerDeferClear");
     };
 
+    @GuardedBy("mService")
+    final BroadcastRecordConsumer mBroadcastRecordConsumerEnqueue = this::enqueueBroadcastLocked;
+
     /**
      * Verify that all known {@link #mProcessQueues} are in the state tested by
      * the given {@link Predicate}.
      */
+    @GuardedBy("mService")
     private boolean testAllProcessQueues(@NonNull Predicate<BroadcastProcessQueue> test,
             @NonNull String label, @NonNull PrintWriter pw) {
         for (int i = 0; i < mProcessQueues.size(); i++) {
@@ -1640,6 +1737,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         return true;
     }
 
+    @GuardedBy("mService")
     private boolean forEachMatchingBroadcast(
             @NonNull Predicate<BroadcastProcessQueue> queuePredicate,
             @NonNull BroadcastPredicate broadcastPredicate,
@@ -1664,6 +1762,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         return didSomething;
     }
 
+    @GuardedBy("mService")
     private boolean forEachMatchingQueue(
             @NonNull Predicate<BroadcastProcessQueue> queuePredicate,
             @NonNull Consumer<BroadcastProcessQueue> queueConsumer) {
@@ -1685,6 +1784,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         return didSomething;
     }
 
+    @GuardedBy("mService")
     @Override
     public void start(@NonNull ContentResolver resolver) {
         mFgConstants.startObserving(mHandler, resolver);
@@ -1705,35 +1805,42 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         mLocalHandler.sendEmptyMessage(MSG_CHECK_HEALTH);
     }
 
+    @GuardedBy("mService")
     @Override
     public boolean isIdleLocked() {
         return isIdleLocked(LOG_WRITER_INFO);
     }
 
+    @GuardedBy("mService")
     public boolean isIdleLocked(@NonNull PrintWriter pw) {
         return testAllProcessQueues(q -> q.isIdle(), "idle", pw);
     }
 
+    @GuardedBy("mService")
     @Override
     public boolean isBeyondBarrierLocked(@UptimeMillisLong long barrierTime) {
         return isBeyondBarrierLocked(barrierTime, LOG_WRITER_INFO);
     }
 
+    @GuardedBy("mService")
     public boolean isBeyondBarrierLocked(@UptimeMillisLong long barrierTime,
             @NonNull PrintWriter pw) {
         return testAllProcessQueues(q -> q.isBeyondBarrierLocked(barrierTime), "barrier", pw);
     }
 
+    @GuardedBy("mService")
     @Override
     public boolean isDispatchedLocked(@NonNull Intent intent) {
         return isDispatchedLocked(intent, LOG_WRITER_INFO);
     }
 
+    @GuardedBy("mService")
     public boolean isDispatchedLocked(@NonNull Intent intent, @NonNull PrintWriter pw) {
         return testAllProcessQueues(q -> q.isDispatched(intent),
                 "dispatch of " + intent, pw);
     }
 
+    @GuardedBy("mService")
     @Override
     public void waitForIdle(@NonNull PrintWriter pw) {
         waitFor(() -> isIdleLocked(pw));
@@ -1756,6 +1863,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         }
     }
 
+    @GuardedBy("mService")
     @Override
     public void waitForDispatched(@NonNull Intent intent, @NonNull PrintWriter pw) {
         waitFor(() -> isDispatchedLocked(intent, pw));
@@ -1774,6 +1882,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         }
     }
 
+    @GuardedBy("mService")
     private void checkAndRemoveWaitingFor() {
         if (!mWaitingFor.isEmpty()) {
             mWaitingFor.removeIf((pair) -> {
@@ -1802,13 +1911,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         return getRunningSize() + " running";
     }
 
-    @Override
-    public boolean isDelayBehindServices() {
-        // Modern queue does not alter the broadcasts delivery behavior based on background
-        // services, so ignore.
-        return false;
-    }
-
+    @GuardedBy("mService")
     @Override
     public void backgroundServicesFinishedLocked(int userId) {
         // Modern queue does not alter the broadcasts delivery behavior based on background
@@ -1821,6 +1924,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         }
     }
 
+    @GuardedBy("mService")
     private void checkHealthLocked() {
         try {
             assertHealthLocked();
@@ -1843,6 +1947,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * current state once and stop future health checks to avoid spamming.
      */
     @VisibleForTesting
+    @GuardedBy("mService")
     void assertHealthLocked() {
         // Verify all runnable queues are sorted
         BroadcastProcessQueue prev = null;
@@ -1882,6 +1987,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     }
 
     @SuppressWarnings("CheckResult")
+    @GuardedBy("mService")
     private void updateWarmProcess(@NonNull BroadcastProcessQueue queue) {
         if (!queue.isProcessWarm()) {
             // This is a bit awkward; we're in the middle of traversing the
@@ -1901,6 +2007,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * {@link BroadcastProcessQueue}. Also updates any runnable status that
      * might have changed as a side-effect.
      */
+    @GuardedBy("mService")
     private void setQueueProcess(@NonNull BroadcastProcessQueue queue,
             @Nullable ProcessRecord app) {
         if (queue.setProcessAndUidState(app, mUidForeground.get(queue.uid, false),
@@ -1909,8 +2016,9 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         }
     }
 
+    @VisibleForTesting
     @GuardedBy("mService")
-    private boolean isProcessFreezable(@Nullable ProcessRecord app) {
+    boolean isProcessFreezable(@Nullable ProcessRecord app) {
         if (app == null) {
             return false;
         }
@@ -1935,16 +2043,25 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         enqueueUpdateRunningList();
     }
 
+    private void handleProcessFreezableChanged(@NonNull ProcessRecord app) {
+        synchronized (mService) {
+            final BroadcastProcessQueue queue = getProcessQueue(app.processName, app.uid);
+            if (queue == null || queue.app == null || queue.app.getPid() != app.getPid()) {
+                return;
+            }
+            if (!isProcessFreezable(app)) {
+                queue.enqueueOutgoingBroadcasts(mBroadcastRecordConsumerEnqueue);
+            }
+            refreshProcessQueueLocked(queue);
+        }
+    }
+
     /**
      * Refresh the process queue corresponding to {@code app} with the latest process state
      * so that runnableAt can be updated.
      */
     @GuardedBy("mService")
-    private void refreshProcessQueueLocked(@NonNull ProcessRecord app) {
-        final BroadcastProcessQueue queue = getProcessQueue(app.processName, app.uid);
-        if (queue == null || queue.app == null || queue.app.getPid() != app.getPid()) {
-            return;
-        }
+    private void refreshProcessQueueLocked(@NonNull BroadcastProcessQueue queue) {
         setQueueProcess(queue, queue.app);
         enqueueUpdateRunningList();
     }
@@ -1953,6 +2070,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Inform other parts of OS that the given broadcast queue has started
      * running, typically for internal bookkeeping.
      */
+    @GuardedBy("mService")
     private void notifyStartedRunning(@NonNull BroadcastProcessQueue queue) {
         if (queue.app != null) {
             queue.app.mReceivers.incrementCurReceivers();
@@ -1977,6 +2095,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Inform other parts of OS that the given broadcast queue has stopped
      * running, typically for internal bookkeeping.
      */
+    @GuardedBy("mService")
     private void notifyStoppedRunning(@NonNull BroadcastProcessQueue queue) {
         if (queue.app != null) {
             queue.app.mReceivers.decrementCurReceivers();
@@ -1991,6 +2110,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Inform other parts of OS that the given broadcast was just scheduled for
      * a registered receiver, typically for internal bookkeeping.
      */
+    @GuardedBy("mService")
     private void notifyScheduleRegisteredReceiver(@NonNull ProcessRecord app,
             @NonNull BroadcastRecord r, @NonNull BroadcastFilter receiver) {
         reportUsageStatsBroadcastDispatched(app, r);
@@ -2000,6 +2120,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Inform other parts of OS that the given broadcast was just scheduled for
      * a manifest receiver, typically for internal bookkeeping.
      */
+    @GuardedBy("mService")
     private void notifyScheduleReceiver(@NonNull ProcessRecord app,
             @NonNull BroadcastRecord r, @NonNull ResolveInfo receiver) {
         reportUsageStatsBroadcastDispatched(app, r);
@@ -2011,8 +2132,13 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         final boolean targetedBroadcast = r.intent.getComponent() != null;
         final boolean targetedSelf = Objects.equals(r.callerPackage, receiverPackageName);
         if (targetedBroadcast && !targetedSelf) {
-            mService.mUsageStatsService.reportEvent(receiverPackageName,
-                    r.userId, Event.APP_COMPONENT_USED);
+            if (r.userId == UserHandle.USER_ALL) {
+                mService.mUsageStatsService.reportEventForAllUsers(
+                        receiverPackageName, Event.APP_COMPONENT_USED);
+            } else {
+                mService.mUsageStatsService.reportEvent(receiverPackageName,
+                        r.userId, Event.APP_COMPONENT_USED);
+            }
         }
 
         mService.notifyPackageUse(receiverPackageName,
@@ -2022,6 +2148,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
                 receiverPackageName, r.userId, r.callerPackage, r.toString());
     }
 
+    @GuardedBy("mService")
     private void reportUsageStatsBroadcastDispatched(@NonNull ProcessRecord app,
             @NonNull BroadcastRecord r) {
         final long idForResponseEvent = (r.options != null)
@@ -2047,6 +2174,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
      * Inform other parts of OS that the given broadcast was just finished,
      * typically for internal bookkeeping.
      */
+    @GuardedBy("mService")
     private void notifyFinishReceiver(@Nullable BroadcastProcessQueue queue,
             @Nullable ProcessRecord app, @NonNull BroadcastRecord r, int index,
             @NonNull Object receiver) {
@@ -2060,6 +2188,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         }
     }
 
+    @GuardedBy("mService")
     private void logBroadcastDeliveryEventReported(@Nullable BroadcastProcessQueue queue,
             @Nullable ProcessRecord app, @NonNull BroadcastRecord r, int index,
             @NonNull Object receiver) {
@@ -2087,6 +2216,12 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         final long dispatchDelay = r.scheduledTime[index] - r.enqueueTime;
         final long receiveDelay = 0;
         final long finishDelay = r.terminalTime[index] - r.scheduledTime[index];
+        if (DEBUG_PROCESSES) {
+            Slog.d(TAG, "Logging broadcast for "
+                    + (app != null ? app.info.packageName : "<null>")
+                    + ", stopped=" + queue.getActiveWasStopped()
+                    + ", firstLaunch=" + queue.getActiveFirstLaunch());
+        }
         if (queue != null) {
             final int packageState = queue.getActiveWasStopped()
                     ? SERVICE_REQUEST_EVENT_REPORTED__PACKAGE_STOPPED_STATE__PACKAGE_STATE_STOPPED
@@ -2096,17 +2231,22 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
                     app != null ? app.info.packageName : null, r.callerPackage,
                     r.calculateTypeForLogging(), r.getDeliveryGroupPolicy(), r.intent.getFlags(),
                     BroadcastRecord.getReceiverPriority(receiver), r.callerProcState,
-                    receiverProcessState);
+                    receiverProcessState, queue.getActiveFirstLaunch(),
+                    0L /* TODO: stoppedDuration */);
+            // Reset the states after logging
+            queue.setActiveFirstLaunch(false);
+            queue.setActiveWasStopped(false);
         }
     }
 
+    @GuardedBy("mService")
     private void notifyFinishBroadcast(@NonNull BroadcastRecord r) {
         mService.notifyBroadcastFinishedLocked(r);
         r.finishTime = SystemClock.uptimeMillis();
         r.nextReceiver = r.receivers.size();
         mHistory.onBroadcastFinishedLocked(r);
 
-        BroadcastQueueImpl.logBootCompletedBroadcastCompletionLatencyIfPossible(r);
+        logBootCompletedBroadcastCompletionLatencyIfPossible(r);
 
         if (r.intent.getComponent() == null && r.intent.getPackage() == null
                 && (r.intent.getFlags() & Intent.FLAG_RECEIVER_REGISTERED_ONLY) == 0) {
@@ -2128,11 +2268,13 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     }
 
     @VisibleForTesting
+    @GuardedBy("mService")
     @NonNull BroadcastProcessQueue getOrCreateProcessQueue(@NonNull ProcessRecord app) {
         return getOrCreateProcessQueue(app.processName, app.info.uid);
     }
 
     @VisibleForTesting
+    @GuardedBy("mService")
     @NonNull BroadcastProcessQueue getOrCreateProcessQueue(@NonNull String processName,
             int uid) {
         BroadcastProcessQueue leaf = mProcessQueues.get(uid);
@@ -2157,11 +2299,13 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     }
 
     @VisibleForTesting
+    @GuardedBy("mService")
     @Nullable BroadcastProcessQueue getProcessQueue(@NonNull ProcessRecord app) {
         return getProcessQueue(app.processName, app.info.uid);
     }
 
     @VisibleForTesting
+    @GuardedBy("mService")
     @Nullable BroadcastProcessQueue getProcessQueue(@NonNull String processName, int uid) {
         BroadcastProcessQueue leaf = mProcessQueues.get(uid);
         while (leaf != null) {
@@ -2174,11 +2318,13 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
     }
 
     @VisibleForTesting
+    @GuardedBy("mService")
     @Nullable BroadcastProcessQueue removeProcessQueue(@NonNull ProcessRecord app) {
         return removeProcessQueue(app.processName, app.info.uid);
     }
 
     @VisibleForTesting
+    @GuardedBy("mService")
     @Nullable BroadcastProcessQueue removeProcessQueue(@NonNull String processName,
             int uid) {
         BroadcastProcessQueue prev = null;
@@ -2202,8 +2348,63 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         return null;
     }
 
+    @GuardedBy("mService")
+    private void logBootCompletedBroadcastCompletionLatencyIfPossible(BroadcastRecord r) {
+        // Only log after last receiver.
+        // In case of split BOOT_COMPLETED broadcast, make sure only call this method on the
+        // last BroadcastRecord of the split broadcast which has non-null resultTo.
+        final int numReceivers = (r.receivers != null) ? r.receivers.size() : 0;
+        if (r.nextReceiver < numReceivers) {
+            return;
+        }
+        final String action = r.intent.getAction();
+        int event = 0;
+        if (Intent.ACTION_LOCKED_BOOT_COMPLETED.equals(action)) {
+            event = BOOT_COMPLETED_BROADCAST_COMPLETION_LATENCY_REPORTED__EVENT__LOCKED_BOOT_COMPLETED;
+        } else if (Intent.ACTION_BOOT_COMPLETED.equals(action)) {
+            event = BOOT_COMPLETED_BROADCAST_COMPLETION_LATENCY_REPORTED__EVENT__BOOT_COMPLETED;
+        }
+        if (event != 0) {
+            final int dispatchLatency = (int) (r.dispatchTime - r.enqueueTime);
+            final int completeLatency = (int) (SystemClock.uptimeMillis() - r.enqueueTime);
+            final int dispatchRealLatency = (int) (r.dispatchRealTime - r.enqueueRealTime);
+            final int completeRealLatency = (int)
+                    (SystemClock.elapsedRealtime() - r.enqueueRealTime);
+            int userType =
+                    FrameworkStatsLog.USER_LIFECYCLE_JOURNEY_REPORTED__USER_TYPE__TYPE_UNKNOWN;
+            // This method is called very infrequently, no performance issue we call
+            // LocalServices.getService() here.
+            final UserManagerInternal umInternal = LocalServices.getService(
+                    UserManagerInternal.class);
+            final UserInfo userInfo =
+                    (umInternal != null) ? umInternal.getUserInfo(r.userId) : null;
+            if (userInfo != null) {
+                userType = UserJourneyLogger.getUserTypeForStatsd(userInfo.userType);
+            }
+            Slog.i(TAG, "BOOT_COMPLETED_BROADCAST_COMPLETION_LATENCY_REPORTED action:"
+                    + action
+                    + " dispatchLatency:" + dispatchLatency
+                    + " completeLatency:" + completeLatency
+                    + " dispatchRealLatency:" + dispatchRealLatency
+                    + " completeRealLatency:" + completeRealLatency
+                    + " receiversSize:" + numReceivers
+                    + " userId:" + r.userId
+                    + " userType:" + (userInfo != null ? userInfo.userType : null));
+            FrameworkStatsLog.write(
+                    BOOT_COMPLETED_BROADCAST_COMPLETION_LATENCY_REPORTED,
+                    event,
+                    dispatchLatency,
+                    completeLatency,
+                    dispatchRealLatency,
+                    completeRealLatency,
+                    r.userId,
+                    userType);
+        }
+    }
+
     @Override
     @NeverCompile
+    @GuardedBy("mService")
     public void dumpDebug(@NonNull ProtoOutputStream proto, long fieldId) {
         long token = proto.start(fieldId);
         proto.write(BroadcastQueueProto.QUEUE_NAME, mQueueName);
@@ -2213,6 +2414,7 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
 
     @Override
     @NeverCompile
+    @GuardedBy("mService")
     public boolean dumpLocked(@NonNull FileDescriptor fd, @NonNull PrintWriter pw,
             @NonNull String[] args, int opti, boolean dumpConstants, boolean dumpHistory,
             boolean dumpAll, @Nullable String dumpPackage, boolean needSep) {
@@ -2282,7 +2484,8 @@ class BroadcastQueueModernImpl extends BroadcastQueue {
         ipw.println();
 
         if (dumpConstants) {
-            mConstants.dump(ipw);
+            mFgConstants.dump(ipw);
+            mBgConstants.dump(ipw);
         }
 
         if (dumpHistory) {

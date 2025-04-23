@@ -16,6 +16,13 @@
 
 package com.android.server.display;
 
+import static android.hardware.display.DisplayManagerInternal.DisplayPowerRequest.POLICY_DOZE;
+
+import static com.android.server.display.BrightnessMappingStrategy.INVALID_LUX;
+import static com.android.server.display.config.DisplayBrightnessMappingConfig.autoBrightnessModeToString;
+
+import android.annotation.IntDef;
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityTaskManager;
 import android.app.ActivityTaskManager.RootTaskInfo;
@@ -38,17 +45,25 @@ import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.Trace;
 import android.util.EventLog;
+import android.util.IndentingPrintWriter;
 import android.util.MathUtils;
 import android.util.Slog;
+import android.util.SparseArray;
 import android.util.TimeUtils;
+import android.view.Display;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.display.BrightnessSynchronizer;
 import com.android.internal.os.BackgroundThread;
 import com.android.server.EventLogTags;
 import com.android.server.display.brightness.BrightnessEvent;
+import com.android.server.display.config.HysteresisLevels;
+import com.android.server.display.feature.DisplayManagerFlags;
 
 import java.io.PrintWriter;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Manages the associated display brightness when in auto-brightness mode. This is also
@@ -63,6 +78,21 @@ public class AutomaticBrightnessController {
     public static final int AUTO_BRIGHTNESS_ENABLED = 1;
     public static final int AUTO_BRIGHTNESS_DISABLED = 2;
     public static final int AUTO_BRIGHTNESS_OFF_DUE_TO_DISPLAY_STATE = 3;
+
+    @IntDef(prefix = { "AUTO_BRIGHTNESS_MODE_" }, value = {
+            AUTO_BRIGHTNESS_MODE_DEFAULT,
+            AUTO_BRIGHTNESS_MODE_IDLE,
+            AUTO_BRIGHTNESS_MODE_DOZE,
+            AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface AutomaticBrightnessMode{}
+
+    public static final int AUTO_BRIGHTNESS_MODE_DEFAULT = 0;
+    public static final int AUTO_BRIGHTNESS_MODE_IDLE = 1;
+    public static final int AUTO_BRIGHTNESS_MODE_DOZE = 2;
+    public static final int AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR = 3;
+    public static final int AUTO_BRIGHTNESS_MODE_MAX = AUTO_BRIGHTNESS_MODE_DOZE;
 
     // How long the current sensor reading is assumed to be valid beyond the current time.
     // This provides a bit of prediction, as well as ensures that the weight for the last sample is
@@ -91,10 +121,11 @@ public class AutomaticBrightnessController {
     private final Sensor mLightSensor;
 
     // The mapper to translate ambient lux to screen brightness in the range [0, 1.0].
-    @Nullable
+    @NonNull
     private BrightnessMappingStrategy mCurrentBrightnessMapper;
-    private final BrightnessMappingStrategy mInteractiveModeBrightnessMapper;
-    private final BrightnessMappingStrategy mIdleModeBrightnessMapper;
+
+    // A map of Brightness Mapping Strategies indexed by AutomaticBrightnessMode
+    private final SparseArray<BrightnessMappingStrategy> mBrightnessMappingStrategyMap;
 
     // The minimum and maximum screen brightnesses.
     private final float mScreenBrightnessRangeMinimum;
@@ -156,7 +187,7 @@ public class AutomaticBrightnessController {
     private long mLightSensorEnableTime;
 
     // The currently accepted nominal ambient light level.
-    private float mAmbientLux;
+    private float mAmbientLux = INVALID_LUX;
 
     // The last calculated ambient light level (long time window).
     private float mSlowAmbientLux;
@@ -213,6 +244,11 @@ public class AutomaticBrightnessController {
     // where the light sensor may not be available.
     private int mDisplayPolicy = DisplayPowerRequest.POLICY_OFF;
 
+    private int mDisplayState = Display.STATE_UNKNOWN;
+
+    // True if the normal brightness should be forced while device is dozing.
+    private boolean mUseNormalBrightnessForDoze;
+
     // True if we are collecting a brightness adjustment sample, along with some data
     // for the initial state of the sample.
     private boolean mBrightnessAdjustmentSamplePending;
@@ -249,9 +285,11 @@ public class AutomaticBrightnessController {
     private Clock mClock;
     private final Injector mInjector;
 
+    private final DisplayManagerFlags mDisplayManagerFlags;
+
     AutomaticBrightnessController(Callbacks callbacks, Looper looper,
             SensorManager sensorManager, Sensor lightSensor,
-            BrightnessMappingStrategy interactiveModeBrightnessMapper,
+            SparseArray<BrightnessMappingStrategy> brightnessMappingStrategyMap,
             int lightSensorWarmUpTime, float brightnessMin, float brightnessMax,
             float dozeScaleFactor, int lightSensorRate, int initialLightSensorRate,
             long brighteningLightDebounceConfig, long darkeningLightDebounceConfig,
@@ -261,26 +299,26 @@ public class AutomaticBrightnessController {
             HysteresisLevels ambientBrightnessThresholdsIdle,
             HysteresisLevels screenBrightnessThresholdsIdle, Context context,
             BrightnessRangeController brightnessModeController,
-            BrightnessThrottler brightnessThrottler,
-            BrightnessMappingStrategy idleModeBrightnessMapper, int ambientLightHorizonShort,
-            int ambientLightHorizonLong, float userLux, float userBrightness) {
+            BrightnessThrottler brightnessThrottler, int ambientLightHorizonShort,
+            int ambientLightHorizonLong, float userLux, float userNits,
+            DisplayManagerFlags displayManagerFlags) {
         this(new Injector(), callbacks, looper, sensorManager, lightSensor,
-                interactiveModeBrightnessMapper,
-                lightSensorWarmUpTime, brightnessMin, brightnessMax, dozeScaleFactor,
-                lightSensorRate, initialLightSensorRate, brighteningLightDebounceConfig,
-                darkeningLightDebounceConfig, brighteningLightDebounceConfigIdle,
-                darkeningLightDebounceConfigIdle, resetAmbientLuxAfterWarmUpConfig,
-                ambientBrightnessThresholds, screenBrightnessThresholds,
-                ambientBrightnessThresholdsIdle, screenBrightnessThresholdsIdle, context,
-                brightnessModeController, brightnessThrottler, idleModeBrightnessMapper,
-                ambientLightHorizonShort, ambientLightHorizonLong, userLux, userBrightness
+                brightnessMappingStrategyMap, lightSensorWarmUpTime, brightnessMin, brightnessMax,
+                dozeScaleFactor, lightSensorRate, initialLightSensorRate,
+                brighteningLightDebounceConfig, darkeningLightDebounceConfig,
+                brighteningLightDebounceConfigIdle, darkeningLightDebounceConfigIdle,
+                resetAmbientLuxAfterWarmUpConfig, ambientBrightnessThresholds,
+                screenBrightnessThresholds, ambientBrightnessThresholdsIdle,
+                screenBrightnessThresholdsIdle, context, brightnessModeController,
+                brightnessThrottler, ambientLightHorizonShort, ambientLightHorizonLong, userLux,
+                userNits, displayManagerFlags
         );
     }
 
     @VisibleForTesting
     AutomaticBrightnessController(Injector injector, Callbacks callbacks, Looper looper,
             SensorManager sensorManager, Sensor lightSensor,
-            BrightnessMappingStrategy interactiveModeBrightnessMapper,
+            SparseArray<BrightnessMappingStrategy> brightnessMappingStrategyMap,
             int lightSensorWarmUpTime, float brightnessMin, float brightnessMax,
             float dozeScaleFactor, int lightSensorRate, int initialLightSensorRate,
             long brighteningLightDebounceConfig, long darkeningLightDebounceConfig,
@@ -289,16 +327,16 @@ public class AutomaticBrightnessController {
             HysteresisLevels screenBrightnessThresholds,
             HysteresisLevels ambientBrightnessThresholdsIdle,
             HysteresisLevels screenBrightnessThresholdsIdle, Context context,
-            BrightnessRangeController brightnessModeController,
-            BrightnessThrottler brightnessThrottler,
-            BrightnessMappingStrategy idleModeBrightnessMapper, int ambientLightHorizonShort,
-            int ambientLightHorizonLong, float userLux, float userBrightness) {
+            BrightnessRangeController brightnessRangeController,
+            BrightnessThrottler brightnessThrottler, int ambientLightHorizonShort,
+            int ambientLightHorizonLong, float userLux, float userNits,
+            DisplayManagerFlags displayManagerFlags) {
         mInjector = injector;
-        mClock = injector.createClock();
+        mClock = injector.createClock(displayManagerFlags.offloadControlsDozeAutoBrightness());
         mContext = context;
         mCallbacks = callbacks;
         mSensorManager = sensorManager;
-        mCurrentBrightnessMapper = interactiveModeBrightnessMapper;
+        mCurrentBrightnessMapper = brightnessMappingStrategyMap.get(AUTO_BRIGHTNESS_MODE_DEFAULT);
         mScreenBrightnessRangeMinimum = brightnessMin;
         mScreenBrightnessRangeMaximum = brightnessMax;
         mLightSensorWarmUpTimeConfig = lightSensorWarmUpTime;
@@ -335,15 +373,15 @@ public class AutomaticBrightnessController {
         mPendingForegroundAppPackageName = null;
         mForegroundAppCategory = ApplicationInfo.CATEGORY_UNDEFINED;
         mPendingForegroundAppCategory = ApplicationInfo.CATEGORY_UNDEFINED;
-        mBrightnessRangeController = brightnessModeController;
+        mBrightnessRangeController = brightnessRangeController;
         mBrightnessThrottler = brightnessThrottler;
-        mInteractiveModeBrightnessMapper = interactiveModeBrightnessMapper;
-        mIdleModeBrightnessMapper = idleModeBrightnessMapper;
-        // Initialize to active (normal) screen brightness mode
-        switchToInteractiveScreenBrightnessMode();
+        mBrightnessMappingStrategyMap = brightnessMappingStrategyMap;
+        mDisplayManagerFlags = displayManagerFlags;
 
         // Use the given short-term model
-        setScreenBrightnessByUser(userLux, userBrightness);
+        if (userNits != BrightnessMappingStrategy.INVALID_NITS) {
+            setScreenBrightnessByUser(userLux, getBrightnessFromNits(userNits));
+        }
     }
 
     /**
@@ -358,11 +396,8 @@ public class AutomaticBrightnessController {
         if (mLoggingEnabled == loggingEnabled) {
             return false;
         }
-        if (mInteractiveModeBrightnessMapper != null) {
-            mInteractiveModeBrightnessMapper.setLoggingEnabled(loggingEnabled);
-        }
-        if (mIdleModeBrightnessMapper != null) {
-            mIdleModeBrightnessMapper.setLoggingEnabled(loggingEnabled);
+        for (int i = 0; i < mBrightnessMappingStrategyMap.size(); i++) {
+            mBrightnessMappingStrategyMap.valueAt(i).setLoggingEnabled(loggingEnabled);
         }
         mLoggingEnabled = loggingEnabled;
         return true;
@@ -387,22 +422,20 @@ public class AutomaticBrightnessController {
             brightnessEvent.setRecommendedBrightness(mScreenAutoBrightness);
             brightnessEvent.setFlags(brightnessEvent.getFlags()
                     | (!mAmbientLuxValid ? BrightnessEvent.FLAG_INVALID_LUX : 0)
-                    | (mDisplayPolicy == DisplayPowerRequest.POLICY_DOZE
-                        ? BrightnessEvent.FLAG_DOZE_SCALE : 0)
-                    | (mCurrentBrightnessMapper.isForIdleMode()
-                        ? BrightnessEvent.FLAG_IDLE_CURVE : 0));
+                    | (shouldApplyDozeScaleFactor() ? BrightnessEvent.FLAG_DOZE_SCALE : 0));
+            brightnessEvent.setAutoBrightnessMode(getMode());
         }
 
         if (!mAmbientLuxValid) {
             return PowerManager.BRIGHTNESS_INVALID_FLOAT;
         }
-        if (mDisplayPolicy == DisplayPowerRequest.POLICY_DOZE) {
+        if (shouldApplyDozeScaleFactor()) {
             return mScreenAutoBrightness * mDozeScaleFactor;
         }
         return mScreenAutoBrightness;
     }
 
-    float getRawAutomaticScreenBrightness() {
+    public float getRawAutomaticScreenBrightness() {
         return mRawScreenAutoBrightness;
     }
 
@@ -416,17 +449,13 @@ public class AutomaticBrightnessController {
 
     public void configure(int state, @Nullable BrightnessConfiguration configuration,
             float brightness, boolean userChangedBrightness, float adjustment,
-            boolean userChangedAutoBrightnessAdjustment, int displayPolicy,
-            boolean shouldResetShortTermModel) {
+            boolean userChangedAutoBrightnessAdjustment, int displayPolicy, int displayState,
+            boolean useNormalBrightnessForDoze, boolean shouldResetShortTermModel) {
         mState = state;
-        // While dozing, the application processor may be suspended which will prevent us from
-        // receiving new information from the light sensor. On some devices, we may be able to
-        // switch to a wake-up light sensor instead but for now we will simply disable the sensor
-        // and hold onto the last computed screen auto brightness.  We save the dozing flag for
-        // debugging purposes.
-        boolean dozing = (displayPolicy == DisplayPowerRequest.POLICY_DOZE);
         boolean changed = setBrightnessConfiguration(configuration, shouldResetShortTermModel);
         changed |= setDisplayPolicy(displayPolicy);
+        mDisplayState = displayState;
+        mUseNormalBrightnessForDoze = useNormalBrightnessForDoze;
         if (userChangedAutoBrightnessAdjustment) {
             changed |= setAutoBrightnessAdjustment(adjustment);
         }
@@ -438,10 +467,10 @@ public class AutomaticBrightnessController {
         }
         final boolean userInitiatedChange =
                 userChangedBrightness || userChangedAutoBrightnessAdjustment;
-        if (userInitiatedChange && enable && !dozing) {
+        if (userInitiatedChange && enable) {
             prepareBrightnessAdjustmentSample();
         }
-        changed |= setLightSensorEnabled(enable && !dozing);
+        changed |= setLightSensorEnabled(enable);
 
         if (mIsBrightnessThrottled != mBrightnessThrottler.isThrottled()) {
             // Maximum brightness has changed, so recalculate display brightness.
@@ -464,15 +493,13 @@ public class AutomaticBrightnessController {
 
     // Used internally to establish whether we have deviated from the default config.
     public boolean isDefaultConfig() {
-        if (isInIdleMode()) {
-            return false;
-        }
-        return mInteractiveModeBrightnessMapper.isDefaultConfig();
+        return mCurrentBrightnessMapper.getMode() == AUTO_BRIGHTNESS_MODE_DEFAULT
+                && mCurrentBrightnessMapper.isDefaultConfig();
     }
 
     // Called from APIs to get the configuration.
     public BrightnessConfiguration getDefaultConfig() {
-        return mInteractiveModeBrightnessMapper.getDefaultConfig();
+        return mBrightnessMappingStrategyMap.get(AUTO_BRIGHTNESS_MODE_DEFAULT).getDefaultConfig();
     }
 
     /**
@@ -527,8 +554,7 @@ public class AutomaticBrightnessController {
     }
 
     private boolean setScreenBrightnessByUser(float lux, float brightness) {
-        if (lux == BrightnessMappingStrategy.NO_USER_LUX
-                || brightness == BrightnessMappingStrategy.NO_USER_BRIGHTNESS) {
+        if (lux == INVALID_LUX || Float.isNaN(brightness)) {
             return false;
         }
         mCurrentBrightnessMapper.addUserDataPoint(lux, brightness);
@@ -539,11 +565,13 @@ public class AutomaticBrightnessController {
     public void resetShortTermModel() {
         mCurrentBrightnessMapper.clearUserDataPoints();
         mShortTermModel.reset();
+        Slog.i(TAG, "Resetting short term model");
     }
 
     public boolean setBrightnessConfiguration(BrightnessConfiguration configuration,
             boolean shouldResetShortTermModel) {
-        if (mInteractiveModeBrightnessMapper.setBrightnessConfiguration(configuration)) {
+        if (mBrightnessMappingStrategyMap.get(AUTO_BRIGHTNESS_MODE_DEFAULT)
+                .setBrightnessConfiguration(configuration)) {
             if (!isInIdleMode() && shouldResetShortTermModel) {
                 resetShortTermModel();
             }
@@ -552,89 +580,101 @@ public class AutomaticBrightnessController {
         return false;
     }
 
+    /**
+     * @return The auto-brightness mode of the current mapping strategy. Different modes use
+     * different brightness curves.
+     */
+    @AutomaticBrightnessController.AutomaticBrightnessMode
+    public int getMode() {
+        return mCurrentBrightnessMapper.getMode();
+    }
+
+    /**
+     * @return The preset for this mapping strategy. Presets are used on devices that allow users
+     * to choose from a set of predefined options in display auto-brightness settings.
+     */
+    public int getPreset() {
+        return mCurrentBrightnessMapper.getPreset();
+    }
+
     public boolean isInIdleMode() {
-        return mCurrentBrightnessMapper.isForIdleMode();
+        return mCurrentBrightnessMapper.getMode() == AUTO_BRIGHTNESS_MODE_IDLE;
     }
 
     public void dump(PrintWriter pw) {
+        IndentingPrintWriter ipw = new IndentingPrintWriter(pw);
+        ipw.increaseIndent();
         pw.println();
         pw.println("Automatic Brightness Controller Configuration:");
-        pw.println("  mState=" + configStateToString(mState));
-        pw.println("  mScreenBrightnessRangeMinimum=" + mScreenBrightnessRangeMinimum);
-        pw.println("  mScreenBrightnessRangeMaximum=" + mScreenBrightnessRangeMaximum);
-        pw.println("  mDozeScaleFactor=" + mDozeScaleFactor);
-        pw.println("  mInitialLightSensorRate=" + mInitialLightSensorRate);
-        pw.println("  mNormalLightSensorRate=" + mNormalLightSensorRate);
-        pw.println("  mLightSensorWarmUpTimeConfig=" + mLightSensorWarmUpTimeConfig);
-        pw.println("  mBrighteningLightDebounceConfig=" + mBrighteningLightDebounceConfig);
-        pw.println("  mDarkeningLightDebounceConfig=" + mDarkeningLightDebounceConfig);
-        pw.println("  mBrighteningLightDebounceConfigIdle=" + mBrighteningLightDebounceConfigIdle);
-        pw.println("  mDarkeningLightDebounceConfigIdle=" + mDarkeningLightDebounceConfigIdle);
-        pw.println("  mResetAmbientLuxAfterWarmUpConfig=" + mResetAmbientLuxAfterWarmUpConfig);
-        pw.println("  mAmbientLightHorizonLong=" + mAmbientLightHorizonLong);
-        pw.println("  mAmbientLightHorizonShort=" + mAmbientLightHorizonShort);
-        pw.println("  mWeightingIntercept=" + mWeightingIntercept);
+        pw.println("----------------------------------------------");
+        ipw.println("mState=" + configStateToString(mState));
+        ipw.println("mScreenBrightnessRangeMinimum=" + mScreenBrightnessRangeMinimum);
+        ipw.println("mScreenBrightnessRangeMaximum=" + mScreenBrightnessRangeMaximum);
+        ipw.println("mDozeScaleFactor=" + mDozeScaleFactor);
+        ipw.println("mInitialLightSensorRate=" + mInitialLightSensorRate);
+        ipw.println("mNormalLightSensorRate=" + mNormalLightSensorRate);
+        ipw.println("mLightSensorWarmUpTimeConfig=" + mLightSensorWarmUpTimeConfig);
+        ipw.println("mBrighteningLightDebounceConfig=" + mBrighteningLightDebounceConfig);
+        ipw.println("mDarkeningLightDebounceConfig=" + mDarkeningLightDebounceConfig);
+        ipw.println("mBrighteningLightDebounceConfigIdle=" + mBrighteningLightDebounceConfigIdle);
+        ipw.println("mDarkeningLightDebounceConfigIdle=" + mDarkeningLightDebounceConfigIdle);
+        ipw.println("mResetAmbientLuxAfterWarmUpConfig=" + mResetAmbientLuxAfterWarmUpConfig);
+        ipw.println("mAmbientLightHorizonLong=" + mAmbientLightHorizonLong);
+        ipw.println("mAmbientLightHorizonShort=" + mAmbientLightHorizonShort);
+        ipw.println("mWeightingIntercept=" + mWeightingIntercept);
 
         pw.println();
         pw.println("Automatic Brightness Controller State:");
-        pw.println("  mLightSensor=" + mLightSensor);
-        pw.println("  mLightSensorEnabled=" + mLightSensorEnabled);
-        pw.println("  mLightSensorEnableTime=" + TimeUtils.formatUptime(mLightSensorEnableTime));
-        pw.println("  mCurrentLightSensorRate=" + mCurrentLightSensorRate);
-        pw.println("  mAmbientLux=" + mAmbientLux);
-        pw.println("  mAmbientLuxValid=" + mAmbientLuxValid);
-        pw.println("  mPreThresholdLux=" + mPreThresholdLux);
-        pw.println("  mPreThresholdBrightness=" + mPreThresholdBrightness);
-        pw.println("  mAmbientBrighteningThreshold=" + mAmbientBrighteningThreshold);
-        pw.println("  mAmbientDarkeningThreshold=" + mAmbientDarkeningThreshold);
-        pw.println("  mScreenBrighteningThreshold=" + mScreenBrighteningThreshold);
-        pw.println("  mScreenDarkeningThreshold=" + mScreenDarkeningThreshold);
-        pw.println("  mLastObservedLux=" + mLastObservedLux);
-        pw.println("  mLastObservedLuxTime=" + TimeUtils.formatUptime(mLastObservedLuxTime));
-        pw.println("  mRecentLightSamples=" + mRecentLightSamples);
-        pw.println("  mAmbientLightRingBuffer=" + mAmbientLightRingBuffer);
-        pw.println("  mScreenAutoBrightness=" + mScreenAutoBrightness);
-        pw.println("  mDisplayPolicy=" + DisplayPowerRequest.policyToString(mDisplayPolicy));
-        pw.println("  mShortTermModelTimeout(active)="
-                + mInteractiveModeBrightnessMapper.getShortTermModelTimeout());
-        if (mIdleModeBrightnessMapper != null) {
-            pw.println("  mShortTermModelTimeout(idle)="
-                    + mIdleModeBrightnessMapper.getShortTermModelTimeout());
-        }
-        pw.println("  mShortTermModel=");
-        mShortTermModel.dump(pw);
-        pw.println("  mPausedShortTermModel=");
-        mPausedShortTermModel.dump(pw);
+        pw.println("--------------------------------------");
+        ipw.println("mLightSensor=" + mLightSensor);
+        ipw.println("mLightSensorEnabled=" + mLightSensorEnabled);
+        ipw.println("mLightSensorEnableTime=" + TimeUtils.formatUptime(mLightSensorEnableTime));
+        ipw.println("mCurrentLightSensorRate=" + mCurrentLightSensorRate);
+        ipw.println("mAmbientLux=" + mAmbientLux);
+        ipw.println("mAmbientLuxValid=" + mAmbientLuxValid);
+        ipw.println("mPreThresholdLux=" + mPreThresholdLux);
+        ipw.println("mPreThresholdBrightness=" + mPreThresholdBrightness);
+        ipw.println("mAmbientBrighteningThreshold=" + mAmbientBrighteningThreshold);
+        ipw.println("mAmbientDarkeningThreshold=" + mAmbientDarkeningThreshold);
+        ipw.println("mScreenBrighteningThreshold=" + mScreenBrighteningThreshold);
+        ipw.println("mScreenDarkeningThreshold=" + mScreenDarkeningThreshold);
+        ipw.println("mLastObservedLux=" + mLastObservedLux);
+        ipw.println("mLastObservedLuxTime=" + TimeUtils.formatUptime(mLastObservedLuxTime));
+        ipw.println("mRecentLightSamples=" + mRecentLightSamples);
+        ipw.println("mAmbientLightRingBuffer=" + mAmbientLightRingBuffer);
+        ipw.println("mScreenAutoBrightness=" + mScreenAutoBrightness);
+        ipw.println("mDisplayPolicy=" + DisplayPowerRequest.policyToString(mDisplayPolicy));
+        ipw.println("mShortTermModel=");
 
-        pw.println();
-        pw.println("  mBrightnessAdjustmentSamplePending=" + mBrightnessAdjustmentSamplePending);
-        pw.println("  mBrightnessAdjustmentSampleOldLux=" + mBrightnessAdjustmentSampleOldLux);
-        pw.println("  mBrightnessAdjustmentSampleOldBrightness="
+        mShortTermModel.dump(ipw);
+        ipw.println("mPausedShortTermModel=");
+        mPausedShortTermModel.dump(ipw);
+
+        ipw.println();
+        ipw.println("mBrightnessAdjustmentSamplePending=" + mBrightnessAdjustmentSamplePending);
+        ipw.println("mBrightnessAdjustmentSampleOldLux=" + mBrightnessAdjustmentSampleOldLux);
+        ipw.println("mBrightnessAdjustmentSampleOldBrightness="
                 + mBrightnessAdjustmentSampleOldBrightness);
-        pw.println("  mForegroundAppPackageName=" + mForegroundAppPackageName);
-        pw.println("  mPendingForegroundAppPackageName=" + mPendingForegroundAppPackageName);
-        pw.println("  mForegroundAppCategory=" + mForegroundAppCategory);
-        pw.println("  mPendingForegroundAppCategory=" + mPendingForegroundAppCategory);
-        pw.println("  Idle mode active=" + mCurrentBrightnessMapper.isForIdleMode());
+        ipw.println("mForegroundAppPackageName=" + mForegroundAppPackageName);
+        ipw.println("mPendingForegroundAppPackageName=" + mPendingForegroundAppPackageName);
+        ipw.println("mForegroundAppCategory=" + mForegroundAppCategory);
+        ipw.println("mPendingForegroundAppCategory=" + mPendingForegroundAppCategory);
+        ipw.println("Current mode="
+                + autoBrightnessModeToString(mCurrentBrightnessMapper.getMode()));
 
-        pw.println();
-        pw.println("  mInteractiveMapper=");
-        mInteractiveModeBrightnessMapper.dump(pw,
-                mBrightnessRangeController.getNormalBrightnessMax());
-        if (mIdleModeBrightnessMapper != null) {
-            pw.println("  mIdleMapper=");
-            mIdleModeBrightnessMapper.dump(pw, mBrightnessRangeController.getNormalBrightnessMax());
+        for (int i = 0; i < mBrightnessMappingStrategyMap.size(); i++) {
+            ipw.println();
+            ipw.println("Mapper for mode "
+                    + autoBrightnessModeToString(mBrightnessMappingStrategyMap.keyAt(i)) + ":");
+            mBrightnessMappingStrategyMap.valueAt(i).dump(ipw,
+                    mBrightnessRangeController.getNormalBrightnessMax());
         }
 
-        pw.println();
-        pw.println("  mAmbientBrightnessThresholds=");
-        mAmbientBrightnessThresholds.dump(pw);
-        pw.println("  mScreenBrightnessThresholds=");
-        mScreenBrightnessThresholds.dump(pw);
-        pw.println("  mScreenBrightnessThresholdsIdle=");
-        mScreenBrightnessThresholdsIdle.dump(pw);
-        pw.println("  mAmbientBrightnessThresholdsIdle=");
-        mAmbientBrightnessThresholdsIdle.dump(pw);
+        ipw.println();
+        ipw.println("mAmbientBrightnessThresholds=" + mAmbientBrightnessThresholds);
+        ipw.println("mAmbientBrightnessThresholdsIdle=" + mAmbientBrightnessThresholdsIdle);
+        ipw.println("mScreenBrightnessThresholds=" + mScreenBrightnessThresholds);
+        ipw.println("mScreenBrightnessThresholdsIdle=" + mScreenBrightnessThresholdsIdle);
     }
 
     public float[] getLastSensorValues() {
@@ -704,7 +744,6 @@ public class AutomaticBrightnessController {
         mRecentLightSamples++;
         mAmbientLightRingBuffer.prune(time - mAmbientLightHorizonLong);
         mAmbientLightRingBuffer.push(time, lux);
-
         // Remember this sample value.
         mLastObservedLux = lux;
         mLastObservedLuxTime = time;
@@ -750,7 +789,6 @@ public class AutomaticBrightnessController {
                     mAmbientBrightnessThresholds.getDarkeningThreshold(lux);
         }
         mBrightnessRangeController.onAmbientLuxChange(mAmbientLux);
-
 
         // If the short term model was invalidated and the change is drastic enough, reset it.
         mShortTermModel.maybeReset(mAmbientLux);
@@ -848,7 +886,7 @@ public class AutomaticBrightnessController {
     }
 
     private void updateAmbientLux() {
-        long time = mClock.uptimeMillis();
+        long time = mClock.getSensorEventScaleTime();
         mAmbientLightRingBuffer.prune(time - mAmbientLightHorizonLong);
         updateAmbientLux(time);
     }
@@ -902,7 +940,7 @@ public class AutomaticBrightnessController {
             setAmbientLux(mFastAmbientLux);
             if (mLoggingEnabled) {
                 Slog.d(TAG, "updateAmbientLux: "
-                        + ((mFastAmbientLux > mAmbientLux) ? "Brightened" : "Darkened") + ": "
+                        + ((mFastAmbientLux > mPreThresholdLux) ? "Brightened" : "Darkened") + ": "
                         + "mAmbientBrighteningThreshold=" + mAmbientBrighteningThreshold + ", "
                         + "mAmbientDarkeningThreshold=" + mAmbientDarkeningThreshold + ", "
                         + "mAmbientLightRingBuffer=" + mAmbientLightRingBuffer + ", "
@@ -925,7 +963,16 @@ public class AutomaticBrightnessController {
             Slog.d(TAG, "updateAmbientLux: Scheduling ambient lux update for " +
                     nextTransitionTime + TimeUtils.formatUptime(nextTransitionTime));
         }
-        mHandler.sendEmptyMessageAtTime(MSG_UPDATE_AMBIENT_LUX, nextTransitionTime);
+
+        // The nextTransitionTime is computed as elapsedTime(Which also accounts for the time when
+        // android was sleeping) as the main reference. However, handlers work on the uptime(Not
+        // accounting for the time when android was sleeping)
+        mHandler.sendEmptyMessageAtTime(MSG_UPDATE_AMBIENT_LUX,
+                convertToUptime(nextTransitionTime));
+    }
+
+    private long convertToUptime(long time) {
+        return time - mClock.getSensorEventScaleTime() + mClock.uptimeMillis();
     }
 
     private void updateAutoBrightness(boolean sendUpdate, boolean isManuallySet) {
@@ -1117,45 +1164,8 @@ public class AutomaticBrightnessController {
         updateAutoBrightness(true /* sendUpdate */, false /* isManuallySet */);
     }
 
-    void switchToIdleMode() {
-        if (mIdleModeBrightnessMapper == null) {
-            return;
-        }
-        if (mCurrentBrightnessMapper.isForIdleMode()) {
-            return;
-        }
-        Slog.i(TAG, "Switching to Idle Screen Brightness Mode");
+    private void switchModeAndShortTermModels(@AutomaticBrightnessMode int mode) {
         // Stash short term model
-        ShortTermModel tempShortTermModel = new ShortTermModel();
-        tempShortTermModel.set(mCurrentBrightnessMapper.getUserLux(),
-                mCurrentBrightnessMapper.getUserBrightness(), /* valid= */ true);
-
-        // Send delayed timeout
-        mHandler.sendEmptyMessageAtTime(MSG_INVALIDATE_PAUSED_SHORT_TERM_MODEL,
-                mClock.uptimeMillis()
-                        + mCurrentBrightnessMapper.getShortTermModelTimeout());
-
-        Slog.i(TAG, "mPreviousShortTermModel" + mPausedShortTermModel);
-        // new brightness mapper
-        mCurrentBrightnessMapper = mIdleModeBrightnessMapper;
-
-        // if previous stm has been invalidated, and lux has drastically changed, just use
-        // the new, reset stm.
-        // if previous stm is still valid then revalidate it
-        if (mPausedShortTermModel != null && !mPausedShortTermModel.maybeReset(mAmbientLux)) {
-            setScreenBrightnessByUser(mPausedShortTermModel.mAnchor,
-                    mPausedShortTermModel.mBrightness);
-        }
-        mPausedShortTermModel.copyFrom(tempShortTermModel);
-
-        update();
-    }
-
-    void switchToInteractiveScreenBrightnessMode() {
-        if (!mCurrentBrightnessMapper.isForIdleMode()) {
-            return;
-        }
-        Slog.i(TAG, "Switching to Interactive Screen Brightness Mode");
         ShortTermModel tempShortTermModel = new ShortTermModel();
         tempShortTermModel.set(mCurrentBrightnessMapper.getUserLux(),
                 mCurrentBrightnessMapper.getUserBrightness(), /* valid= */ true);
@@ -1164,21 +1174,55 @@ public class AutomaticBrightnessController {
         mHandler.sendEmptyMessageAtTime(MSG_INVALIDATE_PAUSED_SHORT_TERM_MODEL,
                 mClock.uptimeMillis()
                         + mCurrentBrightnessMapper.getShortTermModelTimeout());
-        Slog.i(TAG, "mPreviousShortTermModel" + mPausedShortTermModel.toString());
 
-        // restore interactive mapper.
-        mCurrentBrightnessMapper = mInteractiveModeBrightnessMapper;
+        Slog.i(TAG, "mPreviousShortTermModel: " + mPausedShortTermModel);
+        // new brightness mapper
+        mCurrentBrightnessMapper = mBrightnessMappingStrategyMap.get(mode);
 
         // if previous stm has been invalidated, and lux has drastically changed, just use
         // the new, reset stm.
         // if previous stm is still valid then revalidate it
-        if (!mPausedShortTermModel.maybeReset(mAmbientLux)) {
-            setScreenBrightnessByUser(mPausedShortTermModel.mAnchor,
-                    mPausedShortTermModel.mBrightness);
+        if (mPausedShortTermModel != null) {
+            if (!mPausedShortTermModel.maybeReset(mAmbientLux)) {
+                setScreenBrightnessByUser(mPausedShortTermModel.mAnchor,
+                        mPausedShortTermModel.mBrightness);
+            }
+            mPausedShortTermModel.copyFrom(tempShortTermModel);
         }
-        mPausedShortTermModel.copyFrom(tempShortTermModel);
+    }
 
-        update();
+    /**
+     * Responsible for switching the AutomaticBrightnessMode of the associated display. Also takes
+     * care of resetting the short term model wherever required
+     */
+    public void switchMode(@AutomaticBrightnessMode int mode, boolean sendUpdate) {
+        if (!mBrightnessMappingStrategyMap.contains(mode)) {
+            return;
+        }
+        if (mCurrentBrightnessMapper.getMode() == mode) {
+            return;
+        }
+        Slog.i(TAG, "Switching to mode " + autoBrightnessModeToString(mode));
+        if (mode == AUTO_BRIGHTNESS_MODE_IDLE
+                || mCurrentBrightnessMapper.getMode() == AUTO_BRIGHTNESS_MODE_IDLE) {
+            switchModeAndShortTermModels(mode);
+        } else {
+            resetShortTermModel();
+            mCurrentBrightnessMapper = mBrightnessMappingStrategyMap.get(mode);
+        }
+        if (sendUpdate) {
+            update();
+        } else {
+            updateAutoBrightness(/* sendUpdate= */ false, /* isManuallySet= */ false);
+        }
+    }
+
+    float getUserLux() {
+        return mCurrentBrightnessMapper.getUserLux();
+    }
+
+    float getUserNits() {
+        return convertToNits(mCurrentBrightnessMapper.getUserBrightness());
     }
 
     /**
@@ -1187,14 +1231,11 @@ public class AutomaticBrightnessController {
      * passing the brightness value to follower displays.
      *
      * @param brightness The float scale value
-     * @return The nit value or -1f if no conversion is possible.
+     * @return The nit value or {@link BrightnessMappingStrategy.INVALID_NITS} if no conversion is
+     * possible.
      */
     public float convertToNits(float brightness) {
-        if (mCurrentBrightnessMapper != null) {
-            return mCurrentBrightnessMapper.convertToNits(brightness);
-        } else {
-            return -1.0f;
-        }
+        return mCurrentBrightnessMapper.convertToNits(brightness);
     }
 
     /**
@@ -1203,14 +1244,11 @@ public class AutomaticBrightnessController {
      * {@link com.android.server.display.BrightnessTracker}.
      *
      * @param brightness The float scale value
-     * @return The nit value or -1f if no conversion is possible.
+     * @return The nit value or {@link BrightnessMappingStrategy.INVALID_NITS} if no conversion is
+     * possible.
      */
     public float convertToAdjustedNits(float brightness) {
-        if (mCurrentBrightnessMapper != null) {
-            return mCurrentBrightnessMapper.convertToAdjustedNits(brightness);
-        } else {
-            return -1.0f;
-        }
+        return mCurrentBrightnessMapper.convertToAdjustedNits(brightness);
     }
 
     /**
@@ -1221,12 +1259,8 @@ public class AutomaticBrightnessController {
      * @return The float scale value or {@link PowerManager.BRIGHTNESS_INVALID_FLOAT} if no
      * conversion is possible.
      */
-    public float convertToFloatScale(float nits) {
-        if (mCurrentBrightnessMapper != null) {
-            return mCurrentBrightnessMapper.convertToFloatScale(nits);
-        } else {
-            return PowerManager.BRIGHTNESS_INVALID_FLOAT;
-        }
+    public float getBrightnessFromNits(float nits) {
+        return mCurrentBrightnessMapper.getBrightnessFromNits(nits);
     }
 
     public void recalculateSplines(boolean applyAdjustment, float[] adjustment) {
@@ -1244,19 +1278,27 @@ public class AutomaticBrightnessController {
         }
     }
 
+    private boolean shouldApplyDozeScaleFactor() {
+        // We don't apply the doze scale factor if we have a designated brightness curve for doze.
+        return (mDisplayManagerFlags.isNormalBrightnessForDozeParameterEnabled(mContext)
+                ? (!mUseNormalBrightnessForDoze && mDisplayPolicy == POLICY_DOZE)
+                        || Display.isDozeState(mDisplayState) : Display.isDozeState(mDisplayState))
+                && getMode() != AUTO_BRIGHTNESS_MODE_DOZE;
+    }
+
     private class ShortTermModel {
         // When the short term model is invalidated, we don't necessarily reset it (i.e. clear the
         // user's adjustment) immediately, but wait for a drastic enough change in the ambient
         // light.
         // The anchor determines what were the light levels when the user has set their preference,
         // and we use a relative threshold to determine when to revert to the OEM curve.
-        private float mAnchor = BrightnessMappingStrategy.NO_USER_LUX;
-        private float mBrightness = BrightnessMappingStrategy.NO_USER_BRIGHTNESS;
+        private float mAnchor = INVALID_LUX;
+        private float mBrightness = PowerManager.BRIGHTNESS_INVALID_FLOAT;
         private boolean mIsValid = false;
 
         private void reset() {
-            mAnchor = BrightnessMappingStrategy.NO_USER_LUX;
-            mBrightness = BrightnessMappingStrategy.NO_USER_BRIGHTNESS;
+            mAnchor = INVALID_LUX;
+            mBrightness = PowerManager.BRIGHTNESS_INVALID_FLOAT;
             mIsValid = false;
         }
 
@@ -1279,10 +1321,8 @@ public class AutomaticBrightnessController {
         private boolean maybeReset(float currentLux) {
             // If the short term model was invalidated and the change is drastic enough, reset it.
             // Otherwise, we revalidate it.
-            if (!mIsValid && mAnchor != -1) {
-                if (mCurrentBrightnessMapper != null
-                        && mCurrentBrightnessMapper.shouldResetShortTermModel(
-                        currentLux, mAnchor)) {
+            if (!mIsValid && mAnchor != INVALID_LUX) {
+                if (mCurrentBrightnessMapper.shouldResetShortTermModel(currentLux, mAnchor)) {
                     resetShortTermModel();
                 } else {
                     mIsValid = true;
@@ -1304,13 +1344,15 @@ public class AutomaticBrightnessController {
         }
 
         public String toString() {
-            return " mAnchor: " + mAnchor
+            return "mAnchor: " + mAnchor
                     + "\n mBrightness: " + mBrightness
                     + "\n mIsValid: " + mIsValid;
         }
 
-        void dump(PrintWriter pw) {
-            pw.println(this);
+        void dump(IndentingPrintWriter ipw) {
+            ipw.increaseIndent();
+            ipw.println(this);
+            ipw.decreaseIndent();
         }
 
     }
@@ -1358,7 +1400,9 @@ public class AutomaticBrightnessController {
         @Override
         public void onSensorChanged(SensorEvent event) {
             if (mLightSensorEnabled) {
-                final long time = mClock.uptimeMillis();
+                // The time received from the sensor is in nano seconds, hence changing it to ms
+                final long time = (mDisplayManagerFlags.offloadControlsDozeAutoBrightness())
+                        ? TimeUnit.NANOSECONDS.toMillis(event.timestamp) : mClock.uptimeMillis();
                 final float lux = event.values[0];
                 handleLightSensorEvent(time, lux);
             }
@@ -1391,6 +1435,12 @@ public class AutomaticBrightnessController {
          * Returns current time in milliseconds since boot, not counting time spent in deep sleep.
          */
         long uptimeMillis();
+
+        /**
+         * Gets the time on either the elapsedTime or the uptime scale, depending on how we
+         * processing the events from the sensor
+         */
+        long getSensorEventScaleTime();
     }
 
     /**
@@ -1538,7 +1588,8 @@ public class AutomaticBrightnessController {
             StringBuilder buf = new StringBuilder();
             buf.append('[');
             for (int i = 0; i < mCount; i++) {
-                final long next = i + 1 < mCount ? getTime(i + 1) : mClock.uptimeMillis();
+                final long next = i + 1 < mCount ? getTime(i + 1)
+                        : mClock.getSensorEventScaleTime();
                 if (i != 0) {
                     buf.append(", ");
                 }
@@ -1563,13 +1614,31 @@ public class AutomaticBrightnessController {
         }
     }
 
+    private static class RealClock implements Clock {
+        private final boolean mOffloadControlsDozeBrightness;
+
+        RealClock(boolean offloadControlsDozeBrightness) {
+            mOffloadControlsDozeBrightness = offloadControlsDozeBrightness;
+        }
+
+        @Override
+        public long uptimeMillis() {
+            return SystemClock.uptimeMillis();
+        }
+
+        public long getSensorEventScaleTime() {
+            return (mOffloadControlsDozeBrightness)
+                    ? SystemClock.elapsedRealtime() : uptimeMillis();
+        }
+    }
+
     public static class Injector {
         public Handler getBackgroundThreadHandler() {
             return BackgroundThread.getHandler();
         }
 
-        Clock createClock() {
-            return SystemClock::uptimeMillis;
+        Clock createClock(boolean offloadControlsDozeBrightness) {
+            return new RealClock(offloadControlsDozeBrightness);
         }
     }
 }

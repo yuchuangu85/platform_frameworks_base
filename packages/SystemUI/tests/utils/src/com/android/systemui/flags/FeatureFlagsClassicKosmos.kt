@@ -30,7 +30,16 @@ var Kosmos.featureFlagsClassic: FeatureFlagsClassic by Kosmos.Fixture { fakeFeat
  * Fixture supplying a shared [FakeFeatureFlagsClassic] instance. Can be accessed in tests in order
  * to override flag values.
  */
-val Kosmos.fakeFeatureFlagsClassic by Kosmos.Fixture { FakeFeatureFlagsClassic() }
+val Kosmos.fakeFeatureFlagsClassic by
+    Kosmos.Fixture {
+        FakeFeatureFlagsClassic().apply {
+            set(Flags.FULL_SCREEN_USER_SWITCHER, false)
+            set(Flags.LOCK_SCREEN_LONG_PRESS_ENABLED, false)
+            set(Flags.LOCKSCREEN_ENABLE_LANDSCAPE, false)
+            set(Flags.NSSL_DEBUG_LINES, false)
+            set(Flags.COMMUNAL_SERVICE_ENABLED, false)
+        }
+    }
 
 /**
  * Fixture supplying a real [FeatureFlagsClassicRelease] instance, for use by tests that want to
@@ -55,6 +64,7 @@ val Kosmos.featureFlagsClassicRelease by
     }
 
 val Kosmos.systemPropertiesHelper by Kosmos.Fixture { SystemPropertiesHelper() }
+val Kosmos.fakeSystemPropertiesHelper by Kosmos.Fixture { FakeSystemPropertiesHelper() }
 var Kosmos.serverFlagReader: ServerFlagReader by Kosmos.Fixture { serverFlagReaderFake }
 val Kosmos.serverFlagReaderFake by Kosmos.Fixture { ServerFlagReaderFake() }
 var Kosmos.restarter: Restarter by Kosmos.Fixture { mock() }

@@ -20,12 +20,17 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UserIdInt;
 import android.graphics.PointF;
+import android.hardware.display.DisplayTopology;
 import android.hardware.display.DisplayViewport;
+import android.hardware.input.KeyGestureEvent;
 import android.os.IBinder;
+import android.os.RemoteException;
+import android.util.SparseBooleanArray;
 import android.view.InputChannel;
 import android.view.inputmethod.InputMethodSubtype;
 
 import com.android.internal.inputmethod.InputMethodSubtypeHandle;
+import com.android.internal.policy.IShortcutService;
 
 import java.util.List;
 
@@ -43,10 +48,18 @@ public abstract class InputManagerInternal {
     public abstract void setDisplayViewports(List<DisplayViewport> viewports);
 
     /**
-     * Called by the power manager to tell the input manager whether it should start
-     * watching for wake events.
+     * Called by {@link com.android.server.display.DisplayManagerService} to inform InputManager
+     * about changes in the displays topology.
      */
-    public abstract void setInteractive(boolean interactive);
+    public abstract void setDisplayTopology(DisplayTopology topology);
+
+    /**
+     * Called by the power manager to tell the input manager whether it should start
+     * watching for wake events on given displays.
+     *
+     * @param displayInteractivities Map of display ids to their current interactive state.
+     */
+    public abstract void setDisplayInteractivities(SparseBooleanArray displayInteractivities);
 
     /**
      * Toggles Caps Lock state for input device with specific id.
@@ -61,53 +74,43 @@ public abstract class InputManagerInternal {
     public abstract void setPulseGestureEnabled(boolean enabled);
 
     /**
-     * Atomically transfers touch focus from one window to another as identified by
-     * their input channels.  It is possible for multiple windows to have
-     * touch focus if they support split touch dispatch
-     * {@link android.view.WindowManager.LayoutParams#FLAG_SPLIT_TOUCH} but this
-     * method only transfers touch focus of the specified window without affecting
-     * other windows that may also have touch focus at the same time.
+     * Atomically transfers an active touch gesture from one window to another, as identified by
+     * their input channels.
      *
-     * @param fromChannelToken The channel token of a window that currently has touch focus.
-     * @param toChannelToken The channel token of the window that should receive touch focus in
-     * place of the first.
-     * @return {@code true} if the transfer was successful. {@code false} if the window with the
-     * specified channel did not actually have touch focus at the time of the request.
+     * <p>Only the touch gesture that is currently being dispatched to a window associated with
+     * {@code fromChannelToken} will be effected. That window will no longer receive
+     * the touch gesture (i.e. it will receive {@link android.view.MotionEvent#ACTION_CANCEL}).
+     * A window associated with the {@code toChannelToken} will receive the rest of the gesture
+     * (i.e. beginning with {@link android.view.MotionEvent#ACTION_DOWN} or
+     * {@link android.view.MotionEvent#ACTION_POINTER_DOWN}).
+     *
+     * <p>Transferring touch gestures will have no impact on focused windows. If the {@code
+     * toChannelToken} window is focusable, this will not bring focus to that window.
+     *
+     * @param fromChannelToken The channel token of a window that has an active touch gesture.
+     * @param toChannelToken The channel token of the window that should receive the gesture in
+     *   place of the first.
+     * @return True if the transfer was successful. False if the specified windows don't exist, or
+     *   if the source window is not actively receiving a touch gesture at the time of the request.
      */
-    public abstract boolean transferTouchFocus(@NonNull IBinder fromChannelToken,
+    public abstract boolean transferTouchGesture(@NonNull IBinder fromChannelToken,
             @NonNull IBinder toChannelToken);
-
-    /**
-     * Sets the display id that the MouseCursorController will be forced to target. Pass
-     * {@link android.view.Display#INVALID_DISPLAY} to clear the override.
-     *
-     * Note: This method generally blocks until the pointer display override has propagated.
-     * When setting a new override, the caller should ensure that an input device that can control
-     * the mouse pointer is connected. If a new override is set when no such input device is
-     * connected, the caller may be blocked for an arbitrary period of time.
-     *
-     * @return true if the pointer displayId was set successfully, or false if it fails.
-     */
-    public abstract boolean setVirtualMousePointerDisplayId(int pointerDisplayId);
-
-    /**
-     * Gets the display id that the MouseCursorController is being forced to target. Returns
-     * {@link android.view.Display#INVALID_DISPLAY} if there is no override
-     */
-    public abstract int getVirtualMousePointerDisplayId();
 
     /**
      * Gets the current position of the mouse cursor.
      *
      * Returns NaN-s as the coordinates if the cursor is not available.
      */
-    public abstract PointF getCursorPosition();
+    public abstract PointF getCursorPosition(int displayId);
 
     /**
-     * Sets the pointer acceleration.
-     * See {@code frameworks/native/include/input/VelocityControl.h#VelocityControlParameters}.
+     * Enables or disables pointer acceleration for mouse movements.
+     *
+     * Note that this only affects pointer movements from mice (that is, pointing devices which send
+     * relative motions, including trackballs and pointing sticks), not from other pointer devices
+     * such as touchpads and styluses.
      */
-    public abstract void setPointerAcceleration(float acceleration, int displayId);
+    public abstract void setMousePointerAccelerationEnabled(boolean enabled, int displayId);
 
     /**
      * Sets the eligibility of windows on a given display for pointer capture. If a display is
@@ -127,6 +130,18 @@ public abstract class InputManagerInternal {
      * {@link #registerLidSwitchCallback(LidSwitchCallback)}.
      */
     public abstract void unregisterLidSwitchCallback(@NonNull LidSwitchCallback callbacks);
+
+    /**
+     * Notify the input manager that an IME connection is becoming active or is no longer active.
+     */
+    public abstract void notifyInputMethodConnectionActive(boolean connectionIsActive);
+
+    /**
+     * Notify user id changes to input.
+     *
+     * TODO(b/362473586): Cleanup after input shifts to Lifecycle with user change callbacks
+     */
+    public abstract void setCurrentUser(@UserIdInt int newUserId);
 
     /** Callback interface for notifications relating to the lid switch. */
     public interface LidSwitchCallback {
@@ -223,4 +238,75 @@ public abstract class InputManagerInternal {
      * display, external peripherals, fingerprint sensor, etc.
      */
     public abstract void notifyUserActivity();
+
+    /**
+     * Get the device ID of the {@link InputDevice} that used most recently.
+     *
+     * @return the last used input device ID, or
+     *     {@link android.os.IInputConstants#INVALID_INPUT_DEVICE_ID} if no device has been used
+     *     since boot.
+     */
+    public abstract int getLastUsedInputDeviceId();
+
+    /**
+     * Notify key gesture was completed by the user.
+     *
+     * NOTE: This is a temporary API added to assist in a long-term refactor, and is not meant for
+     * general use by system services.
+     *
+     * @param deviceId the device ID of the keyboard using which the event was completed
+     * @param keycodes the keys pressed for the event
+     * @param modifierState the modifier state
+     * @param event the gesture event that was completed
+     *
+     */
+    public abstract void notifyKeyGestureCompleted(int deviceId, int[] keycodes, int modifierState,
+            @KeyGestureEvent.KeyGestureType int event);
+
+    /**
+     * Notify that a key gesture was detected by another system component, and it should be handled
+     * appropriately by KeyGestureController.
+     *
+     * NOTE: This is a temporary API added to assist in a long-term refactor, and is not meant for
+     * general use by system services.
+     *
+     * @param deviceId the device ID of the keyboard using which the event was completed
+     * @param keycodes the keys pressed for the event
+     * @param modifierState the modifier state
+     * @param event the gesture event that was completed
+     *
+     */
+    public abstract void handleKeyGestureInKeyGestureController(int deviceId, int[] keycodes,
+            int modifierState, @KeyGestureEvent.KeyGestureType int event);
+
+    /**
+     * Sets the magnification scale factor for pointer icons.
+     *
+     * @param displayId   the ID of the display where the new scale factor is applied.
+     * @param scaleFactor the new scale factor to be applied for pointer icons.
+     */
+    public abstract void setAccessibilityPointerIconScaleFactor(int displayId, float scaleFactor);
+
+
+    /**
+     * Register shortcuts for input manager to dispatch.
+     * Shortcut code is packed as (metaState << Integer.SIZE) | keyCode
+     * @hide
+     */
+    public abstract void registerShortcutKey(long shortcutCode,
+            IShortcutService shortcutKeyReceiver) throws RemoteException;
+
+    /**
+     * Set whether the given input device can wake up the kernel from sleep
+     * when it generates input events. By default, usually only internal (built-in)
+     * input devices can wake the kernel from sleep. For an external input device
+     * that supports remote wakeup to be able to wake the kernel, this must be called
+     * after each time the device is connected/added.
+     *
+     * @param deviceId the device ID of the input device.
+     * @param enabled When true, device will be configured to wake up kernel.
+     *
+     * @return true if setting power wakeup was successful.
+     */
+    public abstract boolean setKernelWakeEnabled(int deviceId, boolean enabled);
 }

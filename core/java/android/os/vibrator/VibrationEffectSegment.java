@@ -17,6 +17,7 @@
 package android.os.vibrator;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.TestApi;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -45,6 +46,8 @@ public abstract class VibrationEffectSegment implements Parcelable {
     static final int PARCEL_TOKEN_PRIMITIVE = 2;
     static final int PARCEL_TOKEN_STEP = 3;
     static final int PARCEL_TOKEN_RAMP = 4;
+    static final int PARCEL_TOKEN_PWLE = 5;
+    static final int PARCEL_TOKEN_BASIC_PWLE = 6;
 
     /** Prevent subclassing from outside of this package */
     VibrationEffectSegment() {
@@ -58,10 +61,23 @@ public abstract class VibrationEffectSegment implements Parcelable {
      */
     public abstract long getDuration();
 
-   /**
-     * Checks if a given {@link Vibrator} can play this segment as intended. See
-     * {@link Vibrator#areVibrationFeaturesSupported(VibrationEffect)} for more information about
-     * what counts as supported by a vibrator, and what counts as not.
+    /**
+     * Gets the estimated duration of the segment for given vibrator, in milliseconds.
+     *
+     * <p>For segments with hardware-dependent constants (e.g. primitives), this returns the
+     * estimated duration based on the given {@link VibratorInfo}. For all other effects this will
+     * return the same as {@link #getDuration()}.
+     *
+     * @hide
+     */
+    public long getDuration(@Nullable VibratorInfo vibratorInfo) {
+        return getDuration();
+    }
+
+    /**
+     * Checks if a given {@link android.os.Vibrator} can play this segment as intended. See
+     * {@link android.os.Vibrator#areVibrationFeaturesSupported(VibrationEffect)} for more
+     * information about what counts as supported by a vibrator, and what counts as not.
      *
      * @hide
      */
@@ -96,6 +112,9 @@ public abstract class VibrationEffectSegment implements Parcelable {
     /**
      * Scale the segment intensity with the given factor.
      *
+     * <p> This scale is not necessarily linear and may apply a gamma correction to the scale
+     * factor before using it.
+     *
      * @param scaleFactor scale factor to be applied to the intensity. Values within [0,1) will
      *                    scale down the intensity, values larger than 1 will scale up
      *
@@ -103,6 +122,17 @@ public abstract class VibrationEffectSegment implements Parcelable {
      */
     @NonNull
     public abstract <T extends VibrationEffectSegment> T scale(float scaleFactor);
+
+    /**
+     * Performs a linear scaling on the segment intensity with the given factor.
+     *
+     * @param scaleFactor scale factor to be applied to the intensity. Values within [0,1) will
+     *                    scale down the intensity, values larger than 1 will scale up
+     *
+     * @hide
+     */
+    @NonNull
+    public abstract <T extends VibrationEffectSegment> T scaleLinearly(float scaleFactor);
 
     /**
      * Applies given effect strength to prebaked effects.
@@ -195,6 +225,16 @@ public abstract class VibrationEffectSegment implements Parcelable {
                             return new PrebakedSegment(in);
                         case PARCEL_TOKEN_PRIMITIVE:
                             return new PrimitiveSegment(in);
+                        case PARCEL_TOKEN_PWLE:
+                            if (Flags.normalizedPwleEffects()) {
+                                return new PwleSegment(in);
+                            }
+                            // Fall through to default if the flag is not enabled.
+                        case PARCEL_TOKEN_BASIC_PWLE:
+                            if (Flags.normalizedPwleEffects()) {
+                                return new BasicPwleSegment(in);
+                            }
+                            // Fall through to default if the flag is not enabled.
                         default:
                             throw new IllegalStateException(
                                     "Unexpected vibration event type token in parcel.");

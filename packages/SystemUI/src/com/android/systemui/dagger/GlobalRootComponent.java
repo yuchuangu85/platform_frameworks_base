@@ -17,9 +17,14 @@
 package com.android.systemui.dagger;
 
 import android.content.Context;
+import android.os.Looper;
 
 import com.android.systemui.dagger.qualifiers.InstrumentationTest;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.flags.SystemPropertiesHelper;
+import com.android.systemui.process.ProcessWrapper;
 import com.android.systemui.util.InitializationChecker;
+import com.android.wm.shell.dagger.WMComponent;
 
 import dagger.BindsInstance;
 
@@ -58,4 +63,20 @@ public interface GlobalRootComponent {
      * Returns an {@link InitializationChecker}.
      */
     InitializationChecker getInitializationChecker();
+
+    /**
+     * Returns the main looper for this process.
+     */
+    @Main
+    Looper getMainLooper();
+
+    /**
+     * Returns a {@link SystemPropertiesHelper}.
+     */
+    SystemPropertiesHelper getSystemPropertiesHelper();
+
+    /**
+     * Returns a {@link ProcessWrapper}
+     */
+    ProcessWrapper getProcessWrapper();
 }

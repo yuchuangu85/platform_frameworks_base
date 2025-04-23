@@ -33,8 +33,8 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Ідзе зарадка"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Ідзе хуткая зарадка"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Ідзе павольная зарадка"</string>
-    <string name="keyguard_plugged_in_charging_limited" msgid="1053130519456324630">"<xliff:g id="PERCENTAGE">%s</xliff:g> • У мэтах зберажэння акумулятара зарадка аптымізавана"</string>
-    <string name="keyguard_plugged_in_incompatible_charger" msgid="3687961801947819076">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Праблема з зараднай прыладай"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="5369697538556777542">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Зарадка прыпынена, каб абараніць акумулятар"</string>
+    <string name="keyguard_plugged_in_incompatible_charger" msgid="6384203333154532125">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Праверце зарадную прыладу"</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"Сетка заблакіравана"</string>
     <string name="keyguard_missing_sim_message_short" msgid="685029586173458728">"Няма SIM-карты"</string>
     <string name="keyguard_permanent_disabled_sim_message_short" msgid="3955052454216046100">"Непрыдатная для выкарыстання SIM-карта."</string>
@@ -111,6 +111,9 @@
     <string name="kg_prompt_reason_timeout_pattern" msgid="5514969660010197363">"У мэтах дадатковай бяспекі скарыстайце ўзор разблакіроўкі"</string>
     <string name="kg_prompt_reason_timeout_pin" msgid="4227962059353859376">"У мэтах дадатковай бяспекі скарыстайце PIN-код"</string>
     <string name="kg_prompt_reason_timeout_password" msgid="8810879144143933690">"У мэтах дадатковай бяспекі скарыстайце пароль"</string>
+    <string name="kg_prompt_added_security_pin" msgid="5487992065995475528">"Для дадатковай бяспекі неабходна ўвесці PIN-код"</string>
+    <string name="kg_prompt_added_security_pattern" msgid="1017068086102168544">"Для дадатковай бяспекі неабходна ўвесці ўзор разблакіроўкі"</string>
+    <string name="kg_prompt_added_security_password" msgid="6053156069765029006">"Для дадатковай бяспекі неабходна ўвесці пароль"</string>
     <string name="kg_prompt_reason_device_admin" msgid="6961159596224055685">"Прылада заблакіравана адміністратарам"</string>
     <string name="kg_prompt_reason_user_request" msgid="6015774877733717904">"Прылада была заблакіравана ўручную"</string>
     <string name="kg_face_not_recognized" msgid="7903950626744419160">"Не распазнана"</string>

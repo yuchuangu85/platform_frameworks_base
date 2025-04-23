@@ -16,6 +16,7 @@
 
 package android.app;
 
+import android.app.ActivityOptions.SceneTransitionInfo;
 import android.app.ContentProviderHolder;
 import android.app.IInstrumentationWatcher;
 import android.app.IUiAutomationConnection;
@@ -45,9 +46,13 @@ import android.os.ParcelFileDescriptor;
 import android.os.PersistableBundle;
 import android.os.RemoteCallback;
 import android.os.SharedMemory;
+import android.os.instrumentation.IOffsetCallback;
+import android.os.instrumentation.MethodDescriptor;
 import android.view.autofill.AutofillId;
 import android.view.translation.TranslationSpec;
 import android.view.translation.UiTranslationSpec;
+import android.window.ITaskFragmentOrganizer;
+import android.window.TaskFragmentTransaction;
 
 import com.android.internal.app.IVoiceInteractor;
 import com.android.internal.content.ReferrerIntent;
@@ -62,6 +67,7 @@ import java.util.Map;
  *
  * {@hide}
  */
+@JavaDelegator
 oneway interface IApplicationThread {
     void scheduleReceiver(in Intent intent, in ActivityInfo info,
             in CompatibilityInfo compatInfo,
@@ -87,7 +93,8 @@ oneway interface IApplicationThread {
             in CompatibilityInfo compatInfo, in Map services,
             in Bundle coreSettings, in String buildSerial, in AutofillOptions autofillOptions,
             in ContentCaptureOptions contentCaptureOptions, in long[] disabledCompatChanges,
-            in SharedMemory serializedSystemFontMap,
+            in long[] loggableCompatChanges, in SharedMemory serializedSystemFontMap,
+            in FileDescriptor applicationSharedMemoryFd,
             long startRequestedElapsedTime, long startRequestedUptime);
     void runIsolatedEntryPoint(in String entryPoint, in String[] entryPointArgs);
     void scheduleExit();
@@ -112,7 +119,7 @@ oneway interface IApplicationThread {
     void scheduleCreateBackupAgent(in ApplicationInfo app,
             int backupMode, int userId, int operationType);
     void scheduleDestroyBackupAgent(in ApplicationInfo app, int userId);
-    void scheduleOnNewActivityOptions(IBinder token, in Bundle options);
+    void scheduleOnNewSceneTransitionInfo(IBinder token, in SceneTransitionInfo info);
     void scheduleSuicide();
     void dispatchPackageBroadcast(int cmd, in String[] packages);
     void scheduleCrash(in String msg, int typeId, in Bundle extras);
@@ -158,6 +165,8 @@ oneway interface IApplicationThread {
     void scheduleApplicationInfoChanged(in ApplicationInfo ai);
     void setNetworkBlockSeq(long procStateSeq);
     void scheduleTransaction(in ClientTransaction transaction);
+    void scheduleTaskFragmentTransaction(in ITaskFragmentOrganizer organizer,
+            in TaskFragmentTransaction transaction);
     void requestDirectActions(IBinder activityToken, IVoiceInteractor intractor,
             in RemoteCallback cancellationCallback, in RemoteCallback callback);
     void performDirectAction(IBinder activityToken, String actionId,
@@ -174,5 +183,8 @@ oneway interface IApplicationThread {
             in TranslationSpec targetSpec, in List<AutofillId> viewIds,
             in UiTranslationSpec uiTranslationSpec);
     void scheduleTimeoutService(IBinder token, int startId);
+    void scheduleTimeoutServiceForType(IBinder token, int startId, int fgsType);
     void schedulePing(in RemoteCallback pong);
+    void getExecutableMethodFileOffsets(in MethodDescriptor methodDescriptor,
+            in IOffsetCallback resultCallback);
 }

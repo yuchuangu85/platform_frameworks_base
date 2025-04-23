@@ -18,7 +18,8 @@ package com.android.wm.shell.desktopmode;
 
 import android.graphics.Region;
 
-import com.android.wm.shell.common.annotations.ExternalThread;
+import com.android.wm.shell.shared.annotations.ExternalThread;
+import com.android.wm.shell.shared.desktopmode.DesktopModeTransitionSource;
 
 import java.util.concurrent.Executor;
 import java.util.function.Consumer;
@@ -35,7 +36,7 @@ public interface DesktopMode {
      * @param listener the listener to add.
      * @param callbackExecutor the executor to call the listener on.
      */
-    void addVisibleTasksListener(DesktopModeTaskRepository.VisibleTasksListener listener,
+    void addVisibleTasksListener(DesktopRepository.VisibleTasksListener listener,
             Executor callbackExecutor);
 
     /**
@@ -47,4 +48,13 @@ public interface DesktopMode {
     default void addDesktopGestureExclusionRegionListener(Consumer<Region> listener,
             Executor callbackExecutor) { }
 
+
+    /** Called when requested to go to desktop mode from the current focused app. */
+    void moveFocusedTaskToDesktop(int displayId, DesktopModeTransitionSource transitionSource);
+
+    /** Called when requested to go to fullscreen from the current focused desktop app. */
+    void moveFocusedTaskToFullscreen(int displayId, DesktopModeTransitionSource transitionSource);
+
+    /** Called when requested to go to split screen from the current focused desktop app. */
+    void moveFocusedTaskToStageSplit(int displayId, boolean leftOrTop);
 }

@@ -6,7 +6,6 @@ package android {
     field public static final String CONTROL_AUTOMOTIVE_GNSS = "android.permission.CONTROL_AUTOMOTIVE_GNSS";
     field public static final String GET_INTENT_SENDER_INTENT = "android.permission.GET_INTENT_SENDER_INTENT";
     field public static final String MAKE_UID_VISIBLE = "android.permission.MAKE_UID_VISIBLE";
-    field @FlaggedApi("android.companion.flags.companion_transport_apis") public static final String USE_COMPANION_TRANSPORTS = "android.permission.USE_COMPANION_TRANSPORTS";
   }
 
 }
@@ -67,6 +66,11 @@ package android.app {
     method @RequiresPermission(android.Manifest.permission.STATUS_BAR) public void setExpansionDisabledForSimNetworkLock(boolean);
   }
 
+  public final class SystemServiceRegistry {
+    method @FlaggedApi("android.webkit.update_service_ipc_wrapper") @Nullable public static Object getSystemServiceWithNoContext(@NonNull String);
+    method @FlaggedApi("android.webkit.update_service_ipc_wrapper") public static <TServiceClass> void registerForeverStaticService(@NonNull String, @NonNull Class<TServiceClass>, @NonNull android.app.SystemServiceRegistry.StaticServiceProducerWithBinder<TServiceClass>);
+  }
+
 }
 
 package android.app.admin {
@@ -78,29 +82,6 @@ package android.app.admin {
     method public boolean hasManagedProfileContactsAccess(@NonNull android.os.UserHandle, @NonNull String);
     method @RequiresPermission(anyOf={android.Manifest.permission.MANAGE_USERS, android.Manifest.permission.INTERACT_ACROSS_USERS}) public int logoutUser();
     field public static final String ACTION_SHOW_NEW_USER_DISCLAIMER = "android.app.action.SHOW_NEW_USER_DISCLAIMER";
-  }
-
-}
-
-package android.companion {
-
-  public final class CompanionDeviceManager {
-    method @FlaggedApi("android.companion.companion_transport_apis") @RequiresPermission(android.Manifest.permission.USE_COMPANION_TRANSPORTS) public void addOnMessageReceivedListener(@NonNull java.util.concurrent.Executor, int, @NonNull android.companion.CompanionDeviceManager.OnMessageReceivedListener);
-    method @FlaggedApi("android.companion.companion_transport_apis") @RequiresPermission(android.Manifest.permission.USE_COMPANION_TRANSPORTS) public void addOnTransportsChangedListener(@NonNull java.util.concurrent.Executor, @NonNull android.companion.CompanionDeviceManager.OnTransportsChangedListener);
-    method @FlaggedApi("android.companion.companion_transport_apis") @RequiresPermission(android.Manifest.permission.USE_COMPANION_TRANSPORTS) public void removeOnMessageReceivedListener(int, @NonNull android.companion.CompanionDeviceManager.OnMessageReceivedListener);
-    method @FlaggedApi("android.companion.companion_transport_apis") @RequiresPermission(android.Manifest.permission.USE_COMPANION_TRANSPORTS) public void removeOnTransportsChangedListener(@NonNull android.companion.CompanionDeviceManager.OnTransportsChangedListener);
-    method @FlaggedApi("android.companion.companion_transport_apis") @RequiresPermission(android.Manifest.permission.USE_COMPANION_TRANSPORTS) public void sendMessage(int, @NonNull byte[], @NonNull int[]);
-    field @FlaggedApi("android.companion.companion_transport_apis") public static final int MESSAGE_REQUEST_CONTEXT_SYNC = 1667729539; // 0x63678883
-    field @FlaggedApi("android.companion.companion_transport_apis") public static final int MESSAGE_REQUEST_PERMISSION_RESTORE = 1669491075; // 0x63826983
-    field @FlaggedApi("android.companion.companion_transport_apis") public static final int MESSAGE_REQUEST_REMOTE_AUTHENTICATION = 1669494629; // 0x63827765
-  }
-
-  @FlaggedApi("android.companion.companion_transport_apis") public static interface CompanionDeviceManager.OnMessageReceivedListener {
-    method public void onMessageReceived(int, @NonNull byte[]);
-  }
-
-  @FlaggedApi("android.companion.companion_transport_apis") public static interface CompanionDeviceManager.OnTransportsChangedListener {
-    method public void onTransportsChanged(@NonNull java.util.List<android.companion.AssociationInfo>);
   }
 
 }
@@ -119,8 +100,11 @@ package android.content {
     method @NonNull public android.content.Context createContextForSdkInSandbox(@NonNull android.content.pm.ApplicationInfo, int) throws android.content.pm.PackageManager.NameNotFoundException;
     method @NonNull public android.os.IBinder getProcessToken();
     method @NonNull public android.os.UserHandle getUser();
+    field @FlaggedApi("android.app.ondeviceintelligence.flags.enable_on_device_intelligence_module") public static final int BIND_FOREGROUND_SERVICE = 67108864; // 0x4000000
     field public static final String PAC_PROXY_SERVICE = "pac_proxy";
     field public static final String TEST_NETWORK_SERVICE = "test_network";
+    field @FlaggedApi("android.os.mainline_vcn_platform_api") public static final String VCN_MANAGEMENT_SERVICE = "vcn_management";
+    field @FlaggedApi("android.webkit.update_service_ipc_wrapper") public static final String WEBVIEW_UPDATE_SERVICE = "webviewupdate";
   }
 
   public class Intent implements java.lang.Cloneable android.os.Parcelable {
@@ -151,27 +135,23 @@ package android.content.pm {
     field public static final int MATCH_STATIC_SHARED_AND_SDK_LIBRARIES = 67108864; // 0x4000000
   }
 
+  @FlaggedApi("android.permission.flags.enhanced_confirmation_mode_apis_enabled") public class SignedPackage {
+    method @NonNull public byte[] getCertificateDigest();
+    method @NonNull public String getPackageName();
+  }
+
 }
 
 package android.hardware.usb {
 
   public class UsbManager {
     method @RequiresPermission(android.Manifest.permission.MANAGE_USB) public int getGadgetHalVersion();
-    method @RequiresPermission(android.Manifest.permission.MANAGE_USB) public int getUsbBandwidthMbps();
     method @RequiresPermission(android.Manifest.permission.MANAGE_USB) public int getUsbHalVersion();
     field public static final int GADGET_HAL_NOT_SUPPORTED = -1; // 0xffffffff
     field public static final int GADGET_HAL_V1_0 = 10; // 0xa
     field public static final int GADGET_HAL_V1_1 = 11; // 0xb
     field public static final int GADGET_HAL_V1_2 = 12; // 0xc
     field public static final int GADGET_HAL_V2_0 = 20; // 0x14
-    field public static final int USB_DATA_TRANSFER_RATE_10G = 10240; // 0x2800
-    field public static final int USB_DATA_TRANSFER_RATE_20G = 20480; // 0x5000
-    field public static final int USB_DATA_TRANSFER_RATE_40G = 40960; // 0xa000
-    field public static final int USB_DATA_TRANSFER_RATE_5G = 5120; // 0x1400
-    field public static final int USB_DATA_TRANSFER_RATE_FULL_SPEED = 12; // 0xc
-    field public static final int USB_DATA_TRANSFER_RATE_HIGH_SPEED = 480; // 0x1e0
-    field public static final int USB_DATA_TRANSFER_RATE_LOW_SPEED = 2; // 0x2
-    field public static final int USB_DATA_TRANSFER_RATE_UNKNOWN = -1; // 0xffffffff
     field public static final int USB_HAL_NOT_SUPPORTED = -1; // 0xffffffff
     field public static final int USB_HAL_RETRY = -2; // 0xfffffffe
     field public static final int USB_HAL_V1_0 = 10; // 0xa
@@ -284,12 +264,12 @@ package android.net {
     method @RequiresPermission(android.Manifest.permission.OBSERVE_NETWORK_POLICY) public boolean isUidRestrictedOnMeteredNetworks(int);
     method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK}) public void notifyStatsProviderLimitReached();
     method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK}) public void notifyStatsProviderWarningReached();
-    method @RequiresPermission(android.Manifest.permission.OBSERVE_NETWORK_POLICY) public void registerNetworkPolicyCallback(@Nullable java.util.concurrent.Executor, @NonNull android.net.NetworkPolicyManager.NetworkPolicyCallback);
-    method @RequiresPermission(android.Manifest.permission.OBSERVE_NETWORK_POLICY) public void unregisterNetworkPolicyCallback(@NonNull android.net.NetworkPolicyManager.NetworkPolicyCallback);
+    method @Deprecated @FlaggedApi("android.net.platform.flags.deprecate_network_policy_callback") @RequiresPermission(android.Manifest.permission.OBSERVE_NETWORK_POLICY) public void registerNetworkPolicyCallback(@Nullable java.util.concurrent.Executor, @NonNull android.net.NetworkPolicyManager.NetworkPolicyCallback);
+    method @Deprecated @FlaggedApi("android.net.platform.flags.deprecate_network_policy_callback") @RequiresPermission(android.Manifest.permission.OBSERVE_NETWORK_POLICY) public void unregisterNetworkPolicyCallback(@NonNull android.net.NetworkPolicyManager.NetworkPolicyCallback);
   }
 
-  public static interface NetworkPolicyManager.NetworkPolicyCallback {
-    method public default void onUidBlockedReasonChanged(int, int);
+  @Deprecated @FlaggedApi("android.net.platform.flags.deprecate_network_policy_callback") public static interface NetworkPolicyManager.NetworkPolicyCallback {
+    method @Deprecated public default void onUidBlockedReasonChanged(int, int);
   }
 
   public class NetworkWatchlistManager {
@@ -314,6 +294,8 @@ package android.net {
     field public static final int TYPE_VPN_LEGACY = 3; // 0x3
     field public static final int TYPE_VPN_NONE = -1; // 0xffffffff
     field public static final int TYPE_VPN_OEM = 4; // 0x4
+    field @FlaggedApi("android.net.platform.flags.vpn_type_oem_service_and_legacy") public static final int TYPE_VPN_OEM_LEGACY = 6; // 0x6
+    field @FlaggedApi("android.net.platform.flags.vpn_type_oem_service_and_legacy") public static final int TYPE_VPN_OEM_SERVICE = 5; // 0x5
     field public static final int TYPE_VPN_PLATFORM = 2; // 0x2
     field public static final int TYPE_VPN_SERVICE = 1; // 0x1
   }
@@ -333,11 +315,11 @@ package android.net.netstats {
 
 package android.net.wifi {
 
-  public final class WifiKeystore {
-    method @NonNull public static byte[] get(@NonNull String);
-    method @NonNull public static String[] list(@NonNull String);
-    method public static boolean put(@NonNull String, @NonNull byte[]);
-    method public static boolean remove(@NonNull String);
+  public final class WifiMigration {
+    method @FlaggedApi("android.net.wifi.flags.legacy_keystore_to_wifi_blobstore_migration_read_only") public static void migrateLegacyKeystoreToWifiBlobstore(@NonNull java.util.concurrent.Executor, @NonNull java.util.function.IntConsumer);
+    field @FlaggedApi("android.net.wifi.flags.legacy_keystore_to_wifi_blobstore_migration_read_only") public static final int KEYSTORE_MIGRATION_FAILURE_ENCOUNTERED_EXCEPTION = 2; // 0x2
+    field @FlaggedApi("android.net.wifi.flags.legacy_keystore_to_wifi_blobstore_migration_read_only") public static final int KEYSTORE_MIGRATION_SUCCESS_MIGRATION_COMPLETE = 0; // 0x0
+    field @FlaggedApi("android.net.wifi.flags.legacy_keystore_to_wifi_blobstore_migration_read_only") public static final int KEYSTORE_MIGRATION_SUCCESS_MIGRATION_NOT_NEEDED = 1; // 0x1
   }
 
 }
@@ -400,6 +382,19 @@ package android.os {
     field public static final int DEVICE_INITIAL_SDK_INT;
   }
 
+  public final class Bundle extends android.os.BaseBundle implements java.lang.Cloneable android.os.Parcelable {
+    method @FlaggedApi("android.os.enable_has_binders") public int hasBinders();
+    field @FlaggedApi("android.os.enable_has_binders") public static final int STATUS_BINDERS_NOT_PRESENT = 0; // 0x0
+    field @FlaggedApi("android.os.enable_has_binders") public static final int STATUS_BINDERS_PRESENT = 1; // 0x1
+    field @FlaggedApi("android.os.enable_has_binders") public static final int STATUS_BINDERS_UNKNOWN = 2; // 0x2
+  }
+
+  public class Handler {
+    method @FlaggedApi("android.os.mainline_vcn_platform_api") public final boolean hasMessagesOrCallbacks();
+    method @FlaggedApi("android.os.mainline_vcn_platform_api") public final void removeCallbacksAndEqualMessages(@Nullable Object);
+    method @FlaggedApi("android.os.mainline_vcn_platform_api") public final void removeEqualMessages(int, @Nullable Object);
+  }
+
   public class IpcDataCache<Query, Result> {
     ctor public IpcDataCache(int, @NonNull String, @NonNull String, @NonNull String, @NonNull android.os.IpcDataCache.QueryHandler<Query,Result>);
     method public void disableForCurrentProcess();
@@ -417,11 +412,22 @@ package android.os {
   }
 
   public class Process {
-    method public static final int getAppUidForSdkSandboxUid(int);
-    method public static final boolean isSdkSandboxUid(int);
     method public static final int toSdkSandboxUid(int);
     field public static final int NFC_UID = 1027; // 0x403
     field public static final int VPN_UID = 1016; // 0x3f8
+  }
+
+  @FlaggedApi("android.os.telemetry_apis_framework_initialization") public class ProfilingServiceManager {
+    method @NonNull public android.os.ProfilingServiceManager.ServiceRegisterer getProfilingServiceRegisterer();
+  }
+
+  public static class ProfilingServiceManager.ServiceNotFoundException extends java.lang.Exception {
+    ctor public ProfilingServiceManager.ServiceNotFoundException(@NonNull String);
+  }
+
+  public static final class ProfilingServiceManager.ServiceRegisterer {
+    method @Nullable public android.os.IBinder get();
+    method @Nullable public android.os.IBinder getOrThrow() throws android.os.ProfilingServiceManager.ServiceNotFoundException;
   }
 
   public final class ServiceManager {
@@ -451,6 +457,8 @@ package android.os {
 
   public class SystemConfigManager {
     method @NonNull public java.util.List<android.content.ComponentName> getEnabledComponentOverrides(@NonNull String);
+    method @FlaggedApi("android.permission.flags.enhanced_confirmation_mode_apis_enabled") @NonNull @RequiresPermission(android.Manifest.permission.MANAGE_ENHANCED_CONFIRMATION_STATES) public java.util.Set<android.content.pm.SignedPackage> getEnhancedConfirmationTrustedInstallers();
+    method @FlaggedApi("android.permission.flags.enhanced_confirmation_mode_apis_enabled") @NonNull @RequiresPermission(android.Manifest.permission.MANAGE_ENHANCED_CONFIRMATION_STATES) public java.util.Set<android.content.pm.SignedPackage> getEnhancedConfirmationTrustedPackages();
   }
 
   public final class Trace {
@@ -461,6 +469,10 @@ package android.os {
     method public static void traceCounter(long, @NonNull String, int);
     method public static void traceEnd(long);
     field public static final long TRACE_TAG_NETWORK = 2097152L; // 0x200000L
+  }
+
+  public class UpdateEngine {
+    method @FlaggedApi("android.os.update_engine_api") public void triggerPostinstall(@NonNull String);
   }
 
 }
@@ -598,6 +610,7 @@ package android.telephony {
 
   public class TelephonyManager {
     method @NonNull public static int[] getAllNetworkTypes();
+    method @FlaggedApi("android.os.mainline_vcn_platform_api") @NonNull @RequiresPermission(android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE) public java.util.Set<java.lang.String> getPackagesWithCarrierPrivileges();
   }
 
 }
@@ -643,6 +656,38 @@ package android.view.accessibility {
   public final class AccessibilityManager {
     method @FlaggedApi("android.view.accessibility.flash_notification_system_api") public boolean startFlashNotificationSequence(@NonNull android.content.Context, int);
     method @FlaggedApi("android.view.accessibility.flash_notification_system_api") public boolean stopFlashNotificationSequence(@NonNull android.content.Context);
+  }
+
+}
+
+package android.webkit {
+
+  @FlaggedApi("android.webkit.update_service_ipc_wrapper") public class WebViewBootstrapFrameworkInitializer {
+    method public static void registerServiceWrappers();
+  }
+
+  @FlaggedApi("android.webkit.update_service_ipc_wrapper") public final class WebViewProviderResponse implements android.os.Parcelable {
+    ctor public WebViewProviderResponse(@Nullable android.content.pm.PackageInfo, int);
+    method public int describeContents();
+    method public void writeToParcel(@NonNull android.os.Parcel, int);
+    field @NonNull public static final android.os.Parcelable.Creator<android.webkit.WebViewProviderResponse> CREATOR;
+    field public static final int STATUS_FAILED_LISTING_WEBVIEW_PACKAGES = 4; // 0x4
+    field public static final int STATUS_FAILED_OTHER = 11; // 0xb
+    field public static final int STATUS_FAILED_WAITING_FOR_RELRO = 3; // 0x3
+    field public static final int STATUS_SUCCESS = 0; // 0x0
+    field @Nullable public final android.content.pm.PackageInfo packageInfo;
+    field public final int status;
+  }
+
+  @FlaggedApi("android.webkit.update_service_ipc_wrapper") public final class WebViewUpdateManager {
+    method @Nullable @RequiresPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) public String changeProviderAndSetting(@NonNull String);
+    method @NonNull public android.webkit.WebViewProviderInfo[] getAllWebViewPackages();
+    method @Nullable public android.content.pm.PackageInfo getCurrentWebViewPackage();
+    method @Nullable public String getCurrentWebViewPackageName();
+    method @FlaggedApi("android.webkit.update_service_v2") @NonNull public android.webkit.WebViewProviderInfo getDefaultWebViewPackage();
+    method @NonNull public static android.webkit.WebViewUpdateManager getInstance();
+    method @NonNull @RequiresPermission(android.Manifest.permission.INTERACT_ACROSS_USERS) public android.webkit.WebViewProviderInfo[] getValidWebViewPackages();
+    method @NonNull public android.webkit.WebViewProviderResponse waitForAndGetProvider();
   }
 
 }

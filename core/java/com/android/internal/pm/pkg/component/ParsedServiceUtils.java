@@ -29,10 +29,12 @@ import android.content.pm.parsing.result.ParseResult;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.content.res.XmlResourceParser;
+import android.multiuser.Flags;
 import android.os.Build;
 
 import com.android.internal.R;
 import com.android.internal.pm.pkg.parsing.ParsingPackage;
+import com.android.internal.pm.pkg.parsing.ParsingPackageUtils;
 import com.android.internal.pm.pkg.parsing.ParsingUtils;
 
 import org.xmlpull.v1.XmlPullParser;
@@ -72,7 +74,8 @@ public class ParsedServiceUtils {
                     R.styleable.AndroidManifestService_process,
                     R.styleable.AndroidManifestService_roundIcon,
                     R.styleable.AndroidManifestService_splitName,
-                    R.styleable.AndroidManifestService_attributionTags
+                    R.styleable.AndroidManifestService_attributionTags,
+                    R.styleable.AndroidManifestService_intentMatchingFlags
             );
 
             if (result.isError()) {
@@ -105,6 +108,11 @@ public class ParsedServiceUtils {
                             | flag(ServiceInfo.FLAG_SINGLE_USER,
                             R.styleable.AndroidManifestService_singleUser, sa)));
 
+            if (Flags.enableSystemUserOnlyForServicesAndProviders()) {
+                service.setFlags(service.getFlags() | flag(ServiceInfo.FLAG_SYSTEM_USER_ONLY,
+                        R.styleable.AndroidManifestService_systemUserOnly, sa));
+            }
+
             visibleToEphemeral = sa.getBoolean(
                     R.styleable.AndroidManifestService_visibleToInstantApps, false);
             if (visibleToEphemeral) {
@@ -129,6 +137,9 @@ public class ParsedServiceUtils {
                 && (type != XmlPullParser.END_TAG
                 || parser.getDepth() > depth)) {
             if (type != XmlPullParser.START_TAG) {
+                continue;
+            }
+            if (ParsingPackageUtils.getAconfigFlags().skipCurrentElement(pkg, parser)) {
                 continue;
             }
 

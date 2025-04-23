@@ -54,6 +54,7 @@ public final class PackagePolicyKey extends PolicyKey {
     @TestApi
     public PackagePolicyKey(@NonNull String key, @NonNull String packageName) {
         super(key);
+        PolicySizeVerifier.enforceMaxPackageNameLength(packageName);
         mPackageName = Objects.requireNonNull((packageName));
     }
 

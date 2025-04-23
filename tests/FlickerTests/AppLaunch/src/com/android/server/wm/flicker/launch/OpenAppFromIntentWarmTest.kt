@@ -17,11 +17,11 @@
 package com.android.server.wm.flicker.launch
 
 import android.platform.test.annotations.Presubmit
-import android.tools.common.flicker.annotation.FlickerServiceCompatible
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.flicker.annotation.FlickerServiceCompatible
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
 import androidx.test.filters.FlakyTest
 import com.android.server.wm.flicker.helpers.setRotation
 import com.android.server.wm.flicker.launch.common.OpenAppFromLauncherTransition
@@ -34,7 +34,7 @@ import org.junit.runners.Parameterized
 /**
  * Test warm launching an app from launcher
  *
- * To run this test: `atest FlickerTests:OpenAppWarmTest`
+ * To run this test: `atest FlickerTestsAppLaunch:OpenAppFromIntentWarmTest`
  *
  * Actions:
  * ```

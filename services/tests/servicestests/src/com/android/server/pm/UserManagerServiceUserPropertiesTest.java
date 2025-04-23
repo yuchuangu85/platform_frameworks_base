@@ -73,6 +73,8 @@ public class UserManagerServiceUserPropertiesTest {
                 .setDeleteAppWithParent(false)
                 .setAlwaysVisible(false)
                 .setCrossProfileContentSharingStrategy(0)
+                .setProfileApiVisibility(34)
+                .setItemsRestrictedOnHomeScreen(false)
                 .build();
         final UserProperties actualProps = new UserProperties(defaultProps);
         actualProps.setShowInLauncher(14);
@@ -90,6 +92,8 @@ public class UserManagerServiceUserPropertiesTest {
         actualProps.setDeleteAppWithParent(true);
         actualProps.setAlwaysVisible(true);
         actualProps.setCrossProfileContentSharingStrategy(1);
+        actualProps.setProfileApiVisibility(36);
+        actualProps.setItemsRestrictedOnHomeScreen(true);
 
         // Write the properties to xml.
         final ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -134,6 +138,8 @@ public class UserManagerServiceUserPropertiesTest {
                 .setAuthAlwaysRequiredToDisableQuietMode(false)
                 .setAllowStoppingUserWithDelayedLocking(false)
                 .setAlwaysVisible(true)
+                .setProfileApiVisibility(110)
+                .setItemsRestrictedOnHomeScreen(false)
                 .build();
         final UserProperties orig = new UserProperties(defaultProps);
         orig.setShowInLauncher(2841);
@@ -144,6 +150,7 @@ public class UserManagerServiceUserPropertiesTest {
         orig.setAuthAlwaysRequiredToDisableQuietMode(true);
         orig.setAllowStoppingUserWithDelayedLocking(true);
         orig.setAlwaysVisible(false);
+        orig.setItemsRestrictedOnHomeScreen(true);
 
         // Test every permission level. (Currently, it's linear so it's easy.)
         for (int permLevel = 0; permLevel < 4; permLevel++) {
@@ -153,6 +160,7 @@ public class UserManagerServiceUserPropertiesTest {
 
             // Make a possibly-not-full-permission (i.e. partial) copy and check that it is correct.
             final UserProperties copy = new UserProperties(orig, exposeAll, hasManage, hasQuery);
+            assertThat(copy.toString()).isNotNull();
             verifyTestCopyLacksPermissions(orig, copy, exposeAll, hasManage, hasQuery);
             if (permLevel < 1) {
                 // PropertiesPresent should definitely be different since not all items were copied.
@@ -209,6 +217,10 @@ public class UserManagerServiceUserPropertiesTest {
                 copy::isCredentialShareableWithParent, true);
         assertEqualGetterOrThrows(orig::getCrossProfileContentSharingStrategy,
                 copy::getCrossProfileContentSharingStrategy, true);
+        assertEqualGetterOrThrows(orig::getProfileApiVisibility, copy::getProfileApiVisibility,
+                true);
+        assertEqualGetterOrThrows(orig::areItemsRestrictedOnHomeScreen,
+                copy::areItemsRestrictedOnHomeScreen, true);
     }
 
     /**
@@ -270,5 +282,8 @@ public class UserManagerServiceUserPropertiesTest {
         assertThat(expected.getAlwaysVisible()).isEqualTo(actual.getAlwaysVisible());
         assertThat(expected.getCrossProfileContentSharingStrategy())
                 .isEqualTo(actual.getCrossProfileContentSharingStrategy());
+        assertThat(expected.getProfileApiVisibility()).isEqualTo(actual.getProfileApiVisibility());
+        assertThat(expected.areItemsRestrictedOnHomeScreen())
+                .isEqualTo(actual.areItemsRestrictedOnHomeScreen());
     }
 }

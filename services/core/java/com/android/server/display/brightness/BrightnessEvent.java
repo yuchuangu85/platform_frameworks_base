@@ -16,11 +16,21 @@
 
 package com.android.server.display.brightness;
 
+import static android.hardware.display.DisplayManagerInternal.DisplayPowerRequest.POLICY_OFF;
+import static android.hardware.display.DisplayManagerInternal.DisplayPowerRequest.policyToString;
+
+import static com.android.server.display.AutomaticBrightnessController.AUTO_BRIGHTNESS_MODE_DEFAULT;
+import static com.android.server.display.BrightnessMappingStrategy.INVALID_LUX;
+import static com.android.server.display.BrightnessMappingStrategy.INVALID_NITS;
+import static com.android.server.display.config.DisplayBrightnessMappingConfig.autoBrightnessModeToString;
+
 import android.hardware.display.BrightnessInfo;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.view.Display;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.display.AutomaticBrightnessController;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -33,19 +43,27 @@ public final class BrightnessEvent {
     public static final int FLAG_INVALID_LUX = 0x2;
     public static final int FLAG_DOZE_SCALE = 0x4;
     public static final int FLAG_USER_SET = 0x8;
-    public static final int FLAG_IDLE_CURVE = 0x10;
     public static final int FLAG_LOW_POWER_MODE = 0x20;
+    public static final int FLAG_EVEN_DIMMER = 0x40;
 
     private static final SimpleDateFormat FORMAT = new SimpleDateFormat("MM-dd HH:mm:ss.SSS");
 
     private BrightnessReason mReason = new BrightnessReason();
     private int mDisplayId;
     private String mPhysicalDisplayId;
+    private String mPhysicalDisplayName;
+    private int mDisplayState;
+    @Display.StateReason
+    private int mDisplayStateReason;
+    private int mDisplayPolicy;
     private long mTime;
     private float mLux;
+    private float mNits;
+    private float mPercent;
     private float mPreThresholdLux;
     private float mInitialBrightness;
     private float mBrightness;
+    private float mUnclampedBrightness;
     private float mRecommendedBrightness;
     private float mPreThresholdBrightness;
     private int mHbmMode;
@@ -58,6 +76,8 @@ public final class BrightnessEvent {
     private int mAdjustmentFlags;
     private boolean mAutomaticBrightnessEnabled;
     private String mDisplayBrightnessStrategyName;
+    @AutomaticBrightnessController.AutomaticBrightnessMode
+    private int mAutoBrightnessMode;
 
     public BrightnessEvent(BrightnessEvent that) {
         copyFrom(that);
@@ -77,13 +97,20 @@ public final class BrightnessEvent {
         mReason.set(that.getReason());
         mDisplayId = that.getDisplayId();
         mPhysicalDisplayId = that.getPhysicalDisplayId();
+        mPhysicalDisplayName = that.getPhysicalDisplayName();
+        mDisplayState = that.mDisplayState;
+        mDisplayStateReason = that.mDisplayStateReason;
+        mDisplayPolicy = that.mDisplayPolicy;
         mTime = that.getTime();
         // Lux values
         mLux = that.getLux();
         mPreThresholdLux = that.getPreThresholdLux();
+        mNits = that.getNits();
+        mPercent = that.getPercent();
         // Brightness values
         mInitialBrightness = that.getInitialBrightness();
         mBrightness = that.getBrightness();
+        mUnclampedBrightness = that.getUnclampedBrightness();
         mRecommendedBrightness = that.getRecommendedBrightness();
         mPreThresholdBrightness = that.getPreThresholdBrightness();
         // Different brightness modulations
@@ -98,6 +125,7 @@ public final class BrightnessEvent {
         // Auto-brightness setting
         mAutomaticBrightnessEnabled = that.isAutomaticBrightnessEnabled();
         mDisplayBrightnessStrategyName = that.getDisplayBrightnessStrategyName();
+        mAutoBrightnessMode = that.mAutoBrightnessMode;
     }
 
     /**
@@ -107,12 +135,19 @@ public final class BrightnessEvent {
         mReason = new BrightnessReason();
         mTime = SystemClock.uptimeMillis();
         mPhysicalDisplayId = "";
+        mPhysicalDisplayName = "";
+        mDisplayState = Display.STATE_UNKNOWN;
+        mDisplayStateReason = Display.STATE_REASON_UNKNOWN;
+        mDisplayPolicy = POLICY_OFF;
         // Lux values
-        mLux = 0;
+        mLux = INVALID_LUX;
         mPreThresholdLux = 0;
+        mNits = INVALID_NITS;
+        mPercent = -1f;
         // Brightness values
         mInitialBrightness = PowerManager.BRIGHTNESS_INVALID_FLOAT;
         mBrightness = PowerManager.BRIGHTNESS_INVALID_FLOAT;
+        mUnclampedBrightness = PowerManager.BRIGHTNESS_INVALID_FLOAT;
         mRecommendedBrightness = PowerManager.BRIGHTNESS_INVALID_FLOAT;
         mPreThresholdBrightness = PowerManager.BRIGHTNESS_INVALID_FLOAT;
         // Different brightness modulations
@@ -127,6 +162,7 @@ public final class BrightnessEvent {
         // Auto-brightness setting
         mAutomaticBrightnessEnabled = true;
         mDisplayBrightnessStrategyName = "";
+        mAutoBrightnessMode = AUTO_BRIGHTNESS_MODE_DEFAULT;
     }
 
     /**
@@ -143,11 +179,19 @@ public final class BrightnessEvent {
         return mReason.equals(that.mReason)
                 && mDisplayId == that.mDisplayId
                 && mPhysicalDisplayId.equals(that.mPhysicalDisplayId)
+                && mPhysicalDisplayName.equals(that.mPhysicalDisplayName)
+                && mDisplayState == that.mDisplayState
+                && mDisplayStateReason == that.mDisplayStateReason
+                && mDisplayPolicy == that.mDisplayPolicy
                 && Float.floatToRawIntBits(mLux) == Float.floatToRawIntBits(that.mLux)
                 && Float.floatToRawIntBits(mPreThresholdLux)
                 == Float.floatToRawIntBits(that.mPreThresholdLux)
+                && Float.floatToRawIntBits(mNits) == Float.floatToRawIntBits(that.mNits)
+                && Float.floatToRawIntBits(mPercent) == Float.floatToRawIntBits(that.mPercent)
                 && Float.floatToRawIntBits(mBrightness)
                 == Float.floatToRawIntBits(that.mBrightness)
+                && Float.floatToRawIntBits(mUnclampedBrightness)
+                == Float.floatToRawIntBits(that.mUnclampedBrightness)
                 && Float.floatToRawIntBits(mRecommendedBrightness)
                 == Float.floatToRawIntBits(that.mRecommendedBrightness)
                 && Float.floatToRawIntBits(mPreThresholdBrightness)
@@ -163,7 +207,8 @@ public final class BrightnessEvent {
                 && mFlags == that.mFlags
                 && mAdjustmentFlags == that.mAdjustmentFlags
                 && mAutomaticBrightnessEnabled == that.mAutomaticBrightnessEnabled
-                && mDisplayBrightnessStrategyName.equals(that.mDisplayBrightnessStrategyName);
+                && mDisplayBrightnessStrategyName.equals(that.mDisplayBrightnessStrategyName)
+                && mAutoBrightnessMode == that.mAutoBrightnessMode;
     }
 
     /**
@@ -175,24 +220,35 @@ public final class BrightnessEvent {
     public String toString(boolean includeTime) {
         return (includeTime ? FORMAT.format(new Date(mTime)) + " - " : "")
                 + "BrightnessEvent: "
-                + "disp=" + mDisplayId
-                + ", physDisp=" + mPhysicalDisplayId
-                + ", brt=" + mBrightness + ((mFlags & FLAG_USER_SET) != 0 ? "(user_set)" : "")
+                + "brt=" + mBrightness + ((mFlags & FLAG_USER_SET) != 0 ? "(user_set)" : "") + " ("
+                + mPercent + "%)"
+                + ", nits= " + mNits
+                + ", lux=" + mLux
+                + ", reason=" + mReason.toString(mAdjustmentFlags)
+                + ", strat=" + mDisplayBrightnessStrategyName
+                + ", state=" + Display.stateToString(mDisplayState)
+                + ", stateReason=" + Display.stateReasonToString(mDisplayStateReason)
+                + ", policy=" + policyToString(mDisplayPolicy)
+                + ", flags=" + flagsToString()
+                // Autobrightness
                 + ", initBrt=" + mInitialBrightness
                 + ", rcmdBrt=" + mRecommendedBrightness
                 + ", preBrt=" + mPreThresholdBrightness
-                + ", lux=" + mLux
                 + ", preLux=" + mPreThresholdLux
+                + ", wasShortTermModelActive=" + mWasShortTermModelActive
+                + ", autoBrightness=" + mAutomaticBrightnessEnabled + " ("
+                + autoBrightnessModeToString(mAutoBrightnessMode) + ")"
+                // Throttling info
+                + ", unclampedBrt=" + mUnclampedBrightness
                 + ", hbmMax=" + mHbmMax
                 + ", hbmMode=" + BrightnessInfo.hbmToString(mHbmMode)
-                + ", rbcStrength=" + mRbcStrength
                 + ", thrmMax=" + mThermalMax
+                // Modifiers
+                + ", rbcStrength=" + mRbcStrength
                 + ", powerFactor=" + mPowerFactor
-                + ", wasShortTermModelActive=" + mWasShortTermModelActive
-                + ", flags=" + flagsToString()
-                + ", reason=" + mReason.toString(mAdjustmentFlags)
-                + ", autoBrightness=" + mAutomaticBrightnessEnabled
-                + ", strategy=" + mDisplayBrightnessStrategyName;
+                // Meta
+                + ", physDisp=" + mPhysicalDisplayName + "(" + mPhysicalDisplayId + ")"
+                + ", logicalId=" + mDisplayId;
     }
 
     @Override
@@ -232,6 +288,26 @@ public final class BrightnessEvent {
         this.mPhysicalDisplayId = mPhysicalDisplayId;
     }
 
+    public String getPhysicalDisplayName() {
+        return mPhysicalDisplayName;
+    }
+
+    public void setPhysicalDisplayName(String mPhysicalDisplayName) {
+        this.mPhysicalDisplayName = mPhysicalDisplayName;
+    }
+
+    public void setDisplayState(int state) {
+        mDisplayState = state;
+    }
+
+    public void setDisplayStateReason(@Display.StateReason int reason) {
+        mDisplayStateReason = reason;
+    }
+
+    public void setDisplayPolicy(int policy) {
+        mDisplayPolicy = policy;
+    }
+
     public float getLux() {
         return mLux;
     }
@@ -262,6 +338,29 @@ public final class BrightnessEvent {
 
     public void setBrightness(float brightness) {
         this.mBrightness = brightness;
+    }
+
+    public float getUnclampedBrightness() {
+        return mUnclampedBrightness;
+    }
+
+    public void setUnclampedBrightness(float unclampedBrightness) {
+        this.mUnclampedBrightness = unclampedBrightness;
+    }
+
+    public void setPercent(float percent) {
+        this.mPercent = percent;
+    }
+    public float getPercent() {
+        return mPercent;
+    }
+
+    public void setNits(float nits) {
+        this.mNits = nits;
+    }
+
+    public float getNits() {
+        return mNits;
     }
 
     public float getRecommendedBrightness() {
@@ -374,6 +473,16 @@ public final class BrightnessEvent {
         this.mAutomaticBrightnessEnabled = mAutomaticBrightnessEnabled;
     }
 
+    @AutomaticBrightnessController.AutomaticBrightnessMode
+    public int getAutoBrightnessMode() {
+        return mAutoBrightnessMode;
+    }
+
+    public void setAutoBrightnessMode(
+            @AutomaticBrightnessController.AutomaticBrightnessMode int mode) {
+        mAutoBrightnessMode = mode;
+    }
+
     /**
      * A utility to stringify flags from a BrightnessEvent
      * @return Stringified flags from BrightnessEvent
@@ -384,7 +493,7 @@ public final class BrightnessEvent {
                 + ((mFlags & FLAG_RBC) != 0 ? "rbc " : "")
                 + ((mFlags & FLAG_INVALID_LUX) != 0 ? "invalid_lux " : "")
                 + ((mFlags & FLAG_DOZE_SCALE) != 0 ? "doze_scale " : "")
-                + ((mFlags & FLAG_IDLE_CURVE) != 0 ? "idle_curve " : "")
-                + ((mFlags & FLAG_LOW_POWER_MODE) != 0 ? "low_power_mode " : "");
+                + ((mFlags & FLAG_LOW_POWER_MODE) != 0 ? "low_power_mode " : "")
+                + ((mFlags & FLAG_EVEN_DIMMER) != 0 ? "even_dimmer " : "");
     }
 }

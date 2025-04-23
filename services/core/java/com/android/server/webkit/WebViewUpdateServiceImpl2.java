@@ -16,7 +16,6 @@
 package com.android.server.webkit;
 
 import android.annotation.Nullable;
-import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.Signature;
@@ -28,8 +27,11 @@ import android.util.AndroidRuntimeException;
 import android.util.Slog;
 import android.webkit.UserPackage;
 import android.webkit.WebViewFactory;
+import android.webkit.WebViewFactoryProvider;
 import android.webkit.WebViewProviderInfo;
 import android.webkit.WebViewProviderResponse;
+
+import com.android.modules.expresslog.Counter;
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -65,7 +67,7 @@ import java.util.List;
  *
  * @hide
  */
-class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
+class WebViewUpdateServiceImpl2 {
     private static final String TAG = WebViewUpdateServiceImpl2.class.getSimpleName();
 
     private static class WebViewPackageMissingException extends Exception {
@@ -78,13 +80,13 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
     private static final long NS_PER_MS = 1000000;
 
     private static final int VALIDITY_OK = 0;
-    private static final int VALIDITY_INCORRECT_SDK_VERSION = 1;
+    private static final int VALIDITY_OS_INCOMPATIBLE = 1;
     private static final int VALIDITY_INCORRECT_VERSION_CODE = 2;
     private static final int VALIDITY_INCORRECT_SIGNATURE = 3;
     private static final int VALIDITY_NO_LIBRARY_FLAG = 4;
 
     private final SystemInterface mSystemInterface;
-    private final Context mContext;
+    private final WebViewProviderInfo mDefaultProvider;
 
     private long mMinimumVersionCode = -1;
 
@@ -95,6 +97,9 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
     private boolean mWebViewPackageDirty = false;
     private boolean mAnyWebViewInstalled = false;
 
+    // Keeps track of whether we attempted to repair WebView before.
+    private boolean mAttemptedToRepairBefore = false;
+
     private static final int NUMBER_OF_RELROS_UNKNOWN = Integer.MAX_VALUE;
 
     // The WebView package currently in use (or the one we are preparing).
@@ -102,12 +107,25 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
 
     private final Object mLock = new Object();
 
-    WebViewUpdateServiceImpl2(Context context, SystemInterface systemInterface) {
-        mContext = context;
+    WebViewUpdateServiceImpl2(SystemInterface systemInterface) {
         mSystemInterface = systemInterface;
+        WebViewProviderInfo[] webviewProviders = getWebViewPackages();
+
+        WebViewProviderInfo defaultProvider = null;
+        for (WebViewProviderInfo provider : webviewProviders) {
+            if (provider.availableByDefault) {
+                defaultProvider = provider;
+                break;
+            }
+        }
+        if (defaultProvider == null) {
+            // This should be unreachable because the config parser enforces that there is at least
+            // one availableByDefault provider.
+            throw new AndroidRuntimeException("No available by default WebView Provider.");
+        }
+        mDefaultProvider = defaultProvider;
     }
 
-    @Override
     public void packageStateChanged(String packageName, int changedState, int userId) {
         // We don't early out here in different cases where we could potentially early-out (e.g. if
         // we receive PACKAGE_CHANGED for another user than the system user) since that would
@@ -120,6 +138,7 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
                 boolean removedOrChangedOldPackage = false;
                 String oldProviderName = null;
                 PackageInfo newPackage = null;
+                boolean repairNeeded = false;
                 synchronized (mLock) {
                     try {
                         newPackage = findPreferredWebViewPackage();
@@ -145,6 +164,7 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
                         Slog.e(TAG, "Could not find valid WebView package to create relro with "
                                 + e);
                     }
+                    repairNeeded = shouldTriggerRepairLocked();
                 }
                 if (updateWebView && !removedOrChangedOldPackage
                         && oldProviderName != null) {
@@ -154,17 +174,55 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
                     // only kills dependents of packages that are being removed.
                     mSystemInterface.killPackageDependents(oldProviderName);
                 }
+                if (repairNeeded) {
+                    attemptRepair();
+                }
                 return;
             }
         }
     }
 
-    @Override
+    private boolean shouldTriggerRepairLocked() {
+        if (mAttemptedToRepairBefore) {
+            return false;
+        }
+        if (mCurrentWebViewPackage == null) {
+            return true;
+        }
+        if (mCurrentWebViewPackage.packageName.equals(mDefaultProvider.packageName)) {
+            List<UserPackage> userPackages =
+                    mSystemInterface.getPackageInfoForProviderAllUsers(mDefaultProvider);
+            return !isInstalledAndEnabledForAllUsers(userPackages);
+        } else {
+            return false;
+        }
+    }
+
+    private void attemptRepair() {
+        // We didn't find a valid WebView implementation. Try explicitly re-installing and
+        // re-enabling the default package for all users in case it was disabled. If this actually
+        // changes the state, we will see the PackageManager broadcast shortly and try again.
+        synchronized (mLock) {
+            if (mAttemptedToRepairBefore) {
+                return;
+            }
+            mAttemptedToRepairBefore = true;
+        }
+        Slog.w(
+                TAG,
+                "No provider available for all users, trying to install and enable "
+                        + mDefaultProvider.packageName);
+        mSystemInterface.installExistingPackageForAllUsers(mDefaultProvider.packageName);
+        mSystemInterface.enablePackageForAllUsers(mDefaultProvider.packageName, true);
+    }
+
     public void prepareWebViewInSystemServer() {
         try {
+            boolean repairNeeded = true;
             synchronized (mLock) {
                 mCurrentWebViewPackage = findPreferredWebViewPackage();
-                String userSetting = mSystemInterface.getUserChosenWebViewProvider(mContext);
+                repairNeeded = shouldTriggerRepairLocked();
+                String userSetting = mSystemInterface.getUserChosenWebViewProvider();
                 if (userSetting != null
                         && !userSetting.equals(mCurrentWebViewPackage.packageName)) {
                     // Don't persist the user-chosen setting across boots if the package being
@@ -172,30 +230,21 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
                     // be surprised by the device switching to using a certain webview package,
                     // that was uninstalled/disabled a long time ago, if it is installed/enabled
                     // again.
-                    mSystemInterface.updateUserSetting(mContext,
-                            mCurrentWebViewPackage.packageName);
+                    mSystemInterface.updateUserSetting(mCurrentWebViewPackage.packageName);
                 }
                 onWebViewProviderChanged(mCurrentWebViewPackage);
             }
-        } catch (Throwable t) {
-            // Log and discard errors at this stage as we must not crash the system server.
-            Slog.e(TAG, "error preparing webview provider from system server", t);
-        }
 
-        if (getCurrentWebViewPackage() == null) {
-            // We didn't find a valid WebView implementation. Try explicitly re-enabling the
-            // fallback package for all users in case it was disabled, even if we already did the
-            // one-time migration before. If this actually changes the state, we will see the
-            // PackageManager broadcast shortly and try again.
-            WebViewProviderInfo[] webviewProviders = mSystemInterface.getWebViewPackages();
-            WebViewProviderInfo fallbackProvider = getFallbackProvider(webviewProviders);
-            if (fallbackProvider != null) {
-                Slog.w(TAG, "No valid provider, trying to enable " + fallbackProvider.packageName);
-                mSystemInterface.enablePackageForAllUsers(mContext, fallbackProvider.packageName,
-                                                          true);
-            } else {
-                Slog.e(TAG, "No valid provider and no fallback available.");
+            if (repairNeeded) {
+                attemptRepair();
             }
+
+        } catch (WebViewPackageMissingException e) {
+            Slog.e(TAG, "Could not find valid WebView package to create relro with", e);
+        } catch (Throwable t) {
+            // We don't know a case when this should happen but we log and discard errors at this
+            // stage as we must not crash the system server.
+            Slog.wtf(TAG, "error preparing webview provider from system server", t);
         }
     }
 
@@ -206,7 +255,6 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
         mSystemInterface.ensureZygoteStarted();
     }
 
-    @Override
     public void handleNewUser(int userId) {
         // The system user is always started at boot, and by that point we have already run one
         // round of the package-changing logic (through prepareWebViewInSystemServer()), so early
@@ -215,7 +263,6 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
         handleUserChange();
     }
 
-    @Override
     public void handleUserRemoved(int userId) {
         handleUserChange();
     }
@@ -230,7 +277,6 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
         updateCurrentWebViewPackage(null);
     }
 
-    @Override
     public void notifyRelroCreationCompleted() {
         synchronized (mLock) {
             mNumRelroCreationsFinished++;
@@ -238,7 +284,6 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
         }
     }
 
-    @Override
     public WebViewProviderResponse waitForAndGetProvider() {
         PackageInfo webViewPackage = null;
         final long timeoutTimeMs = System.nanoTime() / NS_PER_MS + WAIT_TIMEOUT_MS;
@@ -284,7 +329,6 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
      * replacing that provider it will not be in use directly, but will be used when the relros
      * or the replacement are done).
      */
-    @Override
     public String changeProviderAndSetting(String newProviderName) {
         PackageInfo newPackage = updateCurrentWebViewPackage(newProviderName);
         if (newPackage == null) return "";
@@ -300,11 +344,12 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
         PackageInfo oldPackage = null;
         PackageInfo newPackage = null;
         boolean providerChanged = false;
+        boolean repairNeeded = false;
         synchronized (mLock) {
             oldPackage = mCurrentWebViewPackage;
 
             if (newProviderName != null) {
-                mSystemInterface.updateUserSetting(mContext, newProviderName);
+                mSystemInterface.updateUserSetting(newProviderName);
             }
 
             try {
@@ -322,10 +367,18 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
             if (providerChanged) {
                 onWebViewProviderChanged(newPackage);
             }
+            // Choosing another provider shouldn't break our state. Only check if repair
+            // is needed if this function is called as a result of a user change.
+            if (newProviderName == null) {
+                repairNeeded = shouldTriggerRepairLocked();
+            }
         }
         // Kill apps using the old provider only if we changed provider
         if (providerChanged && oldPackage != null) {
             mSystemInterface.killPackageDependents(oldPackage.packageName);
+        }
+        if (repairNeeded) {
+            attemptRepair();
         }
         // Return the new provider, this is not necessarily the one we were asked to switch to,
         // but the persistent setting will now be pointing to the provider we were asked to
@@ -341,6 +394,7 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
         synchronized (mLock) {
             mAnyWebViewInstalled = true;
             if (mNumRelroCreationsStarted == mNumRelroCreationsFinished) {
+                mSystemInterface.pinWebviewIfRequired(newPackage.applicationInfo);
                 mCurrentWebViewPackage = newPackage;
 
                 // The relro creations might 'finish' (not start at all) before
@@ -350,6 +404,12 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
                 mNumRelroCreationsFinished = 0;
                 mNumRelroCreationsStarted =
                     mSystemInterface.onWebViewProviderChanged(newPackage);
+                Counter.logIncrement("webview.value_on_webview_provider_changed_counter");
+                if (newPackage.packageName.equals(getDefaultWebViewPackage().packageName)) {
+                    Counter.logIncrement(
+                            "webview.value_on_webview_provider_changed_"
+                            + "with_default_package_counter");
+                }
                 // If the relro creations finish before we know the number of started creations
                 // we will have to do any cleanup/notifying here.
                 checkIfRelrosDoneLocked();
@@ -364,7 +424,6 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
     }
 
     /** Fetch only the currently valid WebView packages. */
-    @Override
     public WebViewProviderInfo[] getValidWebViewPackages() {
         ProviderAndPackageInfo[] providersAndPackageInfos = getValidWebViewPackagesAndInfos();
         WebViewProviderInfo[] providers =
@@ -379,17 +438,8 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
      * Returns the default WebView provider which should be first availableByDefault option in the
      * system config.
      */
-    @Override
     public WebViewProviderInfo getDefaultWebViewPackage() {
-        WebViewProviderInfo[] webviewProviders = getWebViewPackages();
-        for (WebViewProviderInfo provider : webviewProviders) {
-            if (provider.availableByDefault) {
-                return provider;
-            }
-        }
-        // This should be unreachable because the config parser enforces that there is at least one
-        // availableByDefault provider.
-        throw new AndroidRuntimeException("No available by default WebView Provider.");
+        return mDefaultProvider;
     }
 
     private static class ProviderAndPackageInfo {
@@ -421,47 +471,60 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
 
     /**
      * Returns either the package info of the WebView provider determined in the following way:
-     * If the user has chosen a provider then use that if it is valid,
-     * otherwise use the first package in the webview priority list that is valid.
-     *
+     * If the user has chosen a provider then use that if it is valid, enabled and installed
+     * for all users, otherwise use the default provider.
      */
     private PackageInfo findPreferredWebViewPackage() throws WebViewPackageMissingException {
-        ProviderAndPackageInfo[] providers = getValidWebViewPackagesAndInfos();
-
-        String userChosenProvider = mSystemInterface.getUserChosenWebViewProvider(mContext);
-
+        Counter.logIncrement("webview.value_find_preferred_webview_package_counter");
         // If the user has chosen provider, use that (if it's installed and enabled for all
         // users).
-        for (ProviderAndPackageInfo providerAndPackage : providers) {
-            if (providerAndPackage.provider.packageName.equals(userChosenProvider)) {
-                // userPackages can contain null objects.
-                List<UserPackage> userPackages =
-                        mSystemInterface.getPackageInfoForProviderAllUsers(mContext,
-                                providerAndPackage.provider);
-                if (isInstalledAndEnabledForAllUsers(userPackages)) {
-                    return providerAndPackage.packageInfo;
+        String userChosenPackageName = mSystemInterface.getUserChosenWebViewProvider();
+        WebViewProviderInfo userChosenProvider =
+                getWebViewProviderForPackage(userChosenPackageName);
+        if (userChosenProvider != null) {
+            try {
+                PackageInfo packageInfo =
+                        mSystemInterface.getPackageInfoForProvider(userChosenProvider);
+                if (validityResult(userChosenProvider, packageInfo) == VALIDITY_OK) {
+                    List<UserPackage> userPackages =
+                            mSystemInterface.getPackageInfoForProviderAllUsers(userChosenProvider);
+                    if (isInstalledAndEnabledForAllUsers(userPackages)) {
+                        return packageInfo;
+                    }
                 }
+            } catch (NameNotFoundException e) {
+                Slog.w(TAG, "User chosen WebView package (" + userChosenPackageName
+                        + ") not found");
             }
         }
 
-        // User did not choose, or the choice failed; use the most stable provider that is
-        // installed and enabled for all users, and available by default (not through
-        // user choice).
-        for (ProviderAndPackageInfo providerAndPackage : providers) {
-            if (providerAndPackage.provider.availableByDefault) {
-                // userPackages can contain null objects.
-                List<UserPackage> userPackages =
-                        mSystemInterface.getPackageInfoForProviderAllUsers(mContext,
-                                providerAndPackage.provider);
-                if (isInstalledAndEnabledForAllUsers(userPackages)) {
-                    return providerAndPackage.packageInfo;
-                }
+        // User did not choose, or the choice failed; return the default provider even if it is not
+        // installed or enabled for all users.
+        try {
+            PackageInfo packageInfo = mSystemInterface.getPackageInfoForProvider(mDefaultProvider);
+            if (validityResult(mDefaultProvider, packageInfo) == VALIDITY_OK) {
+                return packageInfo;
+            } else {
+                Counter.logIncrement("webview.value_default_webview_package_invalid_counter");
             }
+        } catch (NameNotFoundException e) {
+            Slog.w(TAG, "Default WebView package (" + mDefaultProvider.packageName + ") not found");
         }
 
         // This should never happen during normal operation (only with modified system images).
+        Counter.logIncrement("webview.value_webview_not_usable_for_all_users_counter");
         mAnyWebViewInstalled = false;
         throw new WebViewPackageMissingException("Could not find a loadable WebView package");
+    }
+
+    private WebViewProviderInfo getWebViewProviderForPackage(String packageName) {
+        WebViewProviderInfo[] allProviders = getWebViewPackages();
+        for (int n = 0; n < allProviders.length; n++) {
+            if (allProviders[n].packageName.equals(packageName)) {
+                return allProviders[n];
+            }
+        }
+        return null;
     }
 
     /**
@@ -479,12 +542,10 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
         return true;
     }
 
-    @Override
     public WebViewProviderInfo[] getWebViewPackages() {
         return mSystemInterface.getWebViewPackages();
     }
 
-    @Override
     public PackageInfo getCurrentWebViewPackage() {
         synchronized (mLock) {
             return mCurrentWebViewPackage;
@@ -527,9 +588,9 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
     }
 
     private int validityResult(WebViewProviderInfo configInfo, PackageInfo packageInfo) {
-        // Ensure the provider targets this framework release (or a later one).
-        if (!UserPackage.hasCorrectTargetSdkVersion(packageInfo)) {
-            return VALIDITY_INCORRECT_SDK_VERSION;
+        // Ensure the provider is compatible with this framework release.
+        if (!mSystemInterface.isCompatibleImplementationPackage(packageInfo)) {
+            return VALIDITY_OS_INCOMPATIBLE;
         }
         if (!versionCodeGE(packageInfo.getLongVersionCode(), getMinimumVersionCode())
                 && !mSystemInterface.systemIsDebuggable()) {
@@ -637,20 +698,7 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
         return null;
     }
 
-    @Override
-    public boolean isMultiProcessEnabled() {
-        throw new IllegalStateException(
-                "isMultiProcessEnabled shouldn't be called if update_service_v2 flag is set.");
-    }
-
-    @Override
-    public void enableMultiProcess(boolean enable) {
-        throw new IllegalStateException(
-                "enableMultiProcess shouldn't be called if update_service_v2 flag is set.");
-    }
-
     /** Dump the state of this Service. */
-    @Override
     public void dumpState(PrintWriter pw) {
         pw.println("Current WebView Update Service state");
         synchronized (mLock) {
@@ -665,7 +713,8 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
             }
             pw.println(
                     TextUtils.formatSimple(
-                            "  Minimum targetSdkVersion: %d", UserPackage.MINIMUM_SUPPORTED_SDK));
+                            "  %s",
+                            WebViewFactoryProvider.describeCompatibleImplementationPackage()));
             pw.println(
                     TextUtils.formatSimple(
                             "  Minimum WebView version code: %d", mMinimumVersionCode));
@@ -700,7 +749,7 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
         pw.println("  WebView packages:");
         for (WebViewProviderInfo provider : allProviders) {
             List<UserPackage> userPackages =
-                    mSystemInterface.getPackageInfoForProviderAllUsers(mContext, provider);
+                    mSystemInterface.getPackageInfoForProviderAllUsers(provider);
             PackageInfo systemUserPackageInfo =
                     userPackages.get(UserHandle.USER_SYSTEM).getPackageInfo();
             if (systemUserPackageInfo == null) {
@@ -719,8 +768,7 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
             if (validity == VALIDITY_OK) {
                 boolean installedForAllUsers =
                         isInstalledAndEnabledForAllUsers(
-                                mSystemInterface.getPackageInfoForProviderAllUsers(
-                                        mContext, provider));
+                                mSystemInterface.getPackageInfoForProviderAllUsers(provider));
                 pw.println(
                         TextUtils.formatSimple(
                                 "    Valid package %s (%s) is %s installed/enabled for all users",
@@ -740,8 +788,8 @@ class WebViewUpdateServiceImpl2 implements WebViewUpdateServiceInterface {
 
     private static String getInvalidityReason(int invalidityReason) {
         switch (invalidityReason) {
-            case VALIDITY_INCORRECT_SDK_VERSION:
-                return "SDK version too low";
+            case VALIDITY_OS_INCOMPATIBLE:
+                return "Not compatible with this OS version";
             case VALIDITY_INCORRECT_VERSION_CODE:
                 return "Version code too low";
             case VALIDITY_INCORRECT_SIGNATURE:

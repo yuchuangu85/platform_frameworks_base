@@ -17,11 +17,11 @@
 package com.android.server.wm.flicker.activityembedding.open
 
 import android.platform.test.annotations.Presubmit
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.traces.component.ComponentNameMatcher
 import androidx.test.filters.RequiresDevice
 import com.android.server.wm.flicker.activityembedding.ActivityEmbeddingTestBase
 import com.android.server.wm.flicker.helpers.ActivityEmbeddingAppHelper
@@ -34,7 +34,7 @@ import org.junit.runners.Parameterized
 /**
  * Test opening a secondary activity that will split with the main activity.
  *
- * To run this test: `atest FlickerTestsOther:OpenActivityEmbeddingSecondaryToSplitTest`
+ * To run this test: `atest FlickerTestsActivityEmbedding:OpenActivityEmbeddingSecondaryToSplitTest`
  */
 @RequiresDevice
 @RunWith(Parameterized::class)
@@ -90,7 +90,10 @@ class OpenActivityEmbeddingSecondaryToSplitTest(flicker: LegacyFlickerTest) :
         flicker.assertWm {
             notContains(ActivityEmbeddingAppHelper.SECONDARY_ACTIVITY_COMPONENT)
                 .then()
-                .isAppWindowInvisible(ActivityEmbeddingAppHelper.SECONDARY_ACTIVITY_COMPONENT)
+                .isAppWindowInvisible(
+                    ActivityEmbeddingAppHelper.SECONDARY_ACTIVITY_COMPONENT,
+                    isOptional = true
+                )
                 .then()
                 .isAppWindowVisible(ActivityEmbeddingAppHelper.SECONDARY_ACTIVITY_COMPONENT)
         }

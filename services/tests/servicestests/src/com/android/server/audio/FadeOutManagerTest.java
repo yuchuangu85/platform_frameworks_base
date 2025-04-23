@@ -23,8 +23,6 @@ import static android.media.AudioPlaybackConfiguration.PLAYER_TYPE_AAUDIO;
 import static android.media.AudioPlaybackConfiguration.PLAYER_TYPE_JAM_AUDIOTRACK;
 import static android.media.AudioPlaybackConfiguration.PLAYER_TYPE_UNKNOWN;
 
-import static org.junit.Assert.assertThrows;
-
 import android.content.Context;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
@@ -35,6 +33,8 @@ import android.os.Parcel;
 import androidx.test.core.app.ApplicationProvider;
 
 import com.google.common.truth.Expect;
+
+import com.android.server.utils.EventLogger;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -69,23 +69,16 @@ public final class FadeOutManagerTest {
     PlayerBase.PlayerIdCard mMockPlayerIdCard;
     @Mock
     AudioPlaybackConfiguration mMockPlaybackConfiguration;
+    @Mock
+    EventLogger mMockEventLogger;
 
     @Rule
     public final Expect expect = Expect.create();
 
     @Before
     public void setUp() {
-        mFadeOutManager = new FadeOutManager(new FadeConfigurations());
+        mFadeOutManager = new FadeOutManager();
         mContext = ApplicationProvider.getApplicationContext();
-    }
-
-    @Test
-    public void constructor_nullFadeConfigurations_fails() {
-        Throwable thrown = assertThrows(NullPointerException.class, () -> new FadeOutManager(
-                /* FadeConfigurations= */ null));
-
-        expect.withMessage("Constructor exception")
-                .that(thrown).hasMessageThat().contains("Fade configurations can not be null");
     }
 
     @Test
@@ -204,7 +197,7 @@ public final class FadeOutManagerTest {
             String packageName, int uid, int flags) {
         MediaFocusControl mfc = new MediaFocusControl(mContext, null);
         return new FocusRequester(aa, AudioManager.AUDIOFOCUS_GAIN, flags, null, null, clientId,
-                null, packageName, uid, mfc, 1);
+                null, packageName, uid, mfc, 1, mMockEventLogger);
     }
 
     private PlayerBase.PlayerIdCard createPlayerIdCard(AudioAttributes aa, int playerType) {

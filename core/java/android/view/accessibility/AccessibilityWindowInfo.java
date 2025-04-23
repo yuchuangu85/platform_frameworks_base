@@ -16,6 +16,7 @@
 
 package android.view.accessibility;
 
+import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.TestApi;
@@ -92,6 +93,12 @@ public final class AccessibilityWindowInfo implements Parcelable {
      * window-based magnification, which includes the magnified content and the option menu.
      */
     public static final int TYPE_MAGNIFICATION_OVERLAY = 6;
+
+    /**
+     * Window type: A system window that has the function to control an associated window.
+     */
+    @FlaggedApi(Flags.FLAG_ENABLE_TYPE_WINDOW_CONTROL)
+    public static final int TYPE_WINDOW_CONTROL = 7;
 
     /* Special values for window IDs */
     /** @hide */
@@ -892,8 +899,12 @@ public final class AccessibilityWindowInfo implements Parcelable {
             case TYPE_MAGNIFICATION_OVERLAY: {
                 return "TYPE_MAGNIFICATION_OVERLAY";
             }
-            default:
+            default: {
+                if (Flags.enableTypeWindowControl() && type == TYPE_WINDOW_CONTROL) {
+                    return "TYPE_WINDOW_CONTROL";
+                }
                 return "<UNKNOWN:" + type + ">";
+            }
         }
     }
 

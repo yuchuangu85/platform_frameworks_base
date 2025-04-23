@@ -18,6 +18,7 @@ package com.android.server.wm;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_DREAM;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_HOME;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_RECENTS;
+
 import static com.android.server.wm.WindowManagerDebugConfig.DEBUG_SCREENSHOT;
 import static com.android.server.wm.WindowManagerDebugConfig.TAG_WITH_CLASS_NAME;
 import static com.android.server.wm.WindowManagerDebugConfig.TAG_WM;
@@ -42,7 +43,6 @@ import android.view.InsetsState;
 import android.view.SurfaceControl;
 import android.view.ThreadedRenderer;
 import android.view.WindowInsets;
-import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.window.ScreenCapture;
 import android.window.SnapshotDrawerUtils;
@@ -136,7 +136,6 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
     }
 
     abstract ActivityRecord getTopActivity(TYPE source);
-    abstract ActivityRecord getTopFullscreenActivity(TYPE source);
     abstract ActivityManager.TaskDescription getTaskDescription(TYPE source);
     /**
      * Find the window for a given task to take a snapshot. Top child of the task is usually the one
@@ -146,6 +145,7 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
     @Nullable
     protected abstract ActivityRecord findAppTokenForSnapshot(TYPE source);
     protected abstract boolean use16BitFormat();
+    protected abstract Rect getLetterboxInsets(ActivityRecord topActivity);
 
     /**
      * This is different than {@link #recordSnapshotInner(TYPE)} because it doesn't store
@@ -180,16 +180,8 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
         if (snapshot == null) {
             return null;
         }
-        final HardwareBuffer buffer = snapshot.getHardwareBuffer();
-        if (buffer.getWidth() == 0 || buffer.getHeight() == 0) {
-            buffer.close();
-            Slog.e(TAG, "Invalid snapshot dimensions " + buffer.getWidth() + "x"
-                    + buffer.getHeight());
-            return null;
-        } else {
-            mCache.putSnapshot(source, snapshot);
-            return snapshot;
-        }
+        mCache.putSnapshot(source, snapshot);
+        return snapshot;
     }
 
     @VisibleForTesting
@@ -210,6 +202,11 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
 
     @Nullable
     TaskSnapshot snapshot(TYPE source) {
+        return snapshot(source, mHighResSnapshotScale);
+    }
+
+    @Nullable
+    TaskSnapshot snapshot(TYPE source, float scale) {
         TaskSnapshot.Builder builder = new TaskSnapshot.Builder();
         final Rect crop = prepareTaskSnapshot(source, builder);
         if (crop == null) {
@@ -218,7 +215,7 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
         }
         Trace.traceBegin(Trace.TRACE_TAG_WINDOW_MANAGER, "createSnapshot");
         final ScreenCapture.ScreenshotHardwareBuffer screenshotBuffer = createSnapshot(source,
-                mHighResSnapshotScale, crop, builder);
+                scale, crop, builder);
         Trace.traceEnd(Trace.TRACE_TAG_WINDOW_MANAGER);
         if (screenshotBuffer == null) {
             // Failed to acquire image. Has been logged.
@@ -227,7 +224,19 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
         builder.setCaptureTime(SystemClock.elapsedRealtimeNanos());
         builder.setSnapshot(screenshotBuffer.getHardwareBuffer());
         builder.setColorSpace(screenshotBuffer.getColorSpace());
-        return builder.build();
+        final TaskSnapshot snapshot = builder.build();
+        return validateSnapshot(snapshot);
+    }
+
+    private static TaskSnapshot validateSnapshot(@NonNull TaskSnapshot snapshot) {
+        final HardwareBuffer buffer = snapshot.getHardwareBuffer();
+        if (buffer.getWidth() == 0 || buffer.getHeight() == 0) {
+            buffer.close();
+            Slog.e(TAG, "Invalid snapshot dimensions " + buffer.getWidth() + "x"
+                    + buffer.getHeight());
+            return null;
+        }
+        return snapshot;
     }
 
     @Nullable
@@ -299,7 +308,7 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
         final WindowState mainWindow = result.second;
         final Rect contentInsets = getSystemBarInsets(mainWindow.getFrame(),
                 mainWindow.getInsetsStateWithVisibilityOverride());
-        final Rect letterboxInsets = activity.getLetterboxInsets();
+        final Rect letterboxInsets = getLetterboxInsets(activity);
         InsetUtils.addInsets(contentInsets, letterboxInsets);
         builder.setIsRealSnapshot(true);
         builder.setId(System.currentTimeMillis());
@@ -320,27 +329,33 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
         builder.setPixelFormat(pixelFormat);
         builder.setIsTranslucent(isTranslucent);
         builder.setWindowingMode(source.getWindowingMode());
-        builder.setAppearance(getAppearance(source));
+        builder.setAppearance(mainWindow.mAttrs.insetsFlags.appearance);
+        builder.setUiMode(activity.getConfiguration().uiMode);
 
         final Configuration taskConfig = activity.getTask().getConfiguration();
         final int displayRotation = taskConfig.windowConfiguration.getDisplayRotation();
         final Rect outCrop = new Rect();
+        final Point taskSize = new Point();
         final Transition.ChangeInfo changeInfo = mCurrentChangeInfo;
         if (changeInfo != null && changeInfo.mRotation != displayRotation) {
             // For example, the source is closing and display rotation changes at the same time.
             // The snapshot should record the state in previous rotation.
             outCrop.set(changeInfo.mAbsoluteBounds);
+            taskSize.set(changeInfo.mAbsoluteBounds.right, changeInfo.mAbsoluteBounds.bottom);
             builder.setRotation(changeInfo.mRotation);
             builder.setOrientation(changeInfo.mAbsoluteBounds.height()
                     >= changeInfo.mAbsoluteBounds.width()
                     ? Configuration.ORIENTATION_PORTRAIT : Configuration.ORIENTATION_LANDSCAPE);
         } else {
-            outCrop.set(taskConfig.windowConfiguration.getBounds());
+            final Configuration srcConfig = source.getConfiguration();
+            outCrop.set(srcConfig.windowConfiguration.getBounds());
+            final Rect taskBounds = taskConfig.windowConfiguration.getBounds();
+            taskSize.set(taskBounds.width(), taskBounds.height());
             builder.setRotation(displayRotation);
-            builder.setOrientation(taskConfig.orientation);
+            builder.setOrientation(srcConfig.orientation);
         }
         outCrop.offsetTo(0, 0);
-        builder.setTaskSize(new Point(outCrop.right, outCrop.bottom));
+        builder.setTaskSize(taskSize);
         return outCrop;
     }
 
@@ -363,12 +378,6 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
         if (activity == null) {
             if (DEBUG_SCREENSHOT) {
                 Slog.w(TAG_WM, "Failed to take screenshot. No visible windows for " + source);
-            }
-            return null;
-        }
-        if (activity.hasCommittedReparentToAnimationLeash()) {
-            if (DEBUG_SCREENSHOT) {
-                Slog.w(TAG_WM, "Failed to take screenshot. App is animating " + activity);
             }
             return null;
         }
@@ -428,11 +437,11 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
             return null;
         }
         final Rect contentInsets = new Rect(systemBarInsets);
-        final Rect letterboxInsets = topActivity.getLetterboxInsets();
+        final Rect letterboxInsets = getLetterboxInsets(topActivity);
         InsetUtils.addInsets(contentInsets, letterboxInsets);
         // Note, the app theme snapshot is never translucent because we enforce a non-translucent
         // color above
-        return new TaskSnapshot(
+        final TaskSnapshot taskSnapshot = new TaskSnapshot(
                 System.currentTimeMillis() /* id */,
                 SystemClock.elapsedRealtimeNanos() /* captureTime */,
                 topActivity.mActivityComponent, hwBitmap.getHardwareBuffer(),
@@ -440,28 +449,14 @@ abstract class AbsAppSnapshotController<TYPE extends WindowContainer,
                 mainWindow.getWindowConfiguration().getRotation(), new Point(taskWidth, taskHeight),
                 contentInsets, letterboxInsets, false /* isLowResolution */,
                 false /* isRealSnapshot */, source.getWindowingMode(),
-                getAppearance(source), false /* isTranslucent */, false /* hasImeSurface */);
+                attrs.insetsFlags.appearance, false /* isTranslucent */, false /* hasImeSurface */,
+                topActivity.getConfiguration().uiMode /* uiMode */);
+        return validateSnapshot(taskSnapshot);
     }
 
     static Rect getSystemBarInsets(Rect frame, InsetsState state) {
         return state.calculateInsets(
                 frame, WindowInsets.Type.systemBars(), false /* ignoreVisibility */).toRect();
-    }
-
-    /**
-     * @return The {@link WindowInsetsController.Appearance} flags for the top fullscreen opaque
-     * window in the given {@param TYPE}.
-     */
-    @WindowInsetsController.Appearance
-    private int getAppearance(TYPE source) {
-        final ActivityRecord topFullscreenActivity = getTopFullscreenActivity(source);
-        final WindowState topFullscreenOpaqueWindow = topFullscreenActivity != null
-                ? topFullscreenActivity.getTopFullscreenOpaqueWindow()
-                : null;
-        if (topFullscreenOpaqueWindow != null) {
-            return topFullscreenOpaqueWindow.mAttrs.insetsFlags.appearance;
-        }
-        return 0;
     }
 
     /**

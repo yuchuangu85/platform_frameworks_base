@@ -169,16 +169,15 @@ public class ConditionProviders extends ManagedServices {
         for (int i = 0; i < mSystemConditionProviders.size(); i++) {
             mSystemConditionProviders.valueAt(i).onBootComplete();
         }
-        if (mCallback != null) {
-            mCallback.onBootComplete();
-        }
     }
 
     @Override
     public void onUserSwitched(int user) {
         super.onUserSwitched(user);
-        if (mCallback != null) {
-            mCallback.onUserSwitched();
+        if (android.app.Flags.modesHsum()) {
+            for (int i = 0; i < mSystemConditionProviders.size(); i++) {
+                mSystemConditionProviders.valueAt(i).onUserSwitched(UserHandle.of(user));
+            }
         }
     }
 
@@ -234,7 +233,7 @@ public class ConditionProviders extends ManagedServices {
             if (pkgList != null && (pkgList.length > 0)) {
                 for (String pkgName : pkgList) {
                     try {
-                        inm.removeAutomaticZenRules(pkgName);
+                        inm.removeAutomaticZenRules(pkgName, /* fromUser= */ false);
                         inm.setNotificationPolicyAccessGranted(pkgName, false);
                     } catch (Exception e) {
                         Slog.e(TAG, "Failed to clean up rules for " + pkgName, e);
@@ -515,10 +514,8 @@ public class ConditionProviders extends ManagedServices {
     }
 
     public interface Callback {
-        void onBootComplete();
         void onServiceAdded(ComponentName component);
         void onConditionChanged(Uri id, Condition condition);
-        void onUserSwitched();
     }
 
 }

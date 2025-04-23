@@ -16,8 +16,10 @@
 
 package com.android.server.wm;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.inputmethodservice.InputMethodService;
+import android.os.IBinder;
 import android.view.WindowInsets;
 import android.view.WindowInsets.Type.InsetsType;
 import android.view.inputmethod.ImeTracker;
@@ -25,12 +27,14 @@ import android.view.inputmethod.ImeTracker;
 /**
  * Generalization of an object that can control insets state.
  */
-interface InsetsControlTarget {
+interface InsetsControlTarget extends InsetsTarget {
 
     /**
      * Notifies the control target that the insets control has changed.
+     *
+     * @param displayId the display hosting the window of this target
      */
-    default void notifyInsetsControlChanged() {
+    default void notifyInsetsControlChanged(int displayId) {
     };
 
     /**
@@ -40,16 +44,17 @@ interface InsetsControlTarget {
         return null;
     }
 
-    /**
-     * @return {@code true} if any of the {@link InsetsType} is requested visible by this target.
-     */
+    @Override
+    default IBinder getWindowToken() {
+        return null;
+    }
+
+    @Override
     default boolean isRequestedVisible(@InsetsType int types) {
         return (WindowInsets.Type.defaultVisible() & types) != 0;
     }
 
-    /**
-     * @return {@link InsetsType}s which are requested visible by this target.
-     */
+    @Override
     default @InsetsType int getRequestedVisibleTypes() {
         return WindowInsets.Type.defaultVisible();
     }
@@ -58,8 +63,8 @@ interface InsetsControlTarget {
      * Instructs the control target to show inset sources.
      *
      * @param types to specify which types of insets source window should be shown.
-     * @param fromIme {@code true} if IME show request originated from {@link InputMethodService}.
-     * @param statsToken the token tracking the current IME show request or {@code null} otherwise.
+     * @param fromIme {@code true} if the IME request originated from {@link InputMethodService}.
+     * @param statsToken the token tracking the current IME request or {@code null} otherwise.
      */
     default void showInsets(@InsetsType int types, boolean fromIme,
             @Nullable ImeTracker.Token statsToken) {
@@ -69,8 +74,8 @@ interface InsetsControlTarget {
      * Instructs the control target to hide inset sources.
      *
      * @param types to specify which types of insets source window should be hidden.
-     * @param fromIme {@code true} if IME hide request originated from {@link InputMethodService}.
-     * @param statsToken the token tracking the current IME hide request or {@code null} otherwise.
+     * @param fromIme {@code true} if the IME request originated from {@link InputMethodService}.
+     * @param statsToken the token tracking the current IME request or {@code null} otherwise.
      */
     default void hideInsets(@InsetsType int types, boolean fromIme,
             @Nullable ImeTracker.Token statsToken) {
@@ -81,6 +86,15 @@ interface InsetsControlTarget {
      */
     default boolean canShowTransient() {
         return false;
+    }
+
+    /**
+     * @param visible the requested visibility for the IME, used for
+     * {@link com.android.server.wm.DisplayContent.RemoteInsetsControlTarget}
+     * @param statsToken the token tracking the current IME request
+     */
+    default void setImeInputTargetRequestedVisibility(boolean visible,
+            @NonNull ImeTracker.Token statsToken) {
     }
 
     /** Returns {@code target.getWindow()}, or null if {@code target} is {@code null}. */

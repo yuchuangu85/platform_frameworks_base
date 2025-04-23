@@ -16,7 +16,10 @@
 
 package com.android.systemui.statusbar.dagger;
 
+import static com.android.systemui.Flags.predictiveBackAnimateDialogs;
+
 import android.content.Context;
+import android.os.Handler;
 import android.os.RemoteException;
 import android.service.dreams.IDreamManager;
 import android.util.Log;
@@ -24,20 +27,22 @@ import android.util.Log;
 import com.android.internal.jank.InteractionJankMonitor;
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.systemui.CoreStartable;
-import com.android.systemui.animation.ActivityLaunchAnimator;
+import com.android.systemui.animation.ActivityTransitionAnimator;
 import com.android.systemui.animation.AnimationFeatureFlags;
-import com.android.systemui.animation.DialogLaunchAnimator;
+import com.android.systemui.animation.DialogTransitionAnimator;
 import com.android.systemui.bouncer.domain.interactor.AlternateBouncerInteractor;
 import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.dagger.qualifiers.Background;
+import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.dump.DumpHandler;
 import com.android.systemui.dump.DumpManager;
-import com.android.systemui.flags.FeatureFlags;
-import com.android.systemui.flags.Flags;
-import com.android.systemui.media.controls.pipeline.MediaDataManager;
+import com.android.systemui.media.controls.domain.pipeline.MediaDataManager;
 import com.android.systemui.power.domain.interactor.PowerInteractor;
+import com.android.systemui.scene.shared.flag.SceneContainerFlag;
 import com.android.systemui.settings.DisplayTracker;
 import com.android.systemui.shade.NotificationPanelViewController;
 import com.android.systemui.shade.ShadeSurface;
+import com.android.systemui.shade.ShadeSurfaceImpl;
 import com.android.systemui.shade.carrier.ShadeCarrierGroupController;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.NotificationClickNotifier;
@@ -53,11 +58,10 @@ import com.android.systemui.statusbar.notification.collection.render.Notificatio
 import com.android.systemui.statusbar.phone.CentralSurfacesImpl;
 import com.android.systemui.statusbar.phone.ManagedProfileController;
 import com.android.systemui.statusbar.phone.ManagedProfileControllerImpl;
-import com.android.systemui.statusbar.phone.StatusBarIconController;
-import com.android.systemui.statusbar.phone.StatusBarIconControllerImpl;
-import com.android.systemui.statusbar.phone.StatusBarIconList;
-import com.android.systemui.statusbar.phone.StatusBarNotificationPresenterModule;
 import com.android.systemui.statusbar.phone.StatusBarRemoteInputCallback;
+import com.android.systemui.statusbar.phone.ui.StatusBarIconController;
+import com.android.systemui.statusbar.phone.ui.StatusBarIconControllerImpl;
+import com.android.systemui.statusbar.phone.ui.StatusBarIconList;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 
 import dagger.Binds;
@@ -67,13 +71,17 @@ import dagger.Provides;
 import dagger.multibindings.ClassKey;
 import dagger.multibindings.IntoMap;
 
+import java.util.concurrent.Executor;
+
+import javax.inject.Provider;
+
 /**
  * This module provides instances needed to construct {@link CentralSurfacesImpl}. These are moved to
  * this separate from {@link CentralSurfacesModule} module so that components that wish to build
  * their own version of CentralSurfaces can include just dependencies, without injecting
  * CentralSurfaces itself.
  */
-@Module(includes = {StatusBarNotificationPresenterModule.class})
+@Module
 public interface CentralSurfacesDependenciesModule {
 
     /** */
@@ -91,14 +99,18 @@ public interface CentralSurfacesDependenciesModule {
             NotifPipeline notifPipeline,
             NotifCollection notifCollection,
             MediaDataManager mediaDataManager,
-            DumpManager dumpManager) {
+            DumpManager dumpManager,
+            @Background Executor backgroundExecutor,
+            @Main Handler handler) {
         return new NotificationMediaManager(
                 context,
                 visibilityProvider,
                 notifPipeline,
                 notifCollection,
                 mediaDataManager,
-                dumpManager);
+                dumpManager,
+                backgroundExecutor,
+                handler);
     }
 
     /** */
@@ -179,9 +191,19 @@ public interface CentralSurfacesDependenciesModule {
      * The {@link com.android.systemui.shade.ShadeViewController} interface is bound in
      * {@link com.android.systemui.shade.ShadeModule} so others can access it.
      */
-    @Binds
+    @Provides
     @SysUISingleton
-    ShadeSurface provideShadeSurface(NotificationPanelViewController impl);
+    static ShadeSurface provideShadeSurface(
+            Provider<ShadeSurfaceImpl> sceneContainerOn,
+            Provider<NotificationPanelViewController> sceneContainerOff) {
+        if (SceneContainerFlag.isEnabled()) {
+            return sceneContainerOn.get();
+        } else {
+            return sceneContainerOff.get();
+        }
+
+    }
+
 
     /** */
     @Binds
@@ -191,25 +213,27 @@ public interface CentralSurfacesDependenciesModule {
     /** */
     @Provides
     @SysUISingleton
-    static ActivityLaunchAnimator provideActivityLaunchAnimator() {
-        return new ActivityLaunchAnimator();
+    static ActivityTransitionAnimator provideActivityTransitionAnimator(
+            @Main Executor mainExecutor) {
+        return new ActivityTransitionAnimator(mainExecutor);
     }
 
     /** */
     @Provides
     @SysUISingleton
-    static DialogLaunchAnimator provideDialogLaunchAnimator(IDreamManager dreamManager,
+    static DialogTransitionAnimator provideDialogTransitionAnimator(@Main Executor mainExecutor,
+            IDreamManager dreamManager,
             KeyguardStateController keyguardStateController,
             Lazy<AlternateBouncerInteractor> alternateBouncerInteractor,
             InteractionJankMonitor interactionJankMonitor,
             AnimationFeatureFlags animationFeatureFlags) {
-        DialogLaunchAnimator.Callback callback = new DialogLaunchAnimator.Callback() {
+        DialogTransitionAnimator.Callback callback = new DialogTransitionAnimator.Callback() {
             @Override
             public boolean isDreaming() {
                 try {
                     return dreamManager.isDreaming();
                 } catch (RemoteException e) {
-                    Log.e("DialogLaunchAnimator.Callback", "dreamManager.isDreaming failed", e);
+                    Log.e("DialogTransitionAnimator.Callback", "dreamManager.isDreaming failed", e);
                     return false;
                 }
             }
@@ -224,17 +248,18 @@ public interface CentralSurfacesDependenciesModule {
                 return alternateBouncerInteractor.get().canShowAlternateBouncerForFingerprint();
             }
         };
-        return new DialogLaunchAnimator(callback, interactionJankMonitor, animationFeatureFlags);
+        return new DialogTransitionAnimator(
+                mainExecutor, callback, interactionJankMonitor, animationFeatureFlags);
     }
 
     /** */
     @Provides
     @SysUISingleton
-    static AnimationFeatureFlags provideAnimationFeatureFlags(FeatureFlags featureFlags) {
+    static AnimationFeatureFlags provideAnimationFeatureFlags() {
         return new AnimationFeatureFlags() {
             @Override
             public boolean isPredictiveBackQsDialogAnim() {
-                return featureFlags.isEnabled(Flags.WM_ENABLE_PREDICTIVE_BACK_QS_DIALOG_ANIM);
+                return predictiveBackAnimateDialogs();
             }
         };
     }

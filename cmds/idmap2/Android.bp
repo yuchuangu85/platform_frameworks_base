@@ -165,6 +165,7 @@ cc_test {
     ],
     host_supported: true,
     test_suites: ["general-tests"],
+    require_root: true,
     srcs: [
         "tests/BinaryStreamVisitorTests.cpp",
         "tests/CommandLineOptionsTests.cpp",
@@ -313,7 +314,6 @@ cc_binary {
         "libziparchive",
     ],
     static_libs: [
-        "libc++fs",
         "libidmap2_policies",
         "libidmap2_protos",
         "libidmap2daidl",

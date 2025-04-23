@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 The Android Open Source Project
+ * Copyright 2023 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,17 @@
 
 package com.android.server.companion.virtual.camera;
 
+import static android.companion.virtual.VirtualDeviceParams.DEVICE_POLICY_DEFAULT;
+
 import static com.android.server.companion.virtual.camera.VirtualCameraConversionUtil.getServiceCameraConfiguration;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.companion.virtual.VirtualDeviceParams.DevicePolicy;
 import android.companion.virtual.camera.VirtualCameraConfig;
 import android.companion.virtualcamera.IVirtualCameraService;
 import android.companion.virtualcamera.VirtualCameraConfiguration;
+import android.content.AttributionSource;
 import android.os.Binder;
 import android.os.IBinder;
 import android.os.RemoteException;
@@ -32,6 +36,7 @@ import android.util.Slog;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.modules.expresslog.Counter;
 
 import java.io.PrintWriter;
 import java.util.Map;
@@ -51,17 +56,23 @@ public final class VirtualCameraController implements IBinder.DeathRecipient {
 
     @GuardedBy("mServiceLock")
     @Nullable private IVirtualCameraService mVirtualCameraService;
+    @DevicePolicy
+    private final int mCameraPolicy;
+    private final int mDeviceId;
 
     @GuardedBy("mCameras")
     private final Map<IBinder, CameraDescriptor> mCameras = new ArrayMap<>();
 
-    public VirtualCameraController() {
-        connectVirtualCameraService();
+    public VirtualCameraController(@DevicePolicy int cameraPolicy, int deviceId) {
+        this(/* virtualCameraService= */ null, cameraPolicy, deviceId);
     }
 
     @VisibleForTesting
-    VirtualCameraController(IVirtualCameraService virtualCameraService) {
+    VirtualCameraController(IVirtualCameraService virtualCameraService,
+            @DevicePolicy int cameraPolicy, int deviceId) {
         mVirtualCameraService = virtualCameraService;
+        mCameraPolicy = cameraPolicy;
+        mDeviceId = deviceId;
     }
 
     /**
@@ -69,7 +80,10 @@ public final class VirtualCameraController implements IBinder.DeathRecipient {
      *
      * @param cameraConfig The {@link VirtualCameraConfig} sent by the client.
      */
-    public void registerCamera(@NonNull VirtualCameraConfig cameraConfig) {
+    public void registerCamera(@NonNull VirtualCameraConfig cameraConfig,
+            AttributionSource attributionSource) {
+        checkConfigByPolicy(cameraConfig);
+
         connectVirtualCameraServiceIfNeeded();
 
         try {
@@ -88,6 +102,9 @@ public final class VirtualCameraController implements IBinder.DeathRecipient {
         } catch (RemoteException e) {
             e.rethrowFromSystemServer();
         }
+        Counter.logIncrementWithUid(
+                "virtual_devices.value_virtual_camera_created_count",
+                attributionSource.getUid());
     }
 
     /**
@@ -116,7 +133,7 @@ public final class VirtualCameraController implements IBinder.DeathRecipient {
     }
 
     /** Return the id of the virtual camera with the given config. */
-    public int getCameraId(@NonNull VirtualCameraConfig cameraConfig) {
+    public String getCameraId(@NonNull VirtualCameraConfig cameraConfig) {
         connectVirtualCameraServiceIfNeeded();
 
         try {
@@ -168,11 +185,34 @@ public final class VirtualCameraController implements IBinder.DeathRecipient {
         fout.println(indent + "VirtualCameraController:");
         indent += indent;
         synchronized (mCameras) {
-            fout.printf("%sRegistered cameras:%d%n\n", indent, mCameras.size());
+            fout.println(indent + "Registered cameras: " + mCameras.size());
             for (CameraDescriptor descriptor : mCameras.values()) {
-                fout.printf("%s token: %s\n", indent, descriptor.mConfig);
+                fout.println(indent + " token: " +  descriptor.mConfig);
             }
         }
+    }
+
+    private void checkConfigByPolicy(VirtualCameraConfig config) {
+        if (mCameraPolicy == DEVICE_POLICY_DEFAULT) {
+            throw new IllegalArgumentException(
+                    "Cannot create virtual camera with DEVICE_POLICY_DEFAULT for "
+                            + "POLICY_TYPE_CAMERA");
+        } else if (isLensFacingAlreadyPresent(config.getLensFacing())) {
+            throw new IllegalArgumentException(
+                    "Only a single virtual camera can be created with lens facing "
+                            + config.getLensFacing());
+        }
+    }
+
+    private boolean isLensFacingAlreadyPresent(int lensFacing) {
+        synchronized (mCameras) {
+            for (CameraDescriptor cameraDescriptor : mCameras.values()) {
+                if (cameraDescriptor.mConfig.getLensFacing() == lensFacing) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void connectVirtualCameraServiceIfNeeded() {
@@ -211,7 +251,7 @@ public final class VirtualCameraController implements IBinder.DeathRecipient {
         VirtualCameraConfiguration serviceConfiguration = getServiceCameraConfiguration(config);
         synchronized (mServiceLock) {
             return mVirtualCameraService.registerCamera(config.getCallback().asBinder(),
-                    serviceConfiguration);
+                    serviceConfiguration, mDeviceId);
         }
     }
 

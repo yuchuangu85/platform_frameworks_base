@@ -34,6 +34,7 @@ import android.util.Slog;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.InputDevice;
+import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.RoundedCorner;
@@ -228,7 +229,8 @@ public class FocusEventDebugView extends RelativeLayout {
     /** Report a key event to the debug view. */
     @AnyThread
     public void reportKeyEvent(KeyEvent event) {
-        post(() -> handleKeyEvent(KeyEvent.obtain((KeyEvent) event)));
+        KeyEvent keyEvent = KeyEvent.obtain(event);
+        post(() -> handleKeyEvent(keyEvent));
     }
 
     /** Report a motion event to the debug view. */
@@ -238,7 +240,8 @@ public class FocusEventDebugView extends RelativeLayout {
             return;
         }
 
-        post(() -> handleRotaryInput(MotionEvent.obtain((MotionEvent) event)));
+        MotionEvent motionEvent = MotionEvent.obtain(event);
+        post(() -> handleRotaryInput(motionEvent));
     }
 
     private void handleKeyEvent(KeyEvent keyEvent) {
@@ -312,7 +315,7 @@ public class FocusEventDebugView extends RelativeLayout {
             case KeyEvent.KEYCODE_FORWARD_DEL:
                 return "\u2326";
             case KeyEvent.KEYCODE_ESCAPE:
-                return "ESC";
+                return "esc";
             case KeyEvent.KEYCODE_DPAD_UP:
                 return "\u2191";
             case KeyEvent.KEYCODE_DPAD_DOWN:
@@ -329,13 +332,29 @@ public class FocusEventDebugView extends RelativeLayout {
                 return "\u2198";
             case KeyEvent.KEYCODE_DPAD_DOWN_LEFT:
                 return "\u2199";
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                return "\u23ef";
+            case KeyEvent.KEYCODE_HOME:
+                return "\u25ef";
+            case KeyEvent.KEYCODE_BACK:
+                return "\u25c1";
+            case KeyEvent.KEYCODE_RECENT_APPS:
+                return "\u25a1";
             default:
                 break;
         }
 
         final int unicodeChar = event.getUnicodeChar();
         if (unicodeChar != 0) {
-            return new String(Character.toChars(unicodeChar));
+            if ((unicodeChar & KeyCharacterMap.COMBINING_ACCENT) != 0) {
+                // Show combining character
+                final int combiningChar = KeyCharacterMap.getCombiningChar(
+                        unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK);
+                // Return the Unicode dotted circle as part of the label as it is used is used to
+                // illustrate the effect of a combining marks
+                return "\u25cc" + String.valueOf((char) combiningChar);
+            }
+            return String.valueOf((char) unicodeChar);
         }
 
         final var label = KeyEvent.keyCodeToString(event.getKeyCode());

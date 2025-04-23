@@ -34,14 +34,16 @@ final class HardwareKeyboardShortcutController {
     private final ArrayList<InputMethodSubtypeHandle> mSubtypeHandles = new ArrayList<>();
 
     @GuardedBy("ImfLock.class")
-    void reset(@NonNull InputMethodUtils.InputMethodSettings settings) {
+    void update(@NonNull InputMethodSettings settings) {
         mSubtypeHandles.clear();
-        for (final InputMethodInfo imi : settings.getEnabledInputMethodListLocked()) {
+        final List<InputMethodInfo> inputMethods = settings.getEnabledInputMethodList();
+        for (int i = 0; i < inputMethods.size(); ++i) {
+            final InputMethodInfo imi = inputMethods.get(i);
             if (!imi.shouldShowInInputMethodPicker()) {
                 continue;
             }
             final List<InputMethodSubtype> subtypes =
-                    settings.getEnabledInputMethodSubtypeListLocked(imi, true);
+                    settings.getEnabledInputMethodSubtypeList(imi, true);
             if (subtypes.isEmpty()) {
                 mSubtypeHandles.add(InputMethodSubtypeHandle.of(imi, null));
             } else {

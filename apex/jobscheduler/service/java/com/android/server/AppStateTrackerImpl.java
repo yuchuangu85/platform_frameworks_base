@@ -444,8 +444,13 @@ public class AppStateTrackerImpl implements AppStateTracker {
     private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
+            final String action = intent.getAction();
+            if (action == null) {
+                return;
+            }
+
             final int userId = intent.getIntExtra(Intent.EXTRA_USER_HANDLE, -1);
-            switch (intent.getAction()) {
+            switch (action) {
                 case Intent.ACTION_USER_REMOVED:
                     if (userId > 0) {
                         mHandler.doUserRemoved(userId);
@@ -743,7 +748,8 @@ public class AppStateTrackerImpl implements AppStateTracker {
 
     private final class AppOpsWatcher extends IAppOpsCallback.Stub {
         @Override
-        public void opChanged(int op, int uid, String packageName) throws RemoteException {
+        public void opChanged(int op, int uid, String packageName,
+                String persistentDeviceId) throws RemoteException {
             boolean restricted = false;
             try {
                 restricted = mAppOpsService.checkOperation(TARGET_OP,

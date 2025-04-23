@@ -16,28 +16,37 @@
 
 package com.android.systemui.reardisplay;
 
+import static android.hardware.devicestate.DeviceState.PROPERTY_FOLDABLE_DISPLAY_CONFIGURATION_OUTER_PRIMARY;
+
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SuppressLint;
 import android.annotation.TestApi;
 import android.content.Context;
 import android.content.res.Configuration;
+import android.content.res.Resources;
+import android.hardware.devicestate.DeviceState;
 import android.hardware.devicestate.DeviceStateManager;
 import android.hardware.devicestate.DeviceStateManagerGlobal;
+import android.hardware.devicestate.feature.flags.Flags;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup.LayoutParams;
 import android.widget.LinearLayout;
 
-import com.android.internal.annotations.VisibleForTesting;
 import com.android.systemui.CoreStartable;
-import com.android.systemui.res.R;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.res.R;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.phone.SystemUIDialog;
+import com.android.systemui.statusbar.policy.ConfigurationController;
 
 import com.airbnb.lottie.LottieAnimationView;
 import com.airbnb.lottie.LottieDrawable;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.Executor;
 
 import javax.inject.Inject;
@@ -57,31 +66,44 @@ import javax.inject.Inject;
  */
 @SuppressLint("VisibleForTests") // TODO(b/260264542) Migrate away from DeviceStateManagerGlobal
 @SysUISingleton
-public class RearDisplayDialogController implements CoreStartable, CommandQueue.Callbacks {
+public class RearDisplayDialogController implements
+        CoreStartable,
+        ConfigurationController.ConfigurationListener,
+        CommandQueue.Callbacks {
 
-    private int[] mFoldedStates;
+    private List<Integer> mFoldedStates;
     private boolean mStartedFolded;
     private boolean mServiceNotified = false;
     private int mAnimationRepeatCount = LottieDrawable.INFINITE;
 
+    private final DeviceStateManager mDeviceStateManager;
     private DeviceStateManagerGlobal mDeviceStateManagerGlobal;
     private DeviceStateManager.DeviceStateCallback mDeviceStateManagerCallback =
             new DeviceStateManagerCallback();
 
-    private final Context mContext;
     private final CommandQueue mCommandQueue;
     private final Executor mExecutor;
+    private final Resources mResources;
+    private final LayoutInflater mLayoutInflater;
+    private final SystemUIDialog.Factory mSystemUIDialogFactory;
 
-    @VisibleForTesting
-    SystemUIDialog mRearDisplayEducationDialog;
+    private SystemUIDialog mRearDisplayEducationDialog;
     @Nullable LinearLayout mDialogViewContainer;
 
     @Inject
-    public RearDisplayDialogController(Context context, CommandQueue commandQueue,
-            @Main Executor executor) {
-        mContext = context;
+    public RearDisplayDialogController(
+            CommandQueue commandQueue,
+            @Main Executor executor,
+            @Main Resources resources,
+            LayoutInflater layoutInflater,
+            SystemUIDialog.Factory systemUIDialogFactory,
+            DeviceStateManager deviceStateManager) {
         mCommandQueue = commandQueue;
         mExecutor = executor;
+        mResources = resources;
+        mLayoutInflater = layoutInflater;
+        mSystemUIDialogFactory = systemUIDialogFactory;
+        mDeviceStateManager = deviceStateManager;
     }
 
     @Override
@@ -96,12 +118,11 @@ public class RearDisplayDialogController implements CoreStartable, CommandQueue.
     }
 
     @Override
-    public void onConfigurationChanged(Configuration newConfig) {
+    public void onConfigChanged(Configuration newConfig) {
         if (mRearDisplayEducationDialog != null && mRearDisplayEducationDialog.isShowing()
                 && mDialogViewContainer != null) {
             // Refresh the dialog view when configuration is changed.
-            Context dialogContext = mRearDisplayEducationDialog.getContext();
-            View dialogView = createDialogView(dialogContext);
+            View dialogView = createDialogView(mRearDisplayEducationDialog.getContext());
             mDialogViewContainer.removeAllViews();
             mDialogViewContainer.addView(dialogView);
         }
@@ -110,9 +131,7 @@ public class RearDisplayDialogController implements CoreStartable, CommandQueue.
     private void createAndShowDialog() {
         mServiceNotified = false;
         Context dialogContext = mRearDisplayEducationDialog.getContext();
-
         View dialogView = createDialogView(dialogContext);
-
         mDialogViewContainer = new LinearLayout(dialogContext);
         mDialogViewContainer.setLayoutParams(
                 new LinearLayout.LayoutParams(
@@ -129,11 +148,11 @@ public class RearDisplayDialogController implements CoreStartable, CommandQueue.
 
     private View createDialogView(Context context) {
         View dialogView;
+        LayoutInflater inflater = mLayoutInflater.cloneInContext(context);
         if (mStartedFolded) {
-            dialogView = View.inflate(context,
-                    R.layout.activity_rear_display_education, null);
+            dialogView = inflater.inflate(R.layout.activity_rear_display_education, null);
         } else {
-            dialogView = View.inflate(context,
+            dialogView = inflater.inflate(
                     R.layout.activity_rear_display_education_opened, null);
         }
         LottieAnimationView animationView = dialogView.findViewById(
@@ -168,10 +187,24 @@ public class RearDisplayDialogController implements CoreStartable, CommandQueue.
      * Ensures we're not using old values from when the dialog may have been shown previously.
      */
     private void initializeValues(int startingBaseState) {
-        mRearDisplayEducationDialog = new SystemUIDialog(mContext);
-        if (mFoldedStates == null) {
-            mFoldedStates = mContext.getResources().getIntArray(
-                    com.android.internal.R.array.config_foldedDeviceStates);
+        mRearDisplayEducationDialog = mSystemUIDialogFactory.create();
+        if (Flags.deviceStatePropertyMigration()) {
+            if (mFoldedStates == null) {
+                mFoldedStates = new ArrayList<>();
+                List<DeviceState> deviceStates = mDeviceStateManager.getSupportedDeviceStates();
+                for (int i = 0; i < deviceStates.size(); i++) {
+                    DeviceState state = deviceStates.get(i);
+                    if (state.hasProperty(PROPERTY_FOLDABLE_DISPLAY_CONFIGURATION_OUTER_PRIMARY)) {
+                        mFoldedStates.add(state.getIdentifier());
+                    }
+                }
+            }
+        } else {
+            // TODO(b/329170810): Refactor and remove with updated DeviceStateManager values.
+            if (mFoldedStates == null) {
+                mFoldedStates = copyIntArrayToList(mResources.getIntArray(
+                        com.android.internal.R.array.config_foldedDeviceStates));
+            }
         }
         mStartedFolded = isFoldedState(startingBaseState);
         mDeviceStateManagerGlobal = DeviceStateManagerGlobal.getInstance();
@@ -179,9 +212,17 @@ public class RearDisplayDialogController implements CoreStartable, CommandQueue.
                 mExecutor);
     }
 
+    private List<Integer> copyIntArrayToList(int[] intArray) {
+        List<Integer> integerList = new ArrayList<>(intArray.length);
+        for (int i = 0; i < intArray.length; i++) {
+            integerList.add(intArray[i]);
+        }
+        return integerList;
+    }
+
     private boolean isFoldedState(int state) {
-        for (int i = 0; i < mFoldedStates.length; i++) {
-            if (mFoldedStates[i] == state) return true;
+        for (int i = 0; i < mFoldedStates.size(); i++) {
+            if (mFoldedStates.get(i) == state) return true;
         }
         return false;
     }
@@ -201,7 +242,7 @@ public class RearDisplayDialogController implements CoreStartable, CommandQueue.
      * TestAPI to allow us to set the folded states array, instead of reading from resources.
      */
     @TestApi
-    void setFoldedStates(int[] foldedStates) {
+    void setFoldedStates(List<Integer> foldedStates) {
         mFoldedStates = foldedStates;
     }
 
@@ -218,21 +259,19 @@ public class RearDisplayDialogController implements CoreStartable, CommandQueue.
 
     private class DeviceStateManagerCallback implements DeviceStateManager.DeviceStateCallback {
         @Override
-        public void onBaseStateChanged(int state) {
-            if (mStartedFolded && !isFoldedState(state)) {
+        public void onDeviceStateChanged(@NonNull DeviceState state) {
+            if (mStartedFolded && !state.hasProperty(
+                    DeviceState.PROPERTY_FOLDABLE_HARDWARE_CONFIGURATION_FOLD_IN_CLOSED)) {
                 // We've opened the device, we can close the overlay
                 mRearDisplayEducationDialog.dismiss();
                 closeOverlayAndNotifyService(false);
-            } else if (!mStartedFolded && isFoldedState(state)) {
+            } else if (!mStartedFolded && state.hasProperty(
+                    DeviceState.PROPERTY_FOLDABLE_HARDWARE_CONFIGURATION_FOLD_IN_CLOSED)) {
                 // We've closed the device, finish activity
                 mRearDisplayEducationDialog.dismiss();
                 closeOverlayAndNotifyService(true);
             }
         }
-
-        // We only care about physical device changes in this scenario
-        @Override
-        public void onStateChanged(int state) {}
     }
 }
 

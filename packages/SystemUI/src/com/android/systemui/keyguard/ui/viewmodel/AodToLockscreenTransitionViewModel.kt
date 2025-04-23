@@ -16,18 +16,21 @@
 
 package com.android.systemui.keyguard.ui.viewmodel
 
+import android.util.MathUtils
+import com.android.app.animation.Interpolators.FAST_OUT_SLOW_IN
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.deviceentry.domain.interactor.DeviceEntryUdfpsInteractor
 import com.android.systemui.keyguard.domain.interactor.FromAodTransitionInteractor.Companion.TO_LOCKSCREEN_DURATION
-import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor
+import com.android.systemui.keyguard.shared.model.Edge
+import com.android.systemui.keyguard.shared.model.KeyguardState.AOD
+import com.android.systemui.keyguard.shared.model.KeyguardState.LOCKSCREEN
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
+import com.android.systemui.keyguard.ui.StateToValue
 import com.android.systemui.keyguard.ui.transitions.DeviceEntryIconTransition
+import com.android.systemui.shade.domain.interactor.ShadeInteractor
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.flow.flatMapLatest
 
 /**
  * Breaks down AOD->LOCKSCREEN transition into discrete steps for corresponding views to consume.
@@ -36,24 +39,68 @@ import kotlinx.coroutines.flow.flatMapLatest
 @SysUISingleton
 class AodToLockscreenTransitionViewModel
 @Inject
-constructor(
-    interactor: KeyguardTransitionInteractor,
-    deviceEntryUdfpsInteractor: DeviceEntryUdfpsInteractor,
-    animationFlow: KeyguardTransitionAnimationFlow,
-) : DeviceEntryIconTransition {
+constructor(shadeInteractor: ShadeInteractor, animationFlow: KeyguardTransitionAnimationFlow) :
+    DeviceEntryIconTransition {
 
     private val transitionAnimation =
         animationFlow.setup(
             duration = TO_LOCKSCREEN_DURATION,
-            stepFlow = interactor.aodToLockscreenTransition,
+            edge = Edge.create(from = AOD, to = LOCKSCREEN),
         )
 
+    private var isShadeExpanded = false
+
+    /**
+     * Begin the transition from wherever the y-translation value is currently. This helps ensure a
+     * smooth transition if the prior transition was canceled.
+     */
+    fun translationY(currentTranslationY: () -> Float?): Flow<StateToValue> {
+        var startValue = 0f
+        return transitionAnimation.sharedFlowWithState(
+            duration = 500.milliseconds,
+            onStart = { startValue = currentTranslationY() ?: 0f },
+            onStep = { MathUtils.lerp(startValue, 0f, FAST_OUT_SLOW_IN.getInterpolation(it)) },
+        )
+    }
+
+    /**
+     * Begin the transition from wherever the x-translation value is currently. This helps ensure a
+     * smooth transition if the prior transition was canceled.
+     */
+    fun translationX(currentTranslationX: () -> Float?): Flow<StateToValue> {
+        var startValue = 0f
+        return transitionAnimation.sharedFlowWithState(
+            duration = 500.milliseconds,
+            onStart = { startValue = currentTranslationX() ?: 0f },
+            onStep = { MathUtils.lerp(startValue, 0f, FAST_OUT_SLOW_IN.getInterpolation(it)) },
+        )
+    }
+
     /** Ensure alpha is set to be visible */
-    val lockscreenAlpha: Flow<Float> =
+    fun lockscreenAlpha(viewState: ViewStateAccessor): Flow<Float> {
+        var startAlpha = 1f
+        return transitionAnimation.sharedFlow(
+            duration = 500.milliseconds,
+            onStart = { startAlpha = viewState.alpha() },
+            onStep = { MathUtils.lerp(startAlpha, 1f, it) },
+        )
+    }
+
+    val notificationAlpha: Flow<Float> =
         transitionAnimation.sharedFlow(
             duration = 500.milliseconds,
-            onStart = { 1f },
-            onStep = { 1f },
+            onStart = {
+                isShadeExpanded =
+                    shadeInteractor.shadeExpansion.value > 0f ||
+                        shadeInteractor.qsExpansion.value > 0f
+            },
+            onStep = {
+                if (isShadeExpanded) {
+                    1f
+                } else {
+                    it
+                }
+            },
         )
 
     val shortcutsAlpha: Flow<Float> =
@@ -65,19 +112,13 @@ constructor(
         )
 
     val deviceEntryBackgroundViewAlpha: Flow<Float> =
-        deviceEntryUdfpsInteractor.isUdfpsSupported.flatMapLatest { isUdfps ->
-            if (isUdfps) {
-                // fade in
-                transitionAnimation.sharedFlow(
-                    duration = 250.milliseconds,
-                    onStep = { it },
-                    onFinish = { 1f },
-                )
-            } else {
-                // background view isn't visible, so return an empty flow
-                emptyFlow()
-            }
-        }
+        transitionAnimation.sharedFlow(
+            duration = 250.milliseconds,
+            onStep = { it },
+            onCancel = { 1f },
+            onFinish = { 1f },
+        )
 
-    override val deviceEntryParentViewAlpha: Flow<Float> = lockscreenAlpha
+    override val deviceEntryParentViewAlpha: Flow<Float> =
+        transitionAnimation.immediatelyTransitionTo(1f)
 }

@@ -17,10 +17,12 @@
 #include "AutoBackendTextureRelease.h"
 
 #include <SkImage.h>
-#include <include/gpu/ganesh/SkImageGanesh.h>
-#include <include/gpu/GrDirectContext.h>
-#include <include/gpu/GrBackendSurface.h>
 #include <include/gpu/MutableTextureState.h>
+#include <include/gpu/ganesh/GrBackendSurface.h>
+#include <include/gpu/ganesh/GrDirectContext.h>
+#include <include/gpu/ganesh/SkImageGanesh.h>
+#include <include/gpu/vk/VulkanMutableTextureState.h>
+
 #include "renderthread/RenderThread.h"
 #include "utils/Color.h"
 #include "utils/PaintUtils.h"
@@ -139,11 +141,19 @@ void AutoBackendTextureRelease::releaseQueueOwnership(GrDirectContext* context) 
         return;
     }
 
+    if (!RenderThread::isCurrent()) {
+        // releaseQueueOwnership needs to run on RenderThread to prevent multithread calling
+        // setBackendTextureState will operate skia resource cache which need single owner
+        RenderThread::getInstance().queue().post([this, context]() { releaseQueueOwnership(context); });
+        return;
+    }
+
     LOG_ALWAYS_FATAL_IF(Properties::getRenderPipelineType() != RenderPipelineType::SkiaVulkan);
     if (mBackendTexture.isValid()) {
         // Passing in VK_IMAGE_LAYOUT_UNDEFINED means we keep the old layout.
-        skgpu::MutableTextureState newState(VK_IMAGE_LAYOUT_UNDEFINED,
-                                            VK_QUEUE_FAMILY_FOREIGN_EXT);
+        skgpu::MutableTextureState newState = skgpu::MutableTextureStates::MakeVulkan(
+                                                                  VK_IMAGE_LAYOUT_UNDEFINED,
+                                                                  VK_QUEUE_FAMILY_FOREIGN_EXT);
 
         // The unref for this ref happens in the releaseProc passed into setBackendTextureState. The
         // releaseProc callback will be made when the work to set the new state has finished on the

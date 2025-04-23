@@ -30,10 +30,12 @@ import com.android.compatibility.common.util.DisplayUtil;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+@Ignore // b/330376055: Write tests for functionality for both dVRR and MRR devices.
 @RunWith(AndroidJUnit4.class)
 public class SurfaceControlTest {
     private static final String TAG = "SurfaceControlTest";
@@ -90,6 +92,12 @@ public class SurfaceControlTest {
     public void testSurfaceControlFrameRateCategoryHigh() throws InterruptedException {
         GraphicsActivity activity = mActivityRule.getActivity();
         activity.testSurfaceControlFrameRateCategory(Surface.FRAME_RATE_CATEGORY_HIGH);
+    }
+
+    @Test
+    public void testSurfaceControlFrameRateCategoryHighHint() throws InterruptedException {
+        GraphicsActivity activity = mActivityRule.getActivity();
+        activity.testSurfaceControlFrameRateCategory(Surface.FRAME_RATE_CATEGORY_HIGH_HINT);
     }
 
     @Test

@@ -44,6 +44,7 @@ public final class UserRestrictionPolicyKey extends PolicyKey {
     @TestApi
     public UserRestrictionPolicyKey(@NonNull String identifier, @NonNull String restriction) {
         super(identifier);
+        PolicySizeVerifier.enforceMaxStringLength(restriction, "restriction");
         mRestriction = Objects.requireNonNull(restriction);
     }
 

@@ -18,8 +18,11 @@ package android.hardware.camera2.extension;
 
 import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
-import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
+import android.graphics.ImageFormat;
+import android.hardware.camera2.params.ColorSpaceProfiles;
+import android.hardware.camera2.params.DynamicRangeProfiles;
 import android.hardware.camera2.utils.SurfaceUtils;
 import android.util.Size;
 import android.view.Surface;
@@ -28,39 +31,56 @@ import com.android.internal.camera.flags.Flags;
 
 
 /**
+ * Helper method used to describe a single camera output
+ * {@link Surface}.
+ *
+ * <p>Instances of this class can be used as arguments when
+ * initializing {@link ExtensionOutputConfiguration}.</p>
+ *
+ * @see ExtensionConfiguration
+ * @see ExtensionOutputConfiguration
  * @hide
  */
 @SystemApi
-@FlaggedApi(Flags.FLAG_CONCERT_MODE)
 public final class CameraOutputSurface {
     private final OutputSurface mOutputSurface;
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
     CameraOutputSurface(@NonNull OutputSurface surface) {
        mOutputSurface = surface;
     }
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
+    /**
+     * Initialize a camera output surface instance
+     *
+     * @param surface      Output {@link Surface} to be
+     *                     configured as camera output
+     * @param size         Requested size of the camera
+     *                     output
+     */
     public CameraOutputSurface(@NonNull Surface surface,
-            @Nullable Size size ) {
+            @NonNull Size size) {
         mOutputSurface = new OutputSurface();
         mOutputSurface.surface = surface;
         mOutputSurface.imageFormat = SurfaceUtils.getSurfaceFormat(surface);
-        if (size != null) {
-            mOutputSurface.size = new android.hardware.camera2.extension.Size();
-            mOutputSurface.size.width = size.getWidth();
-            mOutputSurface.size.height = size.getHeight();
-        }
+        mOutputSurface.size = new android.hardware.camera2.extension.Size();
+        mOutputSurface.size.width = size.getWidth();
+        mOutputSurface.size.height = size.getHeight();
+        mOutputSurface.dynamicRangeProfile = DynamicRangeProfiles.STANDARD;
+        mOutputSurface.colorSpace = ColorSpaceProfiles.UNSPECIFIED;
     }
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
-    @Nullable
+    /**
+     * Return the current output {@link Surface}
+     */
+    @NonNull
     public Surface getSurface() {
         return mOutputSurface.surface;
     }
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
-    @Nullable
+    /**
+     * Return the current requested output size
+     */
+    @NonNull
     public android.util.Size getSize() {
         if (mOutputSurface.size != null) {
             return new Size(mOutputSurface.size.width, mOutputSurface.size.height);
@@ -68,8 +88,40 @@ public final class CameraOutputSurface {
         return null;
     }
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
-    public int getImageFormat() {
+    /**
+     * Return the current surface output {@link android.graphics.ImageFormat}
+     */
+    public @ImageFormat.Format int getImageFormat() {
         return mOutputSurface.imageFormat;
+    }
+
+    /**
+     * Return the dynamic range profile. The default
+     * dynamicRangeProfile is
+     * {@link android.hardware.camera2.params.DynamicRangeProfiles.STANDARD}
+     * unless specified by CameraOutputSurface.setDynamicRangeProfile.
+     */
+    public @DynamicRangeProfiles.Profile long getDynamicRangeProfile() {
+        return mOutputSurface.dynamicRangeProfile;
+    }
+
+    /**
+     * Return the color space. The default colorSpace is
+     * {@link android.hardware.camera2.params.ColorSpaceProfiles.UNSPECIFIED}
+     * unless specified by CameraOutputSurface.setColorSpace.
+     */
+    @SuppressLint("MethodNameUnits")
+    public int getColorSpace() {
+        return mOutputSurface.colorSpace;
+    }
+
+    /**
+     * Set the dynamic range profile. The default dynamicRangeProfile
+     * will be {@link android.hardware.camera2.params.DynamicRangeProfiles.STANDARD}
+     * unless explicitly set using this method.
+     */
+    public void setDynamicRangeProfile(
+            @DynamicRangeProfiles.Profile long dynamicRangeProfile) {
+        mOutputSurface.dynamicRangeProfile = dynamicRangeProfile;
     }
 }

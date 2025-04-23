@@ -18,29 +18,28 @@ package com.android.credentialmanager
 
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
-import androidx.wear.compose.material.MaterialTheme
+import com.android.credentialmanager.ui.theme.WearCredentialSelectorTheme
 import com.android.credentialmanager.ui.WearApp
-import com.google.android.horologist.annotations.ExperimentalHorologistApi
 import dagger.hilt.android.AndroidEntryPoint
-import kotlin.system.exitProcess
 
 @AndroidEntryPoint(ComponentActivity::class)
 class CredentialSelectorActivity : Hilt_CredentialSelectorActivity() {
 
     private val viewModel: CredentialSelectorViewModel by viewModels()
 
-    @OptIn(ExperimentalHorologistApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
+        Log.d(TAG, "onCreate, intent: $intent")
         super.onCreate(savedInstanceState)
         setTheme(android.R.style.Theme_DeviceDefault)
         setContent {
-            MaterialTheme {
+            WearCredentialSelectorTheme {
                 WearApp(
-                    viewModel = viewModel,
-                    onCloseApp = { exitProcess(0) },
+                    flowEngine = viewModel,
+                    onCloseApp = { finish() },
                 )
             }
         }
@@ -48,6 +47,7 @@ class CredentialSelectorActivity : Hilt_CredentialSelectorActivity() {
     }
 
     override fun onNewIntent(intent: Intent) {
+        Log.d(TAG, "onNewIntent, intent: $intent")
         super.onNewIntent(intent)
         setIntent(intent)
         viewModel.updateRequest(intent)

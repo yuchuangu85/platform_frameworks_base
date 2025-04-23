@@ -33,14 +33,17 @@ import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
 import com.android.internal.logging.MetricsLogger;
+import com.android.internal.logging.UiEventLogger;
 import com.android.internal.statusbar.IStatusBarService;
-import com.android.systemui.flags.FeatureFlags;
+import com.android.systemui.flags.FeatureFlagsClassic;
 import com.android.systemui.flags.Flags;
 import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.plugins.PluginManager;
 import com.android.systemui.plugins.statusbar.NotificationMenuRowPlugin;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
+import com.android.systemui.scene.shared.flag.SceneContainerFlag;
 import com.android.systemui.statusbar.SmartReplyController;
+import com.android.systemui.statusbar.notification.ColorUpdateLogger;
 import com.android.systemui.statusbar.notification.FeedbackIcon;
 import com.android.systemui.statusbar.notification.collection.NotificationEntry;
 import com.android.systemui.statusbar.notification.collection.provider.NotificationDismissibilityProvider;
@@ -48,22 +51,23 @@ import com.android.systemui.statusbar.notification.collection.render.GroupExpans
 import com.android.systemui.statusbar.notification.collection.render.GroupMembershipManager;
 import com.android.systemui.statusbar.notification.collection.render.NodeController;
 import com.android.systemui.statusbar.notification.collection.render.NotifViewController;
-import com.android.systemui.statusbar.notification.logging.NotificationLogger;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager;
 import com.android.systemui.statusbar.notification.people.PeopleNotificationIdentifier;
 import com.android.systemui.statusbar.notification.row.dagger.AppName;
 import com.android.systemui.statusbar.notification.row.dagger.NotificationKey;
 import com.android.systemui.statusbar.notification.row.dagger.NotificationRowScope;
 import com.android.systemui.statusbar.notification.stack.NotificationChildrenContainerLogger;
 import com.android.systemui.statusbar.notification.stack.NotificationListContainer;
+import com.android.systemui.statusbar.notification.stack.ui.view.NotificationRowStatsLogger;
 import com.android.systemui.statusbar.phone.KeyguardBypassController;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
 import com.android.systemui.statusbar.policy.SmartReplyConstants;
 import com.android.systemui.statusbar.policy.dagger.RemoteInputViewSubcomponent;
 import com.android.systemui.util.time.SystemClock;
-import com.android.systemui.wmshell.BubblesManager;
+
+import com.google.android.msdl.data.model.MSDLToken;
+import com.google.android.msdl.domain.MSDLPlayer;
 
 import java.util.List;
-import java.util.Optional;
 
 import javax.inject.Inject;
 import javax.inject.Named;
@@ -86,11 +90,12 @@ public class ExpandableNotificationRowController implements NotifViewController 
     private final SystemClock mClock;
     private final String mAppName;
     private final String mNotificationKey;
+    private final ColorUpdateLogger mColorUpdateLogger;
     private final KeyguardBypassController mKeyguardBypassController;
     private final GroupMembershipManager mGroupMembershipManager;
     private final GroupExpansionManager mGroupExpansionManager;
     private final RowContentBindStage mRowContentBindStage;
-    private final NotificationLogger mNotificationLogger;
+    private final NotificationRowStatsLogger mStatsLogger;
     private final NotificationRowLogger mLogBufferLogger;
     private final HeadsUpManager mHeadsUpManager;
     private final ExpandableNotificationRow.OnExpandClickListener mOnExpandClickListener;
@@ -101,15 +106,16 @@ public class ExpandableNotificationRowController implements NotifViewController 
     private final NotificationGutsManager mNotificationGutsManager;
     private final OnUserInteractionCallback mOnUserInteractionCallback;
     private final FalsingManager mFalsingManager;
-    private final FeatureFlags mFeatureFlags;
+    private final FeatureFlagsClassic mFeatureFlags;
     private final boolean mAllowLongPress;
     private final PeopleNotificationIdentifier mPeopleNotificationIdentifier;
-    private final Optional<BubblesManager> mBubblesManagerOptional;
     private final SmartReplyConstants mSmartReplyConstants;
     private final SmartReplyController mSmartReplyController;
     private final ExpandableNotificationRowDragController mDragController;
     private final NotificationDismissibilityProvider mDismissibilityProvider;
     private final IStatusBarService mStatusBarService;
+    private final UiEventLogger mUiEventLogger;
+    private final MSDLPlayer mMSDLPlayer;
 
     private final NotificationSettingsController mSettingsController;
 
@@ -130,9 +136,10 @@ public class ExpandableNotificationRowController implements NotifViewController 
     private final ExpandableNotificationRow.ExpandableNotificationRowLogger mLoggerCallback =
             new ExpandableNotificationRow.ExpandableNotificationRowLogger() {
                 @Override
-                public void logNotificationExpansion(String key, boolean userAction,
+                public void logNotificationExpansion(String key, int location, boolean userAction,
                         boolean expanded) {
-                    mNotificationLogger.onExpansionChanged(key, userAction, expanded);
+                    mStatsLogger.onNotificationExpansionChanged(key, expanded, location,
+                            userAction);
                 }
 
                 @Override
@@ -190,6 +197,46 @@ public class ExpandableNotificationRowController implements NotifViewController 
                 ) {
                     mLogBufferLogger.logRemoveTransientRow(childEntry, containerEntry);
                 }
+
+                @Override
+                public void logResetAllContentAlphas(
+                        NotificationEntry entry
+                ) {
+                    mLogBufferLogger.logResetAllContentAlphas(entry);
+                }
+
+                @Override
+                public void logSkipResetAllContentAlphas(
+                        NotificationEntry entry
+                ) {
+                    mLogBufferLogger.logSkipResetAllContentAlphas(entry);
+                }
+
+                @Override
+                public void logStartAppearAnimation(NotificationEntry entry, boolean isAppear) {
+                    mLogBufferLogger.logStartAppearAnimation(entry, isAppear);
+                }
+
+                @Override
+                public void logCancelAppearDrawing(NotificationEntry entry, boolean wasDrawing) {
+                    mLogBufferLogger.logCancelAppearDrawing(entry, wasDrawing);
+                }
+
+                @Override
+                public void logAppearAnimationStarted(NotificationEntry entry, boolean isAppear) {
+                    mLogBufferLogger.logAppearAnimationStarted(entry, isAppear);
+                }
+
+                @Override
+                public void logAppearAnimationSkipped(NotificationEntry entry, boolean isAppear) {
+                    mLogBufferLogger.logAppearAnimationSkipped(entry, isAppear);
+                }
+
+                @Override
+                public void logAppearAnimationFinished(NotificationEntry entry, boolean isAppear,
+                        boolean cancelled) {
+                    mLogBufferLogger.logAppearAnimationFinished(entry, isAppear, cancelled);
+                }
             };
 
 
@@ -199,6 +246,7 @@ public class ExpandableNotificationRowController implements NotifViewController 
             ActivatableNotificationViewController activatableNotificationViewController,
             RemoteInputViewSubcomponent.Factory rivSubcomponentFactory,
             MetricsLogger metricsLogger,
+            ColorUpdateLogger colorUpdateLogger,
             NotificationRowLogger logBufferLogger,
             NotificationChildrenContainerLogger childrenContainerLogger,
             NotificationListContainer listContainer,
@@ -212,7 +260,7 @@ public class ExpandableNotificationRowController implements NotifViewController 
             GroupMembershipManager groupMembershipManager,
             GroupExpansionManager groupExpansionManager,
             RowContentBindStage rowContentBindStage,
-            NotificationLogger notificationLogger,
+            NotificationRowStatsLogger statsLogger,
             HeadsUpManager headsUpManager,
             ExpandableNotificationRow.OnExpandClickListener onExpandClickListener,
             StatusBarStateController statusBarStateController,
@@ -220,13 +268,14 @@ public class ExpandableNotificationRowController implements NotifViewController 
             @Named(ALLOW_NOTIFICATION_LONG_PRESS_NAME) boolean allowLongPress,
             OnUserInteractionCallback onUserInteractionCallback,
             FalsingManager falsingManager,
-            FeatureFlags featureFlags,
+            FeatureFlagsClassic featureFlags,
             PeopleNotificationIdentifier peopleNotificationIdentifier,
-            Optional<BubblesManager> bubblesManagerOptional,
             NotificationSettingsController settingsController,
             ExpandableNotificationRowDragController dragController,
             NotificationDismissibilityProvider dismissibilityProvider,
-            IStatusBarService statusBarService) {
+            IStatusBarService statusBarService,
+            UiEventLogger uiEventLogger,
+            MSDLPlayer msdlPlayer) {
         mView = view;
         mListContainer = listContainer;
         mRemoteInputViewSubcomponentFactory = rivSubcomponentFactory;
@@ -239,7 +288,7 @@ public class ExpandableNotificationRowController implements NotifViewController 
         mGroupMembershipManager = groupMembershipManager;
         mGroupExpansionManager = groupExpansionManager;
         mRowContentBindStage = rowContentBindStage;
-        mNotificationLogger = notificationLogger;
+        mStatsLogger = statsLogger;
         mHeadsUpManager = headsUpManager;
         mOnExpandClickListener = onExpandClickListener;
         mStatusBarStateController = statusBarStateController;
@@ -250,16 +299,18 @@ public class ExpandableNotificationRowController implements NotifViewController 
         mAllowLongPress = allowLongPress;
         mFeatureFlags = featureFlags;
         mPeopleNotificationIdentifier = peopleNotificationIdentifier;
-        mBubblesManagerOptional = bubblesManagerOptional;
         mSettingsController = settingsController;
         mDragController = dragController;
         mMetricsLogger = metricsLogger;
         mChildrenContainerLogger = childrenContainerLogger;
+        mColorUpdateLogger = colorUpdateLogger;
         mLogBufferLogger = logBufferLogger;
         mSmartReplyConstants = smartReplyConstants;
         mSmartReplyController = smartReplyController;
         mDismissibilityProvider = dismissibilityProvider;
         mStatusBarService = statusBarService;
+        mUiEventLogger = uiEventLogger;
+        mMSDLPlayer = msdlPlayer;
     }
 
     /**
@@ -284,15 +335,15 @@ public class ExpandableNotificationRowController implements NotifViewController 
                 mStatusBarStateController,
                 mPeopleNotificationIdentifier,
                 mOnUserInteractionCallback,
-                mBubblesManagerOptional,
                 mNotificationGutsManager,
                 mDismissibilityProvider,
                 mMetricsLogger,
                 mChildrenContainerLogger,
+                mColorUpdateLogger,
                 mSmartReplyConstants,
                 mSmartReplyController,
-                mFeatureFlags,
-                mStatusBarService
+                mStatusBarService,
+                mUiEventLogger
         );
         mView.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
         if (mAllowLongPress) {
@@ -301,6 +352,9 @@ public class ExpandableNotificationRowController implements NotifViewController 
             }
 
             mView.setLongPressListener((v, x, y, item) -> {
+                if (com.android.systemui.Flags.msdlFeedback()) {
+                    mMSDLPlayer.playToken(MSDLToken.LONG_PRESS, null);
+                }
                 if (mView.isSummaryWithChildren()) {
                     mView.expandNotification();
                     return true;
@@ -318,15 +372,19 @@ public class ExpandableNotificationRowController implements NotifViewController 
                 mView.getEntry().setInitializationTime(mClock.elapsedRealtime());
                 mPluginManager.addPluginListener(mView,
                         NotificationMenuRowPlugin.class, false /* Allow multiple */);
-                mView.setOnKeyguard(mStatusBarStateController.getState() == KEYGUARD);
-                mStatusBarStateController.addCallback(mStatusBarStateListener);
+                if (!SceneContainerFlag.isEnabled()) {
+                    mView.setOnKeyguard(mStatusBarStateController.getState() == KEYGUARD);
+                    mStatusBarStateController.addCallback(mStatusBarStateListener);
+                }
                 mSettingsController.addCallback(BUBBLES_SETTING_URI, mSettingsListener);
             }
 
             @Override
             public void onViewDetachedFromWindow(View v) {
                 mPluginManager.removePluginListener(mView);
-                mStatusBarStateController.removeCallback(mStatusBarStateListener);
+                if (!SceneContainerFlag.isEnabled()) {
+                    mStatusBarStateController.removeCallback(mStatusBarStateListener);
+                }
                 mSettingsController.removeCallback(BUBBLES_SETTING_URI, mSettingsListener);
             }
         });
@@ -430,8 +488,8 @@ public class ExpandableNotificationRowController implements NotifViewController 
     }
 
     @Override
-    public void setLastAudiblyAlertedMs(long lastAudiblyAlertedMs) {
-        mView.setLastAudiblyAlertedMs(lastAudiblyAlertedMs);
+    public void setLastAudibleMs(long lastAudibleMs) {
+        mView.setLastAudiblyAlertedMs(lastAudibleMs);
     }
 
     @Override

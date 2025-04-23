@@ -20,6 +20,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.UserHandle
+import android.platform.test.annotations.EnabledOnRavenwood
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.settingslib.RestrictedLockUtils
@@ -45,6 +46,7 @@ import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations
 
 @SmallTest
+@EnabledOnRavenwood
 @RunWith(AndroidJUnit4::class)
 class DisabledByPolicyInteractorTest : SysuiTestCase() {
 
@@ -112,7 +114,7 @@ class DisabledByPolicyInteractorTest : SysuiTestCase() {
                 DisabledByPolicyInteractor.PolicyResult.TileDisabled(ADMIN)
             )
 
-        val expectedIntent = RestrictedLockUtils.getShowAdminSupportDetailsIntent(context, ADMIN)
+        val expectedIntent = RestrictedLockUtils.getShowAdminSupportDetailsIntent(ADMIN)
         assertThat(result).isTrue()
         verify(activityStarter).postStartActivityDismissingKeyguard(intentCaptor.capture(), any())
         assertThat(intentCaptor.value.filterEquals(expectedIntent)).isTrue()

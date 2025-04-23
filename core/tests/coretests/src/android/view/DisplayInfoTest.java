@@ -21,9 +21,12 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import android.platform.test.ravenwood.RavenwoodRule;
+
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -31,6 +34,9 @@ import org.junit.runner.RunWith;
 @SmallTest
 public class DisplayInfoTest {
     private static final float FLOAT_EQUAL_DELTA = 0.0001f;
+
+    @Rule
+    public final RavenwoodRule mRavenwood = new RavenwoodRule();
 
     @Test
     public void testDefaultDisplayInfosAreEqual() {
@@ -67,6 +73,23 @@ public class DisplayInfoTest {
         DisplayInfo displayInfo2 = new DisplayInfo();
         setSupportedMode(displayInfo2, mode);
         displayInfo2.refreshRateOverride = 120;
+
+        assertTrue(displayInfo1.equals(displayInfo2));
+    }
+
+    @Test
+    public void testRefreshRateOverride_keepsDisplyInfosEqualWhenOverrideIsSame() {
+        Display.Mode mode = new Display.Mode(
+                /*modeId=*/1, /*width=*/1000, /*height=*/1000, /*refreshRate=*/120);
+        DisplayInfo displayInfo1 = new DisplayInfo();
+        setSupportedMode(displayInfo1, mode);
+        displayInfo1.renderFrameRate = 60;
+        displayInfo1.refreshRateOverride = 30;
+
+        DisplayInfo displayInfo2 = new DisplayInfo();
+        setSupportedMode(displayInfo2, mode);
+        displayInfo2.renderFrameRate = 30;
+        displayInfo2.refreshRateOverride = 30;
 
         assertTrue(displayInfo1.equals(displayInfo2));
     }

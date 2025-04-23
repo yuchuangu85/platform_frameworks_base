@@ -1,16 +1,20 @@
 package com.android.systemui.wallet.controller
 
 import android.content.Intent
+import android.os.DeadObjectException
 import android.os.IBinder
 import android.util.Log
 import androidx.annotation.VisibleForTesting
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
+import com.android.systemui.Flags.registerNewWalletCardInBackground
+import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.flags.FeatureFlags
 import com.android.systemui.flags.Flags
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 
 /**
  * Serves as an intermediary between QuickAccessWalletService and ContextualCardManager (in PCC).
@@ -21,6 +25,7 @@ import kotlinx.coroutines.launch
 class WalletContextualLocationsService
 @Inject
 constructor(
+    @Background private val backgroundDispatcher: CoroutineDispatcher,
     private val controller: WalletContextualSuggestionsController,
     private val featureFlags: FeatureFlags,
 ) : LifecycleService() {
@@ -29,20 +34,38 @@ constructor(
 
     @VisibleForTesting
     constructor(
+        dispatcher: CoroutineDispatcher,
         controller: WalletContextualSuggestionsController,
         featureFlags: FeatureFlags,
         scope: CoroutineScope,
-    ) : this(controller, featureFlags) {
+    ) : this(dispatcher, controller, featureFlags) {
         this.scope = scope
     }
-
     override fun onBind(intent: Intent): IBinder {
         super.onBind(intent)
-        scope.launch {
-            controller.allWalletCards.collect { cards ->
-                val cardsSize = cards.size
-                Log.i(TAG, "Number of cards registered $cardsSize")
-                listener?.registerNewWalletCards(cards)
+        if (registerNewWalletCardInBackground()) {
+            scope.launch(context = backgroundDispatcher) {
+                controller.allWalletCards.collect { cards ->
+                    val cardsSize = cards.size
+                    Log.i(TAG, "Number of cards registered $cardsSize")
+                    try {
+                        listener?.registerNewWalletCards(cards)
+                    } catch (e: DeadObjectException) {
+                        Log.e(TAG, "Failed to register wallet cards because IWalletCardsUpdatedListener is dead")
+                    }
+                }
+            }
+        } else {
+            scope.launch {
+                controller.allWalletCards.collect { cards ->
+                    val cardsSize = cards.size
+                    Log.i(TAG, "Number of cards registered $cardsSize")
+                    try {
+                        listener?.registerNewWalletCards(cards)
+                    } catch (e: DeadObjectException) {
+                        Log.e(TAG, "Failed to register wallet cards because IWalletCardsUpdatedListener is dead")
+                    }
+                }
             }
         }
         return binder
@@ -77,15 +100,15 @@ constructor(
         controller.setSuggestionCardIds(storeLocations.toSet())
     }
 
-    private val binder: IWalletContextualLocationsService.Stub
-    = object : IWalletContextualLocationsService.Stub() {
-        override fun addWalletCardsUpdatedListener(listener: IWalletCardsUpdatedListener) {
-            addWalletCardsUpdatedListenerInternal(listener)
+    private val binder: IWalletContextualLocationsService.Stub =
+        object : IWalletContextualLocationsService.Stub() {
+            override fun addWalletCardsUpdatedListener(listener: IWalletCardsUpdatedListener) {
+                addWalletCardsUpdatedListenerInternal(listener)
+            }
+            override fun onWalletContextualLocationsStateUpdated(storeLocations: List<String>) {
+                onWalletContextualLocationsStateUpdatedInternal(storeLocations)
+            }
         }
-        override fun onWalletContextualLocationsStateUpdated(storeLocations: List<String>) {
-            onWalletContextualLocationsStateUpdatedInternal(storeLocations)
-        }
-    }
 
     companion object {
         private const val TAG = "WalletContextualLocationsService"

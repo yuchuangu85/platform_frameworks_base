@@ -53,6 +53,7 @@ import android.view.IWallpaperVisibilityListener;
 import android.view.IWindow;
 import android.view.IWindowSession;
 import android.view.IWindowSessionCallback;
+import android.view.KeyboardShortcutGroup;
 import android.view.KeyEvent;
 import android.view.InputEvent;
 import android.view.InsetsState;
@@ -61,20 +62,23 @@ import android.view.MotionEvent;
 import android.view.InputChannel;
 import android.view.InputDevice;
 import android.view.IInputFilter;
+import android.view.inputmethod.ImeTracker;
 import android.view.AppTransitionAnimationSpec;
-import android.view.TaskTransitionSpec;
 import android.view.WindowContentFrameStats;
 import android.view.WindowManager;
 import android.view.SurfaceControl;
 import android.view.displayhash.DisplayHash;
 import android.view.displayhash.VerifiedDisplayHash;
 import android.window.AddToSurfaceSyncGroupResult;
+import android.window.IGlobalDragListener;
+import android.window.IScreenRecordingCallback;
 import android.window.ISurfaceSyncGroupCompletedListener;
 import android.window.ITaskFpsCallback;
-import android.window.ScreenCapture;
-import android.window.WindowContextInfo;
 import android.window.ITrustedPresentationListener;
+import android.window.InputTransferToken;
+import android.window.ScreenCapture;
 import android.window.TrustedPresentationThresholds;
+import android.window.WindowContextInfo;
 
 /**
  * System private interface to the window manager.
@@ -286,6 +290,15 @@ interface IWindowManager
      * @see android.view.Display#DEFAULT_DISPLAY
      */
     int getDefaultDisplayRotation();
+
+    /**
+     * Retrieve the display user rotation.
+     * @param displayId Id of the display
+     * @return Rotation one of {@link android.view.Surface#ROTATION_0},
+     *        {@link android.view.Surface#ROTATION_90}, {@link android.view.Surface#ROTATION_180},
+     *        {@link android.view.Surface#ROTATION_270} or -1 if display is not found.
+     */
+    int getDisplayUserRotation(int displayId);
 
     /**
      * Watch the rotation of the specified screen.  Returns the current rotation,
@@ -753,7 +766,8 @@ interface IWindowManager
      * container.
      */
     @EnforcePermission("MANAGE_APP_TOKENS")
-    void updateDisplayWindowRequestedVisibleTypes(int displayId, int requestedVisibleTypes);
+    void updateDisplayWindowRequestedVisibleTypes(int displayId, int visibleTypes, int mask,
+            in @nullable ImeTracker.Token statsToken);
 
     /**
      * Called to get the expected window insets.
@@ -919,6 +933,27 @@ interface IWindowManager
     void detachWindowContext(IBinder clientToken);
 
     /**
+     * Reparents the {@link android.window.WindowContext} to the
+     * {@link com.android.server.wm.DisplayArea} on another display.
+     * This method also reparent the WindowContext associated WindowToken to another display if
+     * necessary.
+     * <p>
+     * {@code type} and {@code options} must be the same as the previous call of
+     * {@link #attachWindowContextToDisplayArea} on the same Context otherwise this will fail
+     * silently.
+     *
+     * @param appThread the process that the window context is on.
+     * @param clientToken the window context's token
+     * @param type The window type of the WindowContext
+     * @param displayId The new display id this context windows should be parented to
+     * @param options Bundle the context was created with
+     *
+     * @return True if the operation was successful, False otherwise.
+     */
+    boolean reparentWindowContextToDisplayArea(in IApplicationThread appThread,
+                IBinder clientToken, int displayId);
+
+    /**
      * Registers a listener, which is to be called whenever cross-window blur is enabled/disabled.
      *
      * @param listener the listener to be registered
@@ -948,19 +983,6 @@ interface IWindowManager
      * @hide
      */
     void setTaskSnapshotEnabled(boolean enabled);
-
-    /**
-     * Customized the task transition animation with a task transition spec.
-     *
-     * @param spec the spec that will be used to customize the task animations
-     */
-    void setTaskTransitionSpec(in TaskTransitionSpec spec);
-
-    /**
-     * Clears any task transition spec that has been previously set and
-     * reverts to using the default task transition with no spec changes.
-     */
-    void clearTaskTransitionSpec();
 
     /**
      * Registers the frame rate per second count callback for one given task ID.
@@ -1083,4 +1105,25 @@ interface IWindowManager
 
 
     void unregisterTrustedPresentationListener(in ITrustedPresentationListener listener, int id);
+
+    @EnforcePermission("DETECT_SCREEN_RECORDING")
+    boolean registerScreenRecordingCallback(IScreenRecordingCallback callback);
+
+    @EnforcePermission("DETECT_SCREEN_RECORDING")
+    void unregisterScreenRecordingCallback(IScreenRecordingCallback callback);
+
+    /**
+     * Sets the listener to be called back when a cross-window drag and drop operation happens.
+     */
+    void setGlobalDragListener(IGlobalDragListener listener);
+
+    boolean transferTouchGesture(in InputTransferToken transferFromToken,
+            in InputTransferToken transferToToken);
+
+    /**
+     * Request the application launch keyboard shortcuts the system has defined.
+     *
+     * @param deviceId The id of the {@link InputDevice} that will handle the shortcut.
+     */
+    KeyboardShortcutGroup getApplicationLaunchKeyboardShortcuts(int deviceId);
 }

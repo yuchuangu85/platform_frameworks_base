@@ -17,13 +17,10 @@
 #ifndef RENDERTHREAD_H_
 #define RENDERTHREAD_H_
 
-#include <GrDirectContext.h>
 #include <SkBitmap.h>
 #include <cutils/compiler.h>
-#include <private/android/choreographer.h>
+#include <include/gpu/ganesh/GrDirectContext.h>
 #include <surface_control_private.h>
-#include <thread/ThreadBase.h>
-#include <utils/Looper.h>
 #include <utils/Thread.h>
 
 #include <memory>

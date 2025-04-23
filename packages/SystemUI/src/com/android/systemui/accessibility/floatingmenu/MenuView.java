@@ -30,15 +30,15 @@ import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 
 import androidx.annotation.NonNull;
-import androidx.core.view.AccessibilityDelegateCompat;
 import androidx.lifecycle.Observer;
 import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
-import androidx.recyclerview.widget.RecyclerViewAccessibilityDelegate;
 
 import com.android.internal.accessibility.dialog.AccessibilityTarget;
+import com.android.modules.expresslog.Counter;
 import com.android.systemui.Flags;
+import com.android.systemui.util.settings.SecureSettings;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -72,26 +72,20 @@ class MenuView extends FrameLayout implements
     private final MenuAnimationController mMenuAnimationController;
     private OnTargetFeaturesChangeListener mFeaturesChangeListener;
     private OnMoveToTuckedListener mMoveToTuckedListener;
+    private SecureSettings mSecureSettings;
 
-    MenuView(Context context, MenuViewModel menuViewModel, MenuViewAppearance menuViewAppearance) {
+    MenuView(Context context, MenuViewModel menuViewModel, MenuViewAppearance menuViewAppearance,
+            SecureSettings secureSettings) {
         super(context);
 
         mMenuViewModel = menuViewModel;
         mMenuViewAppearance = menuViewAppearance;
+        mSecureSettings = secureSettings;
         mMenuAnimationController = new MenuAnimationController(this, menuViewAppearance);
         mAdapter = new AccessibilityTargetAdapter(mTargetFeatures);
         mTargetFeaturesView = new RecyclerView(context);
         mTargetFeaturesView.setAdapter(mAdapter);
         mTargetFeaturesView.setLayoutManager(new LinearLayoutManager(context));
-        mTargetFeaturesView.setAccessibilityDelegateCompat(
-                new RecyclerViewAccessibilityDelegate(mTargetFeaturesView) {
-                    @NonNull
-                    @Override
-                    public AccessibilityDelegateCompat getItemDelegate() {
-                        return new MenuItemAccessibilityDelegate(/* recyclerViewDelegate= */ this,
-                                mMenuAnimationController);
-                    }
-                });
         setLayoutParams(new FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT));
         // Avoid drawing out of bounds of the parent view
         setClipToOutline(true);
@@ -99,6 +93,10 @@ class MenuView extends FrameLayout implements
         loadLayoutResources();
 
         addView(mTargetFeaturesView);
+
+        setClickable(false);
+        setFocusable(false);
+        setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
     }
 
     @Override
@@ -186,11 +184,7 @@ class MenuView extends FrameLayout implements
         final GradientDrawable gradientDrawable = getContainerViewGradient();
         gradientDrawable.setStroke(mMenuViewAppearance.getMenuStrokeWidth(),
                 mMenuViewAppearance.getMenuStrokeColor());
-        if (Flags.floatingMenuRadiiAnimation()) {
-            mMenuAnimationController.startRadiiAnimation(mMenuViewAppearance.getMenuRadii());
-        } else {
-            gradientDrawable.setCornerRadii(mMenuViewAppearance.getMenuRadii());
-        }
+        mMenuAnimationController.startRadiiAnimation(mMenuViewAppearance.getMenuRadii());
     }
 
     void setRadii(float[] radii) {
@@ -222,21 +216,20 @@ class MenuView extends FrameLayout implements
         }
 
         // We can skip animating if FAB is not visible
-        if (Flags.floatingMenuImeDisplacementAnimation()
-                && animateMovement && getVisibility() == VISIBLE) {
+        if (animateMovement && getVisibility() == VISIBLE) {
             mMenuAnimationController.moveToPosition(position, /* animateMovement = */ true);
             // onArrivalAtPosition() is called at the end of the animation.
         } else {
             mMenuAnimationController.moveToPosition(position);
-            onArrivalAtPosition(); // no animation, so we call this immediately.
+            onArrivalAtPosition(true); // no animation, so we call this immediately.
         }
     }
 
-    void onArrivalAtPosition() {
+    void onArrivalAtPosition(boolean moveToEdgeIfTucked) {
         final PointF position = getMenuPosition();
         onBoundsInParentChanged((int) position.x, (int) position.y);
 
-        if (isMoveToTucked()) {
+        if (isMoveToTucked() && moveToEdgeIfTucked) {
             mMenuAnimationController.moveToEdgeAndHide();
         }
     }
@@ -278,6 +271,7 @@ class MenuView extends FrameLayout implements
         if (mFeaturesChangeListener != null) {
             mFeaturesChangeListener.onChange(newTargetFeatures);
         }
+
         mMenuAnimationController.fadeOutIfEnabled();
     }
 
@@ -306,6 +300,10 @@ class MenuView extends FrameLayout implements
         return mMenuViewAppearance.getMenuPosition();
     }
 
+    RecyclerView getTargetFeaturesView() {
+        return mTargetFeaturesView;
+    }
+
     void persistPositionAndUpdateEdge(Position percentagePosition) {
         mMenuViewModel.updateMenuSavingPosition(percentagePosition);
         mMenuViewAppearance.setPercentagePosition(percentagePosition);
@@ -322,22 +320,6 @@ class MenuView extends FrameLayout implements
         mMenuViewModel.updateMenuMoveToTucked(isMoveToTucked);
         if (mMoveToTuckedListener != null) {
             mMoveToTuckedListener.onMoveToTuckedChanged(isMoveToTucked);
-        }
-
-        if (Flags.floatingMenuOverlapsNavBarsFlag() && !Flags.floatingMenuAnimatedTuck()) {
-            if (isMoveToTucked) {
-                final float halfWidth = getMenuWidth() / 2.0f;
-                final boolean isOnLeftSide = mMenuAnimationController.isOnLeftSide();
-                final Rect clipBounds = new Rect(
-                        (int) (!isOnLeftSide ? 0 : halfWidth),
-                        0,
-                        (int) (!isOnLeftSide ? halfWidth : getMenuWidth()),
-                        getMenuHeight()
-                );
-                setClipBounds(clipBounds);
-            } else {
-                setClipBounds(null);
-            }
         }
     }
 
@@ -399,13 +381,8 @@ class MenuView extends FrameLayout implements
         getContainerViewInsetLayer().setLayerInset(INDEX_MENU_ITEM, insets[0], insets[1], insets[2],
                 insets[3]);
 
-        if (Flags.floatingMenuRadiiAnimation()) {
-            mMenuAnimationController.startRadiiAnimation(
-                    mMenuViewAppearance.getMenuMovingStateRadii());
-        } else {
-            final GradientDrawable gradientDrawable = getContainerViewGradient();
-            gradientDrawable.setCornerRadii(mMenuViewAppearance.getMenuMovingStateRadii());
-        }
+        mMenuAnimationController.startRadiiAnimation(
+                mMenuViewAppearance.getMenuMovingStateRadii());
     }
 
     void onBoundsInParentChanged(int newLeft, int newTop) {
@@ -422,6 +399,13 @@ class MenuView extends FrameLayout implements
         onSizeChanged();
         onEdgeChanged();
         onPositionChanged();
+    }
+
+    void incrementTexMetric(String metric) {
+        if (!Flags.floatingMenuDragToEdit()) {
+            return;
+        }
+        Counter.logIncrement(metric);
     }
 
     private InstantInsetLayerDrawable getContainerViewInsetLayer() {

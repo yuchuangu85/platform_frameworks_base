@@ -19,25 +19,18 @@ package com.android.systemui.dagger;
 import com.android.systemui.BootCompleteCacheImpl;
 import com.android.systemui.CoreStartable;
 import com.android.systemui.Dependency;
-import com.android.systemui.Flags;
 import com.android.systemui.InitController;
 import com.android.systemui.SystemUIAppComponentFactoryBase;
+import com.android.systemui.common.ui.GlobalConfig;
 import com.android.systemui.dagger.qualifiers.PerUser;
-import com.android.systemui.display.ui.viewmodel.ConnectingDisplayViewModel;
 import com.android.systemui.dump.DumpManager;
 import com.android.systemui.keyguard.KeyguardSliceProvider;
-import com.android.systemui.media.muteawait.MediaMuteAwaitConnectionCli;
-import com.android.systemui.media.nearby.NearbyMediaDevicesManager;
 import com.android.systemui.people.PeopleProvider;
+import com.android.systemui.startable.Dependencies;
 import com.android.systemui.statusbar.NotificationInsetsModule;
 import com.android.systemui.statusbar.QsFrameTranslateModule;
+import com.android.systemui.statusbar.phone.ConfigurationForwarder;
 import com.android.systemui.statusbar.policy.ConfigurationController;
-import com.android.systemui.unfold.FoldStateLogger;
-import com.android.systemui.unfold.FoldStateLoggingProvider;
-import com.android.systemui.unfold.SysUIUnfoldComponent;
-import com.android.systemui.unfold.UnfoldTransitionProgressProvider;
-import com.android.systemui.unfold.dagger.UnfoldBg;
-import com.android.systemui.unfold.progress.UnfoldTransitionProgressForwarder;
 import com.android.wm.shell.back.BackAnimation;
 import com.android.wm.shell.bubbles.Bubbles;
 import com.android.wm.shell.desktopmode.DesktopMode;
@@ -46,17 +39,18 @@ import com.android.wm.shell.keyguard.KeyguardTransitions;
 import com.android.wm.shell.onehanded.OneHanded;
 import com.android.wm.shell.pip.Pip;
 import com.android.wm.shell.recents.RecentTasks;
+import com.android.wm.shell.shared.ShellTransitions;
 import com.android.wm.shell.splitscreen.SplitScreen;
 import com.android.wm.shell.startingsurface.StartingSurface;
 import com.android.wm.shell.sysui.ShellInterface;
 import com.android.wm.shell.taskview.TaskViewFactory;
-import com.android.wm.shell.transition.ShellTransitions;
 
 import dagger.BindsInstance;
 import dagger.Subcomponent;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 import javax.inject.Provider;
 
@@ -71,7 +65,6 @@ import javax.inject.Provider;
         DependencyProvider.class,
         NotificationInsetsModule.class,
         QsFrameTranslateModule.class,
-        SystemUIBinder.class,
         SystemUIModule.class,
         SystemUICoreStartableModule.class,
         ReferenceSystemUIModule.class})
@@ -102,7 +95,7 @@ public interface SysUIComponent {
         Builder setTaskViewFactory(Optional<TaskViewFactory> t);
 
         @BindsInstance
-        Builder setTransitions(ShellTransitions t);
+        Builder setShellTransitions(ShellTransitions t);
 
         @BindsInstance
         Builder setKeyguardTransitions(KeyguardTransitions k);
@@ -126,89 +119,30 @@ public interface SysUIComponent {
     }
 
     /**
-     * Initializes all the SysUI components.
-     */
-    default void init() {
-        // Initialize components that have no direct tie to the dagger dependency graph,
-        // but are critical to this component's operation
-        getSysUIUnfoldComponent()
-                .ifPresent(
-                        c -> {
-                            c.getUnfoldLightRevealOverlayAnimation().init();
-                            c.getUnfoldTransitionWallpaperController().init();
-                            c.getUnfoldHapticsPlayer();
-                            c.getNaturalRotationUnfoldProgressProvider().init();
-                            c.getUnfoldLatencyTracker().init();
-                        });
-        // No init method needed, just needs to be gotten so that it's created.
-        getMediaMuteAwaitConnectionCli();
-        getNearbyMediaDevicesManager();
-        getConnectingDisplayViewModel().init();
-        getFoldStateLoggingProvider().ifPresent(FoldStateLoggingProvider::init);
-        getFoldStateLogger().ifPresent(FoldStateLogger::init);
-
-        Optional<UnfoldTransitionProgressProvider> unfoldTransitionProgressProvider;
-
-        if (Flags.unfoldAnimationBackgroundProgress()) {
-            unfoldTransitionProgressProvider = getBgUnfoldTransitionProgressProvider();
-        } else {
-            unfoldTransitionProgressProvider = getUnfoldTransitionProgressProvider();
-        }
-        unfoldTransitionProgressProvider
-                .ifPresent(
-                        (progressProvider) ->
-                                getUnfoldTransitionProgressForwarder()
-                                        .ifPresent(progressProvider::addCallback));
-    }
-
-    /**
      * Provides a BootCompleteCache.
      */
     @SysUISingleton
     BootCompleteCacheImpl provideBootCacheImpl();
 
     /**
-     * Creates a ContextComponentHelper.
+     * Creates a ConfigurationController.
      */
     @SysUISingleton
+    @GlobalConfig
     ConfigurationController getConfigurationController();
+
+    /**
+     * Creates a ConfigurationForwarder.
+     */
+    @SysUISingleton
+    @GlobalConfig
+    ConfigurationForwarder getConfigurationForwarder();
 
     /**
      * Creates a ContextComponentHelper.
      */
     @SysUISingleton
     ContextComponentHelper getContextComponentHelper();
-
-    /**
-     * Creates a UnfoldTransitionProgressProvider that calculates progress in the background.
-     */
-    @SysUISingleton
-    @UnfoldBg
-    Optional<UnfoldTransitionProgressProvider> getBgUnfoldTransitionProgressProvider();
-
-    /**
-     * Creates a UnfoldTransitionProgressProvider that calculates progress in the main thread.
-     */
-    @SysUISingleton
-    Optional<UnfoldTransitionProgressProvider> getUnfoldTransitionProgressProvider();
-
-    /**
-     * Creates a UnfoldTransitionProgressForwarder.
-     */
-    @SysUISingleton
-    Optional<UnfoldTransitionProgressForwarder> getUnfoldTransitionProgressForwarder();
-
-    /**
-     * Creates a FoldStateLoggingProvider.
-     */
-    @SysUISingleton
-    Optional<FoldStateLoggingProvider> getFoldStateLoggingProvider();
-
-    /**
-     * Creates a FoldStateLogger.
-     */
-    @SysUISingleton
-    Optional<FoldStateLogger> getFoldStateLogger();
 
     /**
      * Main dependency providing module.
@@ -227,22 +161,6 @@ public interface SysUIComponent {
     InitController getInitController();
 
     /**
-     * For devices with a hinge: access objects within this component
-     */
-    Optional<SysUIUnfoldComponent> getSysUIUnfoldComponent();
-
-    /** */
-    MediaMuteAwaitConnectionCli getMediaMuteAwaitConnectionCli();
-
-    /** */
-    NearbyMediaDevicesManager getNearbyMediaDevicesManager();
-
-    /**
-     * Creates a ConnectingDisplayViewModel
-     */
-    ConnectingDisplayViewModel getConnectingDisplayViewModel();
-
-    /**
      * Returns {@link CoreStartable}s that should be started with the application.
      */
     Map<Class<?>, Provider<CoreStartable>> getStartables();
@@ -251,6 +169,11 @@ public interface SysUIComponent {
      * Returns {@link CoreStartable}s that should be started for every user.
      */
     @PerUser Map<Class<?>, Provider<CoreStartable>> getPerUserStartables();
+
+    /**
+     * Returns {@link CoreStartable} dependencies if there are any.
+     */
+    @Dependencies Map<Class<?>, Set<Class<? extends CoreStartable>>> getStartableDependencies();
 
     /**
      * Member injection into the supplied argument.

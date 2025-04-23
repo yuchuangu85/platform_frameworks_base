@@ -16,24 +16,10 @@ flag {
 }
 
 flag {
-    name: "bal_show_toasts"
-    namespace: "responsible_apis"
-    description: "Enable toasts to indicate (potential) BAL blocking."
-    bug: "308059069"
-}
-
-flag {
     name: "bal_show_toasts_blocked"
     namespace: "responsible_apis"
     description: "Enable toasts to indicate actual BAL blocking."
     bug: "308059069"
-}
-
-flag {
-    name: "bal_return_correct_code_if_caller_is_persistent_system_process"
-    namespace: "responsible_apis"
-    description: "Split visibility check and return a better status code in case of system process."
-    bug: "171459802"
 }
 
 flag {
@@ -47,5 +33,46 @@ flag {
     name: "bal_respect_app_switch_state_when_check_bound_by_foreground_uid"
     namespace: "responsible_apis"
     description: "Prevent BAL based on it is bound by foreground Uid but the app switch is stopped."
-    bug: "171459802"
+    bug: "283801068"
 }
+
+flag {
+    name: "bal_improved_metrics"
+    namespace: "responsible_apis"
+    description: "Improved metrics."
+    bug: "339245692"
+}
+
+flag {
+    name: "bal_additional_start_modes"
+    namespace: "responsible_apis"
+    description: "Introduce additional start modes."
+    bug: "352182359"
+    is_exported: true
+}
+
+flag {
+    name: "bal_send_intent_with_options"
+    namespace: "responsible_apis"
+    description: "Add options parameter to IntentSender.sendIntent."
+    bug: "339720406"
+    is_exported: true
+}
+
+flag {
+    name: "bal_strict_mode_ro"
+    namespace: "responsible_apis"
+    description: "Strict mode flag"
+    bug: "324089586"
+    is_fixed_read_only: true
+    is_exported: true
+}
+
+flag {
+    name: "bal_reduce_grace_period"
+    namespace: "responsible_apis"
+    description: "Changes to reduce or ideally remove the grace period exemption."
+    bug: "362575865"
+}
+
+

@@ -21,15 +21,7 @@
   // v2/android-virtual-infra/test_mapping/presubmit-avd
   "presubmit": [
     {
-      "name": "SystemUIGoogleTests",
-      "options": [
-        {
-          "exclude-annotation": "org.junit.Ignore"
-        },
-        {
-          "exclude-annotation": "androidx.test.filters.FlakyTest"
-        }
-      ]
+      "name": "SystemUIGoogleTests"
     },
     {
       // Permission indicators
@@ -48,37 +40,24 @@
     },
     {
       // Permission indicators
-      "name": "CtsVoiceRecognitionTestCases",
-      "options": [
-        {
-          "exclude-annotation": "org.junit.Ignore"
-        },
-        {
-          "exclude-annotation": "androidx.test.filters.FlakyTest"
-        }
-      ]
+      "name": "CtsVoiceRecognitionTestCases"
     }
   ],
-  
+
   "auto-end-to-end-postsubmit": [
     {
       "name": "AndroidAutomotiveHomeTests",
       "options" : [
         {
           "include-filter": "android.platform.tests.HomeTest"
-        }
-      ]
-    },
-    {
-      "name": "AndroidAutomotiveNotificationsTests",
-      "options" : [
+        },
         {
-          "include-filter": "android.platform.tests.NotificationTest"
+          "exclude-filter": "android.platform.tests.HomeTest#testAssistantWidget"
         }
       ]
     }
   ],
-  
+
   "postsubmit": [
     {
       // Permission indicators
@@ -90,7 +69,7 @@
       ]
     }
   ],
-  
+
   // v2/sysui/suite/test-mapping-sysui-screenshot-test
   "sysui-screenshot-test": [
     {
@@ -128,7 +107,7 @@
       ]
     }
   ],
-  
+
   // v2/sysui/suite/test-mapping-sysui-screenshot-test-staged
   "sysui-screenshot-test-staged": [
     {
@@ -152,6 +131,25 @@
           "include-annotation": "androidx.test.filters.FlakyTest"
         }
       ]
+    }
+  ],
+  "sysui-robo-test": [
+    {
+      "name": "SystemUIGoogleRoboRNGTests"
+    },
+    {
+      "name": "SystemUIGoogleRobo2RNGTests"
+    }
+  ],
+  "imports": [
+    {
+      "path": "cts/tests/tests/multiuser"
+    }
+  ],
+
+  "sysui-e2e-presubmit": [
+    {
+      "name": "PlatformScenarioTests_SysUI_Presubmit"
     }
   ]
 }

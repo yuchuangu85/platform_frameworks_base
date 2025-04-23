@@ -16,6 +16,10 @@
 
 package com.android.internal.os;
 
+import static android.os.BatteryStats.HistoryItem.EVENT_FLAG_FINISH;
+import static android.os.BatteryStats.HistoryItem.EVENT_FLAG_START;
+import static android.os.BatteryStats.HistoryItem.EVENT_STATE_CHANGE;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.os.BatteryConsumer;
@@ -44,6 +48,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.ConcurrentModificationException;
@@ -78,7 +83,7 @@ public class BatteryStatsHistory {
     private static final String TAG = "BatteryStatsHistory";
 
     // Current on-disk Parcel version. Must be updated when the format of the parcelable changes
-    private static final int VERSION = 210;
+    private static final int VERSION = 211;
 
     private static final String HISTORY_DIR = "battery-history";
     private static final String FILE_SUFFIX = ".bh";
@@ -133,13 +138,18 @@ public class BatteryStatsHistory {
     // For state2, trace all bit changes.
     static final int STATE2_TRACE_MASK = ~0;
 
+    /**
+     * Number of overflow bytes that can be written into the history buffer if the history
+     * directory is locked. This is done to prevent a long lock contention and a potential
+     * kill by a watchdog.
+     */
+    private static final int EXTRA_BUFFER_SIZE_WHEN_DIR_LOCKED = 100_000;
+
     private final Parcel mHistoryBuffer;
     private final File mSystemDir;
     private final HistoryStepDetailsCalculator mStepDetailsCalculator;
-    private final File mHistoryDir;
     private final Clock mClock;
 
-    private int mMaxHistoryFiles;
     private int mMaxHistoryBufferSize;
 
     /**
@@ -150,7 +160,7 @@ public class BatteryStatsHistory {
     /**
      * A list of history files with increasing timestamps.
      */
-    private final List<BatteryHistoryFile> mHistoryFiles = new ArrayList<>();
+    private final BatteryHistoryDirectory mHistoryDir;
 
     /**
      * A list of small history parcels, used when BatteryStatsImpl object is created from
@@ -161,7 +171,8 @@ public class BatteryStatsHistory {
     /**
      * When iterating history files, the current file index.
      */
-    private int mCurrentFileIndex;
+    private BatteryHistoryFile mCurrentFile;
+
     /**
      * When iterating history files, the current file parcel.
      */
@@ -199,11 +210,12 @@ public class BatteryStatsHistory {
     private final MonotonicClock mMonotonicClock;
     // Monotonic time when we started writing to the history buffer
     private long mHistoryBufferStartTime;
+    // Monotonically increasing size of written history
+    private long mMonotonicHistorySize;
     private final ArraySet<PowerStats.Descriptor> mWrittenPowerStatsDescriptors = new ArraySet<>();
     private byte mLastHistoryStepLevel = 0;
     private boolean mMutable = true;
     private final BatteryStatsHistory mWritableHistory;
-    private boolean mCleanupEnabled = true;
 
     private static class BatteryHistoryFile implements Comparable<BatteryHistoryFile> {
         public final long monotonicTimeMs;
@@ -232,6 +244,273 @@ public class BatteryStatsHistory {
         @Override
         public String toString() {
             return atomicFile.getBaseFile().toString();
+        }
+    }
+
+    private static class BatteryHistoryDirectory {
+        private final File mDirectory;
+        private final MonotonicClock mMonotonicClock;
+        private int mMaxHistoryFiles;
+        private final List<BatteryHistoryFile> mHistoryFiles = new ArrayList<>();
+        private final ReentrantLock mLock = new ReentrantLock();
+        private boolean mCleanupNeeded;
+
+        BatteryHistoryDirectory(File directory, MonotonicClock monotonicClock,
+                int maxHistoryFiles) {
+            mDirectory = directory;
+            mMonotonicClock = monotonicClock;
+            mMaxHistoryFiles = maxHistoryFiles;
+            if (mMaxHistoryFiles == 0) {
+                Slog.wtf(TAG, "mMaxHistoryFiles should not be zero when writing history");
+            }
+        }
+
+        void setMaxHistoryFiles(int maxHistoryFiles) {
+            mMaxHistoryFiles = maxHistoryFiles;
+            cleanup();
+        }
+
+        void lock() {
+            mLock.lock();
+        }
+
+        boolean tryLock() {
+            return mLock.tryLock();
+        }
+
+        void unlock() {
+            mLock.unlock();
+            if (mCleanupNeeded) {
+                cleanup();
+            }
+        }
+
+        boolean isLocked() {
+            return mLock.isLocked();
+        }
+
+        void load() {
+            mDirectory.mkdirs();
+            if (!mDirectory.exists()) {
+                Slog.wtf(TAG, "HistoryDir does not exist:" + mDirectory.getPath());
+            }
+
+            final List<File> toRemove = new ArrayList<>();
+            final Set<BatteryHistoryFile> dedup = new ArraySet<>();
+            mDirectory.listFiles((dir, name) -> {
+                final int b = name.lastIndexOf(FILE_SUFFIX);
+                if (b <= 0) {
+                    toRemove.add(new File(dir, name));
+                    return false;
+                }
+                try {
+                    long monotonicTime = Long.parseLong(name.substring(0, b));
+                    dedup.add(new BatteryHistoryFile(mDirectory, monotonicTime));
+                } catch (NumberFormatException e) {
+                    toRemove.add(new File(dir, name));
+                    return false;
+                }
+                return true;
+            });
+            if (!dedup.isEmpty()) {
+                mHistoryFiles.addAll(dedup);
+                Collections.sort(mHistoryFiles);
+            }
+            if (!toRemove.isEmpty()) {
+                // Clear out legacy history files, which did not follow the X-Y.bin naming format.
+                BackgroundThread.getHandler().post(() -> {
+                    lock();
+                    try {
+                        for (File file : toRemove) {
+                            file.delete();
+                        }
+                    } finally {
+                        unlock();
+                    }
+                });
+            }
+        }
+
+        List<String> getFileNames() {
+            lock();
+            try {
+                List<String> names = new ArrayList<>();
+                for (BatteryHistoryFile historyFile : mHistoryFiles) {
+                    names.add(historyFile.atomicFile.getBaseFile().getName());
+                }
+                return names;
+            } finally {
+                unlock();
+            }
+        }
+
+        @Nullable
+        BatteryHistoryFile getFirstFile() {
+            lock();
+            try {
+                if (!mHistoryFiles.isEmpty()) {
+                    return mHistoryFiles.get(0);
+                }
+                return null;
+            } finally {
+                unlock();
+            }
+        }
+
+        @Nullable
+        BatteryHistoryFile getLastFile() {
+            lock();
+            try {
+                if (!mHistoryFiles.isEmpty()) {
+                    return mHistoryFiles.get(mHistoryFiles.size() - 1);
+                }
+                return null;
+            } finally {
+                unlock();
+            }
+        }
+
+        @Nullable
+        BatteryHistoryFile getNextFile(BatteryHistoryFile current, long startTimeMs,
+                long endTimeMs) {
+            if (!mLock.isHeldByCurrentThread()) {
+                throw new IllegalStateException("Iterating battery history without a lock");
+            }
+
+            int nextFileIndex = 0;
+            int firstFileIndex = 0;
+            // skip the last file because its data is in history buffer.
+            int lastFileIndex = mHistoryFiles.size() - 2;
+            for (int i = lastFileIndex; i >= 0; i--) {
+                BatteryHistoryFile file = mHistoryFiles.get(i);
+                if (current != null && file.monotonicTimeMs == current.monotonicTimeMs) {
+                    nextFileIndex = i + 1;
+                }
+                if (file.monotonicTimeMs > endTimeMs) {
+                    lastFileIndex = i - 1;
+                }
+                if (file.monotonicTimeMs <= startTimeMs) {
+                    firstFileIndex = i;
+                    break;
+                }
+            }
+
+            if (nextFileIndex < firstFileIndex) {
+                nextFileIndex = firstFileIndex;
+            }
+
+            if (nextFileIndex <= lastFileIndex) {
+                return mHistoryFiles.get(nextFileIndex);
+            }
+
+            return null;
+        }
+
+        BatteryHistoryFile makeBatteryHistoryFile() {
+            BatteryHistoryFile file = new BatteryHistoryFile(mDirectory,
+                    mMonotonicClock.monotonicTime());
+            lock();
+            try {
+                mHistoryFiles.add(file);
+            } finally {
+                unlock();
+            }
+            return file;
+        }
+
+        void writeToParcel(Parcel out, boolean useBlobs) {
+            lock();
+            try {
+                final long start = SystemClock.uptimeMillis();
+                out.writeInt(mHistoryFiles.size() - 1);
+                for (int i = 0; i < mHistoryFiles.size() - 1; i++) {
+                    AtomicFile file = mHistoryFiles.get(i).atomicFile;
+                    byte[] raw = new byte[0];
+                    try {
+                        raw = file.readFully();
+                    } catch (Exception e) {
+                        Slog.e(TAG, "Error reading file " + file.getBaseFile().getPath(), e);
+                    }
+                    if (useBlobs) {
+                        out.writeBlob(raw);
+                    } else {
+                        // Avoiding blobs in the check-in file for compatibility
+                        out.writeByteArray(raw);
+                    }
+                }
+                if (DEBUG) {
+                    Slog.d(TAG,
+                            "writeToParcel duration ms:" + (SystemClock.uptimeMillis() - start));
+                }
+            } finally {
+                unlock();
+            }
+        }
+
+        int getFileCount() {
+            lock();
+            try {
+                return mHistoryFiles.size();
+            } finally {
+                unlock();
+            }
+        }
+
+        int getSize() {
+            lock();
+            try {
+                int ret = 0;
+                for (int i = 0; i < mHistoryFiles.size() - 1; i++) {
+                    ret += (int) mHistoryFiles.get(i).atomicFile.getBaseFile().length();
+                }
+                return ret;
+            } finally {
+                unlock();
+            }
+        }
+
+        void reset() {
+            lock();
+            try {
+                if (DEBUG) Slog.i(TAG, "********** CLEARING HISTORY!");
+                for (BatteryHistoryFile file : mHistoryFiles) {
+                    file.atomicFile.delete();
+                }
+                mHistoryFiles.clear();
+            } finally {
+                unlock();
+            }
+        }
+
+        private void cleanup() {
+            if (mDirectory == null) {
+                return;
+            }
+
+            if (!tryLock()) {
+                mCleanupNeeded = true;
+                return;
+            }
+
+            mCleanupNeeded = false;
+            try {
+                // if free disk space is less than 100MB, delete oldest history file.
+                if (!hasFreeDiskSpace(mDirectory)) {
+                    BatteryHistoryFile oldest = mHistoryFiles.remove(0);
+                    oldest.atomicFile.delete();
+                }
+
+                // if there are more history files than allowed, delete oldest history files.
+                // mMaxHistoryFiles comes from Constants.MAX_HISTORY_FILES and
+                // can be updated by DeviceConfig at run time.
+                while (mHistoryFiles.size() > mMaxHistoryFiles) {
+                    BatteryHistoryFile oldest = mHistoryFiles.get(0);
+                    oldest.atomicFile.delete();
+                    mHistoryFiles.remove(0);
+                }
+            } finally {
+                unlock();
+            }
         }
     }
 
@@ -297,9 +576,20 @@ public class BatteryStatsHistory {
         }
     }
 
+    public static class EventLogger {
+        /**
+         * Records a statsd event when the batterystats config file is written to disk.
+         */
+        public void writeCommitSysConfigFile(long startTimeMs) {
+            com.android.internal.logging.EventLogTags.writeCommitSysConfigFile(
+                    "batterystats", SystemClock.uptimeMillis() - startTimeMs);
+        }
+    }
+
     private TraceDelegate mTracer;
     private int mTraceLastState = 0;
     private int mTraceLastState2 = 0;
+    private final EventLogger mEventLogger;
 
     /**
      * Constructor
@@ -308,111 +598,52 @@ public class BatteryStatsHistory {
      * @param maxHistoryFiles      the largest number of history buffer files to keep
      * @param maxHistoryBufferSize the most amount of RAM to used for buffering of history steps
      */
-    public BatteryStatsHistory(File systemDir, int maxHistoryFiles, int maxHistoryBufferSize,
-            HistoryStepDetailsCalculator stepDetailsCalculator, Clock clock,
-            MonotonicClock monotonicClock) {
-        this(Parcel.obtain(), systemDir, maxHistoryFiles, maxHistoryBufferSize,
-                stepDetailsCalculator, clock, monotonicClock, new TraceDelegate());
-        initHistoryBuffer();
-    }
-
-    @VisibleForTesting
     public BatteryStatsHistory(Parcel historyBuffer, File systemDir,
             int maxHistoryFiles, int maxHistoryBufferSize,
             HistoryStepDetailsCalculator stepDetailsCalculator, Clock clock,
-            MonotonicClock monotonicClock, TraceDelegate tracer) {
+            MonotonicClock monotonicClock, TraceDelegate tracer, EventLogger eventLogger) {
         this(historyBuffer, systemDir, maxHistoryFiles, maxHistoryBufferSize, stepDetailsCalculator,
-                clock, monotonicClock, tracer, null);
+                clock, monotonicClock, tracer, eventLogger, null);
     }
 
-    private BatteryStatsHistory(Parcel historyBuffer, File systemDir,
+    private BatteryStatsHistory(@Nullable Parcel historyBuffer, @Nullable File systemDir,
             int maxHistoryFiles, int maxHistoryBufferSize,
-            HistoryStepDetailsCalculator stepDetailsCalculator, Clock clock,
-            MonotonicClock monotonicClock, TraceDelegate tracer,
-            BatteryStatsHistory writableHistory) {
-        mHistoryBuffer = historyBuffer;
+            @NonNull HistoryStepDetailsCalculator stepDetailsCalculator, @NonNull Clock clock,
+            @NonNull MonotonicClock monotonicClock, @NonNull TraceDelegate tracer,
+            @NonNull EventLogger eventLogger, @Nullable BatteryStatsHistory writableHistory) {
         mSystemDir = systemDir;
-        mMaxHistoryFiles = maxHistoryFiles;
         mMaxHistoryBufferSize = maxHistoryBufferSize;
         mStepDetailsCalculator = stepDetailsCalculator;
         mTracer = tracer;
         mClock = clock;
         mMonotonicClock = monotonicClock;
+        mEventLogger = eventLogger;
         mWritableHistory = writableHistory;
         if (mWritableHistory != null) {
             mMutable = false;
         }
 
-        mHistoryDir = new File(systemDir, HISTORY_DIR);
-        mHistoryDir.mkdirs();
-        if (!mHistoryDir.exists()) {
-            Slog.wtf(TAG, "HistoryDir does not exist:" + mHistoryDir.getPath());
+        if (historyBuffer != null) {
+            mHistoryBuffer = historyBuffer;
+        } else {
+            mHistoryBuffer = Parcel.obtain();
+            initHistoryBuffer();
         }
 
-        final List<File> toRemove = new ArrayList<>();
-        final Set<BatteryHistoryFile> dedup = new ArraySet<>();
-        mHistoryDir.listFiles((dir, name) -> {
-            final int b = name.lastIndexOf(FILE_SUFFIX);
-            if (b <= 0) {
-                toRemove.add(new File(dir, name));
-                return false;
+        if (writableHistory != null) {
+            mHistoryDir = writableHistory.mHistoryDir;
+        } else if (systemDir != null) {
+            mHistoryDir = new BatteryHistoryDirectory(new File(systemDir, HISTORY_DIR),
+                    monotonicClock, maxHistoryFiles);
+            mHistoryDir.load();
+            BatteryHistoryFile activeFile = mHistoryDir.getLastFile();
+            if (activeFile == null) {
+                activeFile = mHistoryDir.makeBatteryHistoryFile();
             }
-            try {
-                long monotonicTime = Long.parseLong(name.substring(0, b));
-                dedup.add(new BatteryHistoryFile(mHistoryDir, monotonicTime));
-            } catch (NumberFormatException e) {
-                toRemove.add(new File(dir, name));
-                return false;
-            }
-            return true;
-        });
-        if (!dedup.isEmpty()) {
-            mHistoryFiles.addAll(dedup);
-            Collections.sort(mHistoryFiles);
-            setActiveFile(mHistoryFiles.get(mHistoryFiles.size() - 1));
-        } else if (mMutable) {
-            // No file found, default to have the initial file.
-            BatteryHistoryFile name = makeBatteryHistoryFile();
-            mHistoryFiles.add(name);
-            setActiveFile(name);
+            setActiveFile(activeFile);
+        } else {
+            mHistoryDir = null;
         }
-        if (!toRemove.isEmpty()) {
-            // Clear out legacy history files, which did not follow the X-Y.bin naming format.
-            BackgroundThread.getHandler().post(() -> {
-                for (File file : toRemove) {
-                    file.delete();
-                }
-            });
-        }
-    }
-
-    private BatteryHistoryFile makeBatteryHistoryFile() {
-        return new BatteryHistoryFile(mHistoryDir, mMonotonicClock.monotonicTime());
-    }
-
-    public BatteryStatsHistory(int maxHistoryFiles, int maxHistoryBufferSize,
-            HistoryStepDetailsCalculator stepDetailsCalculator, Clock clock,
-            MonotonicClock monotonicClock) {
-        this(maxHistoryFiles, maxHistoryBufferSize, stepDetailsCalculator, clock, monotonicClock,
-                new TraceDelegate());
-    }
-
-    @VisibleForTesting
-    public BatteryStatsHistory(int maxHistoryFiles, int maxHistoryBufferSize,
-            HistoryStepDetailsCalculator stepDetailsCalculator, Clock clock,
-            MonotonicClock monotonicClock, TraceDelegate traceDelegate) {
-        mMaxHistoryFiles = maxHistoryFiles;
-        mMaxHistoryBufferSize = maxHistoryBufferSize;
-        mStepDetailsCalculator = stepDetailsCalculator;
-        mTracer = traceDelegate;
-        mClock = clock;
-        mMonotonicClock = monotonicClock;
-
-        mHistoryBuffer = Parcel.obtain();
-        mSystemDir = null;
-        mHistoryDir = null;
-        mWritableHistory = null;
-        initHistoryBuffer();
     }
 
     /**
@@ -425,6 +656,7 @@ public class BatteryStatsHistory {
         mSystemDir = null;
         mHistoryDir = null;
         mStepDetailsCalculator = null;
+        mEventLogger = new EventLogger();
         mWritableHistory = null;
         mMutable = false;
 
@@ -461,7 +693,9 @@ public class BatteryStatsHistory {
      * Changes the maximum number of history files to be kept.
      */
     public void setMaxHistoryFiles(int maxHistoryFiles) {
-        mMaxHistoryFiles = maxHistoryFiles;
+        if (mHistoryDir != null) {
+            mHistoryDir.setMaxHistoryFiles(maxHistoryFiles);
+        }
     }
 
     /**
@@ -482,7 +716,7 @@ public class BatteryStatsHistory {
             historyBufferCopy.appendFrom(mHistoryBuffer, 0, mHistoryBuffer.dataSize());
 
             return new BatteryStatsHistory(historyBufferCopy, mSystemDir, 0, 0, null, null, null,
-                    null, this);
+                    null, mEventLogger, this);
         }
     }
 
@@ -490,7 +724,7 @@ public class BatteryStatsHistory {
      * Returns true if this instance only supports reading history.
      */
     public boolean isReadOnly() {
-        return mActiveFile == null || mHistoryDir == null;
+        return !mMutable || mActiveFile == null/* || mHistoryDir == null*/;
     }
 
     /**
@@ -508,25 +742,20 @@ public class BatteryStatsHistory {
      * create next history file.
      */
     public void startNextFile(long elapsedRealtimeMs) {
-        if (mMaxHistoryFiles == 0) {
-            Slog.wtf(TAG, "mMaxHistoryFiles should not be zero when writing history");
-            return;
+        synchronized (this) {
+            startNextFileLocked(elapsedRealtimeMs);
         }
+    }
 
-        if (mHistoryFiles.isEmpty()) {
-            Slog.wtf(TAG, "mFileNumbers should never be empty");
-            return;
-        }
-
+    @GuardedBy("this")
+    private void startNextFileLocked(long elapsedRealtimeMs) {
         final long start = SystemClock.uptimeMillis();
         writeHistory();
         if (DEBUG) {
             Slog.d(TAG, "writeHistory took ms:" + (SystemClock.uptimeMillis() - start));
         }
 
-        final BatteryHistoryFile next = makeBatteryHistoryFile();
-        mHistoryFiles.add(next);
-        setActiveFile(next);
+        setActiveFile(mHistoryDir.makeBatteryHistoryFile());
         try {
             mActiveFile.getBaseFile().createNewFile();
         } catch (IOException e) {
@@ -548,40 +777,7 @@ public class BatteryStatsHistory {
         }
 
         mWrittenPowerStatsDescriptors.clear();
-
-        synchronized (this) {
-            cleanupLocked();
-        }
-    }
-
-    @GuardedBy("this")
-    private void setCleanupEnabledLocked(boolean enabled) {
-        mCleanupEnabled = enabled;
-        if (mCleanupEnabled) {
-            cleanupLocked();
-        }
-    }
-
-    @GuardedBy("this")
-    private void cleanupLocked() {
-        if (!mCleanupEnabled || mHistoryDir == null) {
-            return;
-        }
-
-        // if free disk space is less than 100MB, delete oldest history file.
-        if (!hasFreeDiskSpace()) {
-            BatteryHistoryFile oldest = mHistoryFiles.remove(0);
-            oldest.atomicFile.delete();
-        }
-
-        // if there are more history files than allowed, delete oldest history files.
-        // mMaxHistoryFiles comes from Constants.MAX_HISTORY_FILES and can be updated by GService
-        // config at run time.
-        while (mHistoryFiles.size() > mMaxHistoryFiles) {
-            BatteryHistoryFile oldest = mHistoryFiles.get(0);
-            oldest.atomicFile.delete();
-            mHistoryFiles.remove(0);
-        }
+        mHistoryDir.cleanup();
     }
 
     /**
@@ -589,9 +785,7 @@ public class BatteryStatsHistory {
      * currently being read.
      */
     public boolean isResetEnabled() {
-        synchronized (this) {
-            return mCleanupEnabled;
-        }
+        return mHistoryDir == null || !mHistoryDir.isLocked();
     }
 
     /**
@@ -599,27 +793,26 @@ public class BatteryStatsHistory {
      * number 0 again.
      */
     public void reset() {
-        if (DEBUG) Slog.i(TAG, "********** CLEARING HISTORY!");
-        for (BatteryHistoryFile file : mHistoryFiles) {
-            file.atomicFile.delete();
+        synchronized (this) {
+            if (mHistoryDir != null) {
+                mHistoryDir.reset();
+                setActiveFile(mHistoryDir.makeBatteryHistoryFile());
+            }
+            initHistoryBuffer();
         }
-        mHistoryFiles.clear();
-
-        BatteryHistoryFile name = makeBatteryHistoryFile();
-        mHistoryFiles.add(name);
-        setActiveFile(name);
-
-        initHistoryBuffer();
     }
 
     /**
      * Returns the monotonic clock time when the available battery history collection started.
      */
     public long getStartTime() {
-        if (!mHistoryFiles.isEmpty()) {
-            return mHistoryFiles.get(0).monotonicTimeMs;
-        } else {
-            return mHistoryBufferStartTime;
+        synchronized (this) {
+            BatteryHistoryFile file = mHistoryDir.getFirstFile();
+            if (file != null) {
+                return file.monotonicTimeMs;
+            } else {
+                return mHistoryBufferStartTime;
+            }
         }
     }
 
@@ -629,20 +822,21 @@ public class BatteryStatsHistory {
      * @param startTimeMs monotonic time (the HistoryItem.time field) to start iterating from,
      *                    inclusive
      * @param endTimeMs monotonic time to stop iterating, exclusive.
-     *                  Pass 0 to indicate current time.
+     *                  Pass {@link MonotonicClock#UNDEFINED} to indicate current time.
      */
     @NonNull
     public BatteryStatsHistoryIterator iterate(long startTimeMs, long endTimeMs) {
-        mCurrentFileIndex = 0;
+        if (mMutable) {
+            return copy().iterate(startTimeMs, endTimeMs);
+        }
+
+        if (mHistoryDir != null) {
+            mHistoryDir.lock();
+        }
+        mCurrentFile = null;
         mCurrentParcel = null;
         mCurrentParcelEnd = 0;
         mParcelIndex = 0;
-        mMutable = false;
-        if (mWritableHistory != null) {
-            synchronized (mWritableHistory) {
-                mWritableHistory.setCleanupEnabledLocked(false);
-            }
-        }
         return new BatteryStatsHistoryIterator(this, startTimeMs, endTimeMs);
     }
 
@@ -650,14 +844,9 @@ public class BatteryStatsHistory {
      * Finish iterating history files and history buffer.
      */
     void iteratorFinished() {
-        // setDataPosition so mHistoryBuffer Parcel can be written.
         mHistoryBuffer.setDataPosition(mHistoryBuffer.dataSize());
-        if (mWritableHistory != null) {
-            synchronized (mWritableHistory) {
-                mWritableHistory.setCleanupEnabledLocked(true);
-            }
-        } else {
-            mMutable = true;
+        if (mHistoryDir != null) {
+            mHistoryDir.unlock();
         }
     }
 
@@ -671,6 +860,8 @@ public class BatteryStatsHistory {
      */
     @Nullable
     public Parcel getNextParcel(long startTimeMs, long endTimeMs) {
+        checkImmutable();
+
         // First iterate through all records in current parcel.
         if (mCurrentParcel != null) {
             if (mCurrentParcel.dataPosition() < mCurrentParcelEnd) {
@@ -686,39 +877,27 @@ public class BatteryStatsHistory {
             }
         }
 
-        int firstFileIndex = 0;
-        // skip the last file because its data is in history buffer.
-        int lastFileIndex = mHistoryFiles.size() - 1;
-        for (int i = mHistoryFiles.size() - 1; i >= 0; i--) {
-            BatteryHistoryFile file = mHistoryFiles.get(i);
-            if (file.monotonicTimeMs >= endTimeMs) {
-                lastFileIndex = i;
-            }
-            if (file.monotonicTimeMs <= startTimeMs) {
-                firstFileIndex = i;
-                break;
-            }
-        }
-
-        if (mCurrentFileIndex < firstFileIndex) {
-            mCurrentFileIndex = firstFileIndex;
-        }
-
-        while (mCurrentFileIndex < lastFileIndex) {
-            mCurrentParcel = null;
-            mCurrentParcelEnd = 0;
-            final Parcel p = Parcel.obtain();
-            AtomicFile file = mHistoryFiles.get(mCurrentFileIndex++).atomicFile;
-            if (readFileToParcel(p, file)) {
-                int bufSize = p.readInt();
-                int curPos = p.dataPosition();
-                mCurrentParcelEnd = curPos + bufSize;
-                mCurrentParcel = p;
-                if (curPos < mCurrentParcelEnd) {
-                    return mCurrentParcel;
+        if (mHistoryDir != null) {
+            BatteryHistoryFile nextFile = mHistoryDir.getNextFile(mCurrentFile, startTimeMs,
+                    endTimeMs);
+            while (nextFile != null) {
+                mCurrentParcel = null;
+                mCurrentParcelEnd = 0;
+                final Parcel p = Parcel.obtain();
+                AtomicFile file = nextFile.atomicFile;
+                if (readFileToParcel(p, file)) {
+                    int bufSize = p.readInt();
+                    int curPos = p.dataPosition();
+                    mCurrentParcelEnd = curPos + bufSize;
+                    mCurrentParcel = p;
+                    if (curPos < mCurrentParcelEnd) {
+                        mCurrentFile = nextFile;
+                        return mCurrentParcel;
+                    }
+                } else {
+                    p.recycle();
                 }
-            } else {
-                p.recycle();
+                nextFile = mHistoryDir.getNextFile(nextFile, startTimeMs, endTimeMs);
             }
         }
 
@@ -731,6 +910,8 @@ public class BatteryStatsHistory {
                     continue;
                 }
                 // skip monotonic time field.
+                p.readLong();
+                // skip monotonic size field
                 p.readLong();
 
                 final int bufSize = p.readInt();
@@ -752,6 +933,12 @@ public class BatteryStatsHistory {
         mCurrentParcel = mHistoryBuffer;
         mCurrentParcelEnd = mCurrentParcel.dataSize();
         return mCurrentParcel;
+    }
+
+    private void checkImmutable() {
+        if (mMutable) {
+            throw new IllegalStateException("Iterating over a mutable battery history");
+        }
     }
 
     /**
@@ -781,6 +968,8 @@ public class BatteryStatsHistory {
         }
         // skip monotonic time field.
         out.readLong();
+        // skip monotonic size field
+        out.readLong();
         return true;
     }
 
@@ -804,6 +993,7 @@ public class BatteryStatsHistory {
         p.setDataPosition(0);
         p.readInt();        // Skip the version field
         long monotonicTime = p.readLong();
+        p.readLong();       // Skip monotonic size field
         p.setDataPosition(pos);
         return monotonicTime;
     }
@@ -863,8 +1053,10 @@ public class BatteryStatsHistory {
      * @param out the output parcel
      */
     public void writeToParcel(Parcel out) {
-        writeHistoryBuffer(out);
-        writeToParcel(out, false /* useBlobs */);
+        synchronized (this) {
+            writeHistoryBuffer(out);
+            writeToParcel(out, false /* useBlobs */);
+        }
     }
 
     /**
@@ -874,30 +1066,15 @@ public class BatteryStatsHistory {
      * @param out the output parcel
      */
     public void writeToBatteryUsageStatsParcel(Parcel out) {
-        out.writeBlob(mHistoryBuffer.marshall());
-        writeToParcel(out, true /* useBlobs */);
+        synchronized (this) {
+            out.writeBlob(mHistoryBuffer.marshall());
+            writeToParcel(out, true /* useBlobs */);
+        }
     }
 
     private void writeToParcel(Parcel out, boolean useBlobs) {
-        final long start = SystemClock.uptimeMillis();
-        out.writeInt(mHistoryFiles.size() - 1);
-        for (int i = 0; i < mHistoryFiles.size() - 1; i++) {
-            AtomicFile file = mHistoryFiles.get(i).atomicFile;
-            byte[] raw = new byte[0];
-            try {
-                raw = file.readFully();
-            } catch (Exception e) {
-                Slog.e(TAG, "Error reading file " + file.getBaseFile().getPath(), e);
-            }
-            if (useBlobs) {
-                out.writeBlob(raw);
-            } else {
-                // Avoiding blobs in the check-in file for compatibility
-                out.writeByteArray(raw);
-            }
-        }
-        if (DEBUG) {
-            Slog.d(TAG, "writeToParcel duration ms:" + (SystemClock.uptimeMillis() - start));
+        if (mHistoryDir != null) {
+            mHistoryDir.writeToParcel(out, useBlobs);
         }
     }
 
@@ -977,18 +1154,19 @@ public class BatteryStatsHistory {
     /**
      * @return true if there is more than 100MB free disk space left.
      */
-    private boolean hasFreeDiskSpace() {
-        final StatFs stats = new StatFs(mHistoryDir.getAbsolutePath());
+    @android.ravenwood.annotation.RavenwoodReplace
+    private static boolean hasFreeDiskSpace(File systemDir) {
+        final StatFs stats = new StatFs(systemDir.getAbsolutePath());
         return stats.getAvailableBytes() > MIN_FREE_SPACE;
+    }
+
+    private static boolean hasFreeDiskSpace$ravenwood(File systemDir) {
+        return true;
     }
 
     @VisibleForTesting
     public List<String> getFilesNames() {
-        List<String> names = new ArrayList<>();
-        for (BatteryHistoryFile historyFile : mHistoryFiles) {
-            names.add(historyFile.atomicFile.getBaseFile().getName());
-        }
-        return names;
+        return mHistoryDir.getFileNames();
     }
 
     @VisibleForTesting
@@ -1000,10 +1178,7 @@ public class BatteryStatsHistory {
      * @return the total size of all history files and history buffer.
      */
     public int getHistoryUsedSize() {
-        int ret = 0;
-        for (int i = 0; i < mHistoryFiles.size() - 1; i++) {
-            ret += mHistoryFiles.get(i).atomicFile.getBaseFile().length();
-        }
+        int ret = mHistoryDir.getSize();
         ret += mHistoryBuffer.dataSize();
         if (mHistoryParcels != null) {
             for (int i = 0; i < mHistoryParcels.size(); i++) {
@@ -1017,14 +1192,18 @@ public class BatteryStatsHistory {
      * Enables/disables recording of history.  When disabled, all "record*" calls are a no-op.
      */
     public void setHistoryRecordingEnabled(boolean enabled) {
-        mRecordingHistory = enabled;
+        synchronized (this) {
+            mRecordingHistory = enabled;
+        }
     }
 
     /**
      * Returns true if history recording is enabled.
      */
     public boolean isRecordingHistory() {
-        return mRecordingHistory;
+        synchronized (this) {
+            return mRecordingHistory;
+        }
     }
 
     /**
@@ -1032,8 +1211,10 @@ public class BatteryStatsHistory {
      */
     @VisibleForTesting
     public void forceRecordAllHistory() {
-        mHaveBatteryLevel = true;
-        mRecordingHistory = true;
+        synchronized (this) {
+            mHaveBatteryLevel = true;
+            mRecordingHistory = true;
+        }
     }
 
     /**
@@ -1041,37 +1222,43 @@ public class BatteryStatsHistory {
      */
     public void startRecordingHistory(final long elapsedRealtimeMs, final long uptimeMs,
             boolean reset) {
-        mRecordingHistory = true;
-        mHistoryCur.currentTime = mClock.currentTimeMillis();
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs, mHistoryCur,
-                reset ? HistoryItem.CMD_RESET : HistoryItem.CMD_CURRENT_TIME);
-        mHistoryCur.currentTime = 0;
+        synchronized (this) {
+            mRecordingHistory = true;
+            mHistoryCur.currentTime = mClock.currentTimeMillis();
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs, mHistoryCur,
+                    reset ? HistoryItem.CMD_RESET : HistoryItem.CMD_CURRENT_TIME);
+            mHistoryCur.currentTime = 0;
+        }
     }
 
     /**
      * Prepares to continue recording after restoring previous history from persistent storage.
      */
     public void continueRecordingHistory() {
-        if (mHistoryBuffer.dataPosition() <= 0 && mHistoryFiles.size() <= 1) {
-            return;
-        }
+        synchronized (this) {
+            if (mHistoryBuffer.dataPosition() <= 0 && mHistoryDir.getFileCount() <= 1) {
+                return;
+            }
 
-        mRecordingHistory = true;
-        final long elapsedRealtimeMs = mClock.elapsedRealtime();
-        final long uptimeMs = mClock.uptimeMillis();
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs, mHistoryCur, HistoryItem.CMD_START);
-        startRecordingHistory(elapsedRealtimeMs, uptimeMs, false);
+            mRecordingHistory = true;
+            final long elapsedRealtimeMs = mClock.elapsedRealtime();
+            final long uptimeMs = mClock.uptimeMillis();
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs, mHistoryCur, HistoryItem.CMD_START);
+            startRecordingHistory(elapsedRealtimeMs, uptimeMs, false);
+        }
     }
 
     /**
      * Notes the current battery state to be reflected in the next written history item.
      */
     public void setBatteryState(boolean charging, int status, int level, int chargeUah) {
-        mHaveBatteryLevel = true;
-        setChargingState(charging);
-        mHistoryCur.batteryStatus = (byte) status;
-        mHistoryCur.batteryLevel = (byte) level;
-        mHistoryCur.batteryChargeUah = chargeUah;
+        synchronized (this) {
+            mHaveBatteryLevel = true;
+            setChargingState(charging);
+            mHistoryCur.batteryStatus = (byte) status;
+            mHistoryCur.batteryLevel = (byte) level;
+            mHistoryCur.batteryChargeUah = chargeUah;
+        }
     }
 
     /**
@@ -1079,24 +1266,28 @@ public class BatteryStatsHistory {
      */
     public void setBatteryState(int status, int level, int health, int plugType, int temperature,
             int voltageMv, int chargeUah) {
-        mHaveBatteryLevel = true;
-        mHistoryCur.batteryStatus = (byte) status;
-        mHistoryCur.batteryLevel = (byte) level;
-        mHistoryCur.batteryHealth = (byte) health;
-        mHistoryCur.batteryPlugType = (byte) plugType;
-        mHistoryCur.batteryTemperature = (short) temperature;
-        mHistoryCur.batteryVoltage = (char) voltageMv;
-        mHistoryCur.batteryChargeUah = chargeUah;
+        synchronized (this) {
+            mHaveBatteryLevel = true;
+            mHistoryCur.batteryStatus = (byte) status;
+            mHistoryCur.batteryLevel = (byte) level;
+            mHistoryCur.batteryHealth = (byte) health;
+            mHistoryCur.batteryPlugType = (byte) plugType;
+            mHistoryCur.batteryTemperature = (short) temperature;
+            mHistoryCur.batteryVoltage = (short) voltageMv;
+            mHistoryCur.batteryChargeUah = chargeUah;
+        }
     }
 
     /**
      * Notes the current power plugged-in state to be reflected in the next written history item.
      */
     public void setPluggedInState(boolean pluggedIn) {
-        if (pluggedIn) {
-            mHistoryCur.states |= HistoryItem.STATE_BATTERY_PLUGGED_FLAG;
-        } else {
-            mHistoryCur.states &= ~HistoryItem.STATE_BATTERY_PLUGGED_FLAG;
+        synchronized (this) {
+            if (pluggedIn) {
+                mHistoryCur.states |= HistoryItem.STATE_BATTERY_PLUGGED_FLAG;
+            } else {
+                mHistoryCur.states &= ~HistoryItem.STATE_BATTERY_PLUGGED_FLAG;
+            }
         }
     }
 
@@ -1104,10 +1295,12 @@ public class BatteryStatsHistory {
      * Notes the current battery charging state to be reflected in the next written history item.
      */
     public void setChargingState(boolean charging) {
-        if (charging) {
-            mHistoryCur.states2 |= HistoryItem.STATE2_CHARGING_FLAG;
-        } else {
-            mHistoryCur.states2 &= ~HistoryItem.STATE2_CHARGING_FLAG;
+        synchronized (this) {
+            if (charging) {
+                mHistoryCur.states2 |= HistoryItem.STATE2_CHARGING_FLAG;
+            } else {
+                mHistoryCur.states2 &= ~HistoryItem.STATE2_CHARGING_FLAG;
+            }
         }
     }
 
@@ -1116,38 +1309,44 @@ public class BatteryStatsHistory {
      */
     public void recordEvent(long elapsedRealtimeMs, long uptimeMs, int code, String name,
             int uid) {
-        mHistoryCur.eventCode = code;
-        mHistoryCur.eventTag = mHistoryCur.localEventTag;
-        mHistoryCur.eventTag.string = name;
-        mHistoryCur.eventTag.uid = uid;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.eventCode = code;
+            mHistoryCur.eventTag = mHistoryCur.localEventTag;
+            mHistoryCur.eventTag.string = name;
+            mHistoryCur.eventTag.uid = uid;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
      * Records a time change event.
      */
     public void recordCurrentTimeChange(long elapsedRealtimeMs, long uptimeMs, long currentTimeMs) {
-        if (!mRecordingHistory) {
-            return;
-        }
+        synchronized (this) {
+            if (!mRecordingHistory) {
+                return;
+            }
 
-        mHistoryCur.currentTime = currentTimeMs;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs, mHistoryCur,
-                HistoryItem.CMD_CURRENT_TIME);
-        mHistoryCur.currentTime = 0;
+            mHistoryCur.currentTime = currentTimeMs;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs, mHistoryCur,
+                    HistoryItem.CMD_CURRENT_TIME);
+            mHistoryCur.currentTime = 0;
+        }
     }
 
     /**
      * Records a system shutdown event.
      */
     public void recordShutdownEvent(long elapsedRealtimeMs, long uptimeMs, long currentTimeMs) {
-        if (!mRecordingHistory) {
-            return;
-        }
+        synchronized (this) {
+            if (!mRecordingHistory) {
+                return;
+            }
 
-        mHistoryCur.currentTime = currentTimeMs;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs, mHistoryCur, HistoryItem.CMD_SHUTDOWN);
-        mHistoryCur.currentTime = 0;
+            mHistoryCur.currentTime = currentTimeMs;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs, mHistoryCur, HistoryItem.CMD_SHUTDOWN);
+            mHistoryCur.currentTime = 0;
+        }
     }
 
     /**
@@ -1155,13 +1354,15 @@ public class BatteryStatsHistory {
      */
     public void recordBatteryState(long elapsedRealtimeMs, long uptimeMs, int batteryLevel,
             boolean isPlugged) {
-        mHistoryCur.batteryLevel = (byte) batteryLevel;
-        setPluggedInState(isPlugged);
-        if (DEBUG) {
-            Slog.v(TAG, "Battery unplugged to: "
-                    + Integer.toHexString(mHistoryCur.states));
+        synchronized (this) {
+            mHistoryCur.batteryLevel = (byte) batteryLevel;
+            setPluggedInState(isPlugged);
+            if (DEBUG) {
+                Slog.v(TAG, "Battery unplugged to: "
+                        + Integer.toHexString(mHistoryCur.states));
+            }
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
         }
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
     }
 
     /**
@@ -1169,9 +1370,11 @@ public class BatteryStatsHistory {
      */
     public void recordPowerStats(long elapsedRealtimeMs, long uptimeMs,
             PowerStats powerStats) {
-        mHistoryCur.powerStats = powerStats;
-        mHistoryCur.states2 |= HistoryItem.STATE2_EXTENSIONS_FLAG;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.powerStats = powerStats;
+            mHistoryCur.states2 |= HistoryItem.STATE2_EXTENSIONS_FLAG;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1179,11 +1382,13 @@ public class BatteryStatsHistory {
      */
     public void recordProcessStateChange(long elapsedRealtimeMs, long uptimeMs,
             int uid, @BatteryConsumer.ProcessState int processState) {
-        mHistoryCur.processStateChange = mHistoryCur.localProcessStateChange;
-        mHistoryCur.processStateChange.uid = uid;
-        mHistoryCur.processStateChange.processState = processState;
-        mHistoryCur.states2 |= HistoryItem.STATE2_EXTENSIONS_FLAG;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.processStateChange = mHistoryCur.localProcessStateChange;
+            mHistoryCur.processStateChange.uid = uid;
+            mHistoryCur.processStateChange.processState = processState;
+            mHistoryCur.states2 |= HistoryItem.STATE2_EXTENSIONS_FLAG;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1192,8 +1397,10 @@ public class BatteryStatsHistory {
      */
     public void recordWifiConsumedCharge(long elapsedRealtimeMs, long uptimeMs,
             double monitoredRailChargeMah) {
-        mHistoryCur.wifiRailChargeMah += monitoredRailChargeMah;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.wifiRailChargeMah += monitoredRailChargeMah;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1201,10 +1408,12 @@ public class BatteryStatsHistory {
      */
     public void recordWakelockStartEvent(long elapsedRealtimeMs, long uptimeMs, String historyName,
             int uid) {
-        mHistoryCur.wakelockTag = mHistoryCur.localWakelockTag;
-        mHistoryCur.wakelockTag.string = historyName;
-        mHistoryCur.wakelockTag.uid = uid;
-        recordStateStartEvent(elapsedRealtimeMs, uptimeMs, HistoryItem.STATE_WAKE_LOCK_FLAG);
+        synchronized (this) {
+            mHistoryCur.wakelockTag = mHistoryCur.localWakelockTag;
+            mHistoryCur.wakelockTag.string = historyName;
+            mHistoryCur.wakelockTag.uid = uid;
+            recordStateStartEvent(elapsedRealtimeMs, uptimeMs, HistoryItem.STATE_WAKE_LOCK_FLAG);
+        }
     }
 
     /**
@@ -1212,18 +1421,20 @@ public class BatteryStatsHistory {
      */
     public boolean maybeUpdateWakelockTag(long elapsedRealtimeMs, long uptimeMs, String historyName,
             int uid) {
-        if (mHistoryLastWritten.cmd != HistoryItem.CMD_UPDATE) {
-            return false;
+        synchronized (this) {
+            if (mHistoryLastWritten.cmd != HistoryItem.CMD_UPDATE) {
+                return false;
+            }
+            if (mHistoryLastWritten.wakelockTag != null) {
+                // We'll try to update the last tag.
+                mHistoryLastWritten.wakelockTag = null;
+                mHistoryCur.wakelockTag = mHistoryCur.localWakelockTag;
+                mHistoryCur.wakelockTag.string = historyName;
+                mHistoryCur.wakelockTag.uid = uid;
+                writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+            }
+            return true;
         }
-        if (mHistoryLastWritten.wakelockTag != null) {
-            // We'll try to update the last tag.
-            mHistoryLastWritten.wakelockTag = null;
-            mHistoryCur.wakelockTag = mHistoryCur.localWakelockTag;
-            mHistoryCur.wakelockTag.string = historyName;
-            mHistoryCur.wakelockTag.uid = uid;
-            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
-        }
-        return true;
     }
 
     /**
@@ -1231,26 +1442,62 @@ public class BatteryStatsHistory {
      */
     public void recordWakelockStopEvent(long elapsedRealtimeMs, long uptimeMs, String historyName,
             int uid) {
-        mHistoryCur.wakelockTag = mHistoryCur.localWakelockTag;
-        mHistoryCur.wakelockTag.string = historyName != null ? historyName : "";
-        mHistoryCur.wakelockTag.uid = uid;
-        recordStateStopEvent(elapsedRealtimeMs, uptimeMs, HistoryItem.STATE_WAKE_LOCK_FLAG);
+        synchronized (this) {
+            mHistoryCur.wakelockTag = mHistoryCur.localWakelockTag;
+            mHistoryCur.wakelockTag.string = historyName != null ? historyName : "";
+            mHistoryCur.wakelockTag.uid = uid;
+            recordStateStopEvent(elapsedRealtimeMs, uptimeMs, HistoryItem.STATE_WAKE_LOCK_FLAG);
+        }
     }
 
     /**
      * Records an event when some state flag changes to true.
      */
     public void recordStateStartEvent(long elapsedRealtimeMs, long uptimeMs, int stateFlags) {
-        mHistoryCur.states |= stateFlags;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states |= stateFlags;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
+    }
+
+    /**
+     * Records an event when some state flag changes to true.
+     */
+    public void recordStateStartEvent(long elapsedRealtimeMs, long uptimeMs, int stateFlags,
+            int uid, String name) {
+        synchronized (this) {
+            mHistoryCur.states |= stateFlags;
+            mHistoryCur.eventCode = EVENT_STATE_CHANGE | EVENT_FLAG_START;
+            mHistoryCur.eventTag = mHistoryCur.localEventTag;
+            mHistoryCur.eventTag.uid = uid;
+            mHistoryCur.eventTag.string = name;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
      * Records an event when some state flag changes to false.
      */
     public void recordStateStopEvent(long elapsedRealtimeMs, long uptimeMs, int stateFlags) {
-        mHistoryCur.states &= ~stateFlags;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states &= ~stateFlags;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
+    }
+
+    /**
+     * Records an event when some state flag changes to false.
+     */
+    public void recordStateStopEvent(long elapsedRealtimeMs, long uptimeMs, int stateFlags,
+            int uid, String name) {
+        synchronized (this) {
+            mHistoryCur.states &= ~stateFlags;
+            mHistoryCur.eventCode = EVENT_STATE_CHANGE | EVENT_FLAG_FINISH;
+            mHistoryCur.eventTag = mHistoryCur.localEventTag;
+            mHistoryCur.eventTag.uid = uid;
+            mHistoryCur.eventTag.string = name;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1258,34 +1505,72 @@ public class BatteryStatsHistory {
      */
     public void recordStateChangeEvent(long elapsedRealtimeMs, long uptimeMs, int stateStartFlags,
             int stateStopFlags) {
-        mHistoryCur.states = (mHistoryCur.states | stateStartFlags) & ~stateStopFlags;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states = (mHistoryCur.states | stateStartFlags) & ~stateStopFlags;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
      * Records an event when some state2 flag changes to true.
      */
     public void recordState2StartEvent(long elapsedRealtimeMs, long uptimeMs, int stateFlags) {
-        mHistoryCur.states2 |= stateFlags;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states2 |= stateFlags;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
+    }
+
+    /**
+     * Records an event when some state2 flag changes to true.
+     */
+    public void recordState2StartEvent(long elapsedRealtimeMs, long uptimeMs, int stateFlags,
+            int uid, String name) {
+        synchronized (this) {
+            mHistoryCur.states2 |= stateFlags;
+            mHistoryCur.eventCode = EVENT_STATE_CHANGE | EVENT_FLAG_START;
+            mHistoryCur.eventTag = mHistoryCur.localEventTag;
+            mHistoryCur.eventTag.uid = uid;
+            mHistoryCur.eventTag.string = name;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
+    }
+
+    /**
+     * Records an event when some state2 flag changes to false.
+     */
+    public void recordState2StopEvent(long elapsedRealtimeMs, long uptimeMs, int stateFlags,
+            int uid, String name) {
+        synchronized (this) {
+            mHistoryCur.states2 &= ~stateFlags;
+            mHistoryCur.eventCode = EVENT_STATE_CHANGE | EVENT_FLAG_FINISH;
+            mHistoryCur.eventTag = mHistoryCur.localEventTag;
+            mHistoryCur.eventTag.uid = uid;
+            mHistoryCur.eventTag.string = name;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
      * Records an event when some state2 flag changes to false.
      */
     public void recordState2StopEvent(long elapsedRealtimeMs, long uptimeMs, int stateFlags) {
-        mHistoryCur.states2 &= ~stateFlags;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states2 &= ~stateFlags;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
      * Records an wakeup event.
      */
     public void recordWakeupEvent(long elapsedRealtimeMs, long uptimeMs, String reason) {
-        mHistoryCur.wakeReasonTag = mHistoryCur.localWakeReasonTag;
-        mHistoryCur.wakeReasonTag.string = reason;
-        mHistoryCur.wakeReasonTag.uid = 0;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.wakeReasonTag = mHistoryCur.localWakeReasonTag;
+            mHistoryCur.wakeReasonTag.string = reason;
+            mHistoryCur.wakeReasonTag.uid = 0;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1293,10 +1578,12 @@ public class BatteryStatsHistory {
      */
     public void recordScreenBrightnessEvent(long elapsedRealtimeMs, long uptimeMs,
             int brightnessBin) {
-        mHistoryCur.states = setBitField(mHistoryCur.states, brightnessBin,
-                HistoryItem.STATE_BRIGHTNESS_SHIFT,
-                HistoryItem.STATE_BRIGHTNESS_MASK);
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states = setBitField(mHistoryCur.states, brightnessBin,
+                    HistoryItem.STATE_BRIGHTNESS_SHIFT,
+                    HistoryItem.STATE_BRIGHTNESS_MASK);
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1304,20 +1591,24 @@ public class BatteryStatsHistory {
      */
     public void recordGpsSignalQualityEvent(long elapsedRealtimeMs, long uptimeMs,
             int signalLevel) {
-        mHistoryCur.states2 = setBitField(mHistoryCur.states2, signalLevel,
-                HistoryItem.STATE2_GPS_SIGNAL_QUALITY_SHIFT,
-                HistoryItem.STATE2_GPS_SIGNAL_QUALITY_MASK);
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states2 = setBitField(mHistoryCur.states2, signalLevel,
+                    HistoryItem.STATE2_GPS_SIGNAL_QUALITY_SHIFT,
+                    HistoryItem.STATE2_GPS_SIGNAL_QUALITY_MASK);
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
      * Records a device idle mode change event.
      */
     public void recordDeviceIdleEvent(long elapsedRealtimeMs, long uptimeMs, int mode) {
-        mHistoryCur.states2 = setBitField(mHistoryCur.states2, mode,
-                HistoryItem.STATE2_DEVICE_IDLE_SHIFT,
-                HistoryItem.STATE2_DEVICE_IDLE_MASK);
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states2 = setBitField(mHistoryCur.states2, mode,
+                    HistoryItem.STATE2_DEVICE_IDLE_SHIFT,
+                    HistoryItem.STATE2_DEVICE_IDLE_MASK);
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1325,20 +1616,22 @@ public class BatteryStatsHistory {
      */
     public void recordPhoneStateChangeEvent(long elapsedRealtimeMs, long uptimeMs, int addStateFlag,
             int removeStateFlag, int state, int signalStrength) {
-        mHistoryCur.states = (mHistoryCur.states | addStateFlag) & ~removeStateFlag;
-        if (state != -1) {
-            mHistoryCur.states =
-                    setBitField(mHistoryCur.states, state,
-                            HistoryItem.STATE_PHONE_STATE_SHIFT,
-                            HistoryItem.STATE_PHONE_STATE_MASK);
+        synchronized (this) {
+            mHistoryCur.states = (mHistoryCur.states | addStateFlag) & ~removeStateFlag;
+            if (state != -1) {
+                mHistoryCur.states =
+                        setBitField(mHistoryCur.states, state,
+                                HistoryItem.STATE_PHONE_STATE_SHIFT,
+                                HistoryItem.STATE_PHONE_STATE_MASK);
+            }
+            if (signalStrength != -1) {
+                mHistoryCur.states =
+                        setBitField(mHistoryCur.states, signalStrength,
+                                HistoryItem.STATE_PHONE_SIGNAL_STRENGTH_SHIFT,
+                                HistoryItem.STATE_PHONE_SIGNAL_STRENGTH_MASK);
+            }
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
         }
-        if (signalStrength != -1) {
-            mHistoryCur.states =
-                    setBitField(mHistoryCur.states, signalStrength,
-                            HistoryItem.STATE_PHONE_SIGNAL_STRENGTH_SHIFT,
-                            HistoryItem.STATE_PHONE_SIGNAL_STRENGTH_MASK);
-        }
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
     }
 
     /**
@@ -1346,10 +1639,12 @@ public class BatteryStatsHistory {
      */
     public void recordDataConnectionTypeChangeEvent(long elapsedRealtimeMs, long uptimeMs,
             int dataConnectionType) {
-        mHistoryCur.states = setBitField(mHistoryCur.states, dataConnectionType,
-                HistoryItem.STATE_DATA_CONNECTION_SHIFT,
-                HistoryItem.STATE_DATA_CONNECTION_MASK);
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states = setBitField(mHistoryCur.states, dataConnectionType,
+                    HistoryItem.STATE_DATA_CONNECTION_SHIFT,
+                    HistoryItem.STATE_DATA_CONNECTION_MASK);
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1357,10 +1652,12 @@ public class BatteryStatsHistory {
      */
     public void recordNrStateChangeEvent(long elapsedRealtimeMs, long uptimeMs,
             int nrState) {
-        mHistoryCur.states2 = setBitField(mHistoryCur.states2, nrState,
-                HistoryItem.STATE2_NR_STATE_SHIFT,
-                HistoryItem.STATE2_NR_STATE_MASK);
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states2 = setBitField(mHistoryCur.states2, nrState,
+                    HistoryItem.STATE2_NR_STATE_SHIFT,
+                    HistoryItem.STATE2_NR_STATE_MASK);
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1368,11 +1665,13 @@ public class BatteryStatsHistory {
      */
     public void recordWifiSupplicantStateChangeEvent(long elapsedRealtimeMs, long uptimeMs,
             int supplState) {
-        mHistoryCur.states2 =
-                setBitField(mHistoryCur.states2, supplState,
-                        HistoryItem.STATE2_WIFI_SUPPL_STATE_SHIFT,
-                        HistoryItem.STATE2_WIFI_SUPPL_STATE_MASK);
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states2 =
+                    setBitField(mHistoryCur.states2, supplState,
+                            HistoryItem.STATE2_WIFI_SUPPL_STATE_SHIFT,
+                            HistoryItem.STATE2_WIFI_SUPPL_STATE_MASK);
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1380,11 +1679,13 @@ public class BatteryStatsHistory {
      */
     public void recordWifiSignalStrengthChangeEvent(long elapsedRealtimeMs, long uptimeMs,
             int strengthBin) {
-        mHistoryCur.states2 =
-                setBitField(mHistoryCur.states2, strengthBin,
-                        HistoryItem.STATE2_WIFI_SIGNAL_STRENGTH_SHIFT,
-                        HistoryItem.STATE2_WIFI_SIGNAL_STRENGTH_MASK);
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        synchronized (this) {
+            mHistoryCur.states2 =
+                    setBitField(mHistoryCur.states2, strengthBin,
+                            HistoryItem.STATE2_WIFI_SIGNAL_STRENGTH_SHIFT,
+                            HistoryItem.STATE2_WIFI_SIGNAL_STRENGTH_MASK);
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs);
+        }
     }
 
     /**
@@ -1441,26 +1742,38 @@ public class BatteryStatsHistory {
      * Writes the current history item to history.
      */
     public void writeHistoryItem(long elapsedRealtimeMs, long uptimeMs) {
-        if (mTrackRunningHistoryElapsedRealtimeMs != 0) {
-            final long diffElapsedMs = elapsedRealtimeMs - mTrackRunningHistoryElapsedRealtimeMs;
-            final long diffUptimeMs = uptimeMs - mTrackRunningHistoryUptimeMs;
-            if (diffUptimeMs < (diffElapsedMs - 20)) {
-                final long wakeElapsedTimeMs = elapsedRealtimeMs - (diffElapsedMs - diffUptimeMs);
-                mHistoryAddTmp.setTo(mHistoryLastWritten);
-                mHistoryAddTmp.wakelockTag = null;
-                mHistoryAddTmp.wakeReasonTag = null;
-                mHistoryAddTmp.eventCode = HistoryItem.EVENT_NONE;
-                mHistoryAddTmp.states &= ~HistoryItem.STATE_CPU_RUNNING_FLAG;
-                writeHistoryItem(wakeElapsedTimeMs, uptimeMs, mHistoryAddTmp);
+        synchronized (this) {
+            if (mTrackRunningHistoryElapsedRealtimeMs != 0) {
+                final long diffElapsedMs =
+                        elapsedRealtimeMs - mTrackRunningHistoryElapsedRealtimeMs;
+                final long diffUptimeMs = uptimeMs - mTrackRunningHistoryUptimeMs;
+                if (diffUptimeMs < (diffElapsedMs - 20)) {
+                    final long wakeElapsedTimeMs =
+                            elapsedRealtimeMs - (diffElapsedMs - diffUptimeMs);
+                    mHistoryAddTmp.setTo(mHistoryLastWritten);
+                    mHistoryAddTmp.wakelockTag = null;
+                    mHistoryAddTmp.wakeReasonTag = null;
+                    mHistoryAddTmp.powerStats = null;
+                    mHistoryAddTmp.processStateChange = null;
+                    mHistoryAddTmp.eventCode = HistoryItem.EVENT_NONE;
+                    mHistoryAddTmp.states &= ~HistoryItem.STATE_CPU_RUNNING_FLAG;
+                    writeHistoryItem(wakeElapsedTimeMs, uptimeMs, mHistoryAddTmp);
+
+                }
             }
+            mHistoryCur.states |= HistoryItem.STATE_CPU_RUNNING_FLAG;
+            mTrackRunningHistoryElapsedRealtimeMs = elapsedRealtimeMs;
+            mTrackRunningHistoryUptimeMs = uptimeMs;
+            writeHistoryItem(elapsedRealtimeMs, uptimeMs, mHistoryCur);
         }
-        mHistoryCur.states |= HistoryItem.STATE_CPU_RUNNING_FLAG;
-        mTrackRunningHistoryElapsedRealtimeMs = elapsedRealtimeMs;
-        mTrackRunningHistoryUptimeMs = uptimeMs;
-        writeHistoryItem(elapsedRealtimeMs, uptimeMs, mHistoryCur);
     }
 
+    @GuardedBy("this")
     private void writeHistoryItem(long elapsedRealtimeMs, long uptimeMs, HistoryItem cur) {
+        if (cur.eventCode != HistoryItem.EVENT_NONE && cur.eventTag.string == null) {
+            Slog.wtfStack(TAG, "Event " + Integer.toHexString(cur.eventCode) + " without a name");
+        }
+
         if (mTracer != null && mTracer.tracingEnabled()) {
             recordTraceEvents(cur.eventCode, cur.eventTag);
             recordTraceCounters(mTraceLastState, cur.states, STATE1_TRACE_MASK,
@@ -1517,6 +1830,7 @@ public class BatteryStatsHistory {
             // as long as no bit has changed both between now and the last entry, as
             // well as the last entry and the one before it (so we capture any toggles).
             if (DEBUG) Slog.i(TAG, "ADD: rewinding back to " + mHistoryBufferLastPos);
+            mMonotonicHistorySize -= (mHistoryBuffer.dataSize() - mHistoryBufferLastPos);
             mHistoryBuffer.setDataSize(mHistoryBufferLastPos);
             mHistoryBuffer.setDataPosition(mHistoryBufferLastPos);
             mHistoryBufferLastPos = -1;
@@ -1547,29 +1861,12 @@ public class BatteryStatsHistory {
             }
             mHistoryLastWritten.setTo(mHistoryLastLastWritten);
         }
-        final int dataSize = mHistoryBuffer.dataSize();
 
-        if (dataSize >= mMaxHistoryBufferSize) {
-            if (mMaxHistoryBufferSize == 0) {
-                Slog.wtf(TAG, "mMaxHistoryBufferSize should not be zero when writing history");
-                mMaxHistoryBufferSize = 1024;
-            }
-
-            // Make a copy of mHistoryCur.
-            HistoryItem copy = new HistoryItem();
-            copy.setTo(cur);
-
-            startNextFile(elapsedRealtimeMs);
-
-            // startRecordingHistory will reset mHistoryCur.
-            startRecordingHistory(elapsedRealtimeMs, uptimeMs, false);
-
-            // Add the copy into history buffer.
-            writeHistoryItem(elapsedRealtimeMs, uptimeMs, copy, HistoryItem.CMD_UPDATE);
+        if (maybeFlushBufferAndWriteHistoryItem(cur, elapsedRealtimeMs, uptimeMs)) {
             return;
         }
 
-        if (dataSize == 0) {
+        if (mHistoryBuffer.dataSize() == 0) {
             // The history is currently empty; we need it to start with a time stamp.
             HistoryItem copy = new HistoryItem();
             copy.setTo(cur);
@@ -1586,6 +1883,53 @@ public class BatteryStatsHistory {
         writeHistoryItem(elapsedRealtimeMs, uptimeMs, cur, HistoryItem.CMD_UPDATE);
     }
 
+    @GuardedBy("this")
+    private boolean maybeFlushBufferAndWriteHistoryItem(HistoryItem cur, long elapsedRealtimeMs,
+            long uptimeMs) {
+        int dataSize = mHistoryBuffer.dataSize();
+        if (dataSize < mMaxHistoryBufferSize) {
+            return false;
+        }
+
+        if (mMaxHistoryBufferSize == 0) {
+            Slog.wtf(TAG, "mMaxHistoryBufferSize should not be zero when writing history");
+            mMaxHistoryBufferSize = 1024;
+        }
+
+        boolean successfullyLocked = mHistoryDir.tryLock();
+        if (!successfullyLocked) {      // Already locked by another thread
+            // If the buffer size is below the allowed overflow limit, just keep going
+            if (dataSize < mMaxHistoryBufferSize + EXTRA_BUFFER_SIZE_WHEN_DIR_LOCKED) {
+                return false;
+            }
+
+            // Report the long contention as a WTF and flush the buffer anyway, potentially
+            // triggering a watchdog kill, which is still better than spinning forever.
+            Slog.wtf(TAG, "History buffer overflow exceeds " + EXTRA_BUFFER_SIZE_WHEN_DIR_LOCKED
+                    + " bytes");
+        }
+
+        // Make a copy of mHistoryCur before starting a new file
+        HistoryItem copy = new HistoryItem();
+        copy.setTo(cur);
+
+        try {
+            startNextFile(elapsedRealtimeMs);
+        } finally {
+            if (successfullyLocked) {
+                mHistoryDir.unlock();
+            }
+        }
+
+        // startRecordingHistory will reset mHistoryCur.
+        startRecordingHistory(elapsedRealtimeMs, uptimeMs, false);
+
+        // Add the copy into history buffer.
+        writeHistoryItem(elapsedRealtimeMs, uptimeMs, copy, HistoryItem.CMD_UPDATE);
+        return true;
+    }
+
+    @GuardedBy("this")
     private void writeHistoryItem(long elapsedRealtimeMs,
             @SuppressWarnings("UnusedVariable") long uptimeMs, HistoryItem cur, byte cmd) {
         if (!mMutable) {
@@ -1602,6 +1946,7 @@ public class BatteryStatsHistory {
         }
         mHistoryLastWritten.tagsFirstOccurrence = hasTags;
         writeHistoryDelta(mHistoryBuffer, mHistoryLastWritten, mHistoryLastLastWritten);
+        mMonotonicHistorySize += (mHistoryBuffer.dataSize() - mHistoryBufferLastPos);
         cur.wakelockTag = null;
         cur.wakeReasonTag = null;
         cur.eventCode = HistoryItem.EVENT_NONE;
@@ -1696,7 +2041,8 @@ public class BatteryStatsHistory {
     /**
      * Writes the delta between the previous and current history items into history buffer.
      */
-    public void writeHistoryDelta(Parcel dest, HistoryItem cur, HistoryItem last) {
+    @GuardedBy("this")
+    private void writeHistoryDelta(Parcel dest, HistoryItem cur, HistoryItem last) {
         if (last == null || cur.cmd != HistoryItem.CMD_UPDATE) {
             dest.writeInt(BatteryStatsHistory.DELTA_TIME_ABS);
             cur.writeToParcel(dest, 0);
@@ -1889,7 +2235,11 @@ public class BatteryStatsHistory {
         int bits = 0;
         bits = setBitField(bits, h.batteryLevel, 25, 0xfe000000 /* 7F << 25 */);
         bits = setBitField(bits, h.batteryTemperature, 15, 0x01ff8000 /* 3FF << 15 */);
-        bits = setBitField(bits, h.batteryVoltage, 1, 0x00007ffe /* 3FFF << 1 */);
+        short voltage = (short) h.batteryVoltage;
+        if (voltage == -1) {
+            voltage = 0x3FFF;
+        }
+        bits = setBitField(bits, voltage, 1, 0x00007ffe /* 3FFF << 1 */);
         return bits;
     }
 
@@ -1916,9 +2266,11 @@ public class BatteryStatsHistory {
      * while writing the current history buffer, the method returns
      * <code>(index | TAG_FIRST_OCCURRENCE_FLAG)</code>
      */
+    @GuardedBy("this")
     private int writeHistoryTag(HistoryTag tag) {
         if (tag.string == null) {
             Slog.wtfStack(TAG, "writeHistoryTag called with null name");
+            tag.string = "";
         }
 
         final int stringLength = tag.string.length();
@@ -1959,33 +2311,37 @@ public class BatteryStatsHistory {
      * Don't allow any more batching in to the current history event.
      */
     public void commitCurrentHistoryBatchLocked() {
-        mHistoryLastWritten.cmd = HistoryItem.CMD_NULL;
+        synchronized (this) {
+            mHistoryLastWritten.cmd = HistoryItem.CMD_NULL;
+        }
     }
 
     /**
      * Saves the accumulated history buffer in the active file, see {@link #getActiveFile()} .
      */
     public void writeHistory() {
-        if (isReadOnly()) {
-            Slog.w(TAG, "writeHistory: this instance instance is read-only");
-            return;
-        }
-
-        // Save the monotonic time first, so that even if the history write below fails,
-        // we still wouldn't end up with overlapping history timelines.
-        mMonotonicClock.write();
-
-        Parcel p = Parcel.obtain();
-        try {
-            final long start = SystemClock.uptimeMillis();
-            writeHistoryBuffer(p);
-            if (DEBUG) {
-                Slog.d(TAG, "writeHistoryBuffer duration ms:"
-                        + (SystemClock.uptimeMillis() - start) + " bytes:" + p.dataSize());
+        synchronized (this) {
+            if (isReadOnly()) {
+                Slog.w(TAG, "writeHistory: this instance instance is read-only");
+                return;
             }
-            writeParcelToFileLocked(p, mActiveFile);
-        } finally {
-            p.recycle();
+
+            // Save the monotonic time first, so that even if the history write below fails,
+            // we still wouldn't end up with overlapping history timelines.
+            mMonotonicClock.write();
+
+            Parcel p = Parcel.obtain();
+            try {
+                final long start = SystemClock.uptimeMillis();
+                writeHistoryBuffer(p);
+                if (DEBUG) {
+                    Slog.d(TAG, "writeHistoryBuffer duration ms:"
+                            + (SystemClock.uptimeMillis() - start) + " bytes:" + p.dataSize());
+                }
+                writeParcelToFileLocked(p, mActiveFile);
+            } finally {
+                p.recycle();
+            }
         }
     }
 
@@ -1993,38 +2349,44 @@ public class BatteryStatsHistory {
      * Reads history buffer from a persisted Parcel.
      */
     public void readHistoryBuffer(Parcel in) throws ParcelFormatException {
-        final int version = in.readInt();
-        if (version != BatteryStatsHistory.VERSION) {
-            Slog.w("BatteryStats", "readHistoryBuffer: version got " + version
-                    + ", expected " + BatteryStatsHistory.VERSION + "; erasing old stats");
-            return;
-        }
-
-        mHistoryBufferStartTime = in.readLong();
-        mHistoryBuffer.setDataSize(0);
-        mHistoryBuffer.setDataPosition(0);
-
-        int bufSize = in.readInt();
-        int curPos = in.dataPosition();
-        if (bufSize >= (mMaxHistoryBufferSize * 100)) {
-            throw new ParcelFormatException(
-                    "File corrupt: history data buffer too large " + bufSize);
-        } else if ((bufSize & ~3) != bufSize) {
-            throw new ParcelFormatException(
-                    "File corrupt: history data buffer not aligned " + bufSize);
-        } else {
-            if (DEBUG) {
-                Slog.i(TAG, "***************** READING NEW HISTORY: " + bufSize
-                        + " bytes at " + curPos);
+        synchronized (this) {
+            final int version = in.readInt();
+            if (version != BatteryStatsHistory.VERSION) {
+                Slog.w("BatteryStats", "readHistoryBuffer: version got " + version
+                        + ", expected " + BatteryStatsHistory.VERSION + "; erasing old stats");
+                return;
             }
-            mHistoryBuffer.appendFrom(in, curPos, bufSize);
-            in.setDataPosition(curPos + bufSize);
+
+            mHistoryBufferStartTime = in.readLong();
+            mMonotonicHistorySize = in.readLong();
+
+            mHistoryBuffer.setDataSize(0);
+            mHistoryBuffer.setDataPosition(0);
+
+            int bufSize = in.readInt();
+            int curPos = in.dataPosition();
+            if (bufSize >= (mMaxHistoryBufferSize * 100)) {
+                throw new ParcelFormatException(
+                        "File corrupt: history data buffer too large " + bufSize);
+            } else if ((bufSize & ~3) != bufSize) {
+                throw new ParcelFormatException(
+                        "File corrupt: history data buffer not aligned " + bufSize);
+            } else {
+                if (DEBUG) {
+                    Slog.i(TAG, "***************** READING NEW HISTORY: " + bufSize
+                            + " bytes at " + curPos);
+                }
+                mHistoryBuffer.appendFrom(in, curPos, bufSize);
+                in.setDataPosition(curPos + bufSize);
+            }
         }
     }
 
+    @GuardedBy("this")
     private void writeHistoryBuffer(Parcel out) {
         out.writeInt(BatteryStatsHistory.VERSION);
         out.writeLong(mHistoryBufferStartTime);
+        out.writeLong(mMonotonicHistorySize);
         out.writeInt(mHistoryBuffer.dataSize());
         if (DEBUG) {
             Slog.i(TAG, "***************** WRITING HISTORY: "
@@ -2033,6 +2395,7 @@ public class BatteryStatsHistory {
         out.appendFrom(mHistoryBuffer, 0, mHistoryBuffer.dataSize());
     }
 
+    @GuardedBy("this")
     private void writeParcelToFileLocked(Parcel p, AtomicFile file) {
         FileOutputStream fos = null;
         mWriteLock.lock();
@@ -2047,8 +2410,7 @@ public class BatteryStatsHistory {
                         + " duration ms:" + (SystemClock.uptimeMillis() - startTimeMs)
                         + " bytes:" + p.dataSize());
             }
-            com.android.internal.logging.EventLogTags.writeCommitSysConfigFile(
-                    "batterystats", SystemClock.uptimeMillis() - startTimeMs);
+            mEventLogger.writeCommitSysConfigFile(startTimeMs);
         } catch (IOException e) {
             Slog.w(TAG, "Error writing battery statistics", e);
             file.failWrite(fos);
@@ -2057,38 +2419,48 @@ public class BatteryStatsHistory {
         }
     }
 
+
     /**
      * Returns the total number of history tags in the tag pool.
      */
     public int getHistoryStringPoolSize() {
-        return mHistoryTagPool.size();
+        synchronized (this) {
+            return mHistoryTagPool.size();
+        }
     }
 
     /**
      * Returns the total number of bytes occupied by the history tag pool.
      */
     public int getHistoryStringPoolBytes() {
-        return mNumHistoryTagChars;
+        synchronized (this) {
+            return mNumHistoryTagChars;
+        }
     }
 
     /**
      * Returns the string held by the requested history tag.
      */
     public String getHistoryTagPoolString(int index) {
-        ensureHistoryTagArray();
-        HistoryTag historyTag = mHistoryTags.get(index);
-        return historyTag != null ? historyTag.string : null;
+        synchronized (this) {
+            ensureHistoryTagArray();
+            HistoryTag historyTag = mHistoryTags.get(index);
+            return historyTag != null ? historyTag.string : null;
+        }
     }
 
     /**
      * Returns the UID held by the requested history tag.
      */
     public int getHistoryTagPoolUid(int index) {
-        ensureHistoryTagArray();
-        HistoryTag historyTag = mHistoryTags.get(index);
-        return historyTag != null ? historyTag.uid : Process.INVALID_UID;
+        synchronized (this) {
+            ensureHistoryTagArray();
+            HistoryTag historyTag = mHistoryTags.get(index);
+            return historyTag != null ? historyTag.uid : Process.INVALID_UID;
+        }
     }
 
+    @GuardedBy("this")
     private void ensureHistoryTagArray() {
         if (mHistoryTags != null) {
             return;
@@ -2099,6 +2471,28 @@ public class BatteryStatsHistory {
             mHistoryTags.put(entry.getValue() & ~BatteryStatsHistory.TAG_FIRST_OCCURRENCE_FLAG,
                     entry.getKey());
         }
+    }
+
+    /**
+     * Returns the monotonically increasing size of written history, including the buffers
+     * that have already been discarded.
+     */
+    public long getMonotonicHistorySize() {
+        return mMonotonicHistorySize;
+    }
+
+    /**
+     * Prints battery stats history for debugging.
+     */
+    public void dump(PrintWriter pw, long startTimeMs, long endTimeMs) {
+        BatteryStats.HistoryPrinter printer = new BatteryStats.HistoryPrinter();
+        try (BatteryStatsHistoryIterator iterate = iterate(startTimeMs, endTimeMs)) {
+            while (iterate.hasNext()) {
+                HistoryItem next = iterate.next();
+                printer.printNextItem(pw, next, 0, false, true);
+            }
+        }
+        pw.flush();
     }
 
     /**

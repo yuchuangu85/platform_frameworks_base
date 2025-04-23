@@ -67,6 +67,7 @@ public final class InputWindowHandle {
             InputConfig.SPY,
             InputConfig.INTERCEPTS_STYLUS,
             InputConfig.CLONE,
+            InputConfig.SENSITIVE_FOR_PRIVACY,
     })
     public @interface InputConfigFlags {}
 
@@ -162,6 +163,12 @@ public final class InputWindowHandle {
     public float alpha;
 
     /**
+     * Sets a property on this window indicating that its visible region should be considered when
+     * computing TrustedPresentation Thresholds.
+     */
+    public boolean canOccludePresentation;
+
+    /**
      * The input token for the window to which focus should be transferred when this input window
      * can be successfully focused. If null, this input window will not transfer its focus to
      * any other window.
@@ -205,6 +212,7 @@ public final class InputWindowHandle {
         focusTransferTarget = other.focusTransferTarget;
         contentSize = new Size(other.contentSize.getWidth(), other.contentSize.getHeight());
         alpha = other.alpha;
+        canOccludePresentation = other.canOccludePresentation;
     }
 
     @Override
@@ -219,6 +227,7 @@ public final class InputWindowHandle {
                 .append(", isClone=").append((inputConfig & InputConfig.CLONE) != 0)
                 .append(", contentSize=").append(contentSize)
                 .append(", alpha=").append(alpha)
+                .append(", canOccludePresentation=").append(canOccludePresentation)
                 .toString();
 
     }
@@ -250,6 +259,15 @@ public final class InputWindowHandle {
     public void setTouchableRegionCrop(@Nullable SurfaceControl bounds) {
         touchableRegionSurfaceControl = new WeakReference<>(bounds);
     }
+
+    /**
+     * Resize the window touchable region.
+     * @param rect new touchable region rectangle.
+     */
+    public void setTouchableRegion(Rect rect) {
+        touchableRegion.set(rect);
+    }
+
 
     public void setWindowToken(IBinder iwindow) {
         windowToken = iwindow;

@@ -34,7 +34,7 @@ import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.keyguard.TAG
 import com.android.systemui.keyguard.domain.interactor.KeyguardSurfaceBehindInteractor
 import com.android.systemui.keyguard.shared.model.KeyguardSurfaceBehindModel
-import com.android.wm.shell.animation.Interpolators
+import com.android.wm.shell.shared.animation.Interpolators
 import java.util.concurrent.Executor
 import javax.inject.Inject
 
@@ -67,8 +67,8 @@ constructor(
         SpringAnimation(animatedTranslationY).apply {
             spring =
                 SpringForce().apply {
-                    stiffness = 200f
-                    dampingRatio = 1f
+                    stiffness = 275f
+                    dampingRatio = 0.98f
                 }
             addUpdateListener { _, _, _ -> applyToSurfaceBehind() }
             addEndListener { _, _, _, _ ->
@@ -84,7 +84,7 @@ constructor(
     private var animatedAlpha = 0f
     private var alphaAnimator =
         ValueAnimator.ofFloat(0f, 1f).apply {
-            duration = 500
+            duration = 150
             interpolator = Interpolators.ALPHA_IN
             addUpdateListener {
                 animatedAlpha = it.animatedValue as Float
@@ -162,6 +162,7 @@ constructor(
                 // If the spring isn't running yet, set the start value. Otherwise, respect the
                 // current position.
                 animatedTranslationY.value = viewParams.animateFromTranslationY
+                translateYSpring.setStartVelocity(viewParams.startVelocity)
             }
 
             translateYSpring.animateToFinalPosition(viewParams.translationY)

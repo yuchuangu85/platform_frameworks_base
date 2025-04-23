@@ -28,7 +28,7 @@ namespace android {
 
 namespace battery {
 
-typedef battery::MultiStateCounter<int64_t> LongMultiStateCounter;
+typedef battery::MultiStateCounter<int64_t, int64_t> LongMultiStateCounter;
 
 template <>
 bool LongMultiStateCounter::delta(const int64_t &previousValue, const int64_t &newValue,
@@ -47,12 +47,6 @@ void LongMultiStateCounter::add(int64_t *value1, const int64_t &value2, const ui
         *value1 += value2;
     }
 }
-
-template <>
-std::string LongMultiStateCounter::valueToString(const int64_t &v) const {
-    return std::to_string(v);
-}
-
 } // namespace battery
 
 static inline battery::LongMultiStateCounter *asLongMultiStateCounter(const jlong nativePtr) {
@@ -100,7 +94,7 @@ static jlong native_getCount(jlong nativePtr, jint state) {
     return asLongMultiStateCounter(nativePtr)->getCount(state);
 }
 
-static jobject native_toString(JNIEnv *env, jobject self, jlong nativePtr) {
+static jobject native_toString(JNIEnv *env, jclass, jlong nativePtr) {
     return env->NewStringUTF(asLongMultiStateCounter(nativePtr)->toString().c_str());
 }
 
@@ -118,7 +112,7 @@ static void throwWriteRE(JNIEnv *env, binder_status_t status) {
         }                                     \
     }
 
-static void native_writeToParcel(JNIEnv *env, jobject self, jlong nativePtr, jobject jParcel,
+static void native_writeToParcel(JNIEnv *env, jclass, jlong nativePtr, jobject jParcel,
                                  jint flags) {
     battery::LongMultiStateCounter *counter = asLongMultiStateCounter(nativePtr);
     ndk::ScopedAParcel parcel(AParcel_fromJavaParcel(env, jParcel));

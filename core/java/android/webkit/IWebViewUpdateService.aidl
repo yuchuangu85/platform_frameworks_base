@@ -45,6 +45,7 @@ interface IWebViewUpdateService {
      * it would then try to update the provider to such a package while in reality the update
      * service would switch to another one.
      */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS)")
     String changeProviderAndSetting(String newProvider);
 
     /**
@@ -69,16 +70,6 @@ interface IWebViewUpdateService {
      * Used by public API for debugging purposes.
      */
     PackageInfo getCurrentWebViewPackage();
-
-    /**
-     * Used by Settings to determine whether multiprocess is enabled.
-     */
-    boolean isMultiProcessEnabled();
-
-    /**
-     * Used by Settings to enable/disable multiprocess.
-     */
-    void enableMultiProcess(boolean enable);
 
     /**
      * Used by Settings to get the default WebView package.

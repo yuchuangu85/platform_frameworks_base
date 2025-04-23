@@ -751,7 +751,6 @@ public class CacheOomRankerTest {
         app.mState.setCurAdj(setAdj);
         app.setLastActivityTime(lastActivityTime);
         mPidToRss.put(app.getPid(), lastRss);
-        app.mState.setCached(false);
         for (int i = 0; i < wentToForegroundCount; ++i) {
             app.mState.setSetProcState(ActivityManager.PROCESS_STATE_FOREGROUND_SERVICE);
             app.mState.setSetProcState(ActivityManager.PROCESS_STATE_CACHED_RECENT);
@@ -761,7 +760,7 @@ public class CacheOomRankerTest {
         ProcessStatsService processStatsService = new ProcessStatsService(
                 mock(ActivityManagerService.class), new File(Environment.getDataSystemCeDirectory(),
                 "procstats"));
-        app.makeActive(mock(IApplicationThread.class), processStatsService);
+        app.makeActive(mock(ApplicationThreadDeferred.class), processStatsService);
         return app;
     }
 

@@ -18,15 +18,15 @@
 
 package com.android.server.wm.flicker
 
-import android.tools.common.PlatformConsts
-import android.tools.common.Position
-import android.tools.common.flicker.subject.layers.LayerTraceEntrySubject
-import android.tools.common.flicker.subject.region.RegionSubject
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.common.traces.component.IComponentNameMatcher
-import android.tools.common.traces.wm.WindowManagerTrace
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.helpers.WindowUtils
+import android.tools.PlatformConsts
+import android.tools.Position
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.subject.layers.LayerTraceEntrySubject
+import android.tools.flicker.subject.region.RegionSubject
+import android.tools.helpers.WindowUtils
+import android.tools.traces.component.ComponentNameMatcher
+import android.tools.traces.component.IComponentNameMatcher
+import android.tools.traces.wm.WindowManagerTrace
 
 /**
  * Checks that [ComponentNameMatcher.STATUS_BAR] window is visible and above the app windows in all
@@ -279,13 +279,11 @@ fun LegacyFlickerTest.snapshotStartingWindowLayerCoversExactlyOnApp(
                         subject.isVisible
                 }
             val visibleAreas =
-                snapshotLayers
-                    .mapNotNull { snapshotLayer -> snapshotLayer.layer.visibleRegion }
-                    .toTypedArray()
+                snapshotLayers.mapNotNull { snapshotLayer -> snapshotLayer.layer.visibleRegion }
             val snapshotRegion = RegionSubject(visibleAreas, it.timestamp)
             val appVisibleRegion = it.visibleRegion(component)
             // Verify the size of snapshotRegion covers appVisibleRegion exactly in animation.
-            if (snapshotRegion.region.isNotEmpty && appVisibleRegion.region.isNotEmpty) {
+            if (!snapshotRegion.region.isEmpty && !appVisibleRegion.region.isEmpty) {
                 snapshotRegion.coversExactly(appVisibleRegion.region)
             }
         }

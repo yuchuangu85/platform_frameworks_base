@@ -276,7 +276,8 @@ public abstract class ApexManager {
      * Returns list of {@code packageName} of apks inside the given apex.
      * @param apexPackageName Package name of the apk container of apex
      */
-    abstract List<String> getApksInApex(String apexPackageName);
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    public abstract List<String> getApksInApex(String apexPackageName);
 
     /**
      * Returns the apex module name for the given package name, if the package is an APEX. Otherwise
@@ -591,7 +592,7 @@ public abstract class ApexManager {
                 return apexSessionInfo;
             } catch (RemoteException re) {
                 Slog.e(TAG, "Unable to contact apexservice", re);
-                throw new RuntimeException(re);
+                return null;
             }
         }
 
@@ -606,7 +607,7 @@ public abstract class ApexManager {
                 return result;
             } catch (RemoteException re) {
                 Slog.e(TAG, "Unable to contact apexservice", re);
-                throw new RuntimeException(re);
+                return new SparseArray<>(0);
             }
         }
 
@@ -618,7 +619,9 @@ public abstract class ApexManager {
                 return apexInfoList;
             } catch (RemoteException re) {
                 Slog.e(TAG, "Unable to contact apexservice", re);
-                throw new RuntimeException(re);
+                throw new PackageManagerException(
+                        PackageManager.INSTALL_FAILED_VERIFICATION_FAILURE,
+                        "apexd verification failed : " + re.getMessage());
             } catch (Exception e) {
                 throw new PackageManagerException(
                         PackageManager.INSTALL_FAILED_VERIFICATION_FAILURE,
@@ -632,7 +635,7 @@ public abstract class ApexManager {
                 return waitForApexService().getStagedApexInfos(params);
             } catch (RemoteException re) {
                 Slog.w(TAG, "Unable to contact apexservice" + re.getMessage());
-                throw new RuntimeException(re);
+                return new ApexInfo[0];
             } catch (Exception e) {
                 Slog.w(TAG, "Failed to collect staged apex infos" + e.getMessage());
                 return new ApexInfo[0];
@@ -645,7 +648,9 @@ public abstract class ApexManager {
                 waitForApexService().markStagedSessionReady(sessionId);
             } catch (RemoteException re) {
                 Slog.e(TAG, "Unable to contact apexservice", re);
-                throw new RuntimeException(re);
+                throw new PackageManagerException(
+                        PackageManager.INSTALL_FAILED_VERIFICATION_FAILURE,
+                        "Failed to mark apexd session as ready : " + re.getMessage());
             } catch (Exception e) {
                 throw new PackageManagerException(
                         PackageManager.INSTALL_FAILED_VERIFICATION_FAILURE,
@@ -751,8 +756,9 @@ public abstract class ApexManager {
             }
         }
 
+        @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
         @Override
-        List<String> getApksInApex(String apexPackageName) {
+        public List<String> getApksInApex(String apexPackageName) {
             synchronized (mLock) {
                 Preconditions.checkState(mPackageNameToApexModuleName != null,
                         "APEX packages have not been scanned");

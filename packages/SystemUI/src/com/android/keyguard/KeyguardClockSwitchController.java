@@ -21,9 +21,7 @@ import static android.view.ViewGroup.LayoutParams.WRAP_CONTENT;
 
 import static com.android.keyguard.KeyguardClockSwitch.LARGE;
 import static com.android.keyguard.KeyguardClockSwitch.SMALL;
-import static com.android.systemui.Flags.migrateClocksToBlueprint;
-import static com.android.systemui.flags.Flags.LOCKSCREEN_WALLPAPER_DREAM_ENABLED;
-import static com.android.systemui.util.kotlin.JavaAdapterKt.collectFlow;
+import static com.android.systemui.Flags.smartspaceRelocateToBottom;
 
 import android.annotation.Nullable;
 import android.database.ContentObserver;
@@ -36,21 +34,16 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 
 import androidx.annotation.NonNull;
-import androidx.annotation.VisibleForTesting;
 
 import com.android.systemui.Dumpable;
-import com.android.systemui.common.ui.ConfigurationState;
 import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.dump.DumpManager;
-import com.android.systemui.flags.FeatureFlagsClassic;
 import com.android.systemui.keyguard.KeyguardUnlockAnimationController;
+import com.android.systemui.keyguard.MigrateClocksToBlueprint;
 import com.android.systemui.keyguard.domain.interactor.KeyguardClockInteractor;
 import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor;
-import com.android.systemui.keyguard.shared.KeyguardShadeMigrationNssl;
-import com.android.systemui.keyguard.ui.binder.KeyguardRootViewBinder;
 import com.android.systemui.keyguard.ui.view.InWindowLauncherUnlockAnimationManager;
-import com.android.systemui.keyguard.ui.viewmodel.KeyguardRootViewModel;
 import com.android.systemui.log.LogBuffer;
 import com.android.systemui.log.core.LogLevel;
 import com.android.systemui.log.dagger.KeyguardClockLog;
@@ -62,29 +55,20 @@ import com.android.systemui.shared.regionsampling.RegionSampler;
 import com.android.systemui.statusbar.lockscreen.LockscreenSmartspaceController;
 import com.android.systemui.statusbar.notification.AnimatableProperty;
 import com.android.systemui.statusbar.notification.PropertyAnimator;
-import com.android.systemui.statusbar.notification.icon.ui.viewbinder.AlwaysOnDisplayNotificationIconViewStore;
-import com.android.systemui.statusbar.notification.icon.ui.viewbinder.NotificationIconContainerViewBinder;
-import com.android.systemui.statusbar.notification.icon.ui.viewbinder.StatusBarIconViewBindingFailureTracker;
-import com.android.systemui.statusbar.notification.icon.ui.viewmodel.NotificationIconContainerAlwaysOnDisplayViewModel;
-import com.android.systemui.statusbar.notification.shared.NotificationIconContainerRefactor;
+import com.android.systemui.statusbar.notification.icon.ui.viewbinder.NotificationIconContainerAlwaysOnDisplayViewBinder;
 import com.android.systemui.statusbar.notification.stack.AnimationProperties;
-import com.android.systemui.statusbar.phone.DozeParameters;
-import com.android.systemui.statusbar.phone.NotificationIconAreaController;
 import com.android.systemui.statusbar.phone.NotificationIconContainer;
-import com.android.systemui.statusbar.phone.ScreenOffAnimationController;
-import com.android.systemui.statusbar.ui.SystemBarUtilsState;
 import com.android.systemui.util.ViewController;
 import com.android.systemui.util.concurrency.DelayableExecutor;
 import com.android.systemui.util.settings.SecureSettings;
 
+import kotlinx.coroutines.DisposableHandle;
+
 import java.io.PrintWriter;
 import java.util.Locale;
 import java.util.concurrent.Executor;
-import java.util.function.Consumer;
 
 import javax.inject.Inject;
-
-import kotlinx.coroutines.DisposableHandle;
 
 /**
  * Injectable controller for {@link KeyguardClockSwitch}.
@@ -96,20 +80,12 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     private final StatusBarStateController mStatusBarStateController;
     private final ClockRegistry mClockRegistry;
     private final KeyguardSliceViewController mKeyguardSliceViewController;
-    private final NotificationIconAreaController mNotificationIconAreaController;
     private final LockscreenSmartspaceController mSmartspaceController;
     private final SecureSettings mSecureSettings;
     private final DumpManager mDumpManager;
     private final ClockEventController mClockEventController;
     private final LogBuffer mLogBuffer;
-    private final NotificationIconContainerAlwaysOnDisplayViewModel mAodIconsViewModel;
-    private final KeyguardRootViewModel mKeyguardRootViewModel;
-    private final ConfigurationState mConfigurationState;
-    private final SystemBarUtilsState mSystemBarUtilsState;
-    private final DozeParameters mDozeParameters;
-    private final ScreenOffAnimationController mScreenOffAnimationController;
-    private final AlwaysOnDisplayNotificationIconViewStore mAodIconViewStore;
-    private final StatusBarIconViewBindingFailureTracker mIconViewBindingFailureTracker;
+    private final NotificationIconContainerAlwaysOnDisplayViewBinder mNicViewBinder;
     private FrameLayout mSmallClockFrame; // top aligned clock
     private FrameLayout mLargeClockFrame; // centered clock
 
@@ -133,8 +109,6 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
 
     private boolean mShownOnSecondaryDisplay = false;
     private boolean mOnlyClock = false;
-    private boolean mIsActiveDreamLockscreenHosted = false;
-    private final FeatureFlagsClassic mFeatureFlags;
     private KeyguardInteractor mKeyguardInteractor;
     private KeyguardClockInteractor mKeyguardClockInteractor;
     private final DelayableExecutor mUiExecutor;
@@ -143,15 +117,6 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     private DisposableHandle mAodIconsBindHandle;
     @Nullable private NotificationIconContainer mAodIconContainer;
 
-    @VisibleForTesting
-    final Consumer<Boolean> mIsActiveDreamLockscreenHostedCallback =
-            (Boolean isLockscreenHosted) -> {
-                if (mIsActiveDreamLockscreenHosted == isLockscreenHosted) {
-                    return;
-                }
-                mIsActiveDreamLockscreenHosted = isLockscreenHosted;
-                updateKeyguardStatusAreaVisibility();
-            };
     private final ContentObserver mDoubleLineClockObserver = new ContentObserver(null) {
         @Override
         public void onChange(boolean change) {
@@ -181,11 +146,8 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
             StatusBarStateController statusBarStateController,
             ClockRegistry clockRegistry,
             KeyguardSliceViewController keyguardSliceViewController,
-            NotificationIconAreaController notificationIconAreaController,
             LockscreenSmartspaceController smartspaceController,
-            SystemBarUtilsState systemBarUtilsState,
-            ScreenOffAnimationController screenOffAnimationController,
-            StatusBarIconViewBindingFailureTracker iconViewBindingFailureTracker,
+            NotificationIconContainerAlwaysOnDisplayViewBinder nicViewBinder,
             KeyguardUnlockAnimationController keyguardUnlockAnimationController,
             SecureSettings secureSettings,
             @Main DelayableExecutor uiExecutor,
@@ -193,24 +155,15 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
             DumpManager dumpManager,
             ClockEventController clockEventController,
             @KeyguardClockLog LogBuffer logBuffer,
-            NotificationIconContainerAlwaysOnDisplayViewModel aodIconsViewModel,
-            KeyguardRootViewModel keyguardRootViewModel,
-            ConfigurationState configurationState,
-            DozeParameters dozeParameters,
-            AlwaysOnDisplayNotificationIconViewStore aodIconViewStore,
             KeyguardInteractor keyguardInteractor,
             KeyguardClockInteractor keyguardClockInteractor,
-            FeatureFlagsClassic featureFlags,
             InWindowLauncherUnlockAnimationManager inWindowLauncherUnlockAnimationManager) {
         super(keyguardClockSwitch);
         mStatusBarStateController = statusBarStateController;
         mClockRegistry = clockRegistry;
         mKeyguardSliceViewController = keyguardSliceViewController;
-        mNotificationIconAreaController = notificationIconAreaController;
         mSmartspaceController = smartspaceController;
-        mSystemBarUtilsState = systemBarUtilsState;
-        mScreenOffAnimationController = screenOffAnimationController;
-        mIconViewBindingFailureTracker = iconViewBindingFailureTracker;
+        mNicViewBinder = nicViewBinder;
         mSecureSettings = secureSettings;
         mUiExecutor = uiExecutor;
         mBgExecutor = bgExecutor;
@@ -218,13 +171,7 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
         mDumpManager = dumpManager;
         mClockEventController = clockEventController;
         mLogBuffer = logBuffer;
-        mAodIconsViewModel = aodIconsViewModel;
-        mKeyguardRootViewModel = keyguardRootViewModel;
-        mConfigurationState = configurationState;
-        mDozeParameters = dozeParameters;
-        mAodIconViewStore = aodIconViewStore;
         mView.setLogBuffer(mLogBuffer);
-        mFeatureFlags = featureFlags;
         mKeyguardInteractor = keyguardInteractor;
         mKeyguardClockInteractor = keyguardClockInteractor;
         mInWindowLauncherUnlockAnimationManager = inWindowLauncherUnlockAnimationManager;
@@ -232,7 +179,7 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
         mClockChangedListener = new ClockRegistry.ClockChangeListener() {
             @Override
             public void onCurrentClockChanged() {
-                if (!migrateClocksToBlueprint()) {
+                if (!MigrateClocksToBlueprint.isEnabled()) {
                     setClock(mClockRegistry.createCurrentClock());
                 }
             }
@@ -275,18 +222,16 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     protected void onInit() {
         mKeyguardSliceViewController.init();
 
-        mSmallClockFrame = mView.findViewById(R.id.lockscreen_clock_view);
-        mLargeClockFrame = mView.findViewById(R.id.lockscreen_clock_view_large);
+        if (!MigrateClocksToBlueprint.isEnabled()) {
+            mSmallClockFrame = mView
+                .findViewById(com.android.systemui.customization.R.id.lockscreen_clock_view);
+            mLargeClockFrame = mView
+                .findViewById(com.android.systemui.customization.R.id.lockscreen_clock_view_large);
+        }
 
         if (!mOnlyClock) {
             mDumpManager.unregisterDumpable(getClass().getSimpleName()); // unregister previous
             mDumpManager.registerDumpable(getClass().getSimpleName(), this);
-        }
-
-        if (mFeatureFlags.isEnabled(LOCKSCREEN_WALLPAPER_DREAM_ENABLED)) {
-            mStatusArea = mView.findViewById(R.id.keyguard_status_area);
-            collectFlow(mStatusArea, mKeyguardInteractor.isActiveDreamLockscreenHosted(),
-                    mIsActiveDreamLockscreenHostedCallback);
         }
     }
 
@@ -309,7 +254,9 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     protected void onViewAttached() {
         mClockRegistry.registerClockChangeListener(mClockChangedListener);
         setClock(mClockRegistry.createCurrentClock());
-        mClockEventController.registerListeners(mView);
+        if (!MigrateClocksToBlueprint.isEnabled()) {
+            mClockEventController.registerListeners(mView);
+        }
         mKeyguardSmallClockTopMargin =
                 mView.getResources().getDimensionPixelSize(R.dimen.keyguard_clock_top_margin);
         mKeyguardLargeClockTopMargin =
@@ -334,14 +281,14 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
         mStatusArea = mView.findViewById(R.id.keyguard_status_area);
 
         mBgExecutor.execute(() -> {
-            mSecureSettings.registerContentObserverForUser(
+            mSecureSettings.registerContentObserverForUserSync(
                     Settings.Secure.LOCKSCREEN_USE_DOUBLE_LINE_CLOCK,
                     false, /* notifyForDescendants */
                     mDoubleLineClockObserver,
                     UserHandle.USER_ALL
             );
 
-            mSecureSettings.registerContentObserverForUser(
+            mSecureSettings.registerContentObserverForUserSync(
                     Settings.Secure.LOCK_SCREEN_WEATHER_ENABLED,
                     false, /* notifyForDescendants */
                     mShowWeatherObserver,
@@ -367,7 +314,7 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
                 addDateWeatherView();
             }
         }
-        if (!migrateClocksToBlueprint()) {
+        if (!MigrateClocksToBlueprint.isEnabled()) {
             setDateWeatherVisibility();
             setWeatherVisibility();
         }
@@ -375,12 +322,10 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     }
 
     int getNotificationIconAreaHeight() {
-        if (KeyguardShadeMigrationNssl.isEnabled()) {
+        if (MigrateClocksToBlueprint.isEnabled()) {
             return 0;
-        } else if (NotificationIconContainerRefactor.isEnabled()) {
-            return mAodIconContainer != null ? mAodIconContainer.getHeight() : 0;
         } else {
-            return mNotificationIconAreaController.getHeight();
+            return mAodIconContainer != null ? mAodIconContainer.getHeight() : 0;
         }
     }
 
@@ -392,12 +337,14 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     @Override
     protected void onViewDetached() {
         mClockRegistry.unregisterClockChangeListener(mClockChangedListener);
-        mClockEventController.unregisterListeners();
+        if (!MigrateClocksToBlueprint.isEnabled()) {
+            mClockEventController.unregisterListeners();
+        }
         setClock(null);
 
         mBgExecutor.execute(() -> {
-            mSecureSettings.unregisterContentObserver(mDoubleLineClockObserver);
-            mSecureSettings.unregisterContentObserver(mShowWeatherObserver);
+            mSecureSettings.unregisterContentObserverSync(mDoubleLineClockObserver);
+            mSecureSettings.unregisterContentObserverSync(mShowWeatherObserver);
         });
 
         mKeyguardUnlockAnimationController.removeKeyguardUnlockAnimationListener(
@@ -418,7 +365,7 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     }
 
     private void addDateWeatherView() {
-        if (migrateClocksToBlueprint()) {
+        if (MigrateClocksToBlueprint.isEnabled()) {
             return;
         }
         mDateWeatherView = (ViewGroup) mSmartspaceController.buildAndConnectDateView(mView);
@@ -434,7 +381,7 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     }
 
     private void addWeatherView() {
-        if (migrateClocksToBlueprint()) {
+        if (MigrateClocksToBlueprint.isEnabled()) {
             return;
         }
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
@@ -447,7 +394,11 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     }
 
     private void addSmartspaceView() {
-        if (migrateClocksToBlueprint()) {
+        if (MigrateClocksToBlueprint.isEnabled()) {
+            return;
+        }
+
+        if (smartspaceRelocateToBottom()) {
             return;
         }
 
@@ -551,13 +502,15 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
      */
     void updatePosition(int x, float scale, AnimationProperties props, boolean animate) {
         x = getCurrentLayoutDirection() == View.LAYOUT_DIRECTION_RTL ? -x : x;
+        if (!MigrateClocksToBlueprint.isEnabled()) {
+            PropertyAnimator.setProperty(mSmallClockFrame, AnimatableProperty.TRANSLATION_X,
+                    x, props, animate);
+            PropertyAnimator.setProperty(mLargeClockFrame, AnimatableProperty.SCALE_X,
+                    scale, props, animate);
+            PropertyAnimator.setProperty(mLargeClockFrame, AnimatableProperty.SCALE_Y,
+                    scale, props, animate);
 
-        PropertyAnimator.setProperty(mSmallClockFrame, AnimatableProperty.TRANSLATION_X,
-                x, props, animate);
-        PropertyAnimator.setProperty(mLargeClockFrame, AnimatableProperty.SCALE_X,
-                scale, props, animate);
-        PropertyAnimator.setProperty(mLargeClockFrame, AnimatableProperty.SCALE_Y,
-                scale, props, animate);
+        }
 
         if (mStatusArea != null) {
             PropertyAnimator.setProperty(mStatusArea, KeyguardStatusAreaView.TRANSLATE_X_AOD,
@@ -572,6 +525,10 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     int getClockBottom(int statusBarHeaderHeight) {
         ClockController clock = getClock();
         if (clock == null) {
+            return 0;
+        }
+
+        if (MigrateClocksToBlueprint.isEnabled()) {
             return 0;
         }
 
@@ -606,52 +563,29 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     }
 
     boolean isClockTopAligned() {
+        if (MigrateClocksToBlueprint.isEnabled()) {
+            return mKeyguardClockInteractor.getClockSize().getValue().getLegacyValue() == LARGE;
+        }
         return mLargeClockFrame.getVisibility() != View.VISIBLE;
     }
 
     private void updateAodIcons() {
-        if (!KeyguardShadeMigrationNssl.isEnabled()) {
+        if (!MigrateClocksToBlueprint.isEnabled()) {
             NotificationIconContainer nic = (NotificationIconContainer)
                     mView.findViewById(
                             com.android.systemui.res.R.id.left_aligned_notification_icon_container);
-            if (NotificationIconContainerRefactor.isEnabled()) {
-                if (mAodIconsBindHandle != null) {
-                    mAodIconsBindHandle.dispose();
-                }
-                if (nic != null) {
-                    final DisposableHandle viewHandle =
-                            NotificationIconContainerViewBinder.bindWhileAttached(
-                                    nic,
-                                    mAodIconsViewModel,
-                                    mConfigurationState,
-                                    mSystemBarUtilsState,
-                                    mIconViewBindingFailureTracker,
-                                    mAodIconViewStore);
-                    final DisposableHandle visHandle = KeyguardRootViewBinder.bindAodIconVisibility(
-                            nic,
-                            mKeyguardRootViewModel.isNotifIconContainerVisible(),
-                            mConfigurationState,
-                            mFeatureFlags,
-                            mScreenOffAnimationController);
-                    if (visHandle == null) {
-                        mAodIconsBindHandle = viewHandle;
-                    } else {
-                        mAodIconsBindHandle = () -> {
-                            viewHandle.dispose();
-                            visHandle.dispose();
-                        };
-                    }
-                    mAodIconContainer = nic;
-                }
-            } else {
-                mNotificationIconAreaController.setupAodIcons(nic);
+            if (mAodIconsBindHandle != null) {
+                mAodIconsBindHandle.dispose();
+            }
+            if (nic != null) {
+                mAodIconsBindHandle = mNicViewBinder.bindWhileAttached(nic);
                 mAodIconContainer = nic;
             }
         }
     }
 
     private void setClock(ClockController clock) {
-        if (migrateClocksToBlueprint()) {
+        if (MigrateClocksToBlueprint.isEnabled()) {
             return;
         }
         if (clock != null && mLogBuffer != null) {
@@ -665,8 +599,8 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
 
     @Nullable
     public ClockController getClock() {
-        if (migrateClocksToBlueprint()) {
-            return mKeyguardClockInteractor.getClock();
+        if (MigrateClocksToBlueprint.isEnabled()) {
+            return mKeyguardClockInteractor.getCurrentClock().getValue();
         } else {
             return mClockEventController.getClock();
         }
@@ -677,7 +611,7 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
     }
 
     private void updateDoubleLineClock() {
-        if (migrateClocksToBlueprint()) {
+        if (MigrateClocksToBlueprint.isEnabled()) {
             return;
         }
         mCanShowDoubleLineClock = mSecureSettings.getIntForUser(
@@ -706,15 +640,6 @@ public class KeyguardClockSwitchController extends ViewController<KeyguardClockS
             mUiExecutor.execute(() -> {
                 mWeatherView.setVisibility(
                         mSmartspaceController.isWeatherEnabled() ? View.VISIBLE : View.GONE);
-            });
-        }
-    }
-
-    private void updateKeyguardStatusAreaVisibility() {
-        if (mStatusArea != null) {
-            mUiExecutor.execute(() -> {
-                mStatusArea.setVisibility(
-                        mIsActiveDreamLockscreenHosted ? View.INVISIBLE : View.VISIBLE);
             });
         }
     }

@@ -31,6 +31,8 @@ import com.android.systemui.assist.AssistManager;
 import com.android.systemui.assist.AssistManager.VisualQueryAttentionListener;
 import com.android.systemui.shared.condition.Condition;
 
+import kotlinx.coroutines.CoroutineScope;
+
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -38,10 +40,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import kotlinx.coroutines.CoroutineScope;
-
 @SmallTest
 @RunWith(AndroidJUnit4.class)
+@android.platform.test.annotations.EnabledOnRavenwood
 public class AssistantAttentionConditionTest extends SysuiTestCase {
     @Mock
     Condition.Callback mCallback;

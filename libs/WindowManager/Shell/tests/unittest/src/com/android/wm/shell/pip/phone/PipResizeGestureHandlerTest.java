@@ -55,6 +55,8 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.util.Optional;
+
 /**
  * Unit tests against {@link PipResizeGestureHandler}
  */
@@ -112,9 +114,10 @@ public class PipResizeGestureHandlerTest extends ShellTestCase {
         final PipBoundsAlgorithm pipBoundsAlgorithm = new PipBoundsAlgorithm(mContext,
                 mPipBoundsState, pipSnapAlgorithm, pipKeepClearAlgorithm, mPipDisplayLayoutState,
                 mSizeSpecSource);
-        final PipMotionHelper motionHelper = new PipMotionHelper(mContext, mPipBoundsState,
-                mPipTaskOrganizer, mPhonePipMenuController, pipSnapAlgorithm,
-                mMockPipTransitionController, mFloatingContentCoordinator);
+        final PipMotionHelper motionHelper = new PipMotionHelper(mContext, mMainExecutor,
+                mPipBoundsState, mPipTaskOrganizer, mPhonePipMenuController, pipSnapAlgorithm,
+                mMockPipTransitionController, mFloatingContentCoordinator,
+                Optional.empty() /* pipPerfHintControllerOptional */);
 
         mPipTouchState = new PipTouchState(ViewConfiguration.get(mContext),
                 () -> {}, () -> {}, mMainExecutor);
@@ -122,7 +125,7 @@ public class PipResizeGestureHandlerTest extends ShellTestCase {
                 mPipBoundsState, motionHelper, mPipTouchState, mPipTaskOrganizer,
                 mPipDismissTargetHandler,
                 (Rect bounds) -> new Rect(), () -> {}, mPipUiEventLogger, mPhonePipMenuController,
-                mMainExecutor) {
+                mMainExecutor, null /* pipPerfHintController */) {
             @Override
             public void pilferPointers() {
                 // Overridden just to avoid calling into InputMonitor.

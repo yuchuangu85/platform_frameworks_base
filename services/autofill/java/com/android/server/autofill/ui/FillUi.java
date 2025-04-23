@@ -15,6 +15,8 @@
  */
 package com.android.server.autofill.ui;
 
+import static android.service.autofill.FillResponse.FLAG_CREDENTIAL_MANAGER_RESPONSE;
+
 import static com.android.server.autofill.Helper.paramsToString;
 import static com.android.server.autofill.Helper.sDebug;
 import static com.android.server.autofill.Helper.sFullScreenMode;
@@ -31,6 +33,7 @@ import android.graphics.drawable.Drawable;
 import android.service.autofill.Dataset;
 import android.service.autofill.Dataset.DatasetFieldFilter;
 import android.service.autofill.FillResponse;
+import android.service.autofill.Flags;
 import android.text.TextUtils;
 import android.util.PluralsMessageFormatter;
 import android.util.Slog;
@@ -45,6 +48,7 @@ import android.view.ViewGroup.LayoutParams;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityManager;
 import android.view.autofill.AutofillId;
+import android.view.autofill.AutofillManager;
 import android.view.autofill.AutofillValue;
 import android.view.autofill.IAutofillWindowPresenter;
 import android.widget.BaseAdapter;
@@ -87,7 +91,7 @@ final class FillUi {
         void onDatasetPicked(@NonNull Dataset dataset);
         void onCanceled();
         void onDestroy();
-        void onShown();
+        void onShown(int datasetSize);
         void requestShowFillUi(int width, int height,
                 IAutofillWindowPresenter windowPresenter);
         void requestHideFillUi();
@@ -103,14 +107,17 @@ final class FillUi {
             new AutofillWindowPresenter();
 
     private final @NonNull Context mContext;
+    private final @NonNull Context mUserContext;
 
     private final @NonNull AnchoredWindow mWindow;
 
     private final @NonNull Callback mCallback;
 
+    private final @NonNull WindowManager mWindowManager;
+
     private final @Nullable View mHeader;
     private final @NonNull ListView mListView;
-    private final @Nullable View mFooter;
+    private @Nullable View mFooter;
 
     private final @Nullable ItemsAdapter mAdapter;
 
@@ -129,6 +136,8 @@ final class FillUi {
 
     private int mMaxInputLengthForAutofill;
 
+    private final boolean mIsCredmanAutofillSession;
+
     public static boolean isFullScreen(Context context) {
         if (sFullScreenMode != null) {
             if (sVerbose) Slog.v(TAG, "forcing full-screen mode to " + sFullScreenMode);
@@ -137,6 +146,8 @@ final class FillUi {
         return context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK);
     }
 
+    // System has all permissions, see b/228957088
+    @SuppressWarnings("AndroidFrameworkRequiresPermission")
     FillUi(@NonNull Context context, @NonNull FillResponse response,
             @NonNull AutofillId focusedViewId, @Nullable String filterText,
             @NonNull OverlayControl overlayControl, @NonNull CharSequence serviceLabel,
@@ -149,7 +160,11 @@ final class FillUi {
         mCallback = callback;
         mFullScreen = isFullScreen(context);
         mContext = new ContextThemeWrapper(context, mThemeId);
+        mUserContext = Helper.getUserContext(mContext);
         mMaxInputLengthForAutofill = maxInputLengthForAutofill;
+        mIsCredmanAutofillSession = (Flags.autofillCredmanIntegration()
+            && ((response.getFlags() & FLAG_CREDENTIAL_MANAGER_RESPONSE) != 0));
+        mWindowManager = mContext.getSystemService(WindowManager.class);
 
         final LayoutInflater inflater = LayoutInflater.from(mContext);
 
@@ -159,7 +174,8 @@ final class FillUi {
         final ViewGroup decor;
         if (mFullScreen) {
             decor = (ViewGroup) inflater.inflate(R.layout.autofill_dataset_picker_fullscreen, null);
-        } else if (headerPresentation != null || footerPresentation != null) {
+        } else if (headerPresentation != null
+                || footerPresentation != null || mIsCredmanAutofillSession) {
             decor = (ViewGroup) inflater.inflate(R.layout.autofill_dataset_picker_header_footer,
                     null);
         } else {
@@ -237,7 +253,7 @@ final class FillUi {
                     throw new RuntimeException("Permission error accessing RemoteView");
                 }
                 content = response.getPresentation().applyWithTheme(
-                        mContext, decor, interceptionHandler, mThemeId);
+                        mUserContext, decor, interceptionHandler, mThemeId);
                 container.addView(content);
             } catch (RuntimeException e) {
                 callback.onCanceled();
@@ -278,7 +294,7 @@ final class FillUi {
             if (headerPresentation != null) {
                 interactionBlocker = newInteractionBlocker();
                 mHeader = headerPresentation.applyWithTheme(
-                        mContext, null, interactionBlocker, mThemeId);
+                        mUserContext, null, interactionBlocker, mThemeId);
                 final LinearLayout headerContainer =
                         decor.findViewById(R.id.autofill_dataset_header);
                 applyCancelAction(mHeader, response.getCancelIds());
@@ -289,7 +305,7 @@ final class FillUi {
                 mHeader = null;
             }
 
-            if (footerPresentation != null) {
+            if (footerPresentation != null && !mIsCredmanAutofillSession) {
                 final LinearLayout footerContainer =
                         decor.findViewById(R.id.autofill_dataset_footer);
                 if (footerContainer != null) {
@@ -297,7 +313,7 @@ final class FillUi {
                         interactionBlocker = newInteractionBlocker();
                     }
                     mFooter = footerPresentation.applyWithTheme(
-                            mContext, null, interactionBlocker, mThemeId);
+                            mUserContext, null, interactionBlocker, mThemeId);
                     applyCancelAction(mFooter, response.getCancelIds());
                     // Footer not supported on some platform e.g. TV
                     if (sVerbose) Slog.v(TAG, "adding footer");
@@ -326,7 +342,7 @@ final class FillUi {
                     try {
                         if (sVerbose) Slog.v(TAG, "setting remote view for " + focusedViewId);
                         view = presentation.applyWithTheme(
-                                mContext, null, interceptionHandler, mThemeId);
+                                mUserContext, null, interceptionHandler, mThemeId);
                     } catch (RuntimeException e) {
                         Slog.e(TAG, "Error inflating remote views", e);
                         continue;
@@ -354,7 +370,22 @@ final class FillUi {
                     }
 
                     applyCancelAction(view, response.getCancelIds());
-                    items.add(new ViewItem(dataset, filterPattern, filterable, valueText, view));
+                    if (AutofillManager.PINNED_DATASET_ID.equals(dataset.getId())
+                            && mIsCredmanAutofillSession && !items.isEmpty()) {
+                        final LinearLayout footerContainer =
+                                decor.findViewById(R.id.autofill_dataset_footer);
+                        if (sVerbose) {
+                          Slog.v(TAG, "adding footer");
+                        }
+                        mFooter = view;
+                        footerContainer.addView(mFooter);
+                        footerContainer.setVisibility(View.VISIBLE);
+                        footerContainer.setClickable(true);
+                        footerContainer.setOnClickListener(v -> mCallback.onDatasetPicked(dataset));
+                    } else {
+                        items.add(
+                            new ViewItem(dataset, filterPattern, filterable, valueText, view));
+                    }
                 }
             }
 
@@ -447,12 +478,9 @@ final class FillUi {
                 if (updateContentSize()) {
                     requestShowFillUi();
                 }
-                if (mAdapter.getCount() > mVisibleDatasetsMaxCount) {
-                    mListView.setVerticalScrollBarEnabled(true);
-                    mListView.onVisibilityAggregated(true);
-                } else {
-                    mListView.setVerticalScrollBarEnabled(false);
-                }
+                mListView.setVerticalScrollBarEnabled(true);
+                mListView.onVisibilityAggregated(true);
+
                 if (mAdapter.getCount() != oldCount) {
                     mListView.requestLayout();
                 }
@@ -566,11 +594,18 @@ final class FillUi {
         return changed;
     }
 
+    private boolean heightLesserThanDisplayScreen(int height) {
+        // Don't update list height for credential options beyond 80% of display window even if we
+        // are still under the max visible number of datasets. This could happen when font or
+        // display size is set to large.
+        return height < (0.8 * mWindowManager.getCurrentWindowMetrics().getBounds().height());
+    }
+
     private boolean updateHeight(View view, Point maxSize) {
         boolean changed = false;
         final int clampedMeasuredHeight = Math.min(view.getMeasuredHeight(), maxSize.y);
         final int newContentHeight = mContentHeight + clampedMeasuredHeight;
-        if (newContentHeight != mContentHeight) {
+        if (newContentHeight != mContentHeight && heightLesserThanDisplayScreen(newContentHeight)) {
             mContentHeight = newContentHeight;
             changed = true;
         }
@@ -682,12 +717,20 @@ final class FillUi {
                 Slog.v(TAG, "AutofillWindowPresenter.show(): fit=" + fitsSystemWindows
                         + ", params=" + paramsToString(p));
             }
-            UiThread.getHandler().post(() -> mWindow.show(p));
+            UiThread.getHandler().post(() -> {
+                if (mWindow != null) {
+                    mWindow.show(p);
+                }
+            });
         }
 
         @Override
         public void hide(Rect transitionEpicenter) {
-            UiThread.getHandler().post(mWindow::hide);
+            UiThread.getHandler().post(() -> {
+                if (mWindow != null) {
+                    mWindow.hide();
+                }
+            });
         }
     }
 
@@ -727,7 +770,8 @@ final class FillUi {
                     mWm.addView(mContentView, params);
                     mOverlayControl.hideOverlays();
                     mShowing = true;
-                    mCallback.onShown();
+                    int numShownDatasets = (mAdapter == null) ? 0 : mAdapter.getCount();
+                    mCallback.onShown(numShownDatasets);
                 } else {
                     mWm.updateViewLayout(mContentView, params);
                 }
@@ -795,6 +839,7 @@ final class FillUi {
         pw.print(prefix); pw.print("mContentHeight: "); pw.println(mContentHeight);
         pw.print(prefix); pw.print("mDestroyed: "); pw.println(mDestroyed);
         pw.print(prefix); pw.print("mContext: "); pw.println(mContext);
+        pw.print(prefix); pw.print("mUserContext: "); pw.println(mUserContext);
         pw.print(prefix); pw.print("theme id: "); pw.print(mThemeId);
         switch (mThemeId) {
             case THEME_ID_DARK:

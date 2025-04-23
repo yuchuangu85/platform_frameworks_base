@@ -91,6 +91,13 @@ class AsyncRotationController extends FadeAnimationController implements Consume
     /** Non-zero if this controller is triggered by shell transition. */
     private final @TransitionOp int mTransitionOp;
 
+    /**
+     * Whether {@link #setupStartTransaction} is called when the transition is ready.
+     * If this is never set for {@link #OP_CHANGE}, the display may be changed to original state
+     * before the transition is ready, then this controller should be finished.
+     */
+    private boolean mIsStartTransactionPrepared;
+
     /** Whether the start transaction of the transition is committed (by shell). */
     private boolean mIsStartTransactionCommitted;
 
@@ -167,11 +174,6 @@ class AsyncRotationController extends FadeAnimationController implements Consume
                 mNavBarToken = w.mToken;
                 // Do not animate movable navigation bar (e.g. 3-buttons mode).
                 if (navigationBarCanMove) return;
-                // Or when the navigation bar is currently controlled by recents animation.
-                final RecentsAnimationController recents = mService.getRecentsAnimationController();
-                if (recents != null && recents.isNavigationBarAttachedToApp()) {
-                    return;
-                }
             } else if (navigationBarCanMove || mTransitionOp == OP_CHANGE_MAY_SEAMLESS
                     || mDisplayContent.mTransitionController.mNavigationBarAttachedToApp) {
                 action = Operation.ACTION_SEAMLESS;
@@ -226,7 +228,8 @@ class AsyncRotationController extends FadeAnimationController implements Consume
     void updateTargetWindows() {
         if (mTransitionOp == OP_LEGACY) return;
         if (!mIsStartTransactionCommitted) {
-            if (mTimeoutRunnable == null && !mDisplayContent.hasTopFixedRotationLaunchingApp()
+            if ((mTimeoutRunnable == null || !mIsStartTransactionPrepared)
+                    && !mDisplayContent.hasTopFixedRotationLaunchingApp()
                     && !mDisplayContent.isRotationChanging() && !mDisplayContent.inTransition()) {
                 Slog.d(TAG, "Cancel for no change");
                 mDisplayContent.finishAsyncRotationIfPossible();
@@ -279,6 +282,17 @@ class AsyncRotationController extends FadeAnimationController implements Consume
             if (DEBUG) Slog.d(TAG, "finishOp undo seamless " + windowToken.getTopChild());
             final SurfaceControl.Transaction t = windowToken.getSyncTransaction();
             clearTransform(t, op.mLeash);
+        }
+        // The insets position may be frozen by shouldFreezeInsetsPosition(), so refresh the
+        // position to the latest state when it is ready to show in new rotation.
+        if (isSeamlessTransition()) {
+            for (int i = windowToken.getChildCount() - 1; i >= 0; i--) {
+                final WindowState w = windowToken.getChildAt(i);
+                final InsetsSourceProvider insetsProvider = w.getControllableInsetProvider();
+                if (insetsProvider != null) {
+                    insetsProvider.updateInsetsControlPosition(w);
+                }
+            }
         }
     }
 
@@ -401,9 +415,18 @@ class AsyncRotationController extends FadeAnimationController implements Consume
         if (mTimeoutRunnable == null) {
             mTimeoutRunnable = () -> {
                 synchronized (mService.mGlobalLock) {
-                    Slog.i(TAG, "Async rotation timeout: " + (!mIsStartTransactionCommitted
-                            ? " start transaction is not committed" : mTargetWindowTokens));
+                    final String reason;
                     if (!mIsStartTransactionCommitted) {
+                        if (!mIsStartTransactionPrepared) {
+                            reason = "setupStartTransaction is not called";
+                        } else {
+                            reason = "start transaction is not committed";
+                        }
+                    } else {
+                        reason = "unfinished windows " + mTargetWindowTokens;
+                    }
+                    Slog.i(TAG, "Async rotation timeout: " + reason);
+                    if (!mIsStartTransactionCommitted && mIsStartTransactionPrepared) {
                         // The transaction commit timeout will be handled by:
                         // 1. BLASTSyncEngine will notify onTransactionCommitTimeout() and then
                         //    apply the start transaction of transition.
@@ -477,10 +500,15 @@ class AsyncRotationController extends FadeAnimationController implements Consume
      */
     boolean shouldFreezeInsetsPosition(WindowState w) {
         // Non-change transition (OP_APP_SWITCH) and METHOD_BLAST don't use screenshot so the
-        // insets should keep original position before the start transaction is applied.
-        return mTransitionOp != OP_LEGACY && (mTransitionOp == OP_APP_SWITCH
+        // insets should keep original position before the window is done with new rotation.
+        return mTransitionOp != OP_LEGACY && (isSeamlessTransition()
                 || TransitionController.SYNC_METHOD == BLASTSyncEngine.METHOD_BLAST)
-                && !mIsStartTransactionCommitted && canBeAsync(w.mToken) && isTargetToken(w.mToken);
+                && canBeAsync(w.mToken) && isTargetToken(w.mToken);
+    }
+
+    /** Returns true if there won't be a screen rotation animation (screenshot-based). */
+    private boolean isSeamlessTransition() {
+        return mTransitionOp == OP_APP_SWITCH || mTransitionOp == OP_CHANGE_MAY_SEAMLESS;
     }
 
     /**
@@ -558,6 +586,7 @@ class AsyncRotationController extends FadeAnimationController implements Consume
                 }
             }
         });
+        mIsStartTransactionPrepared = true;
     }
 
     /** Called when the start transition is ready, but it is not applied in time. */
@@ -577,6 +606,10 @@ class AsyncRotationController extends FadeAnimationController implements Consume
     /** Called when the transition by shell is done. */
     void onTransitionFinished() {
         if (mTransitionOp == OP_CHANGE) {
+            if (mTargetWindowTokens.isEmpty()) {
+                // If nothing was handled, then complete with the transition.
+                mDisplayContent.finishAsyncRotationIfPossible();
+            }
             // With screen rotation animation, the windows are always faded in when they are drawn.
             // Because if they are drawn fast enough, the fade animation should not be observable.
             return;
@@ -620,7 +653,9 @@ class AsyncRotationController extends FadeAnimationController implements Consume
             // by drawing the rotated content before applying projection transaction of display.
             // And it will fade in after the display transition is finished.
             if (mTransitionOp == OP_APP_SWITCH && !mIsStartTransactionCommitted
-                    && canBeAsync(w.mToken)) {
+                    && canBeAsync(w.mToken) && !mDisplayContent.hasFixedRotationTransientLaunch()
+                    && !mService.mAtmService.mBackNavigationController.hasFixedRotationAnimation(
+                            mDisplayContent)) {
                 hideImmediately(w.mToken, Operation.ACTION_FADE);
                 if (DEBUG) Slog.d(TAG, "Hide on finishDrawing " + w.mToken.getTopChild());
             }

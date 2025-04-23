@@ -17,10 +17,10 @@
 package com.android.server.wm.flicker.launch
 
 import android.platform.test.annotations.Presubmit
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.traces.component.ComponentNameMatcher
 import androidx.test.filters.FlakyTest
 import androidx.test.filters.RequiresDevice
 import com.android.server.wm.flicker.helpers.TransferSplashscreenAppHelper
@@ -34,7 +34,7 @@ import org.junit.runners.Parameterized
 /**
  * Test cold launching an app from launcher
  *
- * To run this test: `atest FlickerTests:OpenTransferSplashscreenAppFromLauncherTransition`
+ * To run this test: `atest FlickerTestsAppLaunch:OpenTransferSplashscreenAppFromLauncherTransition`
  *
  * Actions:
  * ```

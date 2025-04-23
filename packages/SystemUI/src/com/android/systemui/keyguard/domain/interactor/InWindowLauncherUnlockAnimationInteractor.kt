@@ -20,10 +20,11 @@ import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.keyguard.data.repository.InWindowLauncherUnlockAnimationRepository
 import com.android.systemui.keyguard.data.repository.KeyguardSurfaceBehindRepository
-import com.android.systemui.keyguard.shared.model.KeyguardState
+import com.android.systemui.keyguard.shared.model.Edge
+import com.android.systemui.keyguard.shared.model.KeyguardState.GONE
+import com.android.systemui.scene.shared.model.Scenes
 import com.android.systemui.shared.system.ActivityManagerWrapper
 import com.android.systemui.shared.system.smartspace.SmartspaceState
-import com.android.systemui.util.kotlin.sample
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.SharingStarted
@@ -51,11 +52,11 @@ constructor(
      */
     val transitioningToGoneWithInWindowAnimation: StateFlow<Boolean> =
         transitionInteractor
-            .isInTransitionToState(KeyguardState.GONE)
-            .sample(repository.launcherActivityClass, ::Pair)
-            .map { (isTransitioningToGone, launcherActivityClass) ->
-                isTransitioningToGone && isActivityClassUnderneath(launcherActivityClass)
-            }
+            .isInTransition(
+                edge = Edge.create(to = Scenes.Gone),
+                edgeWithoutSceneContainer = Edge.create(to = GONE)
+            )
+            .map { transitioningToGone -> transitioningToGone && isLauncherUnderneath() }
             .stateIn(scope, SharingStarted.Eagerly, false)
 
     /**
@@ -91,11 +92,11 @@ constructor(
     }
 
     /**
-     * Whether an activity with the given [activityClass] name is currently underneath the
-     * lockscreen (it's at the top of the activity task stack).
+     * Whether the Launcher is currently underneath the lockscreen (it's at the top of the activity
+     * task stack).
      */
-    private fun isActivityClassUnderneath(activityClass: String?): Boolean {
-        return activityClass?.let {
+    fun isLauncherUnderneath(): Boolean {
+        return repository.launcherActivityClass.value?.let {
             activityManager.runningTask?.topActivity?.className?.equals(it)
         }
             ?: false

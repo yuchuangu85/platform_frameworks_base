@@ -31,7 +31,6 @@ import kotlinx.coroutines.flow.flowOn
 
 data class EnhancedConfirmation(
     val key: String,
-    val uid: Int,
     val packageName: String,
 )
 data class Restrictions(
@@ -85,13 +84,17 @@ internal class RestrictionsProviderImpl(
         for (key in restrictions.keys) {
             RestrictedLockUtilsInternal
                 .checkIfRestrictionEnforced(context, key, restrictions.userId)
-                ?.let { return BlockedByAdminImpl(context = context, enforcedAdmin = it) }
+                ?.let { return BlockedByAdminImpl(
+                    context = context,
+                    enforcedAdmin = it,
+                    userId = restrictions.userId
+                ) }
         }
 
         restrictions.enhancedConfirmation?.let { ec ->
             RestrictedLockUtilsInternal
                     .checkIfRequiresEnhancedConfirmation(context, ec.key,
-                        ec.uid, ec.packageName)
+                        ec.packageName)
                     ?.let { intent -> return BlockedByEcmImpl(context = context, intent = intent) }
         }
 

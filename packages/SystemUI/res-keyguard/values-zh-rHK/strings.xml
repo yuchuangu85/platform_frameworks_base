@@ -33,8 +33,8 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 正在充電"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 快速充電中"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 慢速充電中"</string>
-    <string name="keyguard_plugged_in_charging_limited" msgid="1053130519456324630">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 為保護電池，系統已優化充電"</string>
-    <string name="keyguard_plugged_in_incompatible_charger" msgid="3687961801947819076">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 充電配件發生問題"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="5369697538556777542">"<xliff:g id="PERCENTAGE">%s</xliff:g> - 為保護電池，目前暫停充電"</string>
+    <string name="keyguard_plugged_in_incompatible_charger" msgid="6384203333154532125">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 檢查充電配件"</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"網絡已鎖定"</string>
     <string name="keyguard_missing_sim_message_short" msgid="685029586173458728">"沒有 SIM 卡"</string>
     <string name="keyguard_permanent_disabled_sim_message_short" msgid="3955052454216046100">"SIM 卡無法使用。"</string>
@@ -111,6 +111,9 @@
     <string name="kg_prompt_reason_timeout_pattern" msgid="5514969660010197363">"為提升安全性，請改用圖案"</string>
     <string name="kg_prompt_reason_timeout_pin" msgid="4227962059353859376">"為提升安全性，請改用 PIN"</string>
     <string name="kg_prompt_reason_timeout_password" msgid="8810879144143933690">"為提升安全性，請改用密碼"</string>
+    <string name="kg_prompt_added_security_pin" msgid="5487992065995475528">"請務必輸入 PIN，以進一步確保安全"</string>
+    <string name="kg_prompt_added_security_pattern" msgid="1017068086102168544">"請務必畫出上鎖圖案，以進一步確保安全"</string>
+    <string name="kg_prompt_added_security_password" msgid="6053156069765029006">"請務必輸入密碼，以進一步確保安全"</string>
     <string name="kg_prompt_reason_device_admin" msgid="6961159596224055685">"裝置已由管理員鎖定"</string>
     <string name="kg_prompt_reason_user_request" msgid="6015774877733717904">"使用者已手動將裝置上鎖"</string>
     <string name="kg_face_not_recognized" msgid="7903950626744419160">"未能識別"</string>

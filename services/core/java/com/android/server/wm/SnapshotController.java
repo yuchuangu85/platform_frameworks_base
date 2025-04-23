@@ -19,14 +19,19 @@ package com.android.server.wm;
 import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
 import static android.os.Trace.TRACE_TAG_WINDOW_MANAGER;
 import static android.view.WindowManager.TRANSIT_CLOSE;
+import static android.view.WindowManager.TRANSIT_CLOSE_PREPARE_BACK_NAVIGATION;
 import static android.view.WindowManager.TRANSIT_FIRST_CUSTOM;
 import static android.view.WindowManager.TRANSIT_OPEN;
+import static android.view.WindowManager.TRANSIT_PREPARE_BACK_NAVIGATION;
 import static android.view.WindowManager.TRANSIT_TO_BACK;
 import static android.view.WindowManager.TRANSIT_TO_FRONT;
 
 import android.os.Trace;
+import android.util.ArrayMap;
 import android.view.WindowManager;
 import android.window.TaskSnapshot;
+
+import com.android.window.flags.Flags;
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -80,6 +85,7 @@ class SnapshotController {
         if (!isTransitionOpen && !isTransitionClose && type < TRANSIT_FIRST_CUSTOM) {
             return;
         }
+        ActivitiesByTask activityTargets = null;
         for (int i = changeInfos.size() - 1; i >= 0; --i) {
             Transition.ChangeInfo info = changeInfos.get(i);
             // Intentionally skip record snapshot for changes originated from PiP.
@@ -98,15 +104,73 @@ class SnapshotController {
                 final TaskFragment tf = info.mContainer.asTaskFragment();
                 final ActivityRecord ar = tf != null ? tf.getTopMostActivity()
                         : info.mContainer.asActivityRecord();
-                if (ar != null && !ar.isVisibleRequested() && ar.getTask().isVisibleRequested()) {
-                    final WindowState mainWindow = ar.findMainWindow(false);
-                    // Only capture activity snapshot if this app has adapted to back predict
-                    if (mainWindow != null
-                            && mainWindow.getOnBackInvokedCallbackInfo() != null
-                            && mainWindow.getOnBackInvokedCallbackInfo().isSystemCallback()) {
-                        mActivitySnapshotController.recordSnapshot(ar);
+                if (ar != null && ar.getTask().isVisibleRequested()) {
+                    if (activityTargets == null) {
+                        activityTargets = new ActivitiesByTask();
+                    }
+                    activityTargets.put(ar);
+                }
+            }
+        }
+        if (activityTargets != null) {
+            activityTargets.recordSnapshot(mActivitySnapshotController);
+        }
+    }
+
+    private static class ActivitiesByTask {
+        final ArrayMap<Task, OpenCloseActivities> mActivitiesMap = new ArrayMap<>();
+
+        void put(ActivityRecord ar) {
+            OpenCloseActivities activities = mActivitiesMap.get(ar.getTask());
+            if (activities == null) {
+                activities = new OpenCloseActivities();
+                mActivitiesMap.put(ar.getTask(), activities);
+            }
+            activities.add(ar);
+        }
+
+        void recordSnapshot(ActivitySnapshotController controller) {
+            for (int i = mActivitiesMap.size() - 1; i >= 0; i--) {
+                final OpenCloseActivities pair = mActivitiesMap.valueAt(i);
+                pair.recordSnapshot(controller);
+            }
+        }
+
+        static class OpenCloseActivities {
+            final ArrayList<ActivityRecord> mOpenActivities = new ArrayList<>();
+            final ArrayList<ActivityRecord> mCloseActivities = new ArrayList<>();
+
+            void add(ActivityRecord ar) {
+                if (ar.isVisibleRequested()) {
+                    mOpenActivities.add(ar);
+                } else {
+                    mCloseActivities.add(ar);
+                }
+            }
+
+            boolean allOpensOptInOnBackInvoked() {
+                if (mOpenActivities.isEmpty()) {
+                    return false;
+                }
+                // TODO (b/362183912) always capture activity snapshot will cause performance
+                //  regression, remove flag after ramp up
+                if (!Flags.deferPredictiveAnimationIfNoSnapshot()
+                        && Flags.alwaysCaptureActivitySnapshot()) {
+                    return true;
+                }
+                for (int i = mOpenActivities.size() - 1; i >= 0; --i) {
+                    if (!mOpenActivities.get(i).mOptInOnBackInvoked) {
+                        return false;
                     }
                 }
+                return true;
+            }
+
+            void recordSnapshot(ActivitySnapshotController controller) {
+                if (!allOpensOptInOnBackInvoked() || mCloseActivities.isEmpty()) {
+                    return;
+                }
+                controller.recordSnapshot(mCloseActivities);
             }
         }
     }
@@ -132,11 +196,11 @@ class SnapshotController {
         }
         mActivitySnapshotController.handleTransitionFinish(windows);
         mActivitySnapshotController.endSnapshotProcess();
-        // Remove task snapshot if it is visible at the end of transition.
+        // Remove task snapshot if it is visible at the end of transition, except for PiP.
         for (int i = changeInfos.size() - 1; i >= 0; --i) {
             final WindowContainer wc = changeInfos.get(i).mContainer;
             final Task task = wc.asTask();
-            if (task != null && wc.isVisibleRequested()) {
+            if (task != null && wc.isVisibleRequested() && !task.inPinnedWindowingMode()) {
                 final TaskSnapshot snapshot = mTaskSnapshotController.getSnapshot(task.mTaskId,
                         task.mUserId, false /* restoreFromDisk */, false /* isLowResolution */);
                 if (snapshot != null) {
@@ -148,14 +212,17 @@ class SnapshotController {
     }
 
     private static boolean isTransitionOpen(int type) {
-        return type == TRANSIT_OPEN || type == TRANSIT_TO_FRONT;
+        return type == TRANSIT_OPEN || type == TRANSIT_TO_FRONT
+                || type == TRANSIT_PREPARE_BACK_NAVIGATION;
     }
     private static boolean isTransitionClose(int type) {
-        return type == TRANSIT_CLOSE || type == TRANSIT_TO_BACK;
+        return type == TRANSIT_CLOSE || type == TRANSIT_TO_BACK
+                || type == TRANSIT_CLOSE_PREPARE_BACK_NAVIGATION;
     }
 
     void dump(PrintWriter pw, String prefix) {
         mTaskSnapshotController.dump(pw, prefix);
         mActivitySnapshotController.dump(pw, prefix);
+        mSnapshotPersistQueue.dump(pw, prefix);
     }
 }

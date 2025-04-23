@@ -18,8 +18,14 @@ package android.media.projection;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.annotation.SystemService;
+import android.annotation.TestApi;
 import android.app.Activity;
+import android.app.ActivityOptions.LaunchCookie;
+import android.compat.annotation.ChangeId;
+import android.compat.annotation.Disabled;
+import android.compat.annotation.Overridable;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -37,30 +43,51 @@ import java.util.Map;
 /**
  * Manages the retrieval of certain types of {@link MediaProjection} tokens.
  *
- * <p><ol>An example flow of starting a media projection will be:
- *     <li>Declare a foreground service with the type {@code mediaProjection} in
- *     the {@code AndroidManifest.xml}.
- *     </li>
- *     <li>Create an intent by calling {@link MediaProjectionManager#createScreenCaptureIntent()}
- *         and pass this intent to {@link Activity#startActivityForResult(Intent, int)}.
- *     </li>
- *     <li>On getting {@link Activity#onActivityResult(int, int, Intent)},
- *         start the foreground service with the type
- *         {@link android.content.pm.ServiceInfo#FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION}.
- *     </li>
- *     <li>Retrieve the media projection token by calling
- *         {@link MediaProjectionManager#getMediaProjection(int, Intent)} with the result code and
- *         intent from the {@link Activity#onActivityResult(int, int, Intent)} above.
- *     </li>
- *     <li>Start the screen capture session for media projection by calling
- *         {@link MediaProjection#createVirtualDisplay(String, int, int, int, int, Surface,
- *         android.hardware.display.VirtualDisplay.Callback, Handler)}.
- *     </li>
+ * <p>
+ *
+ * <ol>
+ *   An example flow of starting a media projection will be:
+ *   <li>Declare a foreground service with the type {@code mediaProjection} in the {@code
+ *       AndroidManifest.xml}.
+ *   <li>Create an intent by calling {@link MediaProjectionManager#createScreenCaptureIntent()} and
+ *       pass this intent to {@link Activity#startActivityForResult(Intent, int)}.
+ *   <li>On getting {@link Activity#onActivityResult(int, int, Intent)}, start the foreground
+ *       service with the type {@link
+ *       android.content.pm.ServiceInfo#FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION}.
+ *   <li>Retrieve the media projection token by calling {@link
+ *       MediaProjectionManager#getMediaProjection(int, Intent)} with the result code and intent
+ *       from the {@link Activity#onActivityResult(int, int, Intent)} above.
+ *   <li>Register a {@link MediaProjection.Callback} by calling {@link
+ *       MediaProjection#registerCallback(MediaProjection.Callback, Handler)}. This is required to
+ *       receive notifications about when the {@link MediaProjection} or captured content changes
+ *       state. When receiving an `onStop()` callback the {@link MediaProjection} session has been
+ *       finished and the client must clean up any resources it is holding, e.g. the {@link
+ *       VirtualDisplay} and {@link Surface}. The MediaProjection may further no longer create any
+ *       new {@link VirtualDisplay}s via {@link MediaProjection#createVirtualDisplay(String, int,
+ *       int, int, int, Surface, VirtualDisplay.Callback, Handler)}. Note that the `onStop()`
+ *       callback can be a result of the system stopping MediaProjection due to various reasons.
+ *       This includes the user stopping the MediaProjection via UI affordances in system-level UI,
+ *       the screen being locked, or another {@link MediaProjection} session starting.
+ *   <li>Start the screen capture session for media projection by calling {@link
+ *       MediaProjection#createVirtualDisplay(String, int, int, int, int, Surface,
+ *       android.hardware.display.VirtualDisplay.Callback, Handler)}.
  * </ol>
  */
 @SystemService(Context.MEDIA_PROJECTION_SERVICE)
 public final class MediaProjectionManager {
     private static final String TAG = "MediaProjectionManager";
+
+    /**
+     * This change id ensures that users are presented with a choice of capturing a single app
+     * or the entire screen when initiating a MediaProjection session, overriding the usage of
+     * MediaProjectionConfig#createConfigForDefaultDisplay.
+     *
+     * @hide
+     */
+    @ChangeId
+    @Overridable
+    @Disabled
+    public static final long OVERRIDE_DISABLE_MEDIA_PROJECTION_SINGLE_APP_OPTION = 316897322L;
 
     /**
      * Intent extra to customize the permission dialog based on the host app's preferences.
@@ -73,6 +100,9 @@ public final class MediaProjectionManager {
     /** @hide */
     public static final String EXTRA_MEDIA_PROJECTION =
             "android.media.projection.extra.EXTRA_MEDIA_PROJECTION";
+    /** @hide */
+    public static final String EXTRA_LAUNCH_COOKIE =
+            "android.media.projection.extra.EXTRA_LAUNCH_COOKIE";
 
     /** @hide */
     public static final int TYPE_SCREEN_CAPTURE = 0;
@@ -158,13 +188,25 @@ public final class MediaProjectionManager {
      */
     @NonNull
     public Intent createScreenCaptureIntent(@NonNull MediaProjectionConfig config) {
-        Intent i = new Intent();
-        final ComponentName mediaProjectionPermissionDialogComponent =
-                ComponentName.unflattenFromString(mContext.getResources()
-                        .getString(com.android.internal.R.string
-                                .config_mediaProjectionPermissionDialogComponent));
-        i.setComponent(mediaProjectionPermissionDialogComponent);
+        Intent i = createScreenCaptureIntent();
         i.putExtra(EXTRA_MEDIA_PROJECTION_CONFIG, config);
+        return i;
+    }
+
+    /**
+     * Returns an intent similar to {@link #createScreenCaptureIntent()} that will enable screen
+     * recording of the task with the specified launch cookie. This method should only be used for
+     * testing.
+     *
+     * @param launchCookie the launch cookie corresponding to the task to record.
+     * @hide
+     */
+    @SuppressLint("UnflaggedApi")
+    @TestApi
+    @NonNull
+    public Intent createScreenCaptureIntent(@NonNull LaunchCookie launchCookie) {
+        Intent i = createScreenCaptureIntent();
+        i.putExtra(EXTRA_LAUNCH_COOKIE, launchCookie);
         return i;
     }
 
@@ -224,6 +266,7 @@ public final class MediaProjectionManager {
      * @see <a href="/guide/topics/large-screens/media-projection">
      * Media projection developer guide</a>
      */
+    @Nullable
     public MediaProjection getMediaProjection(int resultCode, @NonNull Intent resultData) {
         if (resultCode != Activity.RESULT_OK || resultData == null) {
             return null;
@@ -254,10 +297,10 @@ public final class MediaProjectionManager {
      * Stop the current projection if there is one.
      * @hide
      */
-    public void stopActiveProjection() {
+    public void stopActiveProjection(@StopReason int stopReason) {
         try {
             Log.d(TAG, "Content Recording: stopping active projection");
-            mService.stopActiveProjection();
+            mService.stopActiveProjection(stopReason);
         } catch (RemoteException e) {
             Log.e(TAG, "Unable to stop the currently active media projection", e);
         }

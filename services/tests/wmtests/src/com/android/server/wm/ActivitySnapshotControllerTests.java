@@ -20,10 +20,21 @@ import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
 
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.spyOn;
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.verify;
+import static com.android.server.wm.SnapshotPersistQueue.MAX_STORE_QUEUE_DEPTH;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.never;
 
 import android.platform.test.annotations.Presubmit;
+import android.util.ArraySet;
+import android.window.TaskSnapshot;
 
 import androidx.test.filters.SmallTest;
 
@@ -32,6 +43,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 
 /**
  * Test class for {@link ActivitySnapshotController}.
@@ -42,13 +54,20 @@ import java.util.ArrayList;
 @SmallTest
 @Presubmit
 @RunWith(WindowTestRunner.class)
-public class ActivitySnapshotControllerTests extends WindowTestsBase {
+public class ActivitySnapshotControllerTests extends TaskSnapshotPersisterTestBase {
 
     private ActivitySnapshotController mActivitySnapshotController;
+
+    public ActivitySnapshotControllerTests() {
+        super(0.8f /* highResScale */, 0.5f /* lowResScale */);
+    }
+
+    @Override
     @Before
-    public void setUp() throws Exception {
-        spyOn(mWm.mSnapshotController.mActivitySnapshotController);
-        mActivitySnapshotController = mWm.mSnapshotController.mActivitySnapshotController;
+    public void setUp() {
+        super.setUp();
+        mActivitySnapshotController = new ActivitySnapshotController(mWm, mSnapshotPersistQueue);
+        spyOn(mActivitySnapshotController);
         doReturn(false).when(mActivitySnapshotController).shouldDisableSnapshots();
         mActivitySnapshotController.resetTmpFields();
     }
@@ -72,12 +91,11 @@ public class ActivitySnapshotControllerTests extends WindowTestsBase {
         assertEquals(0, mActivitySnapshotController.mPendingRemoveActivity.size());
         mActivitySnapshotController.resetTmpFields();
 
-        // simulate three activity
+        // simulate three activity, the bottom activity won't participate in transition
         final WindowState belowClose = createAppWindow(task, ACTIVITY_TYPE_STANDARD,
                 "belowClose");
         belowClose.mActivityRecord.commitVisibility(
                 false /* visible */, true /* performLayout */);
-        windows.add(belowClose.mActivityRecord);
         mActivitySnapshotController.handleTransitionFinish(windows);
         assertEquals(1, mActivitySnapshotController.mPendingRemoveActivity.size());
         assertEquals(belowClose.mActivityRecord,
@@ -153,5 +171,104 @@ public class ActivitySnapshotControllerTests extends WindowTestsBase {
         assertEquals(1, mActivitySnapshotController.mPendingLoadActivity.size());
         assertEquals(openingWindowBelow.mActivityRecord,
                 mActivitySnapshotController.mPendingLoadActivity.valueAt(0));
+    }
+
+    /**
+     * Simulate multiple TaskFragments inside a task.
+     */
+    @Test
+    public void testMultipleActivitiesLoadSnapshot() {
+        final Task testTask = createTask(mDisplayContent);
+        final ActivityRecord activityA = createActivityRecord(testTask);
+        final ActivityRecord activityB = createActivityRecord(testTask);
+        final ActivityRecord activityC = createActivityRecord(testTask);
+        final TaskSnapshot taskSnapshot = createSnapshot();
+
+        final int[] mixedCode = new int[3];
+        mixedCode[0] = ActivitySnapshotController.getSystemHashCode(activityA);
+        mixedCode[1] = ActivitySnapshotController.getSystemHashCode(activityB);
+        mixedCode[2] = ActivitySnapshotController.getSystemHashCode(activityC);
+
+        mActivitySnapshotController.addUserSavedFile(testTask.mUserId, taskSnapshot, mixedCode);
+        mActivitySnapshotController.mCache.putSnapshot(activityA, taskSnapshot);
+        mActivitySnapshotController.mCache.putSnapshot(activityB, taskSnapshot);
+        mActivitySnapshotController.mCache.putSnapshot(activityC, taskSnapshot);
+
+        assertTrue(mActivitySnapshotController.hasRecord(activityA));
+        assertTrue(mActivitySnapshotController.hasRecord(activityB));
+
+        // If A is removed, B and C should also be removed because they share the same snapshot.
+        mActivitySnapshotController.onAppRemoved(activityA);
+        assertFalse(mActivitySnapshotController.hasRecord(activityA));
+        assertFalse(mActivitySnapshotController.hasRecord(activityB));
+        final ActivityRecord[] singleActivityList = new ActivityRecord[1];
+        singleActivityList[0] = activityA;
+        assertNull(mActivitySnapshotController.getSnapshot(singleActivityList));
+        singleActivityList[0] = activityB;
+        assertNull(mActivitySnapshotController.getSnapshot(singleActivityList));
+        final ActivityRecord[] activities = new ActivityRecord[3];
+        activities[0] = activityA;
+        activities[1] = activityB;
+        activities[2] = activityC;
+        assertNull(mActivitySnapshotController.getSnapshot(activities));
+
+        // Reset and test load snapshot
+        mActivitySnapshotController.addUserSavedFile(testTask.mUserId, taskSnapshot, mixedCode);
+        // Request to load by B, nothing will be loaded because the snapshot was [A,B,C].
+        mActivitySnapshotController.mPendingLoadActivity.add(activityB);
+        mActivitySnapshotController.loadActivitySnapshot();
+        verify(mActivitySnapshotController, never()).loadSnapshotInner(any(), any());
+
+        // Able to load snapshot when requesting for all A, B, C
+        mActivitySnapshotController.mPendingLoadActivity.clear();
+        mActivitySnapshotController.mPendingLoadActivity.add(activityA);
+        mActivitySnapshotController.mPendingLoadActivity.add(activityB);
+        mActivitySnapshotController.mPendingLoadActivity.add(activityC);
+        final ArraySet<ActivityRecord> verifyList = new ArraySet<>();
+        verifyList.add(activityA);
+        verifyList.add(activityB);
+        verifyList.add(activityC);
+        mActivitySnapshotController.loadActivitySnapshot();
+        verify(mActivitySnapshotController).loadSnapshotInner(argThat(
+                argument -> {
+                    final ArrayList<ActivityRecord> argumentList = new ArrayList<>(
+                            Arrays.asList(argument));
+                    return verifyList.containsAll(argumentList)
+                            && argumentList.containsAll(verifyList);
+                }),
+                any());
+
+        for (int i = activities.length - 1; i >= 0; --i) {
+            mActivitySnapshotController.mCache.putSnapshot(activities[i], taskSnapshot);
+        }
+        // The loaded snapshot can be retrieved only if the activities match exactly.
+        singleActivityList[0] = activityB;
+        assertNull(mActivitySnapshotController.getSnapshot(singleActivityList));
+        assertEquals(taskSnapshot, mActivitySnapshotController.getSnapshot(activities));
+    }
+
+    /**
+     * Verifies that activity snapshot is skipped if the persister queue has too many pending write
+     * items.
+     */
+    @Test
+    public void testSkipRecordActivity() {
+        doReturn(createSnapshot()).when(mActivitySnapshotController).recordSnapshotInner(any());
+        final Task task = createTask(mDisplayContent);
+
+        mSnapshotPersistQueue.setPaused(true);
+        final ArrayList<ActivityRecord> tmpList = new ArrayList<>();
+        for (int i = 0; i < MAX_STORE_QUEUE_DEPTH; ++i) {
+            tmpList.clear();
+            final ActivityRecord activity = createActivityRecord(task);
+            tmpList.add(activity);
+            mActivitySnapshotController.recordSnapshot(tmpList);
+            assertNotNull(mActivitySnapshotController.findSavedFile(activity));
+        }
+        tmpList.clear();
+        final ActivityRecord activity = createActivityRecord(task);
+        tmpList.add(activity);
+        mActivitySnapshotController.recordSnapshot(tmpList);
+        assertNull(mActivitySnapshotController.findSavedFile(activity));
     }
 }

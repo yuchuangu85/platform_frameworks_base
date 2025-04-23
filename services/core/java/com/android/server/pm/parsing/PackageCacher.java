@@ -17,6 +17,7 @@
 package com.android.server.pm.parsing;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.content.pm.PackageParserCacheHelper;
 import android.os.Environment;
 import android.os.FileUtils;
@@ -28,8 +29,12 @@ import android.system.StructStat;
 import android.util.Slog;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.pm.parsing.IPackageCacher;
+import com.android.internal.pm.parsing.PackageParser2;
 import com.android.internal.pm.parsing.pkg.PackageImpl;
 import com.android.internal.pm.parsing.pkg.ParsedPackage;
+import com.android.internal.pm.pkg.component.AconfigFlags;
+import com.android.internal.pm.pkg.parsing.ParsingPackageUtils;
 import com.android.server.pm.ApexManager;
 
 import libcore.io.IoUtils;
@@ -37,9 +42,11 @@ import libcore.io.IoUtils;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicInteger;
 
-public class PackageCacher {
+public class PackageCacher implements IPackageCacher {
 
     private static final String TAG = "PackageCacher";
 
@@ -50,9 +57,18 @@ public class PackageCacher {
 
     @NonNull
     private final File mCacheDir;
+    @Nullable
+    private final PackageParser2.Callback mCallback;
 
-    public PackageCacher(@NonNull File cacheDir) {
+    private static final AconfigFlags sAconfigFlags = ParsingPackageUtils.getAconfigFlags();
+
+    public PackageCacher(File cacheDir) {
+        this(cacheDir, null);
+    }
+
+    public PackageCacher(File cacheDir, @Nullable PackageParser2.Callback callback) {
         this.mCacheDir = cacheDir;
+        this.mCallback = callback;
     }
 
     /**
@@ -70,12 +86,17 @@ public class PackageCacher {
 
     @VisibleForTesting
     protected ParsedPackage fromCacheEntry(byte[] bytes) {
-        return fromCacheEntryStatic(bytes);
+        return fromCacheEntryStatic(bytes, mCallback);
     }
 
     /** static version of {@link #fromCacheEntry} for unit tests. */
     @VisibleForTesting
     public static ParsedPackage fromCacheEntryStatic(byte[] bytes) {
+        return fromCacheEntryStatic(bytes, null);
+    }
+
+    private static ParsedPackage fromCacheEntryStatic(byte[] bytes,
+            @Nullable ParsingPackageUtils.Callback callback) {
         final Parcel p = Parcel.obtain();
         p.unmarshall(bytes, 0, bytes.length);
         p.setDataPosition(0);
@@ -84,7 +105,7 @@ public class PackageCacher {
                 new PackageParserCacheHelper.ReadHelper(p);
         helper.startAndInstall();
 
-        ParsedPackage pkg = new PackageImpl(p);
+        ParsedPackage pkg = new PackageImpl(p, callback);
 
         p.recycle();
 
@@ -120,7 +141,7 @@ public class PackageCacher {
      * Given a {@code packageFile} and a {@code cacheFile} returns whether the
      * cache file is up to date based on the mod-time of both files.
      */
-    private static boolean isCacheUpToDate(File packageFile, File cacheFile) {
+    private static boolean isCacheFileUpToDate(File packageFile, File cacheFile) {
         try {
             // In case packageFile is located on one of /apex mount points it's mtime will always be
             // 0. Instead, we can use mtime of the APEX file backing the corresponding mount point.
@@ -162,22 +183,43 @@ public class PackageCacher {
      * Returns the cached parse result for {@code packageFile} for parse flags {@code flags},
      * or {@code null} if no cached result exists.
      */
+    @Override
     public ParsedPackage getCachedResult(File packageFile, int flags) {
         final String cacheKey = getCacheKey(packageFile, flags);
         final File cacheFile = new File(mCacheDir, cacheKey);
 
         try {
             // If the cache is not up to date, return null.
-            if (!isCacheUpToDate(packageFile, cacheFile)) {
+            if (!isCacheFileUpToDate(packageFile, cacheFile)) {
                 return null;
             }
 
             final byte[] bytes = IoUtils.readFileAsByteArray(cacheFile.getAbsolutePath());
-            ParsedPackage parsed = fromCacheEntry(bytes);
+            final ParsedPackage parsed = fromCacheEntry(bytes);
             if (!packageFile.getAbsolutePath().equals(parsed.getPath())) {
                 // Don't use this cache if the path doesn't match
                 return null;
             }
+
+            if (!android.content.pm.Flags.includeFeatureFlagsInPackageCacher()) {
+                return parsed;
+            }
+
+            final Map<String, Boolean> featureFlagState =
+                    ((PackageImpl) parsed).getFeatureFlagState();
+            if (!featureFlagState.isEmpty()) {
+                Slog.d(TAG, "Feature flags for package " + packageFile + ": " + featureFlagState);
+                for (var entry : featureFlagState.entrySet()) {
+                    final String flagPackageAndName = entry.getKey();
+                    if (!Objects.equals(sAconfigFlags.getFlagValue(flagPackageAndName),
+                            entry.getValue())) {
+                        Slog.i(TAG, "Feature flag " + flagPackageAndName + " changed for package "
+                                + packageFile + "; cached result is invalid");
+                        return null;
+                    }
+                }
+            }
+
             return parsed;
         } catch (Throwable e) {
             Slog.w(TAG, "Error reading package cache: ", e);
@@ -192,6 +234,7 @@ public class PackageCacher {
     /**
      * Caches the parse result for {@code packageFile} with flags {@code flags}.
      */
+    @Override
     public void cacheResult(File packageFile, int flags, ParsedPackage parsed) {
         try {
             final String cacheKey = getCacheKey(packageFile, flags);

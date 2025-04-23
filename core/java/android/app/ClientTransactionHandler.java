@@ -17,20 +17,20 @@ package android.app;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.app.ActivityOptions.SceneTransitionInfo;
 import android.app.ActivityThread.ActivityClientRecord;
 import android.app.servertransaction.ClientTransaction;
 import android.app.servertransaction.DestroyActivityItem;
 import android.app.servertransaction.PendingTransactionActions;
 import android.app.servertransaction.TransactionExecutor;
-import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
 import android.os.IBinder;
 import android.util.MergedConfiguration;
 import android.view.SurfaceControl;
+import android.window.ActivityWindowInfo;
 import android.window.SplashScreenView.SplashScreenViewParcelable;
-import android.window.WindowContext;
 import android.window.WindowContextInfo;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -42,6 +42,7 @@ import java.util.Map;
 /**
  * Defines operations that a {@link android.app.servertransaction.ClientTransaction} or its items
  * can perform on client.
+ *
  * @hide
  */
 public abstract class ClientTransactionHandler {
@@ -68,7 +69,6 @@ public abstract class ClientTransactionHandler {
             getTransactionExecutor().execute(transaction);
         } finally {
             mIsExecutingLocalTransaction = false;
-            transaction.recycle();
         }
     }
 
@@ -87,10 +87,6 @@ public abstract class ClientTransactionHandler {
 
     /** Get activity instance for the token. */
     public abstract Activity getActivity(IBinder token);
-
-    /** Gets the {@link WindowContext} instance for the token. */
-    @Nullable
-    public abstract Context getWindowContext(@NonNull IBinder clientToken);
 
     // Prepare phase related logic and handlers. Methods that inform about about pending changes or
     // do other internal bookkeeping.
@@ -112,11 +108,11 @@ public abstract class ClientTransactionHandler {
 
     /** Destroy the activity. */
     public abstract void handleDestroyActivity(@NonNull ActivityClientRecord r, boolean finishing,
-            int configChanges, boolean getNonConfigInstance, String reason);
+            boolean getNonConfigInstance, String reason);
 
     /** Pause the activity. */
     public abstract void handlePauseActivity(@NonNull ActivityClientRecord r, boolean finished,
-            boolean userLeaving, int configChanges, boolean autoEnteringPip,
+            boolean userLeaving, boolean autoEnteringPip,
             PendingTransactionActions pendingActions, String reason);
 
     /**
@@ -144,14 +140,13 @@ public abstract class ClientTransactionHandler {
     /**
      * Stop the activity.
      * @param r Target activity record.
-     * @param configChanges Activity configuration changes.
      * @param pendingActions Pending actions to be used on this or later stages of activity
      *                       transaction.
      * @param finalStateRequest Flag indicating if this call is handling final lifecycle state
      *                          request for a transaction.
      * @param reason Reason for performing this operation.
      */
-    public abstract void handleStopActivity(@NonNull ActivityClientRecord r, int configChanges,
+    public abstract void handleStopActivity(@NonNull ActivityClientRecord r,
             PendingTransactionActions pendingActions, boolean finalStateRequest, String reason);
 
     /** Report that activity was stopped to server. */
@@ -165,11 +160,12 @@ public abstract class ClientTransactionHandler {
 
     /** Set pending activity configuration in case it will be updated by other transaction item. */
     public abstract void updatePendingActivityConfiguration(@NonNull IBinder token,
-            Configuration overrideConfig);
+            @NonNull Configuration overrideConfig);
 
     /** Deliver activity (override) configuration change. */
     public abstract void handleActivityConfigurationChanged(@NonNull ActivityClientRecord r,
-            Configuration overrideConfig, int displayId);
+            @NonNull Configuration overrideConfig, int displayId,
+            @NonNull ActivityWindowInfo activityWindowInfo);
 
     /** Deliver {@link android.window.WindowContextInfo} change. */
     public abstract void handleWindowContextInfoChanged(@NonNull IBinder clientToken,
@@ -207,7 +203,7 @@ public abstract class ClientTransactionHandler {
 
     /** Perform activity start. */
     public abstract void handleStartActivity(@NonNull ActivityClientRecord r,
-            PendingTransactionActions pendingActions, ActivityOptions activityOptions);
+            PendingTransactionActions pendingActions, SceneTransitionInfo sceneTransitionInfo);
 
     /** Get package info. */
     public abstract LoadedApk getPackageInfoNoCheck(ApplicationInfo ai);
@@ -231,12 +227,15 @@ public abstract class ClientTransactionHandler {
      * @param config New configuration applied to the activity.
      * @param preserveWindow Whether the activity should try to reuse the window it created,
      *                        including the decor view after the relaunch.
+     * @param activityWindowInfo Window information about the relaunched Activity.
      * @return An initialized instance of {@link ActivityThread.ActivityClientRecord} to use during
      *         relaunch, or {@code null} if relaunch cancelled.
      */
-    public abstract ActivityClientRecord prepareRelaunchActivity(IBinder token,
-            List<ResultInfo> pendingResults, List<ReferrerIntent> pendingNewIntents,
-            int configChanges, MergedConfiguration config, boolean preserveWindow);
+    public abstract ActivityClientRecord prepareRelaunchActivity(@NonNull IBinder token,
+            @Nullable List<ResultInfo> pendingResults,
+            @Nullable List<ReferrerIntent> pendingNewIntents, int configChanges,
+            @NonNull MergedConfiguration config, boolean preserveWindow,
+            @NonNull ActivityWindowInfo activityWindowInfo);
 
     /**
      * Perform activity relaunch.
@@ -244,7 +243,7 @@ public abstract class ClientTransactionHandler {
      * @param pendingActions Pending actions to be used on later stages of activity transaction.
      * */
     public abstract void handleRelaunchActivity(@NonNull ActivityClientRecord r,
-            PendingTransactionActions pendingActions);
+            @NonNull PendingTransactionActions pendingActions);
 
     /**
      * Report that relaunch request was handled.

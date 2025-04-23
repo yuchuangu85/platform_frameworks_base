@@ -16,9 +16,9 @@
 
 package com.android.server.wm.flicker.launch
 
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
 import androidx.test.filters.FlakyTest
 import com.android.server.wm.flicker.launch.common.OpenAppFromIconTransition
 import org.junit.FixMethodOrder
@@ -30,7 +30,7 @@ import org.junit.runners.Parameterized
 /**
  * Test cold launching an app from launcher
  *
- * To run this test: `atest FlickerTests:OpenAppColdFromIcon`
+ * To run this test: `atest FlickerTestsAppLaunch:OpenAppFromIconColdTest`
  *
  * Actions:
  * ```

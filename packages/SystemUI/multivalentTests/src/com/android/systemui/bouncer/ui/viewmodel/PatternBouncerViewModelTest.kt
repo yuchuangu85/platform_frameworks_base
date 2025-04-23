@@ -16,17 +16,29 @@
 
 package com.android.systemui.bouncer.ui.viewmodel
 
+import android.platform.test.annotations.EnableFlags
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
+import com.android.compose.animation.scene.SceneKey
+import com.android.systemui.Flags
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.authentication.data.repository.FakeAuthenticationRepository
+import com.android.systemui.authentication.data.repository.authenticationRepository
+import com.android.systemui.authentication.data.repository.fakeAuthenticationRepository
+import com.android.systemui.authentication.domain.interactor.authenticationInteractor
 import com.android.systemui.authentication.shared.model.AuthenticationMethodModel
 import com.android.systemui.authentication.shared.model.AuthenticationPatternCoordinate as Point
 import com.android.systemui.coroutines.collectLastValue
+import com.android.systemui.haptics.msdl.FakeMSDLPlayer
+import com.android.systemui.haptics.msdl.bouncerHapticPlayer
+import com.android.systemui.haptics.msdl.fakeMSDLPlayer
+import com.android.systemui.kosmos.testScope
+import com.android.systemui.lifecycle.activateIn
 import com.android.systemui.res.R
-import com.android.systemui.scene.SceneTestUtils
-import com.android.systemui.scene.shared.model.SceneKey
-import com.android.systemui.scene.shared.model.SceneModel
+import com.android.systemui.scene.domain.interactor.sceneInteractor
+import com.android.systemui.scene.shared.model.Scenes
+import com.android.systemui.testKosmos
+import com.google.android.msdl.data.model.MSDLToken
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -44,26 +56,18 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class PatternBouncerViewModelTest : SysuiTestCase() {
 
-    private val utils = SceneTestUtils(this)
-    private val testScope = utils.testScope
-    private val authenticationInteractor = utils.authenticationInteractor()
-    private val sceneInteractor = utils.sceneInteractor()
-    private val bouncerInteractor =
-        utils.bouncerInteractor(
-            authenticationInteractor = authenticationInteractor,
-        )
-    private val bouncerViewModel =
-        utils.bouncerViewModel(
-            bouncerInteractor = bouncerInteractor,
-            authenticationInteractor = authenticationInteractor,
-            actionButtonInteractor = utils.bouncerActionButtonInteractor(),
-        )
+    private val kosmos = testKosmos()
+    private val testScope = kosmos.testScope
+    private val authenticationInteractor by lazy { kosmos.authenticationInteractor }
+    private val sceneInteractor by lazy { kosmos.sceneInteractor }
+    private val bouncerViewModel by lazy { kosmos.bouncerSceneContentViewModel }
+    private val msdlPlayer: FakeMSDLPlayer = kosmos.fakeMSDLPlayer
+    private val bouncerHapticHelper = kosmos.bouncerHapticPlayer
     private val underTest =
-        PatternBouncerViewModel(
-            applicationContext = context,
-            viewModelScope = testScope.backgroundScope,
-            interactor = bouncerInteractor,
+        kosmos.patternBouncerViewModelFactory.create(
             isInputEnabled = MutableStateFlow(true).asStateFlow(),
+            onIntentionalUserInput = {},
+            bouncerHapticPlayer = bouncerHapticHelper,
         )
 
     private val containerSize = 90 // px
@@ -73,46 +77,42 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
     fun setUp() {
         overrideResource(R.string.keyguard_enter_your_pattern, ENTER_YOUR_PATTERN)
         overrideResource(R.string.kg_wrong_pattern, WRONG_PATTERN)
+        underTest.activateIn(testScope)
     }
 
     @Test
     fun onShown() =
         testScope.runTest {
-            val currentScene by collectLastValue(sceneInteractor.desiredScene)
-            val message by collectLastValue(bouncerViewModel.message)
+            val currentScene by collectLastValue(sceneInteractor.currentScene)
             val selectedDots by collectLastValue(underTest.selectedDots)
             val currentDot by collectLastValue(underTest.currentDot)
             lockDeviceAndOpenPatternBouncer()
 
-            assertThat(message?.text).isEqualTo(ENTER_YOUR_PATTERN)
             assertThat(selectedDots).isEmpty()
             assertThat(currentDot).isNull()
-            assertThat(currentScene).isEqualTo(SceneModel(SceneKey.Bouncer))
+            assertThat(currentScene).isEqualTo(Scenes.Bouncer)
             assertThat(underTest.authenticationMethod).isEqualTo(AuthenticationMethodModel.Pattern)
         }
 
     @Test
     fun onDragStart() =
         testScope.runTest {
-            val currentScene by collectLastValue(sceneInteractor.desiredScene)
-            val message by collectLastValue(bouncerViewModel.message)
+            val currentScene by collectLastValue(sceneInteractor.currentScene)
             val selectedDots by collectLastValue(underTest.selectedDots)
             val currentDot by collectLastValue(underTest.currentDot)
             lockDeviceAndOpenPatternBouncer()
 
             underTest.onDragStart()
 
-            assertThat(message?.text).isEmpty()
             assertThat(selectedDots).isEmpty()
             assertThat(currentDot).isNull()
-            assertThat(currentScene).isEqualTo(SceneModel(SceneKey.Bouncer))
+            assertThat(currentScene).isEqualTo(Scenes.Bouncer)
         }
 
     @Test
     fun onDragEnd_whenCorrect() =
         testScope.runTest {
-            val authResult by
-                collectLastValue(authenticationInteractor.authenticationChallengeResult)
+            val authResult by collectLastValue(authenticationInteractor.onAuthenticationResult)
             val selectedDots by collectLastValue(underTest.selectedDots)
             val currentDot by collectLastValue(underTest.currentDot)
             lockDeviceAndOpenPatternBouncer()
@@ -124,10 +124,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
                     .that(selectedDots)
                     .isEqualTo(
                         CORRECT_PATTERN.subList(0, index + 1).map {
-                            PatternDotViewModel(
-                                x = it.x,
-                                y = it.y,
-                            )
+                            PatternDotViewModel(x = it.x, y = it.y)
                         }
                     )
                 assertWithMessage("Wrong current dot for index $index")
@@ -148,8 +145,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
     @Test
     fun onDragEnd_whenWrong() =
         testScope.runTest {
-            val currentScene by collectLastValue(sceneInteractor.desiredScene)
-            val message by collectLastValue(bouncerViewModel.message)
+            val currentScene by collectLastValue(sceneInteractor.currentScene)
             val selectedDots by collectLastValue(underTest.selectedDots)
             val currentDot by collectLastValue(underTest.currentDot)
             lockDeviceAndOpenPatternBouncer()
@@ -160,8 +156,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
 
             assertThat(selectedDots).isEmpty()
             assertThat(currentDot).isNull()
-            assertThat(message?.text).isEqualTo(WRONG_PATTERN)
-            assertThat(currentScene).isEqualTo(SceneModel(SceneKey.Bouncer))
+            assertThat(currentScene).isEqualTo(Scenes.Bouncer)
         }
 
     @Test
@@ -185,7 +180,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
                     listOf(
                         PatternDotViewModel(0, 0),
                         PatternDotViewModel(1, 0),
-                        PatternDotViewModel(2, 0)
+                        PatternDotViewModel(2, 0),
                     )
                 )
         }
@@ -211,7 +206,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
                     listOf(
                         PatternDotViewModel(1, 0),
                         PatternDotViewModel(1, 1),
-                        PatternDotViewModel(1, 2)
+                        PatternDotViewModel(1, 2),
                     )
                 )
         }
@@ -239,7 +234,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
                     listOf(
                         PatternDotViewModel(2, 0),
                         PatternDotViewModel(1, 1),
-                        PatternDotViewModel(0, 2)
+                        PatternDotViewModel(0, 2),
                     )
                 )
         }
@@ -303,8 +298,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
     @Test
     fun onDragEnd_whenPatternTooShort() =
         testScope.runTest {
-            val message by collectLastValue(bouncerViewModel.message)
-            val dialogMessage by collectLastValue(bouncerViewModel.dialogMessage)
+            val dialogViewModel by collectLastValue(bouncerViewModel.dialogViewModel)
             lockDeviceAndOpenPatternBouncer()
 
             // Enter a pattern that's too short more than enough times that would normally trigger
@@ -312,10 +306,7 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
             val attempts = FakeAuthenticationRepository.MAX_FAILED_AUTH_TRIES_BEFORE_LOCKOUT + 1
             repeat(attempts) { attempt ->
                 underTest.onDragStart()
-                CORRECT_PATTERN.subList(
-                        0,
-                        utils.authenticationRepository.minPatternLength - 1,
-                    )
+                CORRECT_PATTERN.subList(0, kosmos.authenticationRepository.minPatternLength - 1)
                     .forEach { coordinate ->
                         underTest.onDrag(
                             xPx = 30f * coordinate.x + 15,
@@ -326,17 +317,14 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
 
                 underTest.onDragEnd()
 
-                assertWithMessage("Attempt #$attempt").that(message?.text).isEqualTo(WRONG_PATTERN)
-                assertWithMessage("Attempt #$attempt").that(dialogMessage).isNull()
+                assertWithMessage("Attempt #$attempt").that(dialogViewModel).isNull()
             }
         }
 
     @Test
     fun onDragEnd_correctAfterWrong() =
         testScope.runTest {
-            val authResult by
-                collectLastValue(authenticationInteractor.authenticationChallengeResult)
-            val message by collectLastValue(bouncerViewModel.message)
+            val authResult by collectLastValue(authenticationInteractor.onAuthenticationResult)
             val selectedDots by collectLastValue(underTest.selectedDots)
             val currentDot by collectLastValue(underTest.currentDot)
             lockDeviceAndOpenPatternBouncer()
@@ -346,7 +334,6 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
             underTest.onDragEnd()
             assertThat(selectedDots).isEmpty()
             assertThat(currentDot).isNull()
-            assertThat(message?.text).isEqualTo(WRONG_PATTERN)
             assertThat(authResult).isFalse()
 
             // Enter the correct pattern:
@@ -355,6 +342,16 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
             underTest.onDragEnd()
 
             assertThat(authResult).isTrue()
+        }
+
+    @Test
+    @EnableFlags(Flags.FLAG_MSDL_FEEDBACK)
+    fun performDotFeedback_deliversDragToken() =
+        testScope.runTest {
+            underTest.performDotFeedback(null)
+
+            assertThat(msdlPlayer.latestTokenPlayed).isEqualTo(MSDLToken.DRAG_INDICATOR_DISCRETE)
+            assertThat(msdlPlayer.latestPropertiesPlayed).isNull()
         }
 
     private fun dragOverCoordinates(vararg coordinatesDragged: Point) {
@@ -371,22 +368,20 @@ class PatternBouncerViewModelTest : SysuiTestCase() {
     }
 
     private fun TestScope.switchToScene(toScene: SceneKey) {
-        val currentScene by collectLastValue(sceneInteractor.desiredScene)
-        val bouncerShown = currentScene?.key != SceneKey.Bouncer && toScene == SceneKey.Bouncer
-        val bouncerHidden = currentScene?.key == SceneKey.Bouncer && toScene != SceneKey.Bouncer
-        sceneInteractor.changeScene(SceneModel(toScene), "reason")
-        sceneInteractor.onSceneChanged(SceneModel(toScene), "reason")
-        if (bouncerShown) underTest.onShown()
+        val currentScene by collectLastValue(sceneInteractor.currentScene)
+        val bouncerHidden = currentScene == Scenes.Bouncer && toScene != Scenes.Bouncer
+        sceneInteractor.changeScene(toScene, "reason")
         if (bouncerHidden) underTest.onHidden()
         runCurrent()
 
-        assertThat(currentScene).isEqualTo(SceneModel(toScene))
+        assertThat(currentScene).isEqualTo(toScene)
     }
 
     private fun TestScope.lockDeviceAndOpenPatternBouncer() {
-        utils.authenticationRepository.setAuthenticationMethod(AuthenticationMethodModel.Pattern)
-        utils.deviceEntryRepository.setUnlocked(false)
-        switchToScene(SceneKey.Bouncer)
+        kosmos.fakeAuthenticationRepository.setAuthenticationMethod(
+            AuthenticationMethodModel.Pattern
+        )
+        switchToScene(Scenes.Bouncer)
     }
 
     companion object {

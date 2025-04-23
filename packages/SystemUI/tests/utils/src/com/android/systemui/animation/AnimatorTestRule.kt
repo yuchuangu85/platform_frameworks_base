@@ -16,6 +16,7 @@
 
 package com.android.systemui.animation
 
+import android.animation.Animator
 import java.util.function.Consumer
 import org.junit.rules.RuleChain
 import org.junit.rules.TestRule
@@ -26,12 +27,16 @@ import org.junit.runners.model.Statement
  * A rule that wraps both [androidx.core.animation.AnimatorTestRule] and
  * [android.animation.AnimatorTestRule] such that the clocks of the two animation handlers can be
  * advanced together.
+ *
+ * @param test the instance of the test used to look up the TestableLooper.  If a TestableLooper is
+ * found, the time can only be advanced on that thread; otherwise the time must be advanced on the
+ * main thread.
  */
-class AnimatorTestRule : TestRule {
+class AnimatorTestRule(test: Any?) : TestRule {
     // Create the androidx rule, which initializes start time to SystemClock.uptimeMillis(),
     // then copy that time to the platform rule so that the two clocks are in sync.
     private val androidxRule = androidx.core.animation.AnimatorTestRule()
-    private val platformRule = android.animation.AnimatorTestRule(androidxRule.startTime)
+    private val platformRule = android.animation.AnimatorTestRule(test, androidxRule.startTime)
     private val advanceAndroidXTimeBy =
         Consumer<Long> { timeDelta -> androidxRule.advanceTimeBy(timeDelta) }
 
@@ -64,6 +69,22 @@ class AnimatorTestRule : TestRule {
         //  rules before either rule does its frame output. Failing to do this could cause the
         //  animation from one to start later than the other.
         platformRule.advanceTimeBy(timeDelta, advanceAndroidXTimeBy)
+    }
+
+    /**
+     * This is similar to [advanceTimeBy] but it expects to reach the end of an animation. This call
+     * may produce 2 frames for the last animation frame and end animation callback.
+     *
+     * @param durationMs the duration that is greater than or equal to the animation duration.
+     */
+    fun advanceAnimationDuration(durationMs: Long) {
+        advanceTimeBy(durationMs)
+        if (Animator.isPostNotifyEndListenerEnabled()) {
+            // If the post-end-callback is enabled, the AnimatorListener#onAnimationEnd will be
+            // called on the next frame of last animation frame. So trigger additional doFrame to
+            // ensure the end callback method is called (by android.animation.AnimatorTestRule).
+            advanceTimeBy(0)
+        }
     }
 
     /**

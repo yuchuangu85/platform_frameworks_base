@@ -16,13 +16,13 @@
 
 package com.android.server.wm.flicker.activityembedding.close
 
+import android.graphics.Rect
 import android.platform.test.annotations.Presubmit
-import android.tools.common.datatypes.Rect
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.traces.component.ComponentNameMatcher
 import androidx.test.filters.RequiresDevice
 import com.android.server.wm.flicker.activityembedding.ActivityEmbeddingTestBase
 import com.android.server.wm.flicker.helpers.ActivityEmbeddingAppHelper
@@ -38,7 +38,7 @@ import org.junit.runners.Parameterized
  * Setup: Launch A|B in split with B being the secondary activity. Transitions: Finish B and expect
  * A to become fullscreen.
  *
- * To run this test: `atest FlickerTestsOther:CloseSecondaryActivityInSplitTest`
+ * To run this test: `atest FlickerTestsActivityEmbedding:CloseSecondaryActivityInSplitTest`
  */
 @RequiresDevice
 @RunWith(Parameterized::class)
@@ -122,7 +122,7 @@ class CloseSecondaryActivityInSplitTest(flicker: LegacyFlickerTest) :
 
     companion object {
         /** {@inheritDoc} */
-        private var startDisplayBounds = Rect.EMPTY
+        private var startDisplayBounds = Rect()
         /**
          * Creates the test configurations.
          *

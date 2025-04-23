@@ -21,12 +21,14 @@ import static org.mockito.Mockito.mock;
 import android.app.IActivityManager;
 import android.app.admin.DeviceStateCache;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.UserInfo;
 import android.hardware.authsecret.IAuthSecret;
 import android.os.Handler;
 import android.os.Parcel;
 import android.os.Process;
 import android.os.RemoteException;
+import android.os.UserHandle;
 import android.os.storage.IStorageManager;
 import android.security.keystore.KeyPermanentlyInvalidatedException;
 import android.service.gatekeeper.IGateKeeperService;
@@ -41,10 +43,14 @@ import java.io.FileNotFoundException;
 import java.security.KeyStore;
 
 public class LockSettingsServiceTestable extends LockSettingsService {
+    private Intent mSavedFrpNotificationIntent = null;
+    private UserHandle mSavedFrpNotificationUserHandle = null;
+    private String mSavedFrpNotificationPermission = null;
 
     public static class MockInjector extends LockSettingsService.Injector {
 
         private LockSettingsStorage mLockSettingsStorage;
+        private final LockSettingsStrongAuth mStrongAuth;
         private IActivityManager mActivityManager;
         private IStorageManager mStorageManager;
         private SyntheticPasswordManager mSpManager;
@@ -57,12 +63,14 @@ public class LockSettingsServiceTestable extends LockSettingsService {
         public boolean mIsMainUserPermanentAdmin = false;
 
         public MockInjector(Context context, LockSettingsStorage storage,
+                LockSettingsStrongAuth strongAuth,
                 IActivityManager activityManager, IStorageManager storageManager,
                 SyntheticPasswordManager spManager, FakeGsiService gsiService,
                 RecoverableKeyStoreManager recoverableKeyStoreManager,
                 UserManagerInternal userManagerInternal, DeviceStateCache deviceStateCache) {
             super(context);
             mLockSettingsStorage = storage;
+            mStrongAuth = strongAuth;
             mActivityManager = activityManager;
             mStorageManager = storageManager;
             mSpManager = spManager;
@@ -84,7 +92,7 @@ public class LockSettingsServiceTestable extends LockSettingsService {
 
         @Override
         public LockSettingsStrongAuth getStrongAuth() {
-            return mock(LockSettingsStrongAuth.class);
+            return mStrongAuth;
         }
 
         @Override
@@ -191,11 +199,6 @@ public class LockSettingsServiceTestable extends LockSettingsService {
     }
 
     @Override
-    void setKeystorePassword(byte[] password, int userHandle) {
-
-    }
-
-    @Override
     void initKeystoreSuperKeys(int userId, SyntheticPassword sp, boolean allowExisting) {
     }
 
@@ -209,5 +212,30 @@ public class LockSettingsServiceTestable extends LockSettingsService {
         synchronized (mHeadlessAuthSecretLock) {
             mAuthSecret = null;
         }
+    }
+
+    @Override
+    void sendBroadcast(Intent intent, UserHandle userHandle, String permission) {
+        mSavedFrpNotificationIntent = intent;
+        mSavedFrpNotificationUserHandle = userHandle;
+        mSavedFrpNotificationPermission = permission;
+    }
+
+    String getSavedFrpNotificationPermission() {
+        return mSavedFrpNotificationPermission;
+    }
+
+    UserHandle getSavedFrpNotificationUserHandle() {
+        return mSavedFrpNotificationUserHandle;
+    }
+
+    Intent getSavedFrpNotificationIntent() {
+        return mSavedFrpNotificationIntent;
+    }
+
+    void clearRecordedFrpNotificationData() {
+        mSavedFrpNotificationIntent = null;
+        mSavedFrpNotificationPermission = null;
+        mSavedFrpNotificationUserHandle = null;
     }
 }

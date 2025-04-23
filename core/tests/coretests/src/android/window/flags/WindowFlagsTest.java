@@ -16,13 +16,12 @@
 
 package android.window.flags;
 
-import static com.android.window.flags.Flags.syncWindowConfigUpdateFlag;
 import static com.android.window.flags.Flags.taskFragmentSystemOrganizerFlag;
 
 import android.platform.test.annotations.Presubmit;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -37,12 +36,6 @@ import org.junit.runner.RunWith;
 @SmallTest
 @Presubmit
 public class WindowFlagsTest {
-
-    @Test
-    public void testSyncWindowConfigUpdateFlag() {
-        // No crash when accessing the flag.
-        syncWindowConfigUpdateFlag();
-    }
 
     @Test
     public void testTaskFragmentSystemOrganizerFlag() {

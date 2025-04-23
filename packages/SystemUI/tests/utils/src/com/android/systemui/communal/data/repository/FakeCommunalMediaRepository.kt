@@ -16,8 +16,38 @@
 
 package com.android.systemui.communal.data.repository
 
+import com.android.systemui.communal.data.model.CommunalMediaModel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 
-class FakeCommunalMediaRepository(
-    override val mediaPlaying: MutableStateFlow<Boolean> = MutableStateFlow(false)
-) : CommunalMediaRepository
+class FakeCommunalMediaRepository : CommunalMediaRepository {
+    private val _mediaModel = MutableStateFlow(CommunalMediaModel.INACTIVE)
+
+    override val mediaModel: Flow<CommunalMediaModel> = _mediaModel
+
+    fun mediaActive(timestamp: Long = 0L) {
+        _mediaModel.value =
+            CommunalMediaModel(
+                hasAnyMediaOrRecommendation = true,
+                createdTimestampMillis = timestamp,
+            )
+    }
+
+    fun mediaInactive() {
+        _mediaModel.value = CommunalMediaModel.INACTIVE
+    }
+
+    private var isListening = false
+
+    override fun startListening() {
+        isListening = true
+    }
+
+    override fun stopListening() {
+        isListening = false
+    }
+
+    fun isListening(): Boolean {
+        return isListening
+    }
+}

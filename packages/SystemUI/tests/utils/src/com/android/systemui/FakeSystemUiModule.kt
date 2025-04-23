@@ -18,8 +18,8 @@ package com.android.systemui
 import com.android.systemui.classifier.FakeClassifierModule
 import com.android.systemui.data.FakeSystemUiDataLayerModule
 import com.android.systemui.flags.FakeFeatureFlagsClassicModule
+import com.android.systemui.flags.FakeSystemPropertiesHelperModule
 import com.android.systemui.log.FakeUiEventLoggerModule
-import com.android.systemui.scene.FakeSceneModule
 import com.android.systemui.settings.FakeSettingsModule
 import com.android.systemui.statusbar.policy.FakeConfigurationControllerModule
 import com.android.systemui.statusbar.policy.FakeSplitShadeStateControllerModule
@@ -34,7 +34,7 @@ import dagger.Module
             FakeConfigurationControllerModule::class,
             FakeExecutorModule::class,
             FakeFeatureFlagsClassicModule::class,
-            FakeSceneModule::class,
+            FakeSystemPropertiesHelperModule::class,
             FakeSettingsModule::class,
             FakeSplitShadeStateControllerModule::class,
             FakeSystemClockModule::class,

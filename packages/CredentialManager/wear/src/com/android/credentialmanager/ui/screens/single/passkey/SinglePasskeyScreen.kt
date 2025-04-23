@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 The Android Open Source Project
+ * Copyright 2024 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,66 +18,71 @@
 
 package com.android.credentialmanager.ui.screens.single.passkey
 
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
+import com.android.credentialmanager.FlowEngine
+import com.android.credentialmanager.model.get.CredentialEntryInfo
 import com.android.credentialmanager.R
 import com.android.credentialmanager.ui.components.AccountRow
-import com.android.credentialmanager.ui.components.DialogButtonsRow
+import com.android.credentialmanager.ui.components.ContinueChip
+import com.android.credentialmanager.ui.components.CredentialsScreenChipSpacer
+import com.android.credentialmanager.ui.components.DismissChip
 import com.android.credentialmanager.ui.components.SignInHeader
+import com.android.credentialmanager.ui.components.SignInOptionsChip
 import com.android.credentialmanager.ui.screens.single.SingleAccountScreen
 import com.google.android.horologist.annotations.ExperimentalHorologistApi
 import com.google.android.horologist.compose.layout.ScalingLazyColumnState
-import com.google.android.horologist.compose.layout.belowTimeTextPreview
-import com.google.android.horologist.compose.tools.WearPreview
+import com.android.credentialmanager.ui.components.BottomSpacer
 
+/**
+ * Screen that shows single passkey credential.
+ *
+ * @param entry The passkey entry
+ * @param columnState ScalingLazyColumn configuration to be be applied to SingleAccountScreen
+ * @param modifier styling for composable
+ * @param flowEngine [FlowEngine] that updates ui state for this screen
+ */
+@OptIn(ExperimentalHorologistApi::class)
 @Composable
 fun SinglePasskeyScreen(
-    name: String,
-    email: String,
-    onCancelClick: () -> Unit,
-    onOKClick: () -> Unit,
+    entry: CredentialEntryInfo,
     columnState: ScalingLazyColumnState,
-    modifier: Modifier = Modifier,
+    flowEngine: FlowEngine,
 ) {
     SingleAccountScreen(
         headerContent = {
             SignInHeader(
-                icon = R.drawable.passkey_icon,
+                icon = entry.icon,
                 title = stringResource(R.string.use_passkey_title),
             )
         },
         accountContent = {
-            AccountRow(
-                name = name,
-                email = email,
-                modifier = Modifier.padding(top = 10.dp),
-            )
+            val displayName = entry.displayName
+            if (displayName == null ||
+                entry.displayName.equals(entry.userName, ignoreCase = true)) {
+                AccountRow(
+                    primaryText = entry.userName,
+                )
+            } else {
+                AccountRow(
+                    primaryText = displayName,
+                    secondaryText = entry.userName,
+                )
+            }
         },
         columnState = columnState,
-        modifier = modifier.padding(horizontal = 10.dp)
     ) {
         item {
-            DialogButtonsRow(
-                onCancelClick = onCancelClick,
-                onOKClick = onOKClick,
-                modifier = Modifier.padding(top = 10.dp)
-            )
+            val selectEntry = flowEngine.getEntrySelector()
+            Column {
+                ContinueChip { selectEntry(entry, false) }
+                CredentialsScreenChipSpacer()
+                SignInOptionsChip{ flowEngine.openSecondaryScreen() }
+                CredentialsScreenChipSpacer()
+                DismissChip { flowEngine.cancel() }
+                BottomSpacer()
+            }
         }
     }
 }
-
-@WearPreview
-@Composable
-fun SinglePasskeyScreenPreview() {
-    SinglePasskeyScreen(
-        name = "Elisa Beckett",
-        email = "beckett_bakery@gmail.com",
-        onCancelClick = {},
-        onOKClick = {},
-        columnState = belowTimeTextPreview(),
-    )
-}
-

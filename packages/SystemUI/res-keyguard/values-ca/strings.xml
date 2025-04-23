@@ -33,8 +33,8 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • S\'està carregant"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • S\'està carregant ràpidament"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • S\'està carregant lentament"</string>
-    <string name="keyguard_plugged_in_charging_limited" msgid="1053130519456324630">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Càrrega optimitzada per protegir la bateria"</string>
-    <string name="keyguard_plugged_in_incompatible_charger" msgid="3687961801947819076">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Problema relacionat amb l\'accessori de càrrega"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="5369697538556777542">"<xliff:g id="PERCENTAGE">%s</xliff:g> • La càrrega s\'ha posat en espera per protegir la bateria"</string>
+    <string name="keyguard_plugged_in_incompatible_charger" msgid="6384203333154532125">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Revisa l\'accessori de càrrega"</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"La xarxa està bloquejada"</string>
     <string name="keyguard_missing_sim_message_short" msgid="685029586173458728">"No hi ha cap SIM"</string>
     <string name="keyguard_permanent_disabled_sim_message_short" msgid="3955052454216046100">"La SIM no es pot utilitzar."</string>
@@ -111,6 +111,9 @@
     <string name="kg_prompt_reason_timeout_pattern" msgid="5514969660010197363">"Per a més seguretat, utilitza el patró"</string>
     <string name="kg_prompt_reason_timeout_pin" msgid="4227962059353859376">"Per a més seguretat, utilitza el PIN"</string>
     <string name="kg_prompt_reason_timeout_password" msgid="8810879144143933690">"Per a més seguretat, utilitza la contrasenya"</string>
+    <string name="kg_prompt_added_security_pin" msgid="5487992065995475528">"Cal introduir el PIN per disposar de més seguretat"</string>
+    <string name="kg_prompt_added_security_pattern" msgid="1017068086102168544">"Cal introduir el patró per disposar de més seguretat"</string>
+    <string name="kg_prompt_added_security_password" msgid="6053156069765029006">"Cal introduir la contrasenya per disposar de més seguretat"</string>
     <string name="kg_prompt_reason_device_admin" msgid="6961159596224055685">"L\'administrador ha bloquejat el dispositiu"</string>
     <string name="kg_prompt_reason_user_request" msgid="6015774877733717904">"El dispositiu s\'ha bloquejat manualment"</string>
     <string name="kg_face_not_recognized" msgid="7903950626744419160">"No s\'ha reconegut"</string>

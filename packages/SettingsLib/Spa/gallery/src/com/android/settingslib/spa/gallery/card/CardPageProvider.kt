@@ -17,39 +17,19 @@
 package com.android.settingslib.spa.gallery.card
 
 import android.os.Bundle
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Error
-import androidx.compose.material.icons.outlined.PowerOff
-import androidx.compose.material.icons.outlined.Shield
-import androidx.compose.material.icons.outlined.WarningAmber
-import androidx.compose.material3.Text
+import androidx.compose.material.icons.filled.Stars
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
-import com.android.settingslib.spa.framework.common.SettingsEntryBuilder
 import com.android.settingslib.spa.framework.common.SettingsPageProvider
-import com.android.settingslib.spa.framework.common.createSettingsPage
 import com.android.settingslib.spa.framework.compose.navigator
-import com.android.settingslib.spa.framework.theme.SettingsDimension
 import com.android.settingslib.spa.framework.theme.SettingsTheme
-import com.android.settingslib.spa.gallery.R
-import com.android.settingslib.spa.widget.card.CardButton
-import com.android.settingslib.spa.widget.card.CardModel
-import com.android.settingslib.spa.widget.card.SettingsCard
-import com.android.settingslib.spa.widget.card.SettingsCardContent
-import com.android.settingslib.spa.widget.card.SettingsCollapsibleCard
+import com.android.settingslib.spa.widget.card.SuggestionCard
+import com.android.settingslib.spa.widget.card.SuggestionCardModel
 import com.android.settingslib.spa.widget.preference.Preference
 import com.android.settingslib.spa.widget.preference.PreferenceModel
 import com.android.settingslib.spa.widget.scaffold.RegularScaffold
@@ -62,112 +42,56 @@ object CardPageProvider : SettingsPageProvider {
     @Composable
     override fun Page(arguments: Bundle?) {
         RegularScaffold(title = TITLE) {
-            SettingsCardWithIcon()
-            SettingsCardWithoutIcon()
-            SampleSettingsCollapsibleCard()
-            SampleSettingsCardContent()
+            SuggestionCard()
+            SuggestionCardWithLongTitle()
+            SuggestionCardDismissible()
         }
     }
 
     @Composable
-    private fun SettingsCardWithIcon() {
-        SettingsCard(
-            CardModel(
-                title = stringResource(R.string.sample_title),
-                text = stringResource(R.string.sample_text),
-                imageVector = Icons.Outlined.WarningAmber,
-                buttons = listOf(
-                    CardButton(text = "Action") {},
-                    CardButton(text = "Action", isMain = true) {},
-                )
+    private fun SuggestionCard() {
+        SuggestionCard(
+            SuggestionCardModel(
+                title = "Suggestion card",
+                description = "Suggestion card description",
+                imageVector = Icons.Filled.Stars,
             )
         )
     }
 
     @Composable
-    private fun SettingsCardWithoutIcon() {
+    private fun SuggestionCardWithLongTitle() {
+        SuggestionCard(
+            SuggestionCardModel(
+                title = "Top level suggestion card with a really, really long title",
+                imageVector = Icons.Filled.Stars,
+                onClick = {},
+            )
+        )
+    }
+
+    @Composable
+    private fun SuggestionCardDismissible() {
         var isVisible by rememberSaveable { mutableStateOf(true) }
-        SettingsCard(
-            CardModel(
-                title = stringResource(R.string.sample_title),
-                text = stringResource(R.string.sample_text),
-                isVisible = { isVisible },
+        SuggestionCard(
+            SuggestionCardModel(
+                title = "Suggestion card",
+                description = "Suggestion card description",
+                imageVector = Icons.Filled.Stars,
                 onDismiss = { isVisible = false },
-                buttons = listOf(
-                    CardButton(text = "Action") {},
-                ),
+                isVisible = isVisible,
             )
         )
     }
 
     @Composable
-    fun SampleSettingsCollapsibleCard() {
-        val context = LocalContext.current
-        var isVisible0 by rememberSaveable { mutableStateOf(true) }
-        val cards = remember {
-            mutableStateListOf(
-                CardModel(
-                    title = context.getString(R.string.sample_title),
-                    text = context.getString(R.string.sample_text),
-                    imageVector = Icons.Outlined.PowerOff,
-                    isVisible = { isVisible0 },
-                    onDismiss = { isVisible0 = false },
-                    buttons = listOf(
-                        CardButton(text = "Action") {},
-                    )
-                ),
-                CardModel(
-                    title = context.getString(R.string.sample_title),
-                    text = context.getString(R.string.sample_text),
-                    imageVector = Icons.Outlined.Shield,
-                    buttons = listOf(
-                        CardButton(text = "Action") {},
-                        CardButton(text = "Main action", isMain = true) {},
-                    )
-                )
-            )
-        }
-        SettingsCollapsibleCard(
-            title = "More alerts",
-            imageVector = Icons.Outlined.Error,
-            models = cards.toList()
+    fun Entry() {
+        Preference(
+            object : PreferenceModel {
+                override val title = TITLE
+                override val onClick = navigator(name)
+            }
         )
-    }
-
-    @Composable
-    fun SampleSettingsCardContent() {
-        SettingsCard {
-            SettingsCardContent {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { }
-                        .padding(SettingsDimension.dialogItemPadding),
-                ) {
-                    Text(text = "Abc")
-                }
-            }
-            SettingsCardContent {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { }
-                        .padding(SettingsDimension.dialogItemPadding),
-                ) {
-                    Text(text = "123")
-                }
-            }
-        }
-    }
-
-    fun buildInjectEntry(): SettingsEntryBuilder {
-        return SettingsEntryBuilder.createInject(owner = createSettingsPage())
-            .setUiLayoutFn {
-                Preference(object : PreferenceModel {
-                    override val title = TITLE
-                    override val onClick = navigator(name)
-                })
-            }
     }
 
     private const val TITLE = "Sample Card"
@@ -176,7 +100,5 @@ object CardPageProvider : SettingsPageProvider {
 @Preview
 @Composable
 private fun CardPagePreview() {
-    SettingsTheme {
-        CardPageProvider.Page(null)
-    }
+    SettingsTheme { CardPageProvider.Page(null) }
 }

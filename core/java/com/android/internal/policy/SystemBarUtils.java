@@ -19,7 +19,7 @@ package com.android.internal.policy;
 import android.content.Context;
 import android.content.res.Resources;
 import android.graphics.Insets;
-import android.util.RotationUtils;
+import android.view.Display;
 import android.view.DisplayCutout;
 import android.view.Surface;
 
@@ -56,21 +56,21 @@ public final class SystemBarUtils {
      */
     public static int getStatusBarHeightForRotation(
             Context context, @Surface.Rotation int targetRot) {
-        final int rotation = context.getDisplay().getRotation();
-        final DisplayCutout cutout = context.getDisplay().getCutout();
-
-        Insets insets = cutout == null ? Insets.NONE : Insets.of(cutout.getSafeInsets());
-        Insets waterfallInsets = cutout == null ? Insets.NONE : cutout.getWaterfallInsets();
-        // rotate insets to target rotation if needed.
-        if (rotation != targetRot) {
-            if (!insets.equals(Insets.NONE)) {
-                insets = RotationUtils.rotateInsets(
-                        insets, RotationUtils.deltaRotation(rotation, targetRot));
-            }
-            if (!waterfallInsets.equals(Insets.NONE)) {
-                waterfallInsets = RotationUtils.rotateInsets(
-                        waterfallInsets, RotationUtils.deltaRotation(rotation, targetRot));
-            }
+        final Display display = context.getDisplay();
+        final int rotation = display.getRotation();
+        final DisplayCutout cutout = display.getCutout();
+        Insets insets;
+        Insets waterfallInsets;
+        final int localWidth = context.getResources().getDisplayMetrics().widthPixels;
+        final int localHeight = context.getResources().getDisplayMetrics().heightPixels;
+        if (cutout == null) {
+            insets = Insets.NONE;
+            waterfallInsets = Insets.NONE;
+        } else {
+            DisplayCutout rotated =
+                    cutout.getRotated(localWidth, localHeight, rotation, targetRot);
+            insets = Insets.of(rotated.getSafeInsets());
+            waterfallInsets = rotated.getWaterfallInsets();
         }
         final int defaultSize =
                 context.getResources().getDimensionPixelSize(R.dimen.status_bar_height_default);
@@ -90,5 +90,12 @@ public final class SystemBarUtils {
         final int statusBarHeight = getStatusBarHeight(context);
         // Equals to status bar height if status bar height is bigger.
         return Math.max(defaultSize, statusBarHeight);
+    }
+
+    /**
+     * Gets the taskbar frame height.
+     */
+    public static int getTaskbarHeight(Resources res) {
+        return res.getDimensionPixelSize(R.dimen.taskbar_frame_height);
     }
 }

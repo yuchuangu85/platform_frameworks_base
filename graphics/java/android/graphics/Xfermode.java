@@ -16,23 +16,16 @@
 
 // This file was generated from the C++ include file: SkXfermode.h
 // Any changes made to this file will be discarded by the build.
-// To change this file, either edit the include, or device/tools/gluemaker/main.cpp, 
-// or one of the auxilary file specifications in device/tools/gluemaker.
+// To change this file, either edit the include, or device/tools/gluemaker/main.cpp,
+// or one of the auxiliary file specifications in device/tools/gluemaker.
 
 package android.graphics;
-
-import android.compat.annotation.UnsupportedAppUsage;
-import android.os.Build;
 
 /**
  * Xfermode is the base class for objects that are called to implement custom
  * "transfer-modes" in the drawing pipeline. The static function Create(Modes)
  * can be called to return an instance of any of the predefined subclasses as
- * specified in the Modes enum. When an Xfermode is assigned to an Paint, then
+ * specified in the Modes enum. When an Xfermode is assigned to a Paint, then
  * objects drawn with that paint have the xfermode applied.
  */
-public class Xfermode {
-    static final int DEFAULT = PorterDuff.Mode.SRC_OVER.nativeInt;
-    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
-    int porterDuffMode = DEFAULT;
-}
+public class Xfermode {}

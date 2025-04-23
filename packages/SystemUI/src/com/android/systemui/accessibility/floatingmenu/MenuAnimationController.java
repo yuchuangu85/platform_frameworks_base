@@ -37,8 +37,6 @@ import androidx.dynamicanimation.animation.SpringForce;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.util.Preconditions;
-import com.android.systemui.Flags;
 
 import java.util.HashMap;
 
@@ -73,8 +71,8 @@ class MenuAnimationController {
     private final ValueAnimator mFadeOutAnimator;
     private final Handler mHandler;
     private boolean mIsFadeEffectEnabled;
-    private DismissAnimationController.DismissCallback mDismissCallback;
     private Runnable mSpringAnimationsEndAction;
+    private PointF mAnimationEndPosition = new PointF();
 
     // Cache the animations state of {@link DynamicAnimation.TRANSLATION_X} and {@link
     // DynamicAnimation.TRANSLATION_Y} to be well controlled by the touch handler
@@ -107,21 +105,18 @@ class MenuAnimationController {
                     @Override
                     public void onRadiiAnimationStop() {}
                 });
+        mAnimationEndPosition = mMenuView.getMenuPosition();
     }
 
     void moveToPosition(PointF position) {
         moveToPosition(position, /* animateMovement = */ false);
+        mAnimationEndPosition = position;
     }
 
     /* Moves position without updating underlying percentage position. Can be animated. */
     void moveToPosition(PointF position, boolean animateMovement) {
-        if (Flags.floatingMenuImeDisplacementAnimation()) {
-            moveToPositionX(position.x, animateMovement);
-            moveToPositionY(position.y, animateMovement);
-        } else {
-            moveToPositionX(position.x, /* animateMovement = */ false);
-            moveToPositionY(position.y, /* animateMovement = */ false);
-        }
+        moveToPositionX(position.x, animateMovement);
+        moveToPositionY(position.y, animateMovement);
     }
 
     void moveToPositionX(float positionX) {
@@ -129,7 +124,7 @@ class MenuAnimationController {
     }
 
     void moveToPositionX(float positionX, boolean animateMovement) {
-        if (animateMovement && Flags.floatingMenuImeDisplacementAnimation()) {
+        if (animateMovement) {
             springMenuWith(DynamicAnimation.TRANSLATION_X,
                     createSpringForce(),
                     /* velocity = */ 0,
@@ -137,6 +132,7 @@ class MenuAnimationController {
         } else {
             DynamicAnimation.TRANSLATION_X.setValue(mMenuView, positionX);
         }
+        mAnimationEndPosition.x = positionX;
     }
 
     void moveToPositionY(float positionY) {
@@ -144,7 +140,7 @@ class MenuAnimationController {
     }
 
     void moveToPositionY(float positionY, boolean animateMovement) {
-        if (animateMovement && Flags.floatingMenuImeDisplacementAnimation()) {
+        if (animateMovement) {
             springMenuWith(DynamicAnimation.TRANSLATION_Y,
                     createSpringForce(),
                     /* velocity = */ 0,
@@ -152,6 +148,7 @@ class MenuAnimationController {
         } else {
             DynamicAnimation.TRANSLATION_Y.setValue(mMenuView, positionY);
         }
+        mAnimationEndPosition.y = positionY;
     }
 
     void moveToPositionYIfNeeded(float positionY) {
@@ -168,11 +165,6 @@ class MenuAnimationController {
      */
     void setSpringAnimationsEndAction(Runnable runnable) {
         mSpringAnimationsEndAction = runnable;
-    }
-
-    void setDismissCallback(
-            DismissAnimationController.DismissCallback dismissCallback) {
-        mDismissCallback = dismissCallback;
     }
 
     void moveToTopLeftPosition() {
@@ -203,13 +195,6 @@ class MenuAnimationController {
         moveToPosition(position);
         mMenuView.onBoundsInParentChanged((int) position.x, (int) position.y);
         constrainPositionAndUpdate(position, /* writeToPosition = */ true);
-    }
-
-    void removeMenu() {
-        Preconditions.checkArgument(mDismissCallback != null,
-                "The dismiss callback should be initialized first.");
-
-        mDismissCallback.onDismiss();
     }
 
     void flingMenuThenSpringToEdge(float x, float velocityX, float velocityY) {
@@ -279,6 +264,9 @@ class MenuAnimationController {
 
         cancelAnimation(property);
         mPositionAnimations.put(property, flingAnimation);
+        if (finalPosition != null) {
+            setAnimationEndPosition(property, finalPosition);
+        }
         flingAnimation.start();
     }
 
@@ -312,6 +300,7 @@ class MenuAnimationController {
 
         cancelAnimation(property);
         mPositionAnimations.put(property, springAnimation);
+        setAnimationEndPosition(property, finalPosition);
         springAnimation.animateToFinalPosition(finalPosition);
     }
 
@@ -331,11 +320,10 @@ class MenuAnimationController {
             constrainPositionAndUpdate(
                     new PointF(mMenuView.getTranslationX(), mMenuView.getTranslationY()),
                     /* writeToPosition = */ true);
+            mMenuView.onPositionChanged(true);
             moveToEdgeAndHide();
             return true;
         }
-
-        fadeOutIfEnabled();
         return false;
     }
 
@@ -360,15 +348,11 @@ class MenuAnimationController {
         mMenuView.updateMenuMoveToTucked(/* isMoveToTucked= */ true);
         final PointF position = mMenuView.getMenuPosition();
         final PointF tuckedPosition = getTuckedMenuPosition();
-        if (Flags.floatingMenuAnimatedTuck()) {
-            flingThenSpringMenuWith(DynamicAnimation.TRANSLATION_X,
-                    Math.signum(tuckedPosition.x - position.x) * ESCAPE_VELOCITY,
-                    FLING_FRICTION_SCALAR,
-                    createDefaultSpringForce(),
-                    tuckedPosition.x);
-        } else {
-            moveToPosition(tuckedPosition);
-        }
+        flingThenSpringMenuWith(DynamicAnimation.TRANSLATION_X,
+                Math.signum(tuckedPosition.x - position.x) * ESCAPE_VELOCITY,
+                FLING_FRICTION_SCALAR,
+                createDefaultSpringForce(),
+                tuckedPosition.x);
 
         // Keep the touch region let users could click extra space to pop up the menu view
         // from the screen edge
@@ -380,23 +364,19 @@ class MenuAnimationController {
     void moveOutEdgeAndShow() {
         mMenuView.updateMenuMoveToTucked(/* isMoveToTucked= */ false);
 
-        if (Flags.floatingMenuAnimatedTuck()) {
-            PointF position = mMenuView.getMenuPosition();
-            springMenuWith(DynamicAnimation.TRANSLATION_X,
-                    createDefaultSpringForce(),
-                    0,
-                    position.x,
-                    true
-            );
-            springMenuWith(DynamicAnimation.TRANSLATION_Y,
-                    createDefaultSpringForce(),
-                    0,
-                    position.y,
-                    true
-            );
-        } else {
-            mMenuView.onPositionChanged();
-        }
+        PointF position = mMenuView.getMenuPosition();
+        springMenuWith(DynamicAnimation.TRANSLATION_X,
+                createDefaultSpringForce(),
+                0,
+                position.x,
+                true
+        );
+        springMenuWith(DynamicAnimation.TRANSLATION_Y,
+                createDefaultSpringForce(),
+                0,
+                position.y,
+                true
+        );
 
         mMenuView.onEdgeChangedIfNeeded();
     }
@@ -412,6 +392,21 @@ class MenuAnimationController {
         }
 
         mPositionAnimations.get(property).cancel();
+    }
+
+    private void setAnimationEndPosition(
+            DynamicAnimation.ViewProperty property, Float endPosition) {
+        if (property.equals(DynamicAnimation.TRANSLATION_X)) {
+            mAnimationEndPosition.x = endPosition;
+        }
+        if (property.equals(DynamicAnimation.TRANSLATION_Y)) {
+            mAnimationEndPosition.y = endPosition;
+        }
+    }
+
+    void skipAnimations() {
+        cancelAnimations();
+        moveToPosition(mAnimationEndPosition, false);
     }
 
     @VisibleForTesting
@@ -453,8 +448,6 @@ class MenuAnimationController {
         mMenuView.onBoundsInParentChanged((int) position.x, (int) position.y);
         constrainPositionAndUpdate(position, writeToPosition);
 
-        fadeOutIfEnabled();
-
         if (mSpringAnimationsEndAction != null) {
             mSpringAnimationsEndAction.run();
         }
@@ -473,7 +466,7 @@ class MenuAnimationController {
                 ? MIN_PERCENT
                 : Math.min(MAX_PERCENT, position.y / draggableBounds.height());
 
-        if (Flags.floatingMenuImeDisplacementAnimation() && !writeToPosition) {
+        if (!writeToPosition) {
             mMenuView.onEdgeChangedIfNeeded();
         } else {
             mMenuView.persistPositionAndUpdateEdge(new Position(percentageX, percentageY));

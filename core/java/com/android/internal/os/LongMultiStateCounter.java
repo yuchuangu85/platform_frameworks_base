@@ -18,6 +18,10 @@ package com.android.internal.os;
 
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodRedirect;
+import android.ravenwood.annotation.RavenwoodRedirectionClass;
+import android.ravenwood.annotation.RavenwoodReplace;
 
 import com.android.internal.util.Preconditions;
 
@@ -55,11 +59,11 @@ import libcore.util.NativeAllocationRegistry;
  *
  * @hide
  */
+@RavenwoodKeepWholeClass
+@RavenwoodRedirectionClass("LongMultiStateCounter_ravenwood")
 public final class LongMultiStateCounter implements Parcelable {
 
-    private static final NativeAllocationRegistry sRegistry =
-            NativeAllocationRegistry.createMalloced(
-                    LongMultiStateCounter.class.getClassLoader(), native_getReleaseFunc());
+    private static NativeAllocationRegistry sRegistry;
 
     private final int mStateCount;
 
@@ -71,14 +75,31 @@ public final class LongMultiStateCounter implements Parcelable {
         Preconditions.checkArgumentPositive(stateCount, "stateCount must be greater than 0");
         mStateCount = stateCount;
         mNativeObject = native_init(stateCount);
-        sRegistry.registerNativeAllocation(this, mNativeObject);
+        registerNativeAllocation();
     }
 
     private LongMultiStateCounter(Parcel in) {
         mNativeObject = native_initFromParcel(in);
-        sRegistry.registerNativeAllocation(this, mNativeObject);
+        registerNativeAllocation();
 
         mStateCount = native_getStateCount(mNativeObject);
+    }
+
+    @RavenwoodReplace
+    private void registerNativeAllocation() {
+        if (sRegistry == null) {
+            synchronized (LongMultiStateCounter.class) {
+                if (sRegistry == null) {
+                    sRegistry = NativeAllocationRegistry.createMalloced(
+                            LongMultiStateCounter.class.getClassLoader(), native_getReleaseFunc());
+                }
+            }
+        }
+        sRegistry.registerNativeAllocation(this, mNativeObject);
+    }
+
+    private void registerNativeAllocation$ravenwood() {
+        // No-op under ravenwood
     }
 
     public int getStateCount() {
@@ -192,43 +213,56 @@ public final class LongMultiStateCounter implements Parcelable {
 
 
     @CriticalNative
+    @RavenwoodRedirect
     private static native long native_init(int stateCount);
 
     @CriticalNative
+    @RavenwoodRedirect
     private static native long native_getReleaseFunc();
 
     @CriticalNative
+    @RavenwoodRedirect
     private static native void native_setEnabled(long nativeObject, boolean enabled,
             long timestampMs);
 
     @CriticalNative
+    @RavenwoodRedirect
     private static native void native_setState(long nativeObject, int state, long timestampMs);
 
     @CriticalNative
+    @RavenwoodRedirect
     private static native long native_updateValue(long nativeObject, long value, long timestampMs);
 
     @CriticalNative
+    @RavenwoodRedirect
     private static native void native_incrementValue(long nativeObject, long increment,
             long timestampMs);
 
     @CriticalNative
+    @RavenwoodRedirect
     private static native void native_addCount(long nativeObject, long count);
 
     @CriticalNative
+    @RavenwoodRedirect
     private static native void native_reset(long nativeObject);
 
     @CriticalNative
+    @RavenwoodRedirect
     private static native long native_getCount(long nativeObject, int state);
 
     @FastNative
-    private native String native_toString(long nativeObject);
+    @RavenwoodRedirect
+    private static native String native_toString(long nativeObject);
 
     @FastNative
-    private native void native_writeToParcel(long nativeObject, Parcel dest, int flags);
+    @RavenwoodRedirect
+    private static native void native_writeToParcel(long nativeObject, Parcel dest, int flags);
 
     @FastNative
+    @RavenwoodRedirect
     private static native long native_initFromParcel(Parcel parcel);
 
     @CriticalNative
+    @RavenwoodRedirect
     private static native int native_getStateCount(long nativeObject);
 }

@@ -2,9 +2,9 @@ package com.android.systemui.log
 
 import android.hardware.face.FaceManager
 import android.hardware.face.FaceSensorPropertiesInternal
-import com.android.keyguard.FaceAuthUiEvent
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.keyguard.shared.model.ErrorFaceAuthenticationStatus
+import com.android.systemui.deviceentry.shared.FaceAuthUiEvent
+import com.android.systemui.deviceentry.shared.model.ErrorFaceAuthenticationStatus
 import com.android.systemui.log.core.LogLevel.DEBUG
 import com.android.systemui.log.dagger.FaceAuthLog
 import com.android.systemui.power.shared.model.WakeSleepReason
@@ -199,6 +199,10 @@ constructor(
             { str1 = "${wake?.lastWakeReason}" },
             { "Triggering face auth because lockscreen became visible due to wake reason: $str1" }
         )
+    }
+
+    fun addLockoutResetCallbackDone() {
+        logBuffer.log(TAG, DEBUG, {}, { "addlockoutResetCallback done" })
     }
 
     fun authRequested(uiEvent: FaceAuthUiEvent) {

@@ -16,7 +16,10 @@
 
 package android.app.admin;
 
+import static android.nfc.Flags.FLAG_NFC_STATE_CHANGE_SECURITY_LOG_EVENT_ENABLED;
+
 import android.Manifest;
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -99,6 +102,9 @@ public class SecurityLog {
             TAG_PACKAGE_INSTALLED,
             TAG_PACKAGE_UPDATED,
             TAG_PACKAGE_UNINSTALLED,
+            TAG_BACKUP_SERVICE_TOGGLED,
+            TAG_NFC_ENABLED,
+            TAG_NFC_DISABLED,
     })
     public @interface SecurityLogTag {}
 
@@ -598,6 +604,29 @@ public class SecurityLog {
      */
     public static final int TAG_PACKAGE_UNINSTALLED = SecurityLogTags.SECURITY_PACKAGE_UNINSTALLED;
 
+    /**
+     * Indicates that an admin has enabled or disabled backup service. The log entry contains the
+     * following information about the event encapsulated in an {@link Object} array, accessible
+     * via {@link SecurityEvent#getData()}:
+     * <li> [0] admin package name ({@code String})
+     * <li> [1] admin user ID ({@code Integer})
+     * <li> [2] backup service state ({@code Integer}, 1 for enabled, 0 for disabled)
+     * @see DevicePolicyManager#setBackupServiceEnabled(ComponentName, boolean)
+     */
+    public static final int TAG_BACKUP_SERVICE_TOGGLED =
+            SecurityLogTags.SECURITY_BACKUP_SERVICE_TOGGLED;
+
+    /**
+     * Indicates that NFC service is enabled. There is no extra payload in the log event.
+     */
+    @FlaggedApi(FLAG_NFC_STATE_CHANGE_SECURITY_LOG_EVENT_ENABLED)
+    public static final int TAG_NFC_ENABLED = SecurityLogTags.SECURITY_NFC_ENABLED;
+
+    /**
+     * Indicates that NFC service is disabled. There is no extra payload in the log event.
+     */
+    @FlaggedApi(FLAG_NFC_STATE_CHANGE_SECURITY_LOG_EVENT_ENABLED)
+    public static final int TAG_NFC_DISABLED = SecurityLogTags.SECURITY_NFC_DISABLED;
     /**
      * Event severity level indicating that the event corresponds to normal workflow.
      */

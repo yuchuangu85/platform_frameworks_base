@@ -15,45 +15,73 @@
  */
 package com.android.systemui;
 
-import static android.platform.test.flag.junit.SetFlagsRule.DefaultInitValueType.DEVICE_DEFAULT;
-
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import android.app.Instrumentation;
-import android.os.Build;
+import android.content.Context;
+import android.content.res.Resources;
 import android.os.Handler;
+import android.os.HandlerExecutor;
 import android.os.Looper;
 import android.os.MessageQueue;
 import android.os.ParcelFileDescriptor;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.flag.junit.SetFlagsRule;
+import android.platform.test.ravenwood.RavenwoodClassRule;
+import android.platform.test.ravenwood.RavenwoodRule;
+import android.test.mock.MockContext;
 import android.testing.DexmakerShareClassLoaderRule;
 import android.testing.LeakCheck;
 import android.testing.TestWithLooperRule;
 import android.testing.TestableLooper;
 import android.util.Log;
+import android.util.Singleton;
 
+import androidx.annotation.NonNull;
 import androidx.core.animation.AndroidXAnimatorIsolationRule;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.uiautomator.UiDevice;
 
+import com.android.internal.protolog.ProtoLog;
 import com.android.systemui.broadcast.FakeBroadcastDispatcher;
+import com.android.systemui.flags.SceneContainerRule;
 
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
+import org.junit.ClassRule;
 import org.junit.Rule;
 import org.mockito.Mockito;
 
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
 
 /**
  * Base class that does System UI specific setup.
  */
+// NOTE: This @DisabledOnRavenwood annotation is inherited to all subclasses (unless overridden
+// via a more-specific @EnabledOnRavenwood annotation); this means that by default all
+// subclasses will be "ignored" when executed on the Ravenwood testing environment; more
+// background on Ravenwood is available at go/ravenwood-docs
+@DisabledOnRavenwood
 public abstract class SysuiTestCase {
+    /**
+     * Especially when self-testing test utilities, we may have classes that look like test
+     * classes, but we don't expect to ever actually run as a top-level test.
+     * For example, {@link com.android.systemui.TryToDoABadThing}.
+     * Verifying properties on these as a part of structural tests like
+     * AAAPlusPlusVerifySysuiRequiredTestPropertiesTest is a waste of our time, and makes things
+     * look more confusing, so this lets us skip when appropriate.
+     */
+    @Retention(RetentionPolicy.RUNTIME)
+    public @interface SkipSysuiVerification {
+    }
 
     private static final String TAG = "SysuiTestCase";
 
@@ -64,15 +92,108 @@ public abstract class SysuiTestCase {
     public AndroidXAnimatorIsolationRule mAndroidXAnimatorIsolationRule =
             new AndroidXAnimatorIsolationRule();
 
-    @Rule
-    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule(DEVICE_DEFAULT);
+    /**
+     * Rule that respects class-level annotations such as {@code @DisabledOnRavenwood} when tests
+     * are running on Ravenwood; on all other test environments this rule is a no-op passthrough.
+     */
+    @ClassRule(order = Integer.MIN_VALUE + 1)
+    public static final RavenwoodClassRule sRavenwood = new RavenwoodClassRule();
+
+    /**
+     * Rule that defines and prepares the Ravenwood environment when tests are running on
+     * Ravenwood; on all other test environments this rule is a no-op passthrough.
+     */
+    @Rule(order = Integer.MIN_VALUE + 1)
+    public final RavenwoodRule mRavenwood = new RavenwoodRule.Builder()
+            .setProcessApp()
+            .setProvideMainThread(true)
+            .build();
+
+    @ClassRule
+    public static final SetFlagsRule.ClassRule mSetFlagsClassRule =
+            new SetFlagsRule.ClassRule(
+                    android.app.Flags.class,
+                    android.hardware.biometrics.Flags.class,
+                    android.multiuser.Flags.class,
+                    android.net.platform.flags.Flags.class,
+                    android.os.Flags.class,
+                    android.service.controls.flags.Flags.class,
+                    android.service.quickaccesswallet.Flags.class,
+                    com.android.internal.telephony.flags.Flags.class,
+                    com.android.server.notification.Flags.class,
+                    com.android.systemui.Flags.class);
+
+    // TODO(b/339471826): Fix Robolectric to execute the @ClassRule correctly
+    @Rule public final SetFlagsRule mSetFlagsRule =
+            isRobolectricTest() ? new SetFlagsRule() : mSetFlagsClassRule.createSetFlagsRule();
+
+    @Rule(order = 10)
+    public final SceneContainerRule mSceneContainerRule = new SceneContainerRule();
 
     @Rule
-    public SysuiTestableContext mContext = new SysuiTestableContext(
-            InstrumentationRegistry.getContext(), getLeakCheck());
+    public SysuiTestableContext mContext = createTestableContext();
+
+    @NonNull
+    private SysuiTestableContext createTestableContext() {
+        SysuiTestableContext context = new SysuiTestableContext(
+                getTestableContextBase(), getLeakCheck());
+        if (isRobolectricTest()) {
+            // Manually associate a Display to context for Robolectric test. Similar to b/214297409
+            return context.createDefaultDisplayContext();
+        } else {
+            return context;
+        }
+    }
+
+    @NonNull
+    private Context getTestableContextBase() {
+        if (isRavenwoodTest()) {
+            // TODO(b/292141694): build out Ravenwood support for Context
+            // Ravenwood doesn't yet provide a Context, but many SysUI tests assume one exists;
+            // so here we construct just enough of a Context to be useful; this will be replaced
+            // as more of the Ravenwood environment is built out
+            return new MockContext() {
+                @Override
+                public void setTheme(int resid) {
+                    // TODO(b/318393625): build out Ravenwood support for Resources
+                    // until then, ignored as no-op
+                }
+
+                @Override
+                public Resources getResources() {
+                    // TODO(b/318393625): build out Ravenwood support for Resources
+                    return Mockito.mock(Resources.class);
+                }
+
+                private Singleton<Executor> mMainExecutor = new Singleton<>() {
+                    @Override
+                    protected Executor create() {
+                        return new HandlerExecutor(new Handler(Looper.getMainLooper()));
+                    }
+                };
+
+                @Override
+                public Executor getMainExecutor() {
+                    return mMainExecutor.get();
+                }
+            };
+        } else {
+            return InstrumentationRegistry.getContext();
+        }
+    }
+
     @Rule
     public final DexmakerShareClassLoaderRule mDexmakerShareClassLoaderRule =
             new DexmakerShareClassLoaderRule();
+
+    @Rule public final OnTeardownRule mTearDownRule = new OnTeardownRule();
+
+    /**
+     * Schedule a cleanup routine to happen when the test state is torn down.
+     */
+    protected void onTeardown(Runnable tearDownRunnable) {
+        mTearDownRule.onTeardown(tearDownRunnable);
+    }
 
     // set the highest order so it's the innermost rule
     @Rule(order = Integer.MAX_VALUE)
@@ -84,23 +205,25 @@ public abstract class SysuiTestCase {
 
     @Before
     public void SysuiSetup() throws Exception {
-        // Manually associate a Display to context for Robolectric test. Similar to b/214297409
-        if (isRobolectricTest()) {
-            mContext = mContext.createDefaultDisplayContext();
-        }
+        ProtoLog.REQUIRE_PROTOLOGTOOL = false;
         mSysuiDependency = new SysuiTestDependency(mContext, shouldFailOnLeakedReceiver());
         mDependency = mSysuiDependency.install();
-        mRealInstrumentation = InstrumentationRegistry.getInstrumentation();
-        Instrumentation inst = spy(mRealInstrumentation);
-        when(inst.getContext()).thenAnswer(invocation -> {
-            throw new RuntimeException(
-                    "SysUI Tests should use SysuiTestCase#getContext or SysuiTestCase#mContext");
-        });
-        when(inst.getTargetContext()).thenAnswer(invocation -> {
-            throw new RuntimeException(
-                    "SysUI Tests should use SysuiTestCase#getContext or SysuiTestCase#mContext");
-        });
-        InstrumentationRegistry.registerInstance(inst, InstrumentationRegistry.getArguments());
+        // TODO(b/292141694): build out Ravenwood support for Instrumentation
+        // Ravenwood doesn't yet provide Instrumentation, so we sidestep this global configuration
+        // step; any tests that rely on it are already being excluded on Ravenwood
+        if (!isRavenwoodTest() && !isScreenshotTest()) {
+            mRealInstrumentation = InstrumentationRegistry.getInstrumentation();
+            Instrumentation inst = spy(mRealInstrumentation);
+            when(inst.getContext()).thenAnswer(invocation -> {
+                throw new RuntimeException(
+                        "Tests should use SysuiTestCase#getContext or SysuiTestCase#mContext");
+            });
+            when(inst.getTargetContext()).thenAnswer(invocation -> {
+                throw new RuntimeException(
+                        "Tests should use SysuiTestCase#getContext or SysuiTestCase#mContext");
+            });
+            InstrumentationRegistry.registerInstance(inst, InstrumentationRegistry.getArguments());
+        }
     }
 
     protected boolean shouldFailOnLeakedReceiver() {
@@ -171,10 +294,14 @@ public abstract class SysuiTestCase {
     }
 
     protected void waitForIdleSync() {
-        if (mHandler == null) {
-            mHandler = new Handler(Looper.getMainLooper());
+        if (isRobolectricTest()) {
+            mRealInstrumentation.waitForIdleSync();
+        } else {
+            if (mHandler == null) {
+                mHandler = new Handler(Looper.getMainLooper());
+            }
+            waitForIdleSync(mHandler);
         }
-        waitForIdleSync(mHandler);
     }
 
     protected void waitForUiOffloadThread() {
@@ -196,7 +323,15 @@ public abstract class SysuiTestCase {
     }
 
     public static boolean isRobolectricTest() {
-        return Build.FINGERPRINT.contains("robolectric");
+        return !isRavenwoodTest() && !System.getProperty("java.vm.name").equals("Dalvik");
+    }
+
+    protected boolean isScreenshotTest() {
+        return false;
+    }
+
+    public static boolean isRavenwoodTest() {
+        return RavenwoodRule.isOnRavenwood();
     }
 
     private static final void validateThread(Looper l) {

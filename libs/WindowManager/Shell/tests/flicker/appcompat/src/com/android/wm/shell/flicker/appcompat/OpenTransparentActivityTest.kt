@@ -17,13 +17,12 @@
 package com.android.wm.shell.flicker.appcompat
 
 import android.platform.test.annotations.Postsubmit
-import android.tools.common.Rotation
-import android.tools.common.flicker.assertions.FlickerTest
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.flicker.assertions.FlickerTest
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.traces.component.ComponentNameMatcher
 import androidx.test.filters.RequiresDevice
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -32,7 +31,7 @@ import org.junit.runners.Parameterized
 /**
  * Test launching app in size compat mode.
  *
- * To run this test: `atest WMShellFlickerTestsOther:OpenTransparentActivityTest`
+ * To run this test: `atest WMShellFlickerTestsAppCompat:OpenTransparentActivityTest`
  *
  * Actions:
  * ```
@@ -109,9 +108,7 @@ class OpenTransparentActivityTest(flicker: LegacyFlickerTest) : TransparentBaseA
         @Parameterized.Parameters(name = "{0}")
         @JvmStatic
         fun getParams(): Collection<FlickerTest> {
-            return LegacyFlickerTestFactory.nonRotationTests(
-                supportedRotations = listOf(Rotation.ROTATION_90)
-            )
+            return LegacyFlickerTestFactory.nonRotationTests()
         }
     }
 }

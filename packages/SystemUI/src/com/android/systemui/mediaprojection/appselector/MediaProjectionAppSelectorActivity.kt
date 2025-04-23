@@ -16,6 +16,7 @@
 package com.android.systemui.mediaprojection.appselector
 
 import android.app.ActivityOptions
+import android.app.ActivityOptions.LaunchCookie
 import android.content.Intent
 import android.content.res.Configuration
 import android.content.res.Resources
@@ -24,15 +25,17 @@ import android.media.projection.IMediaProjectionManager.EXTRA_USER_REVIEW_GRANTE
 import android.media.projection.MediaProjectionManager.EXTRA_MEDIA_PROJECTION
 import android.media.projection.ReviewGrantedConsentResult.RECORD_CANCEL
 import android.media.projection.ReviewGrantedConsentResult.RECORD_CONTENT_TASK
-import android.os.Binder
 import android.os.Bundle
-import android.os.IBinder
 import android.os.ResultReceiver
 import android.os.UserHandle
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityEvent
+import android.widget.ImageView
+import androidx.annotation.ColorRes
+import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -51,16 +54,19 @@ import com.android.systemui.mediaprojection.MediaProjectionServiceHelper
 import com.android.systemui.mediaprojection.appselector.data.RecentTask
 import com.android.systemui.mediaprojection.appselector.view.MediaProjectionRecentsViewController
 import com.android.systemui.res.R
+import com.android.systemui.shared.system.ActivityManagerWrapper
 import com.android.systemui.statusbar.policy.ConfigurationController
 import com.android.systemui.util.AsyncActivityLauncher
+import java.lang.IllegalArgumentException
 import javax.inject.Inject
 
 class MediaProjectionAppSelectorActivity(
     private val componentFactory: MediaProjectionAppSelectorComponent.Factory,
     private val activityLauncher: AsyncActivityLauncher,
+    private val activityManager: ActivityManagerWrapper,
     /** This is used to override the dependency in a screenshot test */
     @VisibleForTesting
-    private val listControllerFactory: ((userHandle: UserHandle) -> ResolverListController)?
+    private val listControllerFactory: ((userHandle: UserHandle) -> ResolverListController)?,
 ) :
     ChooserActivity(),
     MediaProjectionAppSelectorView,
@@ -70,8 +76,9 @@ class MediaProjectionAppSelectorActivity(
     @Inject
     constructor(
         componentFactory: MediaProjectionAppSelectorComponent.Factory,
-        activityLauncher: AsyncActivityLauncher
-    ) : this(componentFactory, activityLauncher, listControllerFactory = null)
+        activityLauncher: AsyncActivityLauncher,
+        activityManager: ActivityManagerWrapper,
+    ) : this(componentFactory, activityLauncher, activityManager, listControllerFactory = null)
 
     private val lifecycleRegistry = LifecycleRegistry(this)
     override val lifecycle = lifecycleRegistry
@@ -96,7 +103,7 @@ class MediaProjectionAppSelectorActivity(
                 callingPackage = callingPackage,
                 view = this,
                 resultHandler = this,
-                isFirstStart = savedInstanceState == null
+                isFirstStart = savedInstanceState == null,
             )
         component.lifecycleObservers.forEach { lifecycle.addObserver(it) }
 
@@ -109,7 +116,7 @@ class MediaProjectionAppSelectorActivity(
         intent.configureChooserIntent(
             resources,
             component.hostUserHandle,
-            component.personalProfileUserHandle
+            component.personalProfileUserHandle,
         )
 
         reviewGrantedConsentRequired =
@@ -117,6 +124,7 @@ class MediaProjectionAppSelectorActivity(
 
         super.onCreate(savedInstanceState)
         controller.init()
+        setIcon()
         // we override AppList's AccessibilityDelegate set in ResolverActivity.onCreate because in
         // our case this delegate must extend RecyclerViewAccessibilityDelegate, otherwise
         // RecyclerView scrolling is broken
@@ -163,9 +171,9 @@ class MediaProjectionAppSelectorActivity(
 
         val intent = createIntent(targetInfo)
 
-        val launchToken: IBinder = Binder("media_projection_launch_token")
+        val launchCookie = LaunchCookie("media_projection_launch_token")
         val activityOptions = ActivityOptions.makeBasic()
-        activityOptions.launchCookie = launchToken
+        activityOptions.setLaunchCookie(launchCookie)
 
         val userHandle = mMultiProfilePagerAdapter.activeListAdapter.userHandle
 
@@ -175,7 +183,13 @@ class MediaProjectionAppSelectorActivity(
         // is created and ready to be captured.
         val activityStarted =
             activityLauncher.startActivityAsUser(intent, userHandle, activityOptions.toBundle()) {
-                returnSelectedApp(launchToken)
+                if (targetInfo.resolvedComponentName == callingActivity) {
+                    // If attempting to launch the app used to launch the MediaProjection, then
+                    // provide the task id since the launch cookie won't match the existing task
+                    returnSelectedApp(launchCookie, taskId = activityManager.runningTask.taskId)
+                } else {
+                    returnSelectedApp(launchCookie, taskId = -1)
+                }
             }
 
         // Rely on the ActivityManager to pop up a dialog regarding app suspension
@@ -208,7 +222,7 @@ class MediaProjectionAppSelectorActivity(
             MediaProjectionServiceHelper.setReviewedConsentIfNeeded(
                 RECORD_CANCEL,
                 reviewGrantedConsentRequired,
-                /* projection= */ null
+                /* projection= */ null,
             )
             if (isFinishing) {
                 // Only log dismissed when actually finishing, and not when changing configuration.
@@ -233,7 +247,7 @@ class MediaProjectionAppSelectorActivity(
         }
     }
 
-    override fun returnSelectedApp(launchCookie: IBinder) {
+    override fun returnSelectedApp(launchCookie: LaunchCookie, taskId: Int) {
         taskSelected = true
         if (intent.hasExtra(EXTRA_CAPTURE_REGION_RESULT_RECEIVER)) {
             // The client requested to return the result in the result receiver instead of
@@ -241,9 +255,9 @@ class MediaProjectionAppSelectorActivity(
             val resultReceiver =
                 intent.getParcelableExtra(
                     EXTRA_CAPTURE_REGION_RESULT_RECEIVER,
-                    ResultReceiver::class.java
+                    ResultReceiver::class.java,
                 ) as ResultReceiver
-            val captureRegion = MediaProjectionCaptureTarget(launchCookie)
+            val captureRegion = MediaProjectionCaptureTarget(launchCookie, taskId)
             val data = Bundle().apply { putParcelable(KEY_CAPTURE_TARGET, captureRegion) }
             resultReceiver.send(RESULT_OK, data)
             // TODO(b/279175710): Ensure consent result is always set here. Skipping this for now
@@ -256,6 +270,7 @@ class MediaProjectionAppSelectorActivity(
             val projection = IMediaProjection.Stub.asInterface(mediaProjectionBinder)
 
             projection.launchCookie = launchCookie
+            projection.taskId = taskId
 
             val intent = Intent()
             intent.putExtra(EXTRA_MEDIA_PROJECTION, projection.asBinder())
@@ -264,7 +279,7 @@ class MediaProjectionAppSelectorActivity(
             MediaProjectionServiceHelper.setReviewedConsentIfNeeded(
                 RECORD_CONTENT_TASK,
                 reviewGrantedConsentRequired,
-                projection
+                projection,
             )
         }
 
@@ -298,6 +313,29 @@ class MediaProjectionAppSelectorActivity(
     override fun createContentPreviewView(parent: ViewGroup): ViewGroup =
         recentsViewController.createView(parent)
 
+    /** Set up intent for the [ChooserActivity] */
+    private fun Intent.configureChooserIntent(
+        resources: Resources,
+        hostUserHandle: UserHandle,
+        personalProfileUserHandle: UserHandle,
+    ) {
+        // Specify the query intent to show icons for all apps on the chooser screen
+        val queryIntent = Intent(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
+        putExtra(Intent.EXTRA_INTENT, queryIntent)
+
+        // Update the title of the chooser
+        putExtra(Intent.EXTRA_TITLE, resources.getString(titleResId))
+
+        // Select host app's profile tab by default
+        val selectedProfile =
+            if (hostUserHandle == personalProfileUserHandle) {
+                PROFILE_PERSONAL
+            } else {
+                PROFILE_WORK
+            }
+        putExtra(EXTRA_SELECTED_PROFILE, selectedProfile)
+    }
+
     private val hostUserHandle: UserHandle
         get() {
             val extras =
@@ -321,6 +359,54 @@ class MediaProjectionAppSelectorActivity(
             return intent.getIntExtra(EXTRA_HOST_APP_UID, /* defaultValue= */ -1)
         }
 
+    /**
+     * The type of screen sharing being performed. Used to show the right text and icon in the
+     * activity.
+     */
+    private val screenShareType: ScreenShareType?
+        get() {
+            if (!intent.hasExtra(EXTRA_SCREEN_SHARE_TYPE)) {
+                return null
+            } else {
+                val type = intent.getStringExtra(EXTRA_SCREEN_SHARE_TYPE) ?: return null
+                return try {
+                    enumValueOf<ScreenShareType>(type)
+                } catch (e: IllegalArgumentException) {
+                    null
+                }
+            }
+        }
+
+    @get:StringRes
+    private val titleResId: Int
+        get() =
+            when (screenShareType) {
+                ScreenShareType.ShareToApp ->
+                    R.string.media_projection_entry_share_app_selector_title
+                ScreenShareType.SystemCast ->
+                    R.string.media_projection_entry_cast_app_selector_title
+                ScreenShareType.ScreenRecord -> R.string.screenrecord_app_selector_title
+                null -> R.string.screen_share_generic_app_selector_title
+            }
+
+    @get:DrawableRes
+    private val iconResId: Int
+        get() =
+            when (screenShareType) {
+                ScreenShareType.ShareToApp -> R.drawable.ic_present_to_all
+                ScreenShareType.SystemCast -> R.drawable.ic_cast_connected
+                ScreenShareType.ScreenRecord -> R.drawable.ic_screenrecord
+                null -> R.drawable.ic_present_to_all
+            }
+
+    @get:ColorRes
+    private val iconTintResId: Int?
+        get() =
+            when (screenShareType) {
+                ScreenShareType.ScreenRecord -> R.color.screenrecord_icon_color
+                else -> null
+            }
+
     companion object {
         const val TAG = "MediaProjectionAppSelectorActivity"
 
@@ -343,30 +429,18 @@ class MediaProjectionAppSelectorActivity(
         const val EXTRA_HOST_APP_UID = "launched_from_host_uid"
         const val KEY_CAPTURE_TARGET = "capture_region"
 
-        /** Set up intent for the [ChooserActivity] */
-        private fun Intent.configureChooserIntent(
-            resources: Resources,
-            hostUserHandle: UserHandle,
-            personalProfileUserHandle: UserHandle
-        ) {
-            // Specify the query intent to show icons for all apps on the chooser screen
-            val queryIntent =
-                Intent(Intent.ACTION_MAIN).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
-            putExtra(Intent.EXTRA_INTENT, queryIntent)
+        /**
+         * The type of screen sharing being performed.
+         *
+         * The value set for this extra should match the name of a [ScreenShareType].
+         */
+        const val EXTRA_SCREEN_SHARE_TYPE = "screen_share_type"
+    }
 
-            // Update the title of the chooser
-            val title = resources.getString(R.string.screen_share_permission_app_selector_title)
-            putExtra(Intent.EXTRA_TITLE, title)
-
-            // Select host app's profile tab by default
-            val selectedProfile =
-                if (hostUserHandle == personalProfileUserHandle) {
-                    PROFILE_PERSONAL
-                } else {
-                    PROFILE_WORK
-                }
-            putExtra(EXTRA_SELECTED_PROFILE, selectedProfile)
-        }
+    private fun setIcon() {
+        val iconView = findViewById<ImageView>(R.id.media_projection_app_selector_icon) ?: return
+        iconView.setImageResource(iconResId)
+        iconTintResId?.let { iconView.setColorFilter(this.resources.getColor(it, this.theme)) }
     }
 
     private fun setAppListAccessibilityDelegate() {
@@ -392,7 +466,7 @@ class MediaProjectionAppSelectorActivity(
      */
     private class RecyclerViewExpandingAccessibilityDelegate(
         rdl: ResolverDrawerLayout,
-        view: RecyclerView
+        view: RecyclerView,
     ) : RecyclerViewAccessibilityDelegate(view) {
 
         private val delegate = AppListAccessibilityDelegate(rdl)
@@ -400,10 +474,20 @@ class MediaProjectionAppSelectorActivity(
         override fun onRequestSendAccessibilityEvent(
             host: ViewGroup,
             child: View,
-            event: AccessibilityEvent
+            event: AccessibilityEvent,
         ): Boolean {
             super.onRequestSendAccessibilityEvent(host, child, event)
             return delegate.onRequestSendAccessibilityEvent(host, child, event)
         }
+    }
+
+    /** Enum describing what type of app screen sharing is being performed. */
+    enum class ScreenShareType {
+        /** The selected app will be cast to another device. */
+        SystemCast,
+        /** The selected app will be shared to another app on the device. */
+        ShareToApp,
+        /** The selected app will be recorded. */
+        ScreenRecord,
     }
 }

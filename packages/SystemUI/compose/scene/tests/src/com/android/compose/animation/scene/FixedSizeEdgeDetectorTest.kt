@@ -34,37 +34,37 @@ class FixedSizeEdgeDetectorTest {
 
     @Test
     fun horizontalEdges() {
-        fun horizontalEdge(position: Int): Edge? =
-            detector.edge(
+        fun horizontalEdge(position: Int): Edge.Resolved? =
+            detector.source(
                 layoutSize,
                 position = IntOffset(position, 0),
                 density,
                 Orientation.Horizontal,
             )
 
-        assertThat(horizontalEdge(0)).isEqualTo(Edge.Left)
-        assertThat(horizontalEdge(30)).isEqualTo(Edge.Left)
+        assertThat(horizontalEdge(0)).isEqualTo(Edge.Resolved.Left)
+        assertThat(horizontalEdge(30)).isEqualTo(Edge.Resolved.Left)
         assertThat(horizontalEdge(31)).isEqualTo(null)
         assertThat(horizontalEdge(69)).isEqualTo(null)
-        assertThat(horizontalEdge(70)).isEqualTo(Edge.Right)
-        assertThat(horizontalEdge(100)).isEqualTo(Edge.Right)
+        assertThat(horizontalEdge(70)).isEqualTo(Edge.Resolved.Right)
+        assertThat(horizontalEdge(100)).isEqualTo(Edge.Resolved.Right)
     }
 
     @Test
     fun verticalEdges() {
-        fun verticalEdge(position: Int): Edge? =
-            detector.edge(
+        fun verticalEdge(position: Int): Edge.Resolved? =
+            detector.source(
                 layoutSize,
                 position = IntOffset(0, position),
                 density,
                 Orientation.Vertical,
             )
 
-        assertThat(verticalEdge(0)).isEqualTo(Edge.Top)
-        assertThat(verticalEdge(30)).isEqualTo(Edge.Top)
+        assertThat(verticalEdge(0)).isEqualTo(Edge.Resolved.Top)
+        assertThat(verticalEdge(30)).isEqualTo(Edge.Resolved.Top)
         assertThat(verticalEdge(31)).isEqualTo(null)
         assertThat(verticalEdge(69)).isEqualTo(null)
-        assertThat(verticalEdge(70)).isEqualTo(Edge.Bottom)
-        assertThat(verticalEdge(100)).isEqualTo(Edge.Bottom)
+        assertThat(verticalEdge(70)).isEqualTo(Edge.Resolved.Bottom)
+        assertThat(verticalEdge(100)).isEqualTo(Edge.Resolved.Bottom)
     }
 }

@@ -19,6 +19,7 @@ package com.android.keyguard;
 import static android.content.res.Configuration.ORIENTATION_LANDSCAPE;
 import static android.view.WindowInsets.Type.ime;
 
+import static com.android.keyguard.KeyguardSecurityView.PROMPT_REASON_ADAPTIVE_AUTH_REQUEST;
 import static com.android.keyguard.KeyguardSecurityView.PROMPT_REASON_DEVICE_ADMIN;
 import static com.android.keyguard.KeyguardSecurityView.PROMPT_REASON_NONE;
 import static com.android.keyguard.KeyguardSecurityView.PROMPT_REASON_NON_STRONG_BIOMETRIC_TIMEOUT;
@@ -56,7 +57,6 @@ import com.android.internal.widget.TextViewInputDisabler;
 import com.android.systemui.DejankUtils;
 import com.android.systemui.res.R;
 import com.android.systemui.statusbar.policy.DevicePostureController;
-
 
 /**
  * Displays an alphanumeric (latin-1) key entry for the user to enter
@@ -121,11 +121,13 @@ public class KeyguardPasswordView extends KeyguardAbsKeyInputView {
             case PROMPT_REASON_USER_REQUEST:
                 return R.string.kg_prompt_after_user_lockdown_password;
             case PROMPT_REASON_PREPARE_FOR_UPDATE:
-                return R.string.kg_prompt_reason_timeout_password;
+                return R.string.kg_prompt_added_security_password;
             case PROMPT_REASON_NON_STRONG_BIOMETRIC_TIMEOUT:
                 return R.string.kg_prompt_reason_timeout_password;
             case PROMPT_REASON_TRUSTAGENT_EXPIRED:
                 return R.string.kg_prompt_reason_timeout_password;
+            case PROMPT_REASON_ADAPTIVE_AUTH_REQUEST:
+                return R.string.kg_prompt_after_adaptive_auth_lock;
             case PROMPT_REASON_NONE:
                 return 0;
             default:

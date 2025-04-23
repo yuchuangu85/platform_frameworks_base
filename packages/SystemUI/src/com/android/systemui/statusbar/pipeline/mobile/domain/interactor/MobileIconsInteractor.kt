@@ -32,9 +32,9 @@ import com.android.systemui.statusbar.pipeline.dagger.MobileSummaryLog
 import com.android.systemui.statusbar.pipeline.mobile.data.model.SubscriptionModel
 import com.android.systemui.statusbar.pipeline.mobile.data.repository.MobileConnectionRepository
 import com.android.systemui.statusbar.pipeline.mobile.data.repository.MobileConnectionsRepository
-import com.android.systemui.statusbar.pipeline.mobile.data.repository.UserSetupRepository
 import com.android.systemui.statusbar.pipeline.shared.data.model.ConnectivitySlot
 import com.android.systemui.statusbar.pipeline.shared.data.repository.ConnectivityRepository
+import com.android.systemui.statusbar.policy.data.repository.UserSetupRepository
 import com.android.systemui.util.CarrierConfigTracker
 import java.lang.ref.WeakReference
 import javax.inject.Inject
@@ -71,6 +71,12 @@ interface MobileIconsInteractor {
     /** List of subscriptions, potentially filtered for CBRS */
     val filteredSubscriptions: Flow<List<SubscriptionModel>>
 
+    /**
+     * The current list of [MobileIconInteractor]s associated with the current list of
+     * [filteredSubscriptions]
+     */
+    val icons: StateFlow<List<MobileIconInteractor>>
+
     /** True if the active mobile data subscription has data enabled */
     val activeDataConnectionHasDataEnabled: StateFlow<Boolean>
 
@@ -99,10 +105,17 @@ interface MobileIconsInteractor {
     val isDefaultConnectionFailed: StateFlow<Boolean>
 
     /** True once the user has been set up */
-    val isUserSetup: StateFlow<Boolean>
+    val isUserSetUp: StateFlow<Boolean>
 
     /** True if we're configured to force-hide the mobile icons and false otherwise. */
     val isForceHidden: Flow<Boolean>
+
+    /**
+     * True if the device-level service state (with -1 subscription id) reports emergency calls
+     * only. This value is only useful when there are no other subscriptions OR all existing
+     * subscriptions report that they are not in service.
+     */
+    val isDeviceInEmergencyCallsOnlyMode: Flow<Boolean>
 
     /**
      * Vends out a [MobileIconInteractor] tracking the [MobileConnectionRepository] for the given
@@ -166,19 +179,31 @@ constructor(
     private val unfilteredSubscriptions: Flow<List<SubscriptionModel>> =
         mobileConnectionsRepo.subscriptions
 
-    /**
-     * Any filtering that we can do based purely on the info of each subscription. Currently this
-     * only applies the ProfileClass-based filter, but if we need other they can go here
-     */
+    /** Any filtering that we can do based purely on the info of each subscription individually. */
     private val subscriptionsBasedFilteredSubs =
-        unfilteredSubscriptions.map { subs -> applyProvisioningFilter(subs) }.distinctUntilChanged()
+        unfilteredSubscriptions
+            .map { it.filterBasedOnProvisioning().filterBasedOnNtn() }
+            .distinctUntilChanged()
 
-    private fun applyProvisioningFilter(subs: List<SubscriptionModel>): List<SubscriptionModel> =
+    private fun List<SubscriptionModel>.filterBasedOnProvisioning(): List<SubscriptionModel> =
         if (!featureFlagsClassic.isEnabled(FILTER_PROVISIONING_NETWORK_SUBSCRIPTIONS)) {
-            subs
+            this
         } else {
-            subs.filter { it.profileClass != PROFILE_CLASS_PROVISIONING }
+            this.filter { it.profileClass != PROFILE_CLASS_PROVISIONING }
         }
+
+    /**
+     * Subscriptions that exclusively support non-terrestrial networks should **never** directly
+     * show any iconography in the status bar. These subscriptions only exist to provide a backing
+     * for the device-based satellite connections, and the iconography for those connections are
+     * already being handled in
+     * [com.android.systemui.statusbar.pipeline.satellite.data.DeviceBasedSatelliteRepository]. We
+     * need to filter out those subscriptions here so we guarantee the subscription never turns into
+     * an icon. See b/336881301.
+     */
+    private fun List<SubscriptionModel>.filterBasedOnNtn(): List<SubscriptionModel> {
+        return this.filter { !it.isExclusivelyNonTerrestrial }
+    }
 
     /**
      * Generally, SystemUI wants to show iconography for each subscription that is listed by
@@ -198,12 +223,8 @@ constructor(
                 subscriptionsBasedFilteredSubs,
                 mobileConnectionsRepo.activeMobileDataSubscriptionId,
                 connectivityRepository.vcnSubId,
-            ) { unfilteredSubs, activeId, vcnSubId ->
-                filterSubsBasedOnOpportunistic(
-                    unfilteredSubs,
-                    activeId,
-                    vcnSubId,
-                )
+            ) { preFilteredSubs, activeId, vcnSubId ->
+                filterSubsBasedOnOpportunistic(preFilteredSubs, activeId, vcnSubId)
             }
             .distinctUntilChanged()
             .logDiffsForTable(
@@ -258,6 +279,13 @@ constructor(
             }
         }
     }
+
+    override val icons =
+        filteredSubscriptions
+            .mapLatest { subs ->
+                subs.map { getMobileConnectionInteractorForSubId(it.subscriptionId) }
+            }
+            .stateIn(scope, SharingStarted.WhileSubscribed(), emptyList())
 
     /**
      * Copied from the old pipeline. We maintain a 2s period of time where we will keep the
@@ -349,12 +377,15 @@ constructor(
             )
             .stateIn(scope, SharingStarted.WhileSubscribed(), false)
 
-    override val isUserSetup: StateFlow<Boolean> = userSetupRepo.isUserSetupFlow
+    override val isUserSetUp: StateFlow<Boolean> = userSetupRepo.isUserSetUp
 
     override val isForceHidden: Flow<Boolean> =
         connectivityRepository.forceHiddenSlots
             .map { it.contains(ConnectivitySlot.MOBILE) }
             .stateIn(scope, SharingStarted.WhileSubscribed(), false)
+
+    override val isDeviceInEmergencyCallsOnlyMode: Flow<Boolean> =
+        mobileConnectionsRepo.isDeviceEmergencyCallCapable
 
     /** Vends out new [MobileIconInteractor] for a particular subId */
     override fun getMobileConnectionInteractorForSubId(subId: Int): MobileIconInteractor =

@@ -23,11 +23,15 @@ import android.os.BatteryStats;
 import android.os.Process;
 import android.os.UidBatteryConsumer;
 import android.os.WorkSource;
+import android.platform.test.annotations.EnableFlags;
+import android.platform.test.flag.junit.SetFlagsRule;
+import android.platform.test.ravenwood.RavenwoodRule;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.os.PowerProfile;
+import com.android.server.power.feature.flags.Flags;
 
 import org.junit.Rule;
 import org.junit.Test;
@@ -36,25 +40,41 @@ import org.junit.runner.RunWith;
 @RunWith(AndroidJUnit4.class)
 @SmallTest
 public class WakelockPowerCalculatorTest {
+    @Rule(order = 0)
+    public final RavenwoodRule mRavenwood =
+            new RavenwoodRule.Builder()
+                    .setProvideMainThread(true)
+                    .setSystemPropertyImmutable(
+                            "persist.sys.com.android.server.power.feature.flags."
+                                    + "framework_wakelock_info-override",
+                            null)
+                    .build();
+
+    @Rule(order = 1)
+    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
+
     private static final double PRECISION = 0.00001;
 
     private static final int APP_UID = Process.FIRST_APPLICATION_UID + 42;
     private static final int APP_PID = 3145;
 
-    @Rule
-    public final BatteryUsageStatsRule mStatsRule = new BatteryUsageStatsRule()
-            .setAveragePower(PowerProfile.POWER_CPU_IDLE, 360.0);
+    @Rule(order = 2)
+    public final BatteryUsageStatsRule mStatsRule =
+            new BatteryUsageStatsRule().setAveragePower(PowerProfile.POWER_CPU_IDLE, 360.0);
 
     @Test
+    @EnableFlags(Flags.FLAG_FRAMEWORK_WAKELOCK_INFO)
     public void testTimerBasedModel() {
         mStatsRule.getUidStats(Process.ROOT_UID);
 
         BatteryStatsImpl batteryStats = mStatsRule.getBatteryStats();
 
-        batteryStats.noteStartWakeFromSourceLocked(new WorkSource(APP_UID), APP_PID, "awake", "",
-                BatteryStats.WAKE_TYPE_PARTIAL, true, 1000, 1000);
-        batteryStats.noteStopWakeFromSourceLocked(new WorkSource(APP_UID), APP_PID, "awake", "",
-                BatteryStats.WAKE_TYPE_PARTIAL, 2000, 2000);
+        synchronized (batteryStats) {
+            batteryStats.noteStartWakeFromSourceLocked(new WorkSource(APP_UID), APP_PID, "awake",
+                    "", BatteryStats.WAKE_TYPE_PARTIAL, true, 1000, 1000);
+            batteryStats.noteStopWakeFromSourceLocked(new WorkSource(APP_UID), APP_PID, "awake",
+                    "", BatteryStats.WAKE_TYPE_PARTIAL, 2000, 2000);
+        }
 
         mStatsRule.setTime(10_000, 6_000);
 

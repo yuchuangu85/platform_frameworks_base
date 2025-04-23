@@ -36,15 +36,16 @@ import org.junit.runner.RunWith
 class ColorCorrectionTileMapperTest : SysuiTestCase() {
     private val kosmos = Kosmos()
     private val colorCorrectionTileConfig = kosmos.qsColorCorrectionTileConfig
-    private val subtitleArray =
+    private val subtitleArray by lazy {
         context.resources.getStringArray(R.array.tile_states_color_correction)
+    }
     // Using lazy (versus =) to make sure we override the right context -- see b/311612168
     private val mapper by lazy {
         ColorCorrectionTileMapper(
             context.orCreateTestableResources
                 .apply { addOverride(R.drawable.ic_qs_color_correction, TestStubDrawable()) }
                 .resources,
-            context.theme
+            context.theme,
         )
     }
 
@@ -72,11 +73,12 @@ class ColorCorrectionTileMapperTest : SysuiTestCase() {
 
     private fun createColorCorrectionTileState(
         activationState: QSTileState.ActivationState,
-        secondaryLabel: String
+        secondaryLabel: String,
     ): QSTileState {
         val label = context.getString(R.string.quick_settings_color_correction_label)
         return QSTileState(
-            { Icon.Loaded(context.getDrawable(R.drawable.ic_qs_color_correction)!!, null) },
+            Icon.Loaded(context.getDrawable(R.drawable.ic_qs_color_correction)!!, null),
+            R.drawable.ic_qs_color_correction,
             label,
             activationState,
             secondaryLabel,
@@ -85,7 +87,7 @@ class ColorCorrectionTileMapperTest : SysuiTestCase() {
             null,
             QSTileState.SideViewIcon.None,
             QSTileState.EnabledState.ENABLED,
-            Switch::class.qualifiedName
+            Switch::class.qualifiedName,
         )
     }
 }

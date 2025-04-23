@@ -30,6 +30,7 @@ public final class ComponentNamePolicyValue extends PolicyValue<ComponentName> {
 
     public ComponentNamePolicyValue(@NonNull ComponentName value) {
         super(value);
+        PolicySizeVerifier.enforceMaxComponentNameLength(value);
     }
 
     private ComponentNamePolicyValue(Parcel source) {

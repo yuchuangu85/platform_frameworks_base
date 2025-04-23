@@ -145,6 +145,25 @@ public class BackupManagerMonitor {
    */
   public static final String EXTRA_LOG_OPERATION_TYPE = "android.app.backup.extra.OPERATION_TYPE";
 
+  /**
+   * List of system components that do not support restore in a  V-> U OS downgrade, even if
+   * restoreAnyVersion is set to true.
+   * Read from Settings.Secure.V_TO_U_RESTORE_DENYLIST
+   *
+   * @hide
+   */
+  public static final String EXTRA_LOG_V_TO_U_DENYLIST = "android.app.backup.extra.V_TO_U_DENYLIST";
+
+  /**
+   * List of system components that support restore in a  V-> U OS downgrade, even if
+   * restoreAnyVersion is set to false.
+   * Read from Settings.Secure.V_TO_U_RESTORE_ALLOWLIST
+   *
+   * @hide
+   */
+  public static final String EXTRA_LOG_V_TO_U_ALLOWLIST =
+          "android.app.backup.extra.V_TO_U_ALLOWLIST";
+
   // TODO complete this list with all log messages. And document properly.
   public static final int LOG_EVENT_ID_FULL_BACKUP_CANCEL = 4;
   public static final int LOG_EVENT_ID_ILLEGAL_KEY = 5;
@@ -241,6 +260,42 @@ public class BackupManagerMonitor {
   /** Agent error during {@link PerformUnifiedRestoreTask#restoreFinished()}
    @hide */
   public static final int LOG_EVENT_ID_AGENT_FAILURE = 69;
+  /** V to U restore attempt, pkg is eligible
+   @hide */
+  public static final int LOG_EVENT_ID_V_TO_U_RESTORE_PKG_ELIGIBLE = 70;
+  /** V to U restore attempt, pkg is not eligible
+   @hide */
+  public static final int LOG_EVENT_ID_V_TO_U_RESTORE_PKG_NOT_ELIGIBLE = 71;
+  /** V to U restore attempt, allowlist and denlist are set
+   @hide */
+  public static final int LOG_EVENT_ID_V_TO_U_RESTORE_SET_LIST = 72;
+  /** As part of package install, {@link PackageManager} invoked restore.
+   @hide */
+  public static final int LOG_EVENT_ID_RESTORE_AT_INSTALL_INVOKED = 73;
+  /** Skipping restore at package install
+   @hide */
+  public static final int LOG_EVENT_ID_SKIP_RESTORE_AT_INSTALL = 74;
+  /** Package is eligible and is accepted for restore
+   @hide */
+  public static final int LOG_EVENT_ID_PACKAGE_ACCEPTED_FOR_RESTORE = 75;
+  /** Restore data doesn't belong to the package for which restore is started
+   @hide */
+  public static final int LOG_EVENT_ID_RESTORE_DATA_DOES_NOT_BELONG_TO_PACKAGE = 76;
+  /** Unable to create BackupAgent for package for restore
+   @hide */
+  public static final int LOG_EVENT_ID_UNABLE_TO_CREATE_AGENT_FOR_RESTORE = 77;
+  /** BackupAgent crashed after creation but before accepting any data
+   @hide */
+  public static final int LOG_EVENT_ID_AGENT_CRASHED_BEFORE_RESTORE_DATA_IS_SENT = 78;
+  /** Failure in streaming restore data to BackupAgent
+   @hide */
+  public static final int LOG_EVENT_ID_FAILED_TO_SEND_DATA_TO_AGENT_DURING_RESTORE = 79;
+  /** BackupAgent related failure during restore
+   @hide */
+  public static final int LOG_EVENT_ID_AGENT_FAILURE_DURING_RESTORE = 80;
+  /** Failure in reading data from TransportPackage during restore
+   @hide */
+  public static final int LOG_EVENT_ID_FAILED_TO_READ_DATA_FROM_TRANSPORT = 81;
 
   /**
    * This method will be called each time something important happens on BackupManager.

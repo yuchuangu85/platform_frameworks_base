@@ -23,7 +23,6 @@ import static org.junit.Assert.fail;
 
 import android.content.Context;
 import android.graphics.FontListParser;
-import android.graphics.fonts.FontFamily;
 import android.graphics.fonts.FontManager;
 import android.graphics.fonts.FontStyle;
 import android.graphics.fonts.FontUpdateRequest;
@@ -31,6 +30,8 @@ import android.graphics.fonts.SystemFonts;
 import android.os.FileUtils;
 import android.os.ParcelFileDescriptor;
 import android.platform.test.annotations.Presubmit;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.system.Os;
 import android.text.FontConfig;
 import android.util.Xml;
@@ -41,6 +42,7 @@ import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.xmlpull.v1.XmlPullParser;
@@ -69,6 +71,9 @@ import java.util.stream.Collectors;
 public final class UpdatableFontDirTest {
 
     private static final String LEGACY_FONTS_XML = "/system/etc/fonts.xml";
+
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
 
     /**
      * A {@link UpdatableFontDir.FontFileParser} for testing. Instead of using real font files,
@@ -324,15 +329,16 @@ public final class UpdatableFontDirTest {
         Function<Map<String, File>, FontConfig> configSupplier = (map) -> {
             FontConfig.Font fooFont = new FontConfig.Font(
                     new File(mPreinstalledFontDirs.get(0), "foo.ttf"), null, "foo",
-                    new FontStyle(400, FontStyle.FONT_SLANT_UPRIGHT), 0, null, null);
+                    new FontStyle(400, FontStyle.FONT_SLANT_UPRIGHT), 0, null, null,
+                    FontConfig.Font.VAR_TYPE_AXES_NONE);
             FontConfig.Font barFont = new FontConfig.Font(
                     new File(mPreinstalledFontDirs.get(1), "bar.ttf"), null, "bar",
-                    new FontStyle(400, FontStyle.FONT_SLANT_UPRIGHT), 0, null, null);
+                    new FontStyle(400, FontStyle.FONT_SLANT_UPRIGHT), 0, null, null,
+                    FontConfig.Font.VAR_TYPE_AXES_NONE);
 
             FontConfig.FontFamily family = new FontConfig.FontFamily(
                     Arrays.asList(fooFont, barFont), null,
-                    FontConfig.FontFamily.VARIANT_DEFAULT,
-                    FontFamily.Builder.VARIABLE_FONT_FAMILY_TYPE_NONE);
+                    FontConfig.FontFamily.VARIANT_DEFAULT);
             return new FontConfig(Collections.emptyList(),
                     Collections.emptyList(),
                     Collections.singletonList(new FontConfig.NamedFamilyList(
@@ -492,10 +498,9 @@ public final class UpdatableFontDirTest {
                 mConfigFile, mCurrentTimeSupplier, (map) -> {
             FontConfig.Font font = new FontConfig.Font(
                     file, null, "bar", new FontStyle(400, FontStyle.FONT_SLANT_UPRIGHT),
-                    0, null, null);
+                    0, null, null, FontConfig.Font.VAR_TYPE_AXES_NONE);
             FontConfig.FontFamily family = new FontConfig.FontFamily(
-                    Collections.singletonList(font), null, FontConfig.FontFamily.VARIANT_DEFAULT,
-                    FontFamily.Builder.VARIABLE_FONT_FAMILY_TYPE_NONE);
+                    Collections.singletonList(font), null, FontConfig.FontFamily.VARIANT_DEFAULT);
             return new FontConfig(
                     Collections.emptyList(),
                     Collections.emptyList(),
@@ -647,10 +652,9 @@ public final class UpdatableFontDirTest {
                 mConfigFile, mCurrentTimeSupplier, (map) -> {
             FontConfig.Font font = new FontConfig.Font(
                     file, null, "test", new FontStyle(400, FontStyle.FONT_SLANT_UPRIGHT), 0, null,
-                    null);
+                    null, FontConfig.Font.VAR_TYPE_AXES_NONE);
             FontConfig.FontFamily family = new FontConfig.FontFamily(
-                    Collections.singletonList(font), null, FontConfig.FontFamily.VARIANT_DEFAULT,
-                    FontFamily.Builder.VARIABLE_FONT_FAMILY_TYPE_NONE);
+                    Collections.singletonList(font), null, FontConfig.FontFamily.VARIANT_DEFAULT);
             return new FontConfig(Collections.emptyList(), Collections.emptyList(),
                     Collections.singletonList(new FontConfig.NamedFamilyList(
                             Collections.singletonList(family), "sans-serif")),

@@ -941,8 +941,9 @@ RENDERTHREAD_TEST(RenderNodeDrawable, simple) {
         void onDrawRect(const SkRect& rect, const SkPaint& paint) override {
             EXPECT_EQ(0, mDrawCounter++);
         }
-        void onDrawImage2(const SkImage*, SkScalar dx, SkScalar dy, const SkSamplingOptions&,
-                          const SkPaint*) override {
+        void onDrawImageRect2(const SkImage*, const SkRect&, const SkRect&,
+                              const SkSamplingOptions&, const SkPaint*,
+                              SrcRectConstraint) override {
             EXPECT_EQ(1, mDrawCounter++);
         }
     };
@@ -1279,7 +1280,7 @@ RENDERTHREAD_TEST(BackdropFilterDrawable, drawing) {
     canvas->drawDrawable(&backdropDrawable);
     // the drawable is still visible, ok to draw.
     EXPECT_EQ(2, canvas->mDrawCounter);
-    EXPECT_EQ(SkRect::MakeLTRB(0, 0, CANVAS_WIDTH - 30, CANVAS_HEIGHT - 30), canvas->mDstBounds);
+    EXPECT_EQ(SkRect::MakeLTRB(30, 30, CANVAS_WIDTH, CANVAS_HEIGHT), canvas->mDstBounds);
 
     canvas->translate(CANVAS_WIDTH, CANVAS_HEIGHT);
     canvas->drawDrawable(&drawable);

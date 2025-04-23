@@ -28,6 +28,7 @@ import static android.os.UserHandle.PER_USER_RANGE;
 
 import android.annotation.BytesLong;
 import android.annotation.CallbackExecutor;
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -58,6 +59,7 @@ import android.os.Binder;
 import android.os.Build;
 import android.os.Environment;
 import android.os.FileUtils;
+import android.os.Flags;
 import android.os.Handler;
 import android.os.IInstalld;
 import android.os.IVold;
@@ -118,6 +120,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * StorageManager is the interface to the systems storage service. The storage
@@ -2510,6 +2514,9 @@ public class StorageManager {
         return userId * PER_USER_RANGE + projectId;
     }
 
+    private static final Pattern PATTERN_USER_ID = Pattern.compile(
+            "(?i)^/storage/emulated/([0-9]+)");
+
     /**
      * Let StorageManager know that the quota type for a file on external storage should
      * be updated. Android tracks quotas for various media types. Consequently, this should be
@@ -2539,26 +2546,35 @@ public class StorageManager {
     @SystemApi
     public void updateExternalStorageFileQuotaType(@NonNull File path,
             @QuotaType int quotaType) throws IOException {
+        if (!path.exists()) return;
+
         long projectId;
         final String filePath = path.getCanonicalPath();
-        int volFlags = FLAG_REAL_STATE | FLAG_INCLUDE_INVISIBLE;
-        // If caller has MANAGE_EXTERNAL_STORAGE permission, results from User Profile(s) are also
-        // returned by enabling FLAG_INCLUDE_SHARED_PROFILE.
-        if (mContext.checkSelfPermission(MANAGE_EXTERNAL_STORAGE) == PERMISSION_GRANTED) {
-            volFlags |= FLAG_INCLUDE_SHARED_PROFILE;
-        }
-        final StorageVolume[] availableVolumes = getVolumeList(mContext.getUserId(), volFlags);
-        final StorageVolume volume = getStorageVolume(availableVolumes, path);
-        if (volume == null) {
-            Log.w(TAG, "Failed to update quota type for " + filePath);
-            return;
-        }
-        if (!volume.isEmulated()) {
-            // We only support quota tracking on emulated filesystems
-            return;
+
+        final int userId;
+        final Matcher matcher = PATTERN_USER_ID.matcher(filePath);
+        if (matcher.find()) {
+            userId = Integer.parseInt(matcher.group(1));
+        } else {  // fallback
+            int volFlags = FLAG_REAL_STATE | FLAG_INCLUDE_INVISIBLE;
+            // If caller has MANAGE_EXTERNAL_STORAGE permission, results from User Profile(s) are
+            // also returned by enabling FLAG_INCLUDE_SHARED_PROFILE.
+            if (mContext.checkSelfPermission(MANAGE_EXTERNAL_STORAGE) == PERMISSION_GRANTED) {
+                volFlags |= FLAG_INCLUDE_SHARED_PROFILE;
+            }
+            final StorageVolume[] availableVolumes = getVolumeList(mContext.getUserId(), volFlags);
+            final StorageVolume volume = getStorageVolume(availableVolumes, path);
+            if (volume == null) {
+                Log.w(TAG, "Failed to update quota type for " + filePath);
+                return;
+            }
+            if (!volume.isEmulated()) {
+                // We only support quota tracking on emulated filesystems
+                return;
+            }
+            userId = volume.getOwner().getIdentifier();
         }
 
-        final int userId = volume.getOwner().getIdentifier();
         if (userId < 0) {
             throw new IllegalStateException("Failed to update quota type for " + filePath);
         }
@@ -2939,4 +2955,24 @@ public class StorageManager {
     /** @hide */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public static final int CRYPT_TYPE_DEFAULT = 1;
+
+    /**
+     * Returns the remaining lifetime of the internal storage device, as an integer percentage. For
+     * example, 90 indicates that 90% of the storage device's useful lifetime remains. If no
+     * information is available, -1 is returned.
+     *
+     * @return Percentage of the remaining useful lifetime of the internal storage device.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_STORAGE_LIFETIME_API)
+    @SystemApi
+    @RequiresPermission(android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE)
+    public int getInternalStorageRemainingLifetime() {
+        try {
+            return mStorageManager.getInternalStorageRemainingLifetime();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
 }

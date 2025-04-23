@@ -16,6 +16,8 @@
 
 package com.android.server.audio;
 
+import static android.media.audiopolicy.Flags.enableFadeManagerConfiguration;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.AppOpsManager;
@@ -195,6 +197,15 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
         }
         return mFocusEnforcer.getFadeInDelayForOffendersMillis(aa);
     }
+
+    @Override
+    public boolean shouldEnforceFade() {
+        if (!enableFadeManagerConfiguration()) {
+            return ENFORCE_FADEOUT_FOR_FOCUS_LOSS;
+        }
+
+        return mFocusEnforcer.shouldEnforceFade();
+    }
     //==========================================================================================
     // AudioFocus
     //==========================================================================================
@@ -220,13 +231,8 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
                 final FocusRequester focusOwner = stackIterator.next();
                 if (focusOwner.hasSameUid(uid) && focusOwner.hasSamePackage(packageName)) {
                     clientsToRemove.add(focusOwner.getClientId());
-                    mEventLogger.enqueue((new EventLogger.StringEvent(
-                            "focus owner:" + focusOwner.getClientId()
-                                    + " in uid:" + uid + " pack: " + packageName
-                                    + " getting AUDIOFOCUS_LOSS due to app suspension"))
-                            .printLog(TAG));
                     // make the suspended app lose focus through its focus listener (if any)
-                    focusOwner.dispatchFocusChange(AudioManager.AUDIOFOCUS_LOSS);
+                    focusOwner.dispatchFocusChange(AudioManager.AUDIOFOCUS_LOSS, "app suspension");
                 }
             }
             for (String clientToRemove : clientsToRemove) {
@@ -269,6 +275,37 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
     }
 
     /**
+     * Like {@link #sendFocusLoss(AudioFocusInfo)} but if the loser was at the top of stack,
+     * make the next entry gain focus with {@link AudioManager#AUDIOFOCUS_GAIN}.
+     * @param focusInfo the focus owner to discard
+     * @see AudioPolicy#sendFocusLossAndUpdate(AudioFocusInfo)
+     */
+    protected void sendFocusLossAndUpdate(@NonNull AudioFocusInfo focusInfo) {
+        synchronized (mAudioFocusLock) {
+            if (mFocusStack.isEmpty()) {
+                return;
+            }
+            final FocusRequester currentFocusOwner = mFocusStack.peek();
+            if (currentFocusOwner.toAudioFocusInfo().equals(focusInfo)) {
+                // focus loss is for the top of the stack
+                currentFocusOwner.handleFocusLoss(AudioManager.AUDIOFOCUS_LOSS, null,
+                            false /*forceDuck*/);
+                currentFocusOwner.release();
+
+                mFocusStack.pop();
+                // is there a new focus owner?
+                if (!mFocusStack.isEmpty()) {
+                    mFocusStack.peek().handleFocusGain(AudioManager.AUDIOFOCUS_GAIN);
+                }
+            } else {
+                // focus loss if for another entry that's not at the top of the stack,
+                // just remove it from the stack and make it lose focus
+                sendFocusLoss(focusInfo);
+            }
+        }
+    }
+
+    /**
      * Return a copy of the focus stack for external consumption (composed of AudioFocusInfo
      * instead of FocusRequester instances)
      * @return a SystemApi-friendly version of the focus stack, in the same order (last entry
@@ -282,6 +319,23 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
                 stack.add(fr.toAudioFocusInfo());
             }
             return stack;
+        }
+    }
+
+    /**
+     * Return the UID of the focus owner that has focus with exclusive focus gain
+     * @return -1 if nobody has exclusive focus, the UID of the owner otherwise
+     */
+    protected int getExclusiveFocusOwnerUid() {
+        synchronized (mAudioFocusLock) {
+            if (mFocusStack.empty()) {
+                return -1;
+            }
+            final FocusRequester owner = mFocusStack.peek();
+            if (owner.getGainRequest() != AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE) {
+                return -1;
+            }
+            return owner.getClientUid();
         }
     }
 
@@ -489,11 +543,7 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
             FocusRequester fr = stackIterator.next();
             if(fr.hasSameBinder(cb)) {
                 Log.i(TAG, "AudioFocus  removeFocusStackEntryOnDeath(): removing entry for " + cb);
-                mEventLogger.enqueue(new EventLogger.StringEvent(
-                        "focus requester:" + fr.getClientId()
-                                + " in uid:" + fr.getClientUid()
-                                + " pack:" + fr.getPackageName()
-                                + " died"));
+                mEventLogger.enqueue(new FocusRequester.FocusRequestEvent(fr,  " died"));
                 notifyExtPolicyFocusLoss_syncAf(fr.toAudioFocusInfo(), false);
 
                 stackIterator.remove();
@@ -526,11 +576,7 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
             final FocusRequester fr = owner.getValue();
             if (fr.hasSameBinder(cb)) {
                 ownerIterator.remove();
-                mEventLogger.enqueue(new EventLogger.StringEvent(
-                        "focus requester:" + fr.getClientId()
-                                + " in uid:" + fr.getClientUid()
-                                + " pack:" + fr.getPackageName()
-                                + " died"));
+                mEventLogger.enqueue(new FocusRequester.FocusRequestEvent(fr, "died"));
                 fr.release();
                 notifyExtFocusPolicyFocusAbandon_syncAf(fr.toAudioFocusInfo());
                 break;
@@ -841,7 +887,7 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
             }
             // new focus (future) focus owner to keep track of
             mFocusOwnersForFocusPolicy.put(afi.getClientId(),
-                    new FocusRequester(afi, fd, cb, hdlr, this));
+                    new FocusRequester(afi, fd, cb, hdlr, this, mEventLogger));
         }
 
         try {
@@ -861,14 +907,17 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
                 return;
             }
         }
-        final FocusRequester fr;
-        if (requestResult == AudioManager.AUDIOFOCUS_REQUEST_FAILED) {
-            fr = mFocusOwnersForFocusPolicy.remove(afi.getClientId());
-        } else {
-            fr = mFocusOwnersForFocusPolicy.get(afi.getClientId());
-        }
-        if (fr != null) {
-            fr.dispatchFocusResultFromExtPolicy(requestResult);
+        synchronized (mAudioFocusLock) {
+            FocusRequester fr = getFocusRequesterLocked(afi.getClientId(),
+                    /* shouldRemove= */ requestResult == AudioManager.AUDIOFOCUS_REQUEST_FAILED);
+            if (fr != null) {
+                fr.dispatchFocusResultFromExtPolicy(requestResult);
+                // if fade is enabled for external focus policies, apply it when setting
+                // focus result as well
+                if (enableFadeManagerConfiguration()) {
+                    fr.handleFocusGainFromRequest(requestResult);
+                }
+            }
         }
     }
 
@@ -902,22 +951,79 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
                     + afi.getClientId());
         }
         synchronized (mAudioFocusLock) {
-            if (mFocusPolicy == null) {
-                if (DEBUG) { Log.v(TAG, "> failed: no focus policy" ); }
-                return AudioManager.AUDIOFOCUS_REQUEST_FAILED;
-            }
-            final FocusRequester fr;
-            if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
-                fr = mFocusOwnersForFocusPolicy.remove(afi.getClientId());
-            } else {
-                fr = mFocusOwnersForFocusPolicy.get(afi.getClientId());
-            }
+            FocusRequester fr = getFocusRequesterLocked(afi.getClientId(),
+                    /* shouldRemove= */ focusChange == AudioManager.AUDIOFOCUS_LOSS);
             if (fr == null) {
-                if (DEBUG) { Log.v(TAG, "> failed: no such focus requester known" ); }
+                if (DEBUG) {
+                    Log.v(TAG, "> failed: no such focus requester known");
+                }
                 return AudioManager.AUDIOFOCUS_REQUEST_FAILED;
             }
-            return fr.dispatchFocusChange(focusChange);
+            return fr.dispatchFocusChange(focusChange, "audiomanager");
         }
+    }
+
+    int dispatchFocusChangeWithFade(AudioFocusInfo afi, int focusChange,
+            List<AudioFocusInfo> otherActiveAfis) {
+        if (DEBUG) {
+            Log.v(TAG, "dispatchFocusChangeWithFade " + AudioManager.audioFocusToString(focusChange)
+                    + " to afi client=" + afi.getClientId()
+                    + " other active afis=" + otherActiveAfis);
+        }
+
+        synchronized (mAudioFocusLock) {
+            String clientId = afi.getClientId();
+            // do not remove the entry since it can be posted for fade
+            FocusRequester fr = getFocusRequesterLocked(clientId, /* shouldRemove= */ false);
+            if (fr == null) {
+                if (DEBUG) {
+                    Log.v(TAG, "> failed: no such focus requester known");
+                }
+                return AudioManager.AUDIOFOCUS_REQUEST_FAILED;
+            }
+
+            // convert other AudioFocusInfo to corresponding FocusRequester
+            ArrayList<FocusRequester> otherActiveFrs = new ArrayList<>();
+            for (int index = 0; index < otherActiveAfis.size(); index++) {
+                FocusRequester otherFr = getFocusRequesterLocked(
+                        otherActiveAfis.get(index).getClientId(), /* shouldRemove= */ false);
+                if (otherFr == null) {
+                    continue;
+                }
+                otherActiveFrs.add(otherFr);
+            }
+
+            // TODO log
+            int status = fr.dispatchFocusChangeWithFadeLocked(focusChange, otherActiveFrs);
+            if (status != AudioManager.AUDIOFOCUS_REQUEST_DELAYED
+                    && focusChange == AudioManager.AUDIOFOCUS_LOSS) {
+                mFocusOwnersForFocusPolicy.remove(clientId);
+            }
+
+            return status;
+        }
+    }
+
+    @GuardedBy("mAudioFocusLock")
+    private FocusRequester getFocusRequesterLocked(String clientId, boolean shouldRemove) {
+        if (mFocusPolicy == null) {
+            if (DEBUG) {
+                Log.v(TAG, "> failed: no focus policy");
+            }
+            return null;
+        }
+
+        FocusRequester fr;
+        if (shouldRemove) {
+            fr = mFocusOwnersForFocusPolicy.remove(clientId);
+        } else {
+            fr = mFocusOwnersForFocusPolicy.get(clientId);
+        }
+
+        if (fr == null && DEBUG) {
+            Log.v(TAG, "> failed: no such focus requester known");
+        }
+        return fr;
     }
 
     private void dumpExtFocusPolicyFocusOwners(PrintWriter pw) {
@@ -962,6 +1068,7 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
         switch (attr.getUsage()) {
             case AudioAttributes.USAGE_MEDIA:
             case AudioAttributes.USAGE_GAME:
+            case AudioAttributes.USAGE_SPEAKER_CLEANUP:
                 return 1000;
             case AudioAttributes.USAGE_ALARM:
             case AudioAttributes.USAGE_NOTIFICATION_RINGTONE:
@@ -995,7 +1102,6 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
      * @param fd
      * @param clientId
      * @param callingPackageName
-     * @param attributionTag
      * @param flags
      * @param sdk
      * @param forceDuck only true if
@@ -1003,11 +1109,14 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
      *                  accessibility.
      * @param testUid ignored if flags doesn't contain AudioManager.AUDIOFOCUS_FLAG_TEST
      *                otherwise the UID being injected for testing
+     * @param permissionOverridesCheck true if permission checks guaranteed that the call should
+     *                                 go through, false otherwise (e.g. non-privileged caller)
      * @return
      */
     protected int requestAudioFocus(@NonNull AudioAttributes aa, int focusChangeHint, IBinder cb,
             IAudioFocusDispatcher fd, @NonNull String clientId, @NonNull String callingPackageName,
-            String attributionTag, int flags, int sdk, boolean forceDuck, int testUid) {
+            int flags, int sdk, boolean forceDuck, int testUid,
+            boolean permissionOverridesCheck) {
         new MediaMetrics.Item(mMetricsId)
                 .setUid(Binder.getCallingUid())
                 .set(MediaMetrics.Property.CALLING_PACKAGE, callingPackageName)
@@ -1036,13 +1145,6 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
         // we need a valid binder callback for clients
         if (!cb.pingBinder()) {
             Log.e(TAG, " AudioFocus DOA client for requestAudioFocus(), aborting.");
-            return AudioManager.AUDIOFOCUS_REQUEST_FAILED;
-        }
-
-        if ((flags != AudioManager.AUDIOFOCUS_FLAG_TEST)
-                // note we're using the real uid for appOp evaluation
-                && (mAppOps.noteOp(AppOpsManager.OP_TAKE_AUDIO_FOCUS, Binder.getCallingUid(),
-                        callingPackageName, attributionTag, null) != AppOpsManager.MODE_ALLOWED)) {
             return AudioManager.AUDIOFOCUS_REQUEST_FAILED;
         }
 
@@ -1147,7 +1249,7 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
             removeFocusStackEntry(clientId, false /* signal */, false /*notifyFocusFollowers*/);
 
             final FocusRequester nfr = new FocusRequester(aa, focusChangeHint, flags, fd, cb,
-                    clientId, afdh, callingPackageName, uid, this, sdk);
+                    clientId, afdh, callingPackageName, uid, this, sdk, mEventLogger);
 
             if (mMultiAudioFocusEnabled
                     && (focusChangeHint == AudioManager.AUDIOFOCUS_GAIN)) {
@@ -1220,7 +1322,7 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
         mEventLogger.enqueue((new EventLogger.StringEvent(
                 "abandonAudioFocus() from uid/pid " + Binder.getCallingUid()
                     + "/" + Binder.getCallingPid()
-                    + " clientId=" + clientId))
+                    + " clientId=" + clientId + " callingPack=" + callingPackageName))
                 .printLog(TAG));
         try {
             // this will take care of notifying the new focus owner if needed
@@ -1481,7 +1583,7 @@ public class MediaFocusControl implements PlayerFocusEnforcer {
                         synchronized (mAudioFocusLock) {
                             final FocusRequester loser = (FocusRequester) msg.obj;
                             if (loser.isInFocusLossLimbo()) {
-                                loser.dispatchFocusChange(AudioManager.AUDIOFOCUS_LOSS);
+                                loser.dispatchFocusChange(AudioManager.AUDIOFOCUS_LOSS, "loss after fade");
                                 loser.release();
                                 postForgetUidLater(loser);
                             }

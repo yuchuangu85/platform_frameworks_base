@@ -17,6 +17,7 @@
 package com.android.systemui.biometrics.data.repository
 
 import android.hardware.biometrics.PromptInfo
+import android.util.Log
 import com.android.systemui.biometrics.AuthController
 import com.android.systemui.biometrics.shared.model.PromptKind
 import com.android.systemui.common.coroutine.ChannelExt.trySendWithFailureLogging
@@ -49,11 +50,17 @@ interface PromptRepository {
     /** The user that the prompt is for. */
     val userId: StateFlow<Int?>
 
+    /** The request that the prompt is for. */
+    val requestId: StateFlow<Long?>
+
     /** The gatekeeper challenge, if one is associated with this prompt. */
     val challenge: StateFlow<Long?>
 
-    /** The kind of credential to use (biometric, pin, pattern, etc.). */
-    val kind: StateFlow<PromptKind>
+    /** The kind of prompt to use (biometric, pin, pattern, etc.). */
+    val promptKind: StateFlow<PromptKind>
+
+    /** The package name that the prompt is called from. */
+    val opPackageName: StateFlow<String?>
 
     /**
      * If explicit confirmation is required.
@@ -66,12 +73,14 @@ interface PromptRepository {
     fun setPrompt(
         promptInfo: PromptInfo,
         userId: Int,
+        requestId: Long,
         gatekeeperChallenge: Long?,
         kind: PromptKind,
+        opPackageName: String,
     )
 
     /** Unset the prompt info. */
-    fun unsetPrompt()
+    fun unsetPrompt(requestId: Long)
 }
 
 @SysUISingleton
@@ -105,8 +114,14 @@ constructor(
     private val _userId: MutableStateFlow<Int?> = MutableStateFlow(null)
     override val userId = _userId.asStateFlow()
 
-    private val _kind: MutableStateFlow<PromptKind> = MutableStateFlow(PromptKind.Biometric())
-    override val kind = _kind.asStateFlow()
+    private val _requestId: MutableStateFlow<Long?> = MutableStateFlow(null)
+    override val requestId = _requestId.asStateFlow()
+
+    private val _promptKind: MutableStateFlow<PromptKind> = MutableStateFlow(PromptKind.None)
+    override val promptKind = _promptKind.asStateFlow()
+
+    private val _opPackageName: MutableStateFlow<String?> = MutableStateFlow(null)
+    override val opPackageName = _opPackageName.asStateFlow()
 
     private val _faceSettings =
         _userId.map { id -> faceSettings.forUser(id) }.distinctUntilChanged()
@@ -125,20 +140,30 @@ constructor(
     override fun setPrompt(
         promptInfo: PromptInfo,
         userId: Int,
+        requestId: Long,
         gatekeeperChallenge: Long?,
         kind: PromptKind,
+        opPackageName: String,
     ) {
-        _kind.value = kind
+        _promptKind.value = kind
         _userId.value = userId
+        _requestId.value = requestId
         _challenge.value = gatekeeperChallenge
         _promptInfo.value = promptInfo
+        _opPackageName.value = opPackageName
     }
 
-    override fun unsetPrompt() {
-        _promptInfo.value = null
-        _userId.value = null
-        _challenge.value = null
-        _kind.value = PromptKind.Biometric()
+    override fun unsetPrompt(requestId: Long) {
+        if (requestId == _requestId.value) {
+            _promptInfo.value = null
+            _userId.value = null
+            _requestId.value = null
+            _challenge.value = null
+            _promptKind.value = PromptKind.None
+            _opPackageName.value = null
+        } else {
+            Log.w(TAG, "Ignoring unsetPrompt - requestId mismatch")
+        }
     }
 
     companion object {

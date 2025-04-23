@@ -25,6 +25,8 @@
 namespace android {
 
 bool SpriteIcon::draw(sp<Surface> surface) const {
+    LOG_ALWAYS_FATAL_IF(!isValid(), "Cannot draw SpriteIcon: not valid");
+
     ANativeWindow_Buffer outBuffer;
     status_t status = surface->lock(&outBuffer, NULL);
     if (status) {
@@ -34,6 +36,9 @@ bool SpriteIcon::draw(sp<Surface> surface) const {
 
     graphics::Paint paint;
     paint.setBlendMode(ABLEND_MODE_SRC);
+    if (drawNativeDropShadow) {
+        paint.setImageFilter(AIMAGE_FILTER_DROP_SHADOW_FOR_POINTER_ICON);
+    }
 
     graphics::Canvas canvas(outBuffer, (int32_t)surface->getBuffersDataSpace());
     canvas.drawBitmap(bitmap, 0, 0, &paint);

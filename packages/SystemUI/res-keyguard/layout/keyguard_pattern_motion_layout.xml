@@ -67,6 +67,7 @@
 
             <com.android.systemui.bouncer.ui.BouncerMessageView
                 android:id="@+id/bouncer_message_view"
+                android:importantForAccessibility="noHideDescendants"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical" />
@@ -85,6 +86,7 @@
             android:layout_width="0dp"
             android:layout_height="0dp"
             android:layout_marginBottom="8dp"
+            android:focusable="false"
             androidprv:layout_constraintVertical_bias="1.0"
             androidprv:layout_constraintDimensionRatio="1.0"
             androidprv:layout_constraintStart_toStartOf="parent"

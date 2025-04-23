@@ -17,8 +17,20 @@
 package com.android.systemui.qs.pipeline.data.repository
 
 import com.android.systemui.kosmos.Kosmos
+import com.android.systemui.retail.data.repository.FakeRetailModeRepository
+import com.android.systemui.retail.data.repository.RetailModeRepository
 
-val Kosmos.fakeTileSpecRepository by Kosmos.Fixture { FakeTileSpecRepository() }
+/** This fake uses 0 as the minimum number of tiles. That means that no tiles is a valid state. */
+var Kosmos.fakeMinimumTilesRepository by Kosmos.Fixture { MinimumTilesFixedRepository(0) }
+val Kosmos.minimumTilesRepository: MinimumTilesRepository by
+    Kosmos.Fixture { fakeMinimumTilesRepository }
+
+var Kosmos.fakeDefaultTilesRepository by Kosmos.Fixture { FakeDefaultTilesRepository() }
+val Kosmos.defaultTilesRepository: DefaultTilesRepository by
+    Kosmos.Fixture { fakeDefaultTilesRepository }
+
+val Kosmos.fakeTileSpecRepository by
+    Kosmos.Fixture { FakeTileSpecRepository(defaultTilesRepository) }
 var Kosmos.tileSpecRepository: TileSpecRepository by Kosmos.Fixture { fakeTileSpecRepository }
 
 val Kosmos.fakeAutoAddRepository by Kosmos.Fixture { FakeAutoAddRepository() }
@@ -36,3 +48,6 @@ var Kosmos.installedTilesRepository: InstalledTilesComponentRepository by
 val Kosmos.fakeCustomTileAddedRepository by Kosmos.Fixture { FakeCustomTileAddedRepository() }
 var Kosmos.customTileAddedRepository: CustomTileAddedRepository by
     Kosmos.Fixture { fakeCustomTileAddedRepository }
+
+val Kosmos.fakeRetailModeRepository by Kosmos.Fixture { FakeRetailModeRepository() }
+var Kosmos.retailModeRepository: RetailModeRepository by Kosmos.Fixture { fakeRetailModeRepository }

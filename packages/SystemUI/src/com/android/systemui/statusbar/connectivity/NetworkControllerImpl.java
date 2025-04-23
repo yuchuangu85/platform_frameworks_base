@@ -61,7 +61,6 @@ import com.android.settingslib.mobile.MobileStatusTracker.SubscriptionDefaults;
 import com.android.settingslib.mobile.TelephonyIcons;
 import com.android.settingslib.net.DataUsageController;
 import com.android.systemui.Dumpable;
-import com.android.systemui.res.R;
 import com.android.systemui.broadcast.BroadcastDispatcher;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Background;
@@ -72,7 +71,8 @@ import com.android.systemui.dump.DumpManager;
 import com.android.systemui.log.LogBuffer;
 import com.android.systemui.log.core.LogLevel;
 import com.android.systemui.log.dagger.StatusBarNetworkControllerLog;
-import com.android.systemui.qs.tiles.dialog.InternetDialogFactory;
+import com.android.systemui.qs.tiles.dialog.InternetDialogManager;
+import com.android.systemui.res.R;
 import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.pipeline.StatusBarPipelineFlags;
 import com.android.systemui.statusbar.policy.ConfigurationController;
@@ -84,6 +84,8 @@ import com.android.systemui.telephony.TelephonyListenerManager;
 import com.android.systemui.util.CarrierConfigTracker;
 
 import dalvik.annotation.optimization.NeverCompile;
+
+import kotlin.Unit;
 
 import java.io.PrintWriter;
 import java.text.SimpleDateFormat;
@@ -98,8 +100,6 @@ import java.util.concurrent.Executor;
 import java.util.stream.Collectors;
 
 import javax.inject.Inject;
-
-import kotlin.Unit;
 
 /** Platform implementation of the network controller. **/
 @SysUISingleton
@@ -201,7 +201,7 @@ public class NetworkControllerImpl extends BroadcastReceiver
     private boolean mUserSetup;
     private boolean mSimDetected;
     private boolean mForceCellularValidated;
-    private InternetDialogFactory mInternetDialogFactory;
+    private InternetDialogManager mInternetDialogManager;
     private Handler mMainHandler;
 
     private ConfigurationController.ConfigurationListener mConfigurationListener =
@@ -245,7 +245,7 @@ public class NetworkControllerImpl extends BroadcastReceiver
             WifiStatusTrackerFactory trackerFactory,
             MobileSignalControllerFactory mobileFactory,
             @Main Handler handler,
-            InternetDialogFactory internetDialogFactory,
+            InternetDialogManager internetDialogManager,
             DumpManager dumpManager,
             @StatusBarNetworkControllerLog LogBuffer logBuffer) {
         this(context, connectivityManager,
@@ -272,7 +272,7 @@ public class NetworkControllerImpl extends BroadcastReceiver
                 dumpManager,
                 logBuffer);
         mReceiverHandler.post(mRegisterListeners);
-        mInternetDialogFactory = internetDialogFactory;
+        mInternetDialogManager = internetDialogManager;
     }
 
     @VisibleForTesting
@@ -465,7 +465,10 @@ public class NetworkControllerImpl extends BroadcastReceiver
             });
         };
 
-        mDemoModeController.addCallback(this);
+        // TODO(b/336357360): Until we can remove this class entirely, disable its handling of ALL
+        // demo mode commands, due to the fact that the mobile command handler has an infinite
+        // loop bug if you use any slot other than 1.
+        // mDemoModeController.addCallback(this);
 
         mDumpManager.registerNormalDumpable(TAG, this);
     }
@@ -593,7 +596,8 @@ public class NetworkControllerImpl extends BroadcastReceiver
             // NetworkCapabilities, but we need to convert it into TRANSPORT_WIFI in order to
             // distinguish it from VCN over Cellular.
             if (transportTypes[i] == NetworkCapabilities.TRANSPORT_CELLULAR
-                    && Utils.tryGetWifiInfoForVcn(networkCapabilities) != null) {
+                    && Utils.tryGetWifiInfoForVcn(mConnectivityManager, networkCapabilities)
+                            != null) {
                 transportTypes[i] = NetworkCapabilities.TRANSPORT_WIFI;
                 break;
             }
@@ -829,7 +833,7 @@ public class NetworkControllerImpl extends BroadcastReceiver
                 mReceiverHandler.post(this::handleConfigurationChanged);
                 break;
             case Settings.Panel.ACTION_INTERNET_CONNECTIVITY:
-                mMainHandler.post(() -> mInternetDialogFactory.create(true,
+                mMainHandler.post(() -> mInternetDialogManager.create(true,
                         mAccessPoints.canConfigMobileData(), mAccessPoints.canConfigWifi(),
                         null /* view */));
                 break;
@@ -1109,7 +1113,9 @@ public class NetworkControllerImpl extends BroadcastReceiver
                     continue;
                 }
                 if (transportType == NetworkCapabilities.TRANSPORT_CELLULAR
-                        && Utils.tryGetWifiInfoForVcn(mLastDefaultNetworkCapabilities) != null) {
+                        && Utils.tryGetWifiInfoForVcn(
+                                        mConnectivityManager, mLastDefaultNetworkCapabilities)
+                                != null) {
                     mConnectedTransports.set(NetworkCapabilities.TRANSPORT_WIFI);
                     if (mLastDefaultNetworkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED)) {
                         mValidatedTransports.set(NetworkCapabilities.TRANSPORT_WIFI);
@@ -1318,6 +1324,8 @@ public class NetworkControllerImpl extends BroadcastReceiver
             int carrierId = TextUtils.isEmpty(carrierIdString) ? 0
                     : Integer.parseInt(carrierIdString);
             // Ensure we have enough sim slots
+            // TODO(b/336357360): This is the origination of the infinite loop bug, for those
+            // following along at home.
             List<SubscriptionInfo> subs = new ArrayList<>();
             while (mMobileSignalControllers.size() <= slot) {
                 int nextSlot = mMobileSignalControllers.size();

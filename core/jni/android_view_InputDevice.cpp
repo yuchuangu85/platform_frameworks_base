@@ -14,17 +14,16 @@
  * limitations under the License.
  */
 
-#include <input/Input.h>
+#include "android_view_InputDevice.h"
 
 #include <android_runtime/AndroidRuntime.h>
+#include <com_android_input_flags.h>
+#include <input/Input.h>
 #include <jni.h>
 #include <nativehelper/JNIHelp.h>
-
 #include <nativehelper/ScopedLocalRef.h>
 
-#include "android_view_InputDevice.h"
 #include "android_view_KeyCharacterMap.h"
-
 #include "core_jni_helpers.h"
 
 namespace android {
@@ -34,6 +33,7 @@ static struct {
 
     jmethodID ctor;
     jmethodID addMotionRange;
+    jmethodID setShouldSmoothScroll;
 } gInputDeviceClassInfo;
 
 jobject android_view_InputDevice_create(JNIEnv* env, const InputDeviceInfo& deviceInfo) {
@@ -60,7 +60,7 @@ jobject android_view_InputDevice_create(JNIEnv* env, const InputDeviceInfo& devi
                                                                   ? layoutInfo->layoutType.c_str()
                                                                   : NULL));
 
-    std::shared_ptr<KeyCharacterMap> map = deviceInfo.getKeyCharacterMap();
+    const KeyCharacterMap* map = deviceInfo.getKeyCharacterMap();
     std::unique_ptr<KeyCharacterMap> mapCopy;
     if (map != nullptr) {
         mapCopy = std::make_unique<KeyCharacterMap>(*map);
@@ -90,7 +90,8 @@ jobject android_view_InputDevice_create(JNIEnv* env, const InputDeviceInfo& devi
                                           deviceInfo.hasButtonUnderPad(), deviceInfo.hasSensor(),
                                           deviceInfo.hasBattery(), usiVersion.majorVersion,
                                           usiVersion.minorVersion,
-                                          deviceInfo.getAssociatedDisplayId()));
+                                          deviceInfo.getAssociatedDisplayId(),
+                                          deviceInfo.isEnabled()));
     // Note: We do not populate the Bluetooth address into the InputDevice object to avoid leaking
     // it to apps that do not have the Bluetooth permission.
 
@@ -100,6 +101,18 @@ jobject android_view_InputDevice_create(JNIEnv* env, const InputDeviceInfo& devi
                 range.source, range.min, range.max, range.flat, range.fuzz, range.resolution);
         if (env->ExceptionCheck()) {
             return NULL;
+        }
+    }
+
+    if (com::android::input::flags::input_device_view_behavior_api()) {
+        const InputDeviceViewBehavior& viewBehavior = deviceInfo.getViewBehavior();
+        std::optional<bool> defaultSmoothScroll = viewBehavior.shouldSmoothScroll;
+        if (defaultSmoothScroll.has_value()) {
+            env->CallVoidMethod(inputDeviceObj.get(), gInputDeviceClassInfo.setShouldSmoothScroll,
+                                *defaultSmoothScroll);
+            if (env->ExceptionCheck()) {
+                return NULL;
+            }
         }
     }
 
@@ -114,10 +127,12 @@ int register_android_view_InputDevice(JNIEnv* env)
     gInputDeviceClassInfo.ctor = GetMethodIDOrDie(env, gInputDeviceClassInfo.clazz, "<init>",
                                                   "(IIILjava/lang/String;IIILjava/lang/"
                                                   "String;ZIILandroid/view/KeyCharacterMap;Ljava/"
-                                                  "lang/String;Ljava/lang/String;ZZZZZIII)V");
+                                                  "lang/String;Ljava/lang/String;ZZZZZIIIZ)V");
 
     gInputDeviceClassInfo.addMotionRange =
             GetMethodIDOrDie(env, gInputDeviceClassInfo.clazz, "addMotionRange", "(IIFFFFF)V");
+    gInputDeviceClassInfo.setShouldSmoothScroll =
+            GetMethodIDOrDie(env, gInputDeviceClassInfo.clazz, "setShouldSmoothScroll", "(Z)V");
     return 0;
 }
 

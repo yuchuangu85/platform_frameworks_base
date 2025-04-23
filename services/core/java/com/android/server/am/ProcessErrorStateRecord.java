@@ -22,7 +22,7 @@ import static com.android.server.Watchdog.NATIVE_STACKS_OF_INTEREST;
 import static com.android.server.am.ActivityManagerDebugConfig.DEBUG_ANR;
 import static com.android.server.am.ActivityManagerService.MY_PID;
 import static com.android.server.am.ProcessRecord.TAG;
-import static com.android.server.stats.pull.ProcfsMemoryUtil.readMemorySnapshotFromProcfs;
+import static com.android.internal.os.ProcfsMemoryUtil.readMemorySnapshotFromProcfs;
 
 import android.annotation.Nullable;
 import android.app.ActivityManager;
@@ -58,13 +58,17 @@ import com.android.internal.util.FrameworkStatsLog;
 import com.android.modules.expresslog.Counter;
 import com.android.server.ResourcePressureUtil;
 import com.android.server.criticalevents.CriticalEventLog;
-import com.android.server.stats.pull.ProcfsMemoryUtil.MemorySnapshot;
+import com.android.internal.os.ProcfsMemoryUtil.MemorySnapshot;
 import com.android.server.wm.WindowProcessController;
 
 import java.io.File;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -299,6 +303,9 @@ class ProcessErrorStateRecord {
         SparseBooleanArray lastPids = new SparseBooleanArray(20);
         ActivityManagerService.VolatileDropboxEntryStates volatileDropboxEntriyStates = null;
 
+        // Release the expired timer preparatory to starting the dump or returning without dumping.
+        timeoutRecord.closeExpiredTimer();
+
         if (mApp.isDebugging()) {
             Slog.i(TAG, "Skipping debugged app ANR: " + this + " " + annotation);
             return;
@@ -349,9 +356,18 @@ class ProcessErrorStateRecord {
             synchronized (mProcLock) {
                 latencyTracker.waitingOnProcLockEnded();
                 setNotResponding(true);
+
+                ZonedDateTime timestamp = null;
+                if (timeoutRecord != null && timeoutRecord.mEndUptimeMillis > 0) {
+                    long millisSinceEndUptimeMs = anrTime - timeoutRecord.mEndUptimeMillis;
+                    timestamp = Instant.now().minusMillis(millisSinceEndUptimeMs)
+                                    .atZone(ZoneId.systemDefault());
+                }
+
                 volatileDropboxEntriyStates =
                         ActivityManagerService.VolatileDropboxEntryStates
-                                .withProcessFrozenState(mApp.mOptRecord.isFrozen());
+                                .withProcessFrozenStateAndTimestamp(
+                                        mApp.mOptRecord.isFrozen(), timestamp);
             }
 
             // Log the ANR to the event log.
@@ -413,7 +429,7 @@ class ProcessErrorStateRecord {
             }
         }
         // Build memory headers for the ANRing process.
-        String memoryHeaders = buildMemoryHeadersFor(pid);
+        LinkedHashMap<String, String> memoryHeaders = buildMemoryHeadersFor(pid);
 
         // Get critical event log before logging the ANR so that it doesn't occur in the log.
         latencyTracker.criticalEventLogStarted();
@@ -705,9 +721,7 @@ class ProcessErrorStateRecord {
                         mService.mContext, mApp.info.packageName, mApp.info.flags);
             }
         }
-        for (BroadcastQueue queue : mService.mBroadcastQueues) {
-            queue.onApplicationProblemLocked(mApp);
-        }
+        mService.getBroadcastQueue().onApplicationProblemLocked(mApp);
     }
 
     @GuardedBy("mService")
@@ -739,7 +753,7 @@ class ProcessErrorStateRecord {
             resolver.getUserId()) != 0;
     }
 
-    private @Nullable String buildMemoryHeadersFor(int pid) {
+    private @Nullable LinkedHashMap<String, String> buildMemoryHeadersFor(int pid) {
         if (pid <= 0) {
             Slog.i(TAG, "Memory header requested with invalid pid: " + pid);
             return null;
@@ -750,15 +764,13 @@ class ProcessErrorStateRecord {
             return null;
         }
 
-        StringBuilder memoryHeaders = new StringBuilder();
-        memoryHeaders.append("RssHwmKb: ")
-            .append(snapshot.rssHighWaterMarkInKilobytes)
-            .append("\n");
-        memoryHeaders.append("RssKb: ").append(snapshot.rssInKilobytes).append("\n");
-        memoryHeaders.append("RssAnonKb: ").append(snapshot.anonRssInKilobytes).append("\n");
-        memoryHeaders.append("RssShmemKb: ").append(snapshot.rssShmemKilobytes).append("\n");
-        memoryHeaders.append("VmSwapKb: ").append(snapshot.swapInKilobytes).append("\n");
-        return memoryHeaders.toString();
+        LinkedHashMap<String, String> memoryHeaders = new LinkedHashMap<>();
+        memoryHeaders.put("RssHwmKb", Integer.toString(snapshot.rssHighWaterMarkInKilobytes));
+        memoryHeaders.put("RssKb", Integer.toString(snapshot.rssInKilobytes));
+        memoryHeaders.put("RssAnonKb", Integer.toString(snapshot.anonRssInKilobytes));
+        memoryHeaders.put("RssShmemKb", Integer.toString(snapshot.rssShmemKilobytes));
+        memoryHeaders.put("VmSwapKb", Integer.toString(snapshot.swapInKilobytes));
+        return memoryHeaders;
     }
     /**
      * Unless configured otherwise, swallow ANRs in background processes & kill the process.

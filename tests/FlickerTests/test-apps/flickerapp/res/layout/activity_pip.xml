@@ -113,6 +113,12 @@
             android:onClick="onRatioSelected"/>
     </RadioGroup>
 
+    <CheckBox
+        android:id="@+id/set_source_rect_hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Set SourceRectHint"/>
+
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"

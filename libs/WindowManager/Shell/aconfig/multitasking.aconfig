@@ -1,26 +1,13 @@
+# proto-file: build/make/tools/aconfig/aconfig_protos/protos/aconfig.proto
+
 package: "com.android.wm.shell"
 container: "system"
-
-flag {
-    name: "example_flag"
-    namespace: "multitasking"
-    description: "An Example Flag"
-    bug: "300136750"
-}
 
 flag {
     name: "enable_app_pairs"
     namespace: "multitasking"
     description: "Enables the ability to create and save app pairs to the Home screen"
     bug: "274835596"
-}
-
-flag {
-    name: "enable_desktop_windowing"
-    namespace: "multitasking"
-    description: "Enables desktop windowing"
-    bug: "304778354"
-    is_fixed_read_only: true
 }
 
 flag {
@@ -38,18 +25,10 @@ flag {
 }
 
 flag {
-    name: "enable_pip_ui_state_on_entering"
-    namespace: "multitasking"
-    description: "Enables PiP UI state callback on entering"
-    bug: "303718131"
-}
-
-flag {
-    name: "enable_pip2_implementation"
+    name: "enable_pip2"
     namespace: "multitasking"
     description: "Enables the new implementation of PiP (PiP2)"
-    bug: "290220798"
-    is_fixed_read_only: true
+    bug: "311462191"
 }
 
 flag {
@@ -57,4 +36,145 @@ flag {
     namespace: "multitasking"
     description: "Enables left/right split in portrait"
     bug: "291018646"
+}
+
+flag {
+    name: "enable_new_bubble_animations"
+    namespace: "multitasking"
+    description: "Enables new animations for expand and collapse for bubbles"
+    bug: "311450609"
+}
+
+flag {
+    name: "enable_pip_umo_experience"
+    namespace: "multitasking"
+    description: "Enables new UMO experience for PiP menu"
+    bug: "307998712"
+}
+
+flag {
+    name: "enable_bubble_bar"
+    namespace: "multitasking"
+    description: "Enables the new bubble bar UI for tablets"
+    bug: "286246694"
+}
+
+flag {
+    name: "enable_bubbles_long_press_nav_handle"
+    namespace: "multitasking"
+    description: "Enables long-press action for nav handle when a bubble is expanded"
+    bug: "324910035"
+}
+
+flag {
+    name: "enable_optional_bubble_overflow"
+    namespace: "multitasking"
+    description: "Hides the bubble overflow if there aren't any overflowed bubbles"
+    bug: "334175587"
+}
+
+flag {
+    name: "enable_retrievable_bubbles"
+    namespace: "multitasking"
+    description: "Allow opening bubbles overflow UI without bubbles being visible"
+    bug: "340337839"
+}
+
+flag {
+    name: "enable_bubble_stashing"
+    namespace: "multitasking"
+    description: "Allow the floating bubble stack to stash on the edge of the screen"
+    bug: "341361249"
+}
+
+flag {
+    name: "enable_tiny_taskbar"
+    namespace: "multitasking"
+    description: "Enables Taskbar on phones"
+    bug: "341784466"
+}
+
+flag {
+    name: "enable_bubble_anything"
+    namespace: "multitasking"
+    description: "Enable UI affordances to put other content into a bubble"
+    bug: "342245211"
+}
+
+flag {
+    name: "only_reuse_bubbled_task_when_launched_from_bubble"
+    namespace: "multitasking"
+    description: "Allow reusing bubbled tasks for new activities only when launching from bubbles"
+    bug: "328229865"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "enable_taskbar_on_phones"
+    namespace: "multitasking"
+    description: "Enables taskbar on phones"
+    bug: "348007377"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "enable_shell_top_task_tracking"
+    namespace: "multitasking"
+    description: "Enables tracking top tasks from the shell"
+    bug: "342627272"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "enable_bubble_bar_in_persistent_task_bar"
+    namespace: "multitasking"
+    description: "Enable bubble bar to be shown in the persistent task bar"
+    bug: "346391377"
+}
+
+flag {
+    name: "bubble_view_info_executors"
+    namespace: "multitasking"
+    description: "Use executors to inflate bubble views"
+    bug: "353894869"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+   name: "enable_bubble_to_fullscreen"
+   namespace: "multitasking"
+   description: "Enable an option to move bubbles to fullscreen"
+   bug: "363326492"
+}
+
+flag {
+    name: "enable_flexible_two_app_split"
+    namespace: "multitasking"
+    description: "Enables only 2 app 90:10 split"
+    bug: "349828130"
+}
+
+flag {
+    name: "enable_flexible_split"
+    namespace: "multitasking"
+    description: "Enables flexibile split feature for split screen"
+    bug: "349828130"
+}
+
+flag {
+    name: "enable_task_view_controller_cleanup"
+    namespace: "multitasking"
+    description: "Fix memory leak with task view controllers"
+    bug: "369995920"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
 }

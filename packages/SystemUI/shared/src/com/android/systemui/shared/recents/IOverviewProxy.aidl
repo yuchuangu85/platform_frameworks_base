@@ -20,10 +20,9 @@ import android.graphics.Rect;
 import android.graphics.Region;
 import android.os.Bundle;
 import android.view.MotionEvent;
-import android.view.SurfaceControl;
 import com.android.systemui.shared.recents.ISystemUiProxy;
 
-// Next ID: 29
+// Next ID: 34
 oneway interface IOverviewProxy {
 
     void onActiveNavBarRegionChanges(in Region activeRegion) = 11;
@@ -66,7 +65,7 @@ oneway interface IOverviewProxy {
     /**
      * Sent when some system ui state changes.
      */
-    void onSystemUiStateChanged(int stateFlags) = 16;
+    void onSystemUiStateChanged(long stateFlags) = 16;
 
     /**
      * Sent when suggested rotation button could be shown
@@ -84,22 +83,58 @@ oneway interface IOverviewProxy {
     void onSystemBarAttributesChanged(int displayId, int behavior) = 20;
 
     /**
+     * Sent when {@link TaskbarDelegate#onTransitionModeUpdated} is called.
+     */
+    void onTransitionModeUpdated(int barMode, boolean checkBarModes) = 21;
+
+    /**
      * Sent when the desired dark intensity of the nav buttons has changed
      */
     void onNavButtonsDarkIntensityChanged(float darkIntensity) = 22;
 
-     /**
-      * Sent when split keyboard shortcut is triggered to enter stage split.
-      */
-     void enterStageSplitFromRunningApp(boolean leftOrTop) = 25;
+    /**
+     * Sent when when navigation bar luma sampling is enabled or disabled.
+     */
+    void onNavigationBarLumaSamplingEnabled(int displayId, boolean enable) = 23;
 
-     /**
-      * Sent when the surface for navigation bar is created or changed
-      */
-     void onNavigationBarSurface(in SurfaceControl surface) = 26;
+    /**
+     * Sent when split keyboard shortcut is triggered to enter stage split.
+     */
+    void enterStageSplitFromRunningApp(boolean leftOrTop) = 25;
 
-     /**
-      * Sent when the task bar stash state is toggled.
-      */
-     void onTaskbarToggled() = 27;
+    /**
+     * Sent when the task bar stash state is toggled.
+     */
+    void onTaskbarToggled() = 27;
+
+    /**
+     * Sent when the wallpaper visibility is updated.
+     */
+    void updateWallpaperVisibility(int displayId, boolean visible) = 29;
+
+    /**
+     * Sent when {@link TaskbarDelegate#checkNavBarModes} is called.
+     */
+    void checkNavBarModes(int displayId) = 30;
+
+    /**
+     * Sent when {@link TaskbarDelegate#finishBarAnimations} is called.
+     */
+    void finishBarAnimations(int displayId) = 31;
+
+    /**
+     * Sent when {@link TaskbarDelegate#touchAutoDim} is called. {@param reset} is true, when auto
+     * dim is reset after a timeout.
+     */
+    void touchAutoDim(int displayid, boolean reset) = 32;
+
+    /**
+     * Sent when {@link TaskbarDelegate#transitionTo} is called.
+     */
+    void transitionTo(int displayId, int barMode, boolean animate) = 33;
+
+    /**
+     * Sent when {@link TaskbarDelegate#appTransitionPending} is called.
+     */
+    void appTransitionPending(boolean pending) = 34;
 }

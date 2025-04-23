@@ -227,6 +227,9 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     private String requiredAccountType;
     @Nullable
     @DataClass.ParcelWith(ForInternedString.class)
+    private String mEmergencyInstaller;
+    @Nullable
+    @DataClass.ParcelWith(ForInternedString.class)
     private String overlayTarget;
     @Nullable
     @DataClass.ParcelWith(ForInternedString.class)
@@ -389,6 +392,10 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     private int memtagMode;
     @ApplicationInfo.NativeHeapZeroInitialized
     private int nativeHeapZeroInitialized;
+
+    @ApplicationInfo.PageSizeAppCompatFlags private int mPageSizeAppCompatFlags =
+            ApplicationInfo.PAGE_SIZE_APP_COMPAT_FLAG_UNDEFINED;
+
     @Nullable
     @DataClass.ParcelWith(Parcelling.BuiltIn.ForBoolean.class)
     private Boolean requestRawExternalStorageAccess;
@@ -405,6 +412,12 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     // Derived fields
     private long mLongVersionCode;
     private int mLocaleConfigRes;
+    private boolean mAllowCrossUidActivitySwitchFromBelow;
+
+    @Nullable
+    private int[] mAlternateLauncherIconResIds;
+    @Nullable
+    private int[] mAlternateLauncherLabelResIds;
 
     private List<AndroidPackageSplit> mSplits;
 
@@ -416,6 +429,10 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     private String[] mUsesSdkLibrariesSorted;
     @NonNull
     private String[] mUsesStaticLibrariesSorted;
+
+    private Map<String, Boolean> mFeatureFlagState = new ArrayMap<>();
+
+    private int mIntentMatchingFlags;
 
     @NonNull
     public static PackageImpl forParsing(@NonNull String packageName, @NonNull String baseCodePath,
@@ -723,27 +740,12 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
         this.usesSdkLibraries = CollectionUtils.add(this.usesSdkLibraries,
                 TextUtils.safeIntern(libraryName));
         this.usesSdkLibrariesVersionsMajor = ArrayUtils.appendLong(
-                this.usesSdkLibrariesVersionsMajor, versionMajor, true);
+                this.usesSdkLibrariesVersionsMajor, versionMajor, /* allowDuplicates= */ true);
         this.usesSdkLibrariesCertDigests = ArrayUtils.appendElement(String[].class,
-                this.usesSdkLibrariesCertDigests, certSha256Digests, true);
-        this.usesSdkLibrariesOptional = appendBoolean(this.usesSdkLibrariesOptional,
-                usesSdkLibrariesOptional);
+                this.usesSdkLibrariesCertDigests, certSha256Digests, /* allowDuplicates= */ true);
+        this.usesSdkLibrariesOptional = ArrayUtils.appendBooleanDuplicatesAllowed(
+                this.usesSdkLibrariesOptional, usesSdkLibrariesOptional);
         return this;
-    }
-
-    /**
-     * Adds value to given array if not already present, providing set-like
-     * behavior.
-     */
-    public static boolean[] appendBoolean(@Nullable boolean[] cur, boolean val) {
-        if (cur == null) {
-            return new boolean[] { val };
-        }
-        final int N = cur.length;
-        boolean[] ret = new boolean[N + 1];
-        System.arraycopy(cur, 0, ret, 0, N);
-        ret[N] = val;
-        return ret;
     }
 
     @Override
@@ -879,6 +881,18 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     @Override
     public List<String> getAdoptPermissions() {
         return adoptPermissions;
+    }
+
+    @Nullable
+    @Override
+    public int[] getAlternateLauncherIconResIds() {
+        return mAlternateLauncherIconResIds;
+    }
+
+    @Nullable
+    @Override
+    public int[] getAlternateLauncherLabelResIds() {
+        return mAlternateLauncherLabelResIds;
     }
 
     @NonNull
@@ -1108,6 +1122,12 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
         return nativeHeapZeroInitialized;
     }
 
+    @ApplicationInfo.PageSizeAppCompatFlags
+    @Override
+    public int getPageSizeAppCompatFlags() {
+        return mPageSizeAppCompatFlags;
+    }
+
     @Override
     public int getNetworkSecurityConfigResourceId() {
         return networkSecurityConfigRes;
@@ -1288,6 +1308,12 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     @Override
     public String getRestrictedAccountType() {
         return restrictedAccountType;
+    }
+
+    @Nullable
+    @Override
+    public String getEmergencyInstaller() {
+        return mEmergencyInstaller;
     }
 
     @Override
@@ -1545,6 +1571,11 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     @Override
     public String getZygotePreloadName() {
         return zygotePreloadName;
+    }
+
+    @Override
+    public boolean isAllowCrossUidActivitySwitchFromBelow() {
+        return mAllowCrossUidActivitySwitchFromBelow;
     }
 
     @Override
@@ -1884,6 +1915,19 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     }
 
     @Override
+    public PackageImpl setAlternateLauncherIconResIds(@Nullable int[] alternateLauncherIconResIds) {
+        this.mAlternateLauncherIconResIds = alternateLauncherIconResIds;
+        return this;
+    }
+
+    @Override
+    public PackageImpl setAlternateLauncherLabelResIds(
+            @Nullable int[] alternateLauncherLabelResIds) {
+        this.mAlternateLauncherLabelResIds = alternateLauncherLabelResIds;
+        return this;
+    }
+
+    @Override
     public PackageImpl setTaskReparentingAllowed(boolean value) {
         return setBoolean(Booleans.ALLOW_TASK_REPARENTING, value);
     }
@@ -2187,6 +2231,12 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     }
 
     @Override
+    public PackageImpl setPageSizeAppCompatFlags(@ApplicationInfo.PageSizeAppCompatFlags int flag) {
+        mPageSizeAppCompatFlags = flag;
+        return this;
+    }
+
+    @Override
     public PackageImpl setNetworkSecurityConfigResourceId(int value) {
         networkSecurityConfigRes = value;
         return this;
@@ -2201,6 +2251,12 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     @Override
     public ParsingPackage setOnBackInvokedCallbackEnabled(boolean value) {
         setBoolean(Booleans.ENABLE_ON_BACK_INVOKED_CALLBACK, value);
+        return this;
+    }
+
+    @Override
+    public ParsingPackage setAllowCrossUidActivitySwitchFromBelow(boolean value) {
+        mAllowCrossUidActivitySwitchFromBelow = value;
         return this;
     }
 
@@ -2347,6 +2403,12 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     @Override
     public PackageImpl setRestrictedAccountType(@Nullable String restrictedAccountType) {
         this.restrictedAccountType = restrictedAccountType;
+        return this;
+    }
+
+    @Override
+    public PackageImpl setEmergencyInstaller(@Nullable String emergencyInstaller) {
+        this.mEmergencyInstaller = emergencyInstaller;
         return this;
     }
 
@@ -2656,6 +2718,8 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
         if (!mKnownActivityEmbeddingCerts.isEmpty()) {
             appInfo.setKnownActivityEmbeddingCerts(mKnownActivityEmbeddingCerts);
         }
+        appInfo.allowCrossUidActivitySwitchFromBelow = mAllowCrossUidActivitySwitchFromBelow;
+        appInfo.setPageSizeAppCompatFlags(mPageSizeAppCompatFlags);
 
         return appInfo;
     }
@@ -2806,6 +2870,7 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
         queriesProviders = Collections.unmodifiableSet(queriesProviders);
         mimeGroups = Collections.unmodifiableSet(mimeGroups);
         mKnownActivityEmbeddingCerts = Collections.unmodifiableSet(mKnownActivityEmbeddingCerts);
+        mFeatureFlagState = Collections.unmodifiableMap(mFeatureFlagState);
     }
 
     @Override
@@ -3012,6 +3077,7 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
     @Override
     public PackageImpl setSplitCodePaths(@Nullable String[] splitCodePaths) {
         this.splitCodePaths = splitCodePaths;
+        this.mSplits = null; // reset for paths changed
         if (splitCodePaths != null) {
             int size = splitCodePaths.length;
             for (int index = 0; index < size; index++) {
@@ -3104,6 +3170,8 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
 
     @Override
     public void writeToParcel(Parcel dest, int flags) {
+        writeFeatureFlagState(dest);
+
         sForBoolean.parcel(this.supportsSmallScreens, dest, flags);
         sForBoolean.parcel(this.supportsNormalScreens, dest, flags);
         sForBoolean.parcel(this.supportsLargeScreens, dest, flags);
@@ -3120,6 +3188,7 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
         dest.writeString(this.mBaseApkPath);
         dest.writeString(this.restrictedAccountType);
         dest.writeString(this.requiredAccountType);
+        dest.writeString(this.mEmergencyInstaller);
         sForInternedString.parcel(this.overlayTarget, dest, flags);
         dest.writeString(this.overlayTargetOverlayableName);
         dest.writeString(this.overlayCategory);
@@ -3249,11 +3318,45 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
         dest.writeInt(this.uid);
         dest.writeLong(this.mBooleans);
         dest.writeLong(this.mBooleans2);
+        dest.writeBoolean(this.mAllowCrossUidActivitySwitchFromBelow);
+        dest.writeInt(this.mIntentMatchingFlags);
+        dest.writeIntArray(this.mAlternateLauncherIconResIds);
+        dest.writeIntArray(this.mAlternateLauncherLabelResIds);
+        dest.writeInt(this.mPageSizeAppCompatFlags);
+    }
+
+    private void writeFeatureFlagState(@NonNull Parcel dest) {
+        // Use a string array to encode flag state. One string per flag in the form `<flag>=<value>`
+        // where value is 0 (disabled), 1 (enabled) or ? (unknown flag or value).
+        int featureFlagCount = this.mFeatureFlagState.size();
+        String[] featureFlagStateAsArray = new String[featureFlagCount];
+        var entryIterator = this.mFeatureFlagState.entrySet().iterator();
+        for (int i = 0; i < featureFlagCount; i++) {
+            var entry = entryIterator.next();
+            Boolean flagValue = entry.getValue();
+            if (flagValue == null) {
+                featureFlagStateAsArray[i] = entry.getKey() + "=?";
+            } else if (flagValue.booleanValue()) {
+                featureFlagStateAsArray[i] = entry.getKey() + "=1";
+            } else {
+                featureFlagStateAsArray[i] = entry.getKey() + "=0";
+            }
+
+        }
+        dest.writeStringArray(featureFlagStateAsArray);
     }
 
     public PackageImpl(Parcel in) {
+        this(in, /* callback */ null);
+    }
+
+    public PackageImpl(@NonNull Parcel in, @Nullable ParsingPackageUtils.Callback callback) {
+        mCallback = callback;
         // We use the boot classloader for all classes that we load.
         final ClassLoader boot = Object.class.getClassLoader();
+
+        readFeatureFlagState(in);
+
         this.supportsSmallScreens = sForBoolean.unparcel(in);
         this.supportsNormalScreens = sForBoolean.unparcel(in);
         this.supportsLargeScreens = sForBoolean.unparcel(in);
@@ -3270,6 +3373,7 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
         this.mBaseApkPath = in.readString();
         this.restrictedAccountType = in.readString();
         this.requiredAccountType = in.readString();
+        this.mEmergencyInstaller = in.readString();
         this.overlayTarget = sForInternedString.unparcel(in);
         this.overlayTargetOverlayableName = in.readString();
         this.overlayCategory = in.readString();
@@ -3409,12 +3513,38 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
         this.uid = in.readInt();
         this.mBooleans = in.readLong();
         this.mBooleans2 = in.readLong();
+        this.mAllowCrossUidActivitySwitchFromBelow = in.readBoolean();
+        this.mIntentMatchingFlags = in.readInt();
+        this.mAlternateLauncherIconResIds = in.createIntArray();
+        this.mAlternateLauncherLabelResIds = in.createIntArray();
+        this.mPageSizeAppCompatFlags = in.readInt();
 
         assignDerivedFields();
         assignDerivedFields2();
 
         // Do not call makeImmutable here as cached parsing will need
         // to mutate this instance before it's finalized.
+    }
+
+    private void readFeatureFlagState(@NonNull Parcel in) {
+        // See comment in writeFeatureFlagState() for encoding of flag state.
+        String[] featureFlagStateAsArray = in.createStringArray();
+        for (String s : featureFlagStateAsArray) {
+            int sepIndex = s.lastIndexOf('=');
+            if (sepIndex >= 0 && sepIndex == s.length() - 2) {
+                String flagPackageAndName = s.substring(0, sepIndex);
+                char c = s.charAt(sepIndex + 1);
+                Boolean flagValue = null;
+                if (c == '1') {
+                    flagValue = Boolean.TRUE;
+                } else if (c == '0') {
+                    flagValue = Boolean.FALSE;
+                } else if (c != '?') {
+                    continue;
+                }
+                this.mFeatureFlagState.put(flagPackageAndName, flagValue);
+            }
+        }
     }
 
     @NonNull
@@ -3626,6 +3756,17 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
         return this;
     }
 
+    @Override
+    public ParsingPackage setIntentMatchingFlags(int intentMatchingFlags) {
+        mIntentMatchingFlags = intentMatchingFlags;
+        return this;
+    }
+
+    @Override
+    public int getIntentMatchingFlags() {
+        return mIntentMatchingFlags;
+    }
+
     // The following methods are explicitly not inside any interface. These are hidden under
     // PackageImpl which is only accessible to the system server. This is to prevent/discourage
     // usage of these fields outside of the utility classes.
@@ -3635,6 +3776,18 @@ public class PackageImpl implements ParsedPackage, AndroidPackageInternal,
 
     public String getBaseAppDataDeviceProtectedDirForSystemUser() {
         return mBaseAppDataDeviceProtectedDirForSystemUser;
+    }
+
+    @Override
+    public PackageImpl addFeatureFlag(
+            @NonNull String flagPackageAndName,
+            @Nullable Boolean flagValue) {
+        mFeatureFlagState.put(flagPackageAndName, flagValue);
+        return this;
+    }
+
+    public Map<String, Boolean> getFeatureFlagState() {
+        return mFeatureFlagState;
     }
 
     /**

@@ -318,7 +318,7 @@ public class SurfaceTexture {
     }
 
     /**
-     * Releases the the texture content. This is needed in single buffered mode to allow the image
+     * Releases the texture content. This is needed in single buffered mode to allow the image
      * content producer to take ownership of the image buffer.
      * <p>
      * For more information see {@link #SurfaceTexture(int, boolean)}.
@@ -416,7 +416,8 @@ public class SurfaceTexture {
     }
 
     /**
-     * Retrieve the dataspace associated with the texture image.
+     * Retrieve the dataspace associated with the texture image
+     * set by the most recent call to {@link #updateTexImage}.
      */
     @SuppressLint("MethodNameUnits")
     public @NamedDataSpace int getDataSpace() {
@@ -431,7 +432,7 @@ public class SurfaceTexture {
      * error.
      * <p>
      * Note that while calling this method causes all the buffers to be freed
-     * from the perspective of the the SurfaceTexture, if there are additional
+     * from the perspective of the SurfaceTexture, if there are additional
      * references on the buffers (e.g. if a buffer is referenced by a client or
      * by OpenGL ES as a texture) then those buffer will remain allocated.
      * <p>
@@ -489,7 +490,7 @@ public class SurfaceTexture {
             @Surface.ChangeFrameRateStrategy int changeFrameRateStrategy) {
         Trace.traceBegin(Trace.TRACE_TAG_VIEW, "postOnSetFrameRateEventFromNative");
         try {
-            if (Flags.toolkitSetFrameRate()) {
+            if (Flags.toolkitSetFrameRateReadOnly()) {
                 SurfaceTexture st = weakSelf.get();
                 if (st != null) {
                     Handler handler = st.mOnSetFrameRateHandler;

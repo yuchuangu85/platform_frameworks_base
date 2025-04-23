@@ -345,7 +345,7 @@ class AnrController {
                     null /* processCpuTracker */, null /* lastPids */,
                     CompletableFuture.completedFuture(nativePids),
                     null /* logExceptionCreatingFile */, "Pre-dump", criticalEvents,
-                    Runnable::run, null/* AnrLatencyTracker */);
+                    null /* extraHeaders */, Runnable::run, null/* AnrLatencyTracker */);
             if (tracesFile != null) {
                 tracesFile.renameTo(
                         new File(tracesFile.getParent(), tracesFile.getName() + "_pre"));
@@ -367,7 +367,7 @@ class AnrController {
                 Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, "dumpAnrStateLocked()");
                 synchronized (mService.mGlobalLock) {
                     mService.saveANRStateLocked(activity, windowState, reason);
-                    mService.mAtmService.saveANRState(reason);
+                    mService.mAtmService.saveANRState(activity, reason);
                 }
             } finally {
                 Trace.traceEnd(Trace.TRACE_TAG_ACTIVITY_MANAGER);

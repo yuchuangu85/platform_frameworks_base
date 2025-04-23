@@ -36,20 +36,19 @@ import com.android.internal.widget.LockPatternUtils;
 import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.keyguard.KeyguardUpdateMonitorCallback;
 import com.android.keyguard.logging.KeyguardUpdateMonitorLogger;
-import com.android.systemui.Dumpable;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dump.DumpManager;
 import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.keyguard.KeyguardUnlockAnimationController;
-import com.android.systemui.log.core.LogLevel;
+import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor;
 import com.android.systemui.res.R;
 import com.android.systemui.user.domain.interactor.SelectedUserInteractor;
 
 import dagger.Lazy;
 
 import java.io.PrintWriter;
-import java.util.ArrayList;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 import javax.inject.Inject;
@@ -58,12 +57,13 @@ import javax.inject.Inject;
  *
  */
 @SysUISingleton
-public class KeyguardStateControllerImpl implements KeyguardStateController, Dumpable {
+public class KeyguardStateControllerImpl implements KeyguardStateController {
 
     private static final boolean DEBUG_AUTH_WITH_ADB = false;
     private static final String AUTH_BROADCAST_KEY = "debug_trigger_auth";
 
-    private final ArrayList<Callback> mCallbacks = new ArrayList<>();
+    private final ConcurrentHashMap.KeySetView<Callback, Boolean> mCallbacks =
+            ConcurrentHashMap.<Callback>newKeySet();
     private final Context mContext;
     private final KeyguardUpdateMonitor mKeyguardUpdateMonitor;
     private final LockPatternUtils mLockPatternUtils;
@@ -72,6 +72,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
             new UpdateMonitorCallback();
     private final Lazy<KeyguardUnlockAnimationController> mUnlockAnimationControllerLazy;
     private final KeyguardUpdateMonitorLogger mLogger;
+    private final Lazy<KeyguardInteractor> mKeyguardInteractorLazy;
 
     private boolean mCanDismissLockScreen;
     private boolean mShowing;
@@ -124,6 +125,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
             Lazy<KeyguardUnlockAnimationController> keyguardUnlockAnimationController,
             KeyguardUpdateMonitorLogger logger,
             DumpManager dumpManager,
+            Lazy<KeyguardInteractor> keyguardInteractor,
             FeatureFlags featureFlags,
             SelectedUserInteractor userInteractor) {
         mContext = context;
@@ -134,6 +136,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
         mKeyguardUpdateMonitor.registerCallback(mKeyguardUpdateMonitorCallback);
         mUnlockAnimationControllerLazy = keyguardUnlockAnimationController;
         mFeatureFlags = featureFlags;
+        mKeyguardInteractorLazy = keyguardInteractor;
 
         dumpManager.registerDumpable(getClass().getSimpleName(), this);
 
@@ -157,9 +160,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
     @Override
     public void addCallback(@NonNull Callback callback) {
         Objects.requireNonNull(callback, "Callback must not be null. b/128895449");
-        if (!mCallbacks.contains(callback)) {
-            mCallbacks.add(callback);
-        }
+        mCallbacks.add(callback);
     }
 
     @Override
@@ -221,18 +222,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
     }
 
     private void invokeForEachCallback(Consumer<Callback> consumer) {
-        // Copy the list to allow removal during callback.
-        ArrayList<Callback> copyOfCallbacks = new ArrayList<>(mCallbacks);
-        for (int i = 0; i < copyOfCallbacks.size(); i++) {
-            Callback callback = copyOfCallbacks.get(i);
-            // Temporary fix for b/315731775, callback is null even though only non-null callbacks
-            // are added to the list by addCallback
-            if (callback != null) {
-                consumer.accept(callback);
-            } else {
-                mLogger.log("KeyguardStateController callback is null", LogLevel.DEBUG);
-            }
-        }
+        mCallbacks.forEach(consumer);
     }
 
     private void notifyUnlockedChanged() {
@@ -297,8 +287,9 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
 
     @Override
     public boolean isKeyguardScreenRotationAllowed() {
-        return SystemProperties.getBoolean("lockscreen.rot_override", false)
-                || mContext.getResources().getBoolean(R.bool.config_enableLockScreenRotation)
+        final boolean configEnabled =
+                mContext.getResources().getBoolean(R.bool.config_enableLockScreenRotation);
+        return SystemProperties.getBoolean("lockscreen.rot_override", configEnabled)
                 || mFeatureFlags.isEnabled(LOCKSCREEN_ENABLE_LANDSCAPE);
     }
 
@@ -368,6 +359,7 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
             Trace.traceCounter(Trace.TRACE_TAG_APP, "keyguardGoingAway",
                     keyguardGoingAway ? 1 : 0);
             mKeyguardGoingAway = keyguardGoingAway;
+            mKeyguardInteractorLazy.get().setIsKeyguardGoingAway(keyguardGoingAway);
             invokeForEachCallback(Callback::onKeyguardGoingAwayChanged);
         }
     }
@@ -504,6 +496,11 @@ public class KeyguardStateControllerImpl implements KeyguardStateController, Dum
 
         @Override
         public void onEnabledTrustAgentsChanged(int userId) {
+            update(false /* updateAlways */);
+        }
+
+        @Override
+        public void onForceIsDismissibleChanged(boolean keepUnlockedOnFold) {
             update(false /* updateAlways */);
         }
     }

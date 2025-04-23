@@ -16,13 +16,12 @@
 
 package android.app;
 
-import static android.view.Display.DEFAULT_DISPLAY;
-
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.accessibilityservice.IAccessibilityServiceClient;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.UserIdInt;
+import android.companion.virtual.VirtualDeviceManager;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.graphics.Rect;
@@ -227,7 +226,8 @@ public final class UiAutomationConnection extends IUiAutomationConnection.Stub {
     }
 
     @Override
-    public boolean takeScreenshot(Rect crop, ScreenCapture.ScreenCaptureListener listener) {
+    public boolean takeScreenshot(Rect crop, ScreenCapture.ScreenCaptureListener listener,
+            int displayId) {
         synchronized (mLock) {
             throwIfCalledByNotTrustedUidLocked();
             throwIfShutdownLocked();
@@ -239,7 +239,7 @@ public final class UiAutomationConnection extends IUiAutomationConnection.Stub {
             final CaptureArgs captureArgs = new CaptureArgs.Builder<>()
                     .setSourceCrop(crop)
                     .build();
-            mWindowManager.captureDisplay(DEFAULT_DISPLAY, captureArgs, listener);
+            mWindowManager.captureDisplay(displayId, captureArgs, listener);
         } catch (RemoteException re) {
             re.rethrowAsRuntimeException();
         } finally {
@@ -363,7 +363,7 @@ public final class UiAutomationConnection extends IUiAutomationConnection.Stub {
         final long identity = Binder.clearCallingIdentity();
         try {
             mPermissionManager.grantRuntimePermission(packageName, permission,
-                    Context.DEVICE_ID_DEFAULT, userId);
+                    VirtualDeviceManager.PERSISTENT_DEVICE_ID_DEFAULT, userId);
         } finally {
             Binder.restoreCallingIdentity(identity);
         }
@@ -383,7 +383,7 @@ public final class UiAutomationConnection extends IUiAutomationConnection.Stub {
         final long identity = Binder.clearCallingIdentity();
         try {
             mPermissionManager.revokeRuntimePermission(packageName, permission,
-                    Context.DEVICE_ID_DEFAULT, userId, null);
+                    VirtualDeviceManager.PERSISTENT_DEVICE_ID_DEFAULT, userId, null);
         } finally {
             Binder.restoreCallingIdentity(identity);
         }
@@ -431,6 +431,71 @@ public final class UiAutomationConnection extends IUiAutomationConnection.Stub {
         final long identity = Binder.clearCallingIdentity();
         try {
             return mActivityManager.getDelegatedShellPermissions();
+        } finally {
+            Binder.restoreCallingIdentity(identity);
+        }
+    }
+
+    @Override
+    public void addOverridePermissionState(int uid, String permission, int result)
+            throws RemoteException {
+        synchronized (mLock) {
+            throwIfCalledByNotTrustedUidLocked();
+            throwIfShutdownLocked();
+            throwIfNotConnectedLocked();
+        }
+        final int callingUid = Binder.getCallingUid();
+        final long identity = Binder.clearCallingIdentity();
+        try {
+            mActivityManager.addOverridePermissionState(callingUid, uid, permission, result);
+        } finally {
+            Binder.restoreCallingIdentity(identity);
+        }
+    }
+
+    @Override
+    public void removeOverridePermissionState(int uid, String permission) throws RemoteException {
+        synchronized (mLock) {
+            throwIfCalledByNotTrustedUidLocked();
+            throwIfShutdownLocked();
+            throwIfNotConnectedLocked();
+        }
+        final int callingUid = Binder.getCallingUid();
+        final long identity = Binder.clearCallingIdentity();
+        try {
+            mActivityManager.removeOverridePermissionState(callingUid, uid, permission);
+        } finally {
+            Binder.restoreCallingIdentity(identity);
+        }
+    }
+
+    @Override
+    public void clearOverridePermissionStates(int uid) throws RemoteException {
+        synchronized (mLock) {
+            throwIfCalledByNotTrustedUidLocked();
+            throwIfShutdownLocked();
+            throwIfNotConnectedLocked();
+        }
+        final int callingUid = Binder.getCallingUid();
+        final long identity = Binder.clearCallingIdentity();
+        try {
+            mActivityManager.clearOverridePermissionStates(callingUid, uid);
+        } finally {
+            Binder.restoreCallingIdentity(identity);
+        }
+    }
+
+    @Override
+    public void clearAllOverridePermissionStates() throws RemoteException {
+        synchronized (mLock) {
+            throwIfCalledByNotTrustedUidLocked();
+            throwIfShutdownLocked();
+            throwIfNotConnectedLocked();
+        }
+        final int callingUid = Binder.getCallingUid();
+        final long identity = Binder.clearCallingIdentity();
+        try {
+            mActivityManager.clearAllOverridePermissionStates(callingUid);
         } finally {
             Binder.restoreCallingIdentity(identity);
         }
@@ -484,10 +549,28 @@ public final class UiAutomationConnection extends IUiAutomationConnection.Stub {
 
         try {
             process = Runtime.getRuntime().exec(command);
-        } catch (IOException exc) {
-            throw new RuntimeException("Error running shell command '" + command + "'", exc);
+        } catch (IOException ex) {
+            // Make sure the passed FDs are closed.
+            IoUtils.closeQuietly(sink);
+            IoUtils.closeQuietly(source);
+            IoUtils.closeQuietly(stderrSink);
+            // No to need to wrap in RuntimeException. Only to keep the old behavior.
+            // This is just logged and not propagated to the remote caller anyway.
+            throw new RuntimeException("Error running shell command '" + command + "'", ex);
+        } catch (IllegalArgumentException | NullPointerException | SecurityException ex) {
+            // Make sure the passed FDs are closed.
+            IoUtils.closeQuietly(sink);
+            IoUtils.closeQuietly(source);
+            IoUtils.closeQuietly(stderrSink);
+            // Rethrow the exception. This will be propagated to the remote caller.
+            throw ex;
         }
+        handleExecuteShellCommandProcess(process, sink, source, stderrSink);
+    }
 
+    private void handleExecuteShellCommandProcess(final java.lang.Process process,
+            final ParcelFileDescriptor sink, final ParcelFileDescriptor source,
+            final ParcelFileDescriptor stderrSink) {
         // Read from process and write to pipe
         final Thread readFromProcess;
         if (sink != null) {
@@ -547,6 +630,26 @@ public final class UiAutomationConnection extends IUiAutomationConnection.Stub {
             }
         });
         cleanup.start();
+    }
+
+    @Override
+    public void executeShellCommandArrayWithStderr(final String[] command,
+            final ParcelFileDescriptor sink, final ParcelFileDescriptor source,
+            final ParcelFileDescriptor stderrSink) throws RemoteException {
+        synchronized (mLock) {
+            throwIfCalledByNotTrustedUidLocked();
+            throwIfShutdownLocked();
+            throwIfNotConnectedLocked();
+        }
+        final java.lang.Process process;
+
+        try {
+            process = Runtime.getRuntime().exec(command);
+        } catch (IOException exc) {
+            throw new RuntimeException(
+                    "Error running shell command '" + String.join(" ", command) + "'", exc);
+        }
+        handleExecuteShellCommandProcess(process, sink, source, stderrSink);
     }
 
     @Override

@@ -16,18 +16,22 @@
 
 #include "VulkanSurface.h"
 
-#include <include/android/SkSurfaceAndroid.h>
-#include <GrDirectContext.h>
 #include <SkSurface.h>
+#include <gui/TraceUtils.h>
+#include <include/android/SkSurfaceAndroid.h>
+#include <include/gpu/ganesh/GrDirectContext.h>
+
 #include <algorithm>
 
-#include <gui/TraceUtils.h>
 #include "VulkanManager.h"
 #include "utils/Color.h"
 
 namespace android {
 namespace uirenderer {
 namespace renderthread {
+
+static constexpr auto P3_XRB = static_cast<android_dataspace>(
+        ADATASPACE_STANDARD_DCI_P3 | ADATASPACE_TRANSFER_SRGB | ADATASPACE_RANGE_EXTENDED);
 
 static int InvertTransform(int transform) {
     switch (transform) {
@@ -214,8 +218,7 @@ bool VulkanSurface::InitializeWindowInfoStruct(ANativeWindow* window, ColorMode 
     outWindowInfo->colorMode = colorMode;
 
     if (colorMode == ColorMode::Hdr || colorMode == ColorMode::Hdr10) {
-        outWindowInfo->dataspace =
-                static_cast<android_dataspace>(STANDARD_DCI_P3 | TRANSFER_SRGB | RANGE_EXTENDED);
+        outWindowInfo->dataspace = P3_XRB;
     } else {
         outWindowInfo->dataspace = ColorSpaceToADataSpace(colorSpace.get(), colorType);
     }
@@ -320,11 +323,16 @@ bool VulkanSurface::UpdateWindow(ANativeWindow* window, const WindowInfo& window
         return false;
     }
 
-    err = native_window_set_buffer_count(window, windowInfo.bufferCount);
-    if (err != 0) {
-        ALOGE("VulkanSurface::UpdateWindow() native_window_set_buffer_count(%zu) failed: %s (%d)",
-              windowInfo.bufferCount, strerror(-err), err);
-        return false;
+    // If bufferCount == 1 then we're in shared buffer mode and we cannot actually call
+    // set_buffer_count, it'll just fail.
+    if (windowInfo.bufferCount > 1) {
+        err = native_window_set_buffer_count(window, windowInfo.bufferCount);
+        if (err != 0) {
+            ALOGE("VulkanSurface::UpdateWindow() native_window_set_buffer_count(%zu) failed: %s "
+                  "(%d)",
+                  windowInfo.bufferCount, strerror(-err), err);
+            return false;
+        }
     }
 
     err = native_window_set_usage(window, windowInfo.windowUsageFlags);
@@ -541,8 +549,7 @@ void VulkanSurface::setColorSpace(sk_sp<SkColorSpace> colorSpace) {
     }
 
     if (mWindowInfo.colorMode == ColorMode::Hdr || mWindowInfo.colorMode == ColorMode::Hdr10) {
-        mWindowInfo.dataspace =
-                static_cast<android_dataspace>(STANDARD_DCI_P3 | TRANSFER_SRGB | RANGE_EXTENDED);
+        mWindowInfo.dataspace = P3_XRB;
     } else {
         mWindowInfo.dataspace = ColorSpaceToADataSpace(
                 mWindowInfo.colorspace.get(), BufferFormatToColorType(mWindowInfo.bufferFormat));

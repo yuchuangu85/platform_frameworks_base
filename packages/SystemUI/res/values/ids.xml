@@ -132,6 +132,7 @@
 
     <!-- Status bar -->
     <item type="id" name="status_bar_dot" />
+    <item type="id" name="ongoing_activity_chip_custom_icon" />
 
     <!-- Default display cutout on the physical top of screen -->
     <item type="id" name="display_cutout" />
@@ -184,6 +185,9 @@
     <item type="id" name="action_move_to_edge_and_hide"/>
     <item type="id" name="action_move_out_edge_and_show"/>
     <item type="id" name="action_remove_menu"/>
+    <item type="id" name="action_edit"/>
+
+    <item type="id" name="accessibility_action_open_communal_hub"/>
 
     <!-- rounded corner view id -->
     <item type="id" name="rounded_corner_top_left"/>
@@ -222,9 +226,16 @@
     <item type="id" name="lock_icon" />
     <item type="id" name="lock_icon_bg" />
     <item type="id" name="burn_in_layer" />
+    <item type="id" name="burn_in_layer_empty_view" />
     <item type="id" name="communal_tutorial_indicator" />
     <item type="id" name="nssl_placeholder_barrier_bottom" />
     <item type="id" name="ambient_indication_container" />
+    <item type="id" name="status_view_media_container" />
+    <item type="id" name="smart_space_barrier_bottom" />
+    <item type="id" name="small_clock_guideline_top" />
+    <item type="id" name="weather_clock_date_and_icons_barrier_bottom" />
+    <item type="id" name="weather_clock_bc_smartspace_bottom" />
+    <item type="id" name="accessibility_actions_view" />
 
     <!-- Privacy dialog -->
     <item type="id" name="privacy_dialog_close_app_button" />
@@ -247,8 +258,8 @@
     -->
     <item type="id" name="tag_smartspace_view" />
 
-    <!-- Tag set on the Compose implementation of the QS footer actions. -->
-    <item type="id" name="tag_compose_qs_footer_actions" />
+    <!-- ID of the Scene Container root Composable view -->
+    <item type='id' name="scene_container_root_composable" />
 
     <!--
     Ids for the device entry icon.
@@ -259,4 +270,22 @@
     <item type="id" name="device_entry_icon_view" />
     <item type="id" name="device_entry_icon_fg" />
     <item type="id" name="device_entry_icon_bg" />
+
+    <!--Id for the device-entry UDFPS related views that live in the alternate bouncer. -->
+    <item type="id" name="alternate_bouncer_udfps_icon_view" />
+    <item type="id" name="alternate_bouncer_udfps_accessibility_overlay" />
+
+    <!-- Id for the udfps accessibility overlay -->
+    <item type="id" name="udfps_accessibility_overlay" />
+    <item type="id" name="udfps_accessibility_overlay_top_guideline" />
+
+    <!-- Ids for communal hub widgets -->
+    <item type="id" name="communal_widget_disposable_tag"/>
+
+    <!-- snapshot view-binding IDs -->
+    <item type="id" name="snapshot_view_binding" />
+    <item type="id" name="snapshot_view_binding_root" />
+
+    <item type="id" name="brightness_dialog_slider" />
+
 </resources>

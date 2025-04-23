@@ -18,18 +18,35 @@ package com.android.systemui.communal.widgets
 
 import android.content.Context
 import android.content.Intent
+import com.android.systemui.communal.widgets.EditWidgetsActivity.Companion.EXTRA_OPEN_WIDGET_PICKER_ON_START
 import com.android.systemui.dagger.qualifiers.Application
+import com.android.systemui.plugins.ActivityStarter
+import com.android.systemui.res.R
+import javax.inject.Inject
 
 interface EditWidgetsActivityStarter {
-    fun startActivity()
+    fun startActivity(
+        shouldOpenWidgetPickerOnStart: Boolean = false,
+    )
 }
 
-class EditWidgetsActivityStarterImpl(@Application private val applicationContext: Context) :
-    EditWidgetsActivityStarter {
-    override fun startActivity() {
-        applicationContext.startActivity(
+class EditWidgetsActivityStarterImpl
+@Inject
+constructor(
+    @Application private val applicationContext: Context,
+    private val activityStarter: ActivityStarter,
+) : EditWidgetsActivityStarter {
+
+    override fun startActivity(shouldOpenWidgetPickerOnStart: Boolean) {
+        activityStarter.startActivityDismissingKeyguard(
             Intent(applicationContext, EditWidgetsActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                .apply {
+                    putExtra(EXTRA_OPEN_WIDGET_PICKER_ON_START, shouldOpenWidgetPickerOnStart)
+                },
+            /* onlyProvisioned = */ true,
+            /* dismissShade = */ true,
+            applicationContext.resources.getString(R.string.unlock_reason_to_customize_widgets),
         )
     }
 }

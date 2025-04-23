@@ -30,13 +30,21 @@ import java.util.Map;
 import java.util.Set;
 
 /**
+ * Helper class used to forward the current
+ * system camera characteristics information.
+ *
  * @hide
  */
 @SystemApi
-@FlaggedApi(Flags.FLAG_CONCERT_MODE)
 public class CharacteristicsMap {
     private final HashMap<String, CameraCharacteristics> mCharMap;
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
+
+    /**
+     * Initialize a camera characteristics map instance
+     *
+     * @param charsMap       Maps camera ids to respective
+     *                       {@link CameraCharacteristics}
+     */
     CharacteristicsMap(@NonNull Map<String, CameraMetadataNative> charsMap) {
         mCharMap = new HashMap<>();
         for (Map.Entry<String, CameraMetadataNative> entry : charsMap.entrySet()) {
@@ -44,13 +52,25 @@ public class CharacteristicsMap {
         }
     }
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
+    /**
+     * Return the set of camera ids stored in the characteristics map
+     *
+     * @return Set of the camera ids stored in the map
+     */
     @NonNull
     public Set<String> getCameraIds() {
         return mCharMap.keySet();
     }
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
+    /**
+     * Return the corresponding {@link CameraCharacteristics} given
+     * a valid camera id
+     *
+     * @param cameraId Camera device id
+     *
+     * @return Valid {@link CameraCharacteristics} instance of null
+     *         in case the camera id is not part of the map
+     */
     @Nullable
     public CameraCharacteristics get(@NonNull String cameraId) {
         return mCharMap.get(cameraId);

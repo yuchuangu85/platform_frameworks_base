@@ -18,8 +18,8 @@ package android.libcore.regression;
 
 import android.perftests.utils.BenchmarkState;
 import android.perftests.utils.PerfStatusReporter;
-import android.test.suitebuilder.annotation.LargeTest;
 
+import androidx.test.filters.LargeTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Rule;
@@ -75,8 +75,19 @@ public class ExpensiveObjectsPerfTest {
     @Test(timeout = 900000)
     public void timeNewCollator() {
         BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+        int i = 0;
         while (state.keepRunning()) {
             Collator.getInstance(Locale.US);
+
+            if (++i % 1000 == 0) {
+                state.pauseTiming();
+                // GC and finalize occasionally to avoid GC for alloc and/or
+                // blocking on finalization during benchmark time.
+                // See: b/394961590
+                System.gc();
+                System.runFinalization();
+                state.resumeTiming();
+            }
         }
     }
 
@@ -84,8 +95,19 @@ public class ExpensiveObjectsPerfTest {
     public void timeClonedCollator() {
         Collator c = Collator.getInstance(Locale.US);
         BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+        int i = 0;
         while (state.keepRunning()) {
             c.clone();
+
+            if (++i % 1000 == 0) {
+                state.pauseTiming();
+                // GC and finalize occasionally to avoid GC for alloc and/or
+                // blocking on finalization during benchmark time.
+                // See: b/394961590
+                System.gc();
+                System.runFinalization();
+                state.resumeTiming();
+            }
         }
     }
 

@@ -23,6 +23,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
+    <uses-permission android:name="android.permission.READ_SYSTEM_GRAMMATICAL_GENDER" />
 
     <uses-permission android:name="com.google.android.permission.INSTALL_WEARABLE_PACKAGES" />
 
@@ -45,11 +46,9 @@
 
         <activity android:name=".v2.ui.InstallLaunch"
             android:configChanges="orientation|keyboardHidden|screenSize"
-            android:theme="@style/Theme.AlertDialogActivity"
             android:exported="false"/>
 
         <activity android:name=".InstallStart"
-                android:theme="@style/Theme.AlertDialogActivity"
                 android:exported="true"
                 android:excludeFromRecents="true">
             <intent-filter android:priority="1">
@@ -75,23 +74,19 @@
             </intent-filter>
         </activity>
 
-        <!-- NOTE: the workaround to fix the screen flash problem. Remember to check the problem
-            is resolved for new implementation -->
         <activity android:name=".InstallStaging"
-                  android:theme="@style/Theme.AlertDialogActivity.NoDim"
-                  android:exported="false" />
+                android:exported="false" />
 
         <activity android:name=".DeleteStagedFileOnResult"
-            android:theme="@style/Theme.AlertDialogActivity.NoActionBar"
             android:exported="false" />
 
         <activity android:name=".PackageInstallerActivity"
-                  android:theme="@style/Theme.AlertDialogActivity.NoAnimation"
-                  android:exported="false" />
+                android:exported="false"
+                android:enableOnBackInvokedCallback="false" />
 
         <activity android:name=".InstallInstalling"
-                android:theme="@style/Theme.AlertDialogActivity.NoAnimation"
-                android:exported="false" />
+                android:exported="false"
+                android:enableOnBackInvokedCallback="false" />
 
         <receiver android:name=".common.InstallEventReceiver"
                 android:permission="android.permission.INSTALL_PACKAGES"
@@ -102,16 +97,13 @@
         </receiver>
 
         <activity android:name=".InstallSuccess"
-                android:theme="@style/Theme.AlertDialogActivity.NoAnimation"
                 android:exported="false" />
 
         <activity android:name=".InstallFailed"
-                android:theme="@style/Theme.AlertDialogActivity.NoAnimation"
                 android:exported="false" />
 
         <activity android:name=".UninstallerActivity"
                 android:configChanges="orientation|keyboardHidden|screenSize"
-                android:theme="@style/Theme.AlertDialogActivity.NoActionBar"
                 android:excludeFromRecents="true"
                 android:noHistory="true"
                 android:exported="true">
@@ -125,7 +117,6 @@
 
         <activity android:name=".v2.ui.UninstallLaunch"
             android:configChanges="orientation|keyboardHidden|screenSize"
-            android:theme="@style/Theme.AlertDialogActivity.NoActionBar"
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:exported="false">
@@ -148,8 +139,8 @@
         </receiver>
 
         <activity android:name=".UninstallUninstalling"
-            android:theme="@style/Theme.AlertDialogActivity.NoActionBar"
             android:excludeFromRecents="true"
+            android:enableOnBackInvokedCallback="false"
             android:exported="false" />
 
         <receiver android:name=".UninstallFinish"
@@ -159,23 +150,11 @@
                 android:configChanges="mnc|mnc|touchscreen|navigation|screenLayout|screenSize|smallestScreenSize|orientation|locale|keyboard|keyboardHidden|fontScale|uiMode|layoutDirection|density"
                 android:exported="false" />
 
-        <!-- Wearable Components -->
-        <service android:name=".wear.WearPackageInstallerService"
-                 android:permission="com.google.android.permission.INSTALL_WEARABLE_PACKAGES"
-                 android:foregroundServiceType="systemExempted"
-                 android:exported="true"/>
-
-        <provider android:name=".wear.WearPackageIconProvider"
-                  android:authorities="com.google.android.packageinstaller.wear.provider"
-                  android:grantUriPermissions="true"
-                  android:exported="false" />
-
         <receiver android:name="androidx.profileinstaller.ProfileInstallReceiver"
             tools:node="remove" />
 
         <activity android:name=".UnarchiveActivity"
                   android:configChanges="orientation|keyboardHidden|screenSize"
-                  android:theme="@style/Theme.AlertDialogActivity.NoActionBar"
                   android:excludeFromRecents="true"
                   android:noHistory="true"
                   android:exported="true">
@@ -187,7 +166,6 @@
 
         <activity android:name=".UnarchiveErrorActivity"
                   android:configChanges="orientation|keyboardHidden|screenSize"
-                  android:theme="@style/Theme.AlertDialogActivity.NoActionBar"
                   android:excludeFromRecents="true"
                   android:noHistory="true"
                   android:exported="true">

@@ -30,13 +30,15 @@ import com.android.internal.logging.UiEventLogger;
 import com.android.internal.util.LatencyTracker;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.keyguard.KeyguardSecurityModel.SecurityMode;
+import com.android.keyguard.domain.interactor.KeyguardKeyboardInteractor;
+import com.android.systemui.Flags;
 import com.android.systemui.bouncer.domain.interactor.BouncerMessageInteractor;
 import com.android.systemui.bouncer.ui.BouncerMessageView;
 import com.android.systemui.bouncer.ui.binder.BouncerMessageViewBinder;
+import com.android.systemui.bouncer.ui.helper.BouncerHapticPlayer;
 import com.android.systemui.classifier.FalsingCollector;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.flags.FeatureFlags;
-import com.android.systemui.flags.Flags;
 import com.android.systemui.log.BouncerLogger;
 import com.android.systemui.res.R;
 import com.android.systemui.statusbar.policy.DevicePostureController;
@@ -45,7 +47,6 @@ import com.android.systemui.util.ViewController;
 import com.android.systemui.util.concurrency.DelayableExecutor;
 
 import javax.inject.Inject;
-
 
 /** Controller for a {@link KeyguardSecurityView}. */
 public abstract class KeyguardInputViewController<T extends KeyguardInputView>
@@ -63,19 +64,22 @@ public abstract class KeyguardInputViewController<T extends KeyguardInputView>
     private KeyguardSecurityCallback mNullCallback = new KeyguardSecurityCallback() {};
     private final FeatureFlags mFeatureFlags;
     protected final SelectedUserInteractor mSelectedUserInteractor;
+    protected final BouncerHapticPlayer mBouncerHapticPlayer;
 
     protected KeyguardInputViewController(T view, SecurityMode securityMode,
             KeyguardSecurityCallback keyguardSecurityCallback,
             EmergencyButtonController emergencyButtonController,
             @Nullable KeyguardMessageAreaController.Factory messageAreaControllerFactory,
             FeatureFlags featureFlags,
-            SelectedUserInteractor selectedUserInteractor) {
+            SelectedUserInteractor selectedUserInteractor,
+            BouncerHapticPlayer bouncerHapticPlayer) {
         super(view);
         mSecurityMode = securityMode;
         mKeyguardSecurityCallback = keyguardSecurityCallback;
         mEmergencyButtonController = emergencyButtonController;
         mFeatureFlags = featureFlags;
         mSelectedUserInteractor = selectedUserInteractor;
+        mBouncerHapticPlayer = bouncerHapticPlayer;
         if (messageAreaControllerFactory != null) {
             try {
                 BouncerKeyguardMessageArea kma = view.requireViewById(R.id.bouncer_message_area);
@@ -106,9 +110,12 @@ public abstract class KeyguardInputViewController<T extends KeyguardInputView>
         }
     }
 
-    private void updateMessageAreaVisibility() {
+    /**
+     * Determines whether to show the message area controlled by MessageAreaController.
+     */
+    public void updateMessageAreaVisibility() {
         if (mMessageAreaController == null) return;
-        if (mFeatureFlags.isEnabled(Flags.REVAMPED_BOUNCER_MESSAGES)) {
+        if (Flags.revampedBouncerMessages()) {
             mMessageAreaController.disable();
         } else {
             mMessageAreaController.setIsVisible(true);
@@ -182,15 +189,13 @@ public abstract class KeyguardInputViewController<T extends KeyguardInputView>
     public void bindMessageView(
             @NonNull BouncerMessageInteractor bouncerMessageInteractor,
             KeyguardMessageAreaController.Factory messageAreaControllerFactory,
-            BouncerLogger bouncerLogger,
-            FeatureFlags featureFlags) {
+            BouncerLogger bouncerLogger) {
         BouncerMessageView bouncerMessageView = (BouncerMessageView) mView.getBouncerMessageView();
         if (bouncerMessageView != null) {
             BouncerMessageViewBinder.bind(bouncerMessageView,
                     bouncerMessageInteractor,
                     messageAreaControllerFactory,
-                    bouncerLogger,
-                    featureFlags);
+                    bouncerLogger);
         }
     }
 
@@ -212,6 +217,9 @@ public abstract class KeyguardInputViewController<T extends KeyguardInputView>
         private final FeatureFlags mFeatureFlags;
         private final SelectedUserInteractor mSelectedUserInteractor;
         private final UiEventLogger mUiEventLogger;
+        private final KeyguardKeyboardInteractor mKeyguardKeyboardInteractor;
+        private final BouncerHapticPlayer mBouncerHapticPlayer;
+        private final UserActivityNotifier mUserActivityNotifier;
 
         @Inject
         public Factory(KeyguardUpdateMonitor keyguardUpdateMonitor,
@@ -225,7 +233,10 @@ public abstract class KeyguardInputViewController<T extends KeyguardInputView>
                 DevicePostureController devicePostureController,
                 KeyguardViewController keyguardViewController,
                 FeatureFlags featureFlags, SelectedUserInteractor selectedUserInteractor,
-                UiEventLogger uiEventLogger) {
+                UiEventLogger uiEventLogger,
+                KeyguardKeyboardInteractor keyguardKeyboardInteractor,
+                BouncerHapticPlayer bouncerHapticPlayer,
+                UserActivityNotifier userActivityNotifier) {
             mKeyguardUpdateMonitor = keyguardUpdateMonitor;
             mLockPatternUtils = lockPatternUtils;
             mLatencyTracker = latencyTracker;
@@ -242,6 +253,9 @@ public abstract class KeyguardInputViewController<T extends KeyguardInputView>
             mFeatureFlags = featureFlags;
             mSelectedUserInteractor = selectedUserInteractor;
             mUiEventLogger = uiEventLogger;
+            mKeyguardKeyboardInteractor = keyguardKeyboardInteractor;
+            mBouncerHapticPlayer = bouncerHapticPlayer;
+            mUserActivityNotifier = userActivityNotifier;
         }
 
         /** Create a new {@link KeyguardInputViewController}. */
@@ -256,33 +270,39 @@ public abstract class KeyguardInputViewController<T extends KeyguardInputView>
                         mKeyguardUpdateMonitor, securityMode, mLockPatternUtils,
                         keyguardSecurityCallback, mLatencyTracker, mFalsingCollector,
                         emergencyButtonController, mMessageAreaControllerFactory,
-                        mDevicePostureController, mFeatureFlags, mSelectedUserInteractor);
+                        mDevicePostureController, mFeatureFlags, mSelectedUserInteractor,
+                        mBouncerHapticPlayer);
             } else if (keyguardInputView instanceof KeyguardPasswordView) {
                 return new KeyguardPasswordViewController((KeyguardPasswordView) keyguardInputView,
                         mKeyguardUpdateMonitor, securityMode, mLockPatternUtils,
                         keyguardSecurityCallback, mMessageAreaControllerFactory, mLatencyTracker,
                         mInputMethodManager, emergencyButtonController, mMainExecutor, mResources,
                         mFalsingCollector, mKeyguardViewController,
-                        mDevicePostureController, mFeatureFlags, mSelectedUserInteractor);
+                        mDevicePostureController, mFeatureFlags, mSelectedUserInteractor,
+                        mKeyguardKeyboardInteractor, mBouncerHapticPlayer, mUserActivityNotifier);
             } else if (keyguardInputView instanceof KeyguardPINView) {
                 return new KeyguardPinViewController((KeyguardPINView) keyguardInputView,
                         mKeyguardUpdateMonitor, securityMode, mLockPatternUtils,
                         keyguardSecurityCallback, mMessageAreaControllerFactory, mLatencyTracker,
                         mLiftToActivateListener, emergencyButtonController, mFalsingCollector,
                         mDevicePostureController, mFeatureFlags, mSelectedUserInteractor,
-                        mUiEventLogger);
+                        mUiEventLogger, mKeyguardKeyboardInteractor, mBouncerHapticPlayer,
+                        mUserActivityNotifier);
             } else if (keyguardInputView instanceof KeyguardSimPinView) {
                 return new KeyguardSimPinViewController((KeyguardSimPinView) keyguardInputView,
                         mKeyguardUpdateMonitor, securityMode, mLockPatternUtils,
                         keyguardSecurityCallback, mMessageAreaControllerFactory, mLatencyTracker,
                         mLiftToActivateListener, mTelephonyManager, mFalsingCollector,
-                        emergencyButtonController, mFeatureFlags, mSelectedUserInteractor);
+                        emergencyButtonController, mFeatureFlags, mSelectedUserInteractor,
+                        mKeyguardKeyboardInteractor, mBouncerHapticPlayer, mUserActivityNotifier);
             } else if (keyguardInputView instanceof KeyguardSimPukView) {
                 return new KeyguardSimPukViewController((KeyguardSimPukView) keyguardInputView,
                         mKeyguardUpdateMonitor, securityMode, mLockPatternUtils,
                         keyguardSecurityCallback, mMessageAreaControllerFactory, mLatencyTracker,
                         mLiftToActivateListener, mTelephonyManager, mFalsingCollector,
-                        emergencyButtonController, mFeatureFlags, mSelectedUserInteractor);
+                        emergencyButtonController, mFeatureFlags, mSelectedUserInteractor,
+                        mKeyguardKeyboardInteractor, mBouncerHapticPlayer, mUserActivityNotifier
+                );
             }
 
             throw new RuntimeException("Unable to find controller for " + keyguardInputView);

@@ -33,9 +33,9 @@ import android.view.RemoteAnimationTarget;
 public final class BackMotionEvent implements Parcelable {
     private final float mTouchX;
     private final float mTouchY;
+    private final long mFrameTimeMillis;
     private final float mProgress;
-    private final float mVelocityX;
-    private final float mVelocityY;
+    private final boolean mTriggerBack;
 
     @BackEvent.SwipeEdge
     private final int mSwipeEdge;
@@ -49,11 +49,9 @@ public final class BackMotionEvent implements Parcelable {
      *
      * @param touchX Absolute X location of the touch point of this event.
      * @param touchY Absolute Y location of the touch point of this event.
+     * @param frameTimeMillis Event time of the corresponding touch event.
      * @param progress Value between 0 and 1 on how far along the back gesture is.
-     * @param velocityX X velocity computed from the touch point of this event.
-     *                  Value in pixels/second. {@link Float#NaN} if was not computed.
-     * @param velocityY Y velocity computed from the touch point of this event.
-     *                  Value in pixels/second. {@link Float#NaN} if was not computed.
+     * @param triggerBack Indicates whether the back arrow is in the triggered state or not
      * @param swipeEdge Indicates which edge the swipe starts from.
      * @param departingAnimationTarget The remote animation target of the departing
      *                                 application window.
@@ -61,16 +59,16 @@ public final class BackMotionEvent implements Parcelable {
     public BackMotionEvent(
             float touchX,
             float touchY,
+            long frameTimeMillis,
             float progress,
-            float velocityX,
-            float velocityY,
+            boolean triggerBack,
             @BackEvent.SwipeEdge int swipeEdge,
             @Nullable RemoteAnimationTarget departingAnimationTarget) {
         mTouchX = touchX;
         mTouchY = touchY;
+        mFrameTimeMillis = frameTimeMillis;
         mProgress = progress;
-        mVelocityX = velocityX;
-        mVelocityY = velocityY;
+        mTriggerBack = triggerBack;
         mSwipeEdge = swipeEdge;
         mDepartingAnimationTarget = departingAnimationTarget;
     }
@@ -79,10 +77,10 @@ public final class BackMotionEvent implements Parcelable {
         mTouchX = in.readFloat();
         mTouchY = in.readFloat();
         mProgress = in.readFloat();
-        mVelocityX = in.readFloat();
-        mVelocityY = in.readFloat();
+        mTriggerBack = in.readBoolean();
         mSwipeEdge = in.readInt();
         mDepartingAnimationTarget = in.readTypedObject(RemoteAnimationTarget.CREATOR);
+        mFrameTimeMillis = in.readLong();
     }
 
     @NonNull
@@ -108,10 +106,10 @@ public final class BackMotionEvent implements Parcelable {
         dest.writeFloat(mTouchX);
         dest.writeFloat(mTouchY);
         dest.writeFloat(mProgress);
-        dest.writeFloat(mVelocityX);
-        dest.writeFloat(mVelocityY);
+        dest.writeBoolean(mTriggerBack);
         dest.writeInt(mSwipeEdge);
         dest.writeTypedObject(mDepartingAnimationTarget, flags);
+        dest.writeLong(mFrameTimeMillis);
     }
 
     /**
@@ -139,21 +137,12 @@ public final class BackMotionEvent implements Parcelable {
     }
 
     /**
-     * Returns the X velocity computed from the touch point.
+     * Returns whether the back arrow is in the triggered state or not
      *
-     * @return value in pixels/second or {@link Float#NaN} if was not computed.
+     * @return boolean indicating whether the back arrow is in the triggered state or not
      */
-    public float getVelocityX() {
-        return mVelocityX;
-    }
-
-    /**
-     * Returns the Y velocity computed from the touch point.
-     *
-     * @return value in pixels/second or {@link Float#NaN} if was not computed.
-     */
-    public float getVelocityY() {
-        return mVelocityY;
+    public boolean getTriggerBack() {
+        return mTriggerBack;
     }
 
     /**
@@ -162,6 +151,13 @@ public final class BackMotionEvent implements Parcelable {
     @BackEvent.SwipeEdge
     public int getSwipeEdge() {
         return mSwipeEdge;
+    }
+
+    /**
+     * Returns the frame time of the BackMotionEvent in milliseconds.
+     */
+    public long getFrameTimeMillis() {
+        return mFrameTimeMillis;
     }
 
     /**
@@ -179,11 +175,11 @@ public final class BackMotionEvent implements Parcelable {
         return "BackMotionEvent{"
                 + "mTouchX=" + mTouchX
                 + ", mTouchY=" + mTouchY
+                + ", mFrameTimeMillis=" + mFrameTimeMillis
                 + ", mProgress=" + mProgress
-                + ", mVelocityX=" + mVelocityX
-                + ", mVelocityY=" + mVelocityY
-                + ", mSwipeEdge" + mSwipeEdge
-                + ", mDepartingAnimationTarget" + mDepartingAnimationTarget
+                + ", mTriggerBack=" + mTriggerBack
+                + ", mSwipeEdge=" + mSwipeEdge
+                + ", mDepartingAnimationTarget=" + mDepartingAnimationTarget
                 + "}";
     }
 }

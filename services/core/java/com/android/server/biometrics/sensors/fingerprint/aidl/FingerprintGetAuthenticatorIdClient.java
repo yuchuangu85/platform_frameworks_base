@@ -30,7 +30,7 @@ import com.android.server.biometrics.sensors.HalClientMonitor;
 import java.util.Map;
 import java.util.function.Supplier;
 
-class FingerprintGetAuthenticatorIdClient extends HalClientMonitor<AidlSession> {
+public class FingerprintGetAuthenticatorIdClient extends HalClientMonitor<AidlSession> {
 
     private static final String TAG = "FingerprintGetAuthenticatorIdClient";
 
@@ -42,7 +42,8 @@ class FingerprintGetAuthenticatorIdClient extends HalClientMonitor<AidlSession> 
             @NonNull BiometricLogger biometricLogger, @NonNull BiometricContext biometricContext,
             Map<Integer, Long> authenticatorIds) {
         super(context, lazyDaemon, null /* token */, null /* listener */, userId, owner,
-                0 /* cookie */, sensorId, biometricLogger, biometricContext);
+                0 /* cookie */, sensorId, biometricLogger, biometricContext,
+                false /* isMandatoryBiometrics */);
         mAuthenticatorIds = authenticatorIds;
     }
 

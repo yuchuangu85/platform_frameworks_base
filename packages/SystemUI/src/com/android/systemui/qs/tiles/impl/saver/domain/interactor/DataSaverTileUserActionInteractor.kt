@@ -21,7 +21,7 @@ import android.content.Intent
 import android.provider.Settings
 import com.android.internal.jank.InteractionJankMonitor
 import com.android.systemui.animation.DialogCuj
-import com.android.systemui.animation.DialogLaunchAnimator
+import com.android.systemui.animation.DialogTransitionAnimator
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
 import com.android.systemui.dagger.qualifiers.Main
@@ -32,6 +32,7 @@ import com.android.systemui.qs.tiles.impl.saver.domain.DataSaverDialogDelegate
 import com.android.systemui.qs.tiles.impl.saver.domain.model.DataSaverTileModel
 import com.android.systemui.qs.tiles.viewmodel.QSTileUserAction
 import com.android.systemui.settings.UserFileManager
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.phone.SystemUIDialog
 import com.android.systemui.statusbar.policy.DataSaverController
 import javax.inject.Inject
@@ -42,12 +43,12 @@ import kotlinx.coroutines.withContext
 class DataSaverTileUserActionInteractor
 @Inject
 constructor(
-    @Application private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     @Main private val coroutineContext: CoroutineContext,
     @Background private val backgroundContext: CoroutineContext,
     private val dataSaverController: DataSaverController,
     private val qsTileIntentUserActionHandler: QSTileIntentUserInputHandler,
-    private val dialogLaunchAnimator: DialogLaunchAnimator,
+    private val dialogTransitionAnimator: DialogTransitionAnimator,
     private val systemUIDialogFactory: SystemUIDialog.Factory,
     userFileManager: UserFileManager,
 ) : QSTileUserActionInteractor<DataSaverTileModel> {
@@ -71,41 +72,39 @@ constructor(
                         }
                         return@with
                     }
-                    // Show a dialog to confirm first. Dialogs shown by the DialogLaunchAnimator
+                    // Show a dialog to confirm first. Dialogs shown by the DialogTransitionAnimator
                     // must be created and shown on the main thread, so we post it to the UI
                     // handler
                     withContext(coroutineContext) {
-                        val dialogContext = action.view?.context ?: context
                         val dialogDelegate =
                             DataSaverDialogDelegate(
                                 systemUIDialogFactory,
-                                dialogContext,
+                                context,
                                 backgroundContext,
                                 dataSaverController,
                                 sharedPreferences
                             )
-                        val dialog = systemUIDialogFactory.create(dialogDelegate, dialogContext)
+                        val dialog = systemUIDialogFactory.create(dialogDelegate, context)
 
-                        if (action.view != null) {
-                            dialogLaunchAnimator.showFromView(
-                                dialog,
-                                action.view!!,
+                        action.expandable
+                            ?.dialogTransitionController(
                                 DialogCuj(
                                     InteractionJankMonitor.CUJ_SHADE_DIALOG_OPEN,
                                     INTERACTION_JANK_TAG
                                 )
                             )
-                        } else {
-                            dialog.show()
-                        }
+                            ?.let { controller ->
+                                dialogTransitionAnimator.show(dialog, controller)
+                            } ?: dialog.show()
                     }
                 }
                 is QSTileUserAction.LongClick -> {
                     qsTileIntentUserActionHandler.handle(
-                        action.view,
+                        action.expandable,
                         Intent(Settings.ACTION_DATA_SAVER_SETTINGS)
                     )
                 }
+                is QSTileUserAction.ToggleClick -> {}
             }
         }
 }

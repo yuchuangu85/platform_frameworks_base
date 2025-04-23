@@ -18,12 +18,12 @@ package com.android.server.wm.flicker.notification
 
 import android.platform.test.annotations.Postsubmit
 import android.platform.test.annotations.Presubmit
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
-import android.tools.device.helpers.wakeUpAndGoToHomeScreen
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.helpers.wakeUpAndGoToHomeScreen
+import android.tools.traces.component.ComponentNameMatcher
 import androidx.test.filters.FlakyTest
 import androidx.test.filters.RequiresDevice
 import com.android.server.wm.flicker.helpers.ShowWhenLockedAppHelper
@@ -40,7 +40,8 @@ import org.junit.runners.Parameterized
  *
  * This test assumes the device doesn't have AOD enabled
  *
- * To run this test: `atest FlickerTests:OpenAppFromLockNotificationWithLockOverlayApp`
+ * To run this test:
+ * `atest FlickerTestsNotification:OpenAppFromLockscreenNotificationWithOverlayAppTest`
  */
 @RequiresDevice
 @RunWith(Parameterized::class)
@@ -123,7 +124,9 @@ class OpenAppFromLockscreenNotificationWithOverlayAppTest(flicker: LegacyFlicker
     @Test
     override fun navBarWindowIsAlwaysVisible() = super.navBarWindowIsAlwaysVisible()
 
-    @Presubmit @Test override fun entireScreenCovered() = super.entireScreenCovered()
+    @FlakyTest(bugId = 227143265)
+    @Test
+    override fun entireScreenCovered() = super.entireScreenCovered()
 
     @FlakyTest(bugId = 278227468)
     @Test

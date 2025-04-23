@@ -27,39 +27,37 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.android.app.animation.Interpolators
 import com.android.dream.lowlight.util.TruncatedInterpolator
+import com.android.systemui.ambient.statusbar.ui.AmbientStatusBarViewController
 import com.android.systemui.complication.ComplicationHostViewController
 import com.android.systemui.complication.ComplicationLayoutParams
 import com.android.systemui.complication.ComplicationLayoutParams.POSITION_BOTTOM
 import com.android.systemui.complication.ComplicationLayoutParams.POSITION_TOP
 import com.android.systemui.complication.ComplicationLayoutParams.Position
+import com.android.systemui.dreams.dagger.DreamOverlayComponent.DreamOverlayScope
 import com.android.systemui.dreams.dagger.DreamOverlayModule
-import com.android.systemui.keyguard.ui.viewmodel.DreamingToLockscreenTransitionViewModel
+import com.android.systemui.dreams.ui.viewmodel.DreamViewModel
 import com.android.systemui.lifecycle.repeatWhenAttached
 import com.android.systemui.log.LogBuffer
 import com.android.systemui.log.core.Logger
 import com.android.systemui.log.dagger.DreamLog
-import com.android.systemui.res.R
 import com.android.systemui.statusbar.BlurUtils
 import com.android.systemui.statusbar.CrossFadeHelper
-import com.android.systemui.statusbar.policy.ConfigurationController
-import com.android.systemui.statusbar.policy.ConfigurationController.ConfigurationListener
 import javax.inject.Inject
 import javax.inject.Named
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.DisposableHandle
+import com.android.app.tracing.coroutines.launchTraced as launch
 
 /** Controller for dream overlay animations. */
+@DreamOverlayScope
 class DreamOverlayAnimationsController
 @Inject
 constructor(
     private val mBlurUtils: BlurUtils,
     private val mComplicationHostViewController: ComplicationHostViewController,
-    private val mStatusBarViewController: DreamOverlayStatusBarViewController,
+    private val mStatusBarViewController: AmbientStatusBarViewController,
     private val mOverlayStateController: DreamOverlayStateController,
     @Named(DreamOverlayModule.DREAM_BLUR_RADIUS) private val mDreamBlurRadius: Int,
-    private val transitionViewModel: DreamingToLockscreenTransitionViewModel,
-    private val configController: ConfigurationController,
+    private val dreamViewModel: DreamViewModel,
     @Named(DreamOverlayModule.DREAM_IN_BLUR_ANIMATION_DURATION)
     private val mDreamInBlurAnimDurationMs: Long,
     @Named(DreamOverlayModule.DREAM_IN_COMPLICATIONS_ANIMATION_DURATION)
@@ -87,41 +85,38 @@ constructor(
 
     private var mCurrentBlurRadius: Float = 0f
 
+    private var mLifecycleFlowHandle: DisposableHandle? = null
+
     fun init(view: View) {
         this.view = view
 
-        view.repeatWhenAttached {
-            val configurationBasedDimensions = MutableStateFlow(loadFromResources(view))
-            val configCallback =
-                object : ConfigurationListener {
-                    override fun onDensityOrFontScaleChanged() {
-                        configurationBasedDimensions.value = loadFromResources(view)
-                    }
-                }
-
-            configController.addCallback(configCallback)
-
-            try {
+        mLifecycleFlowHandle =
+            view.repeatWhenAttached {
                 repeatOnLifecycle(Lifecycle.State.CREATED) {
-                    /* Translation animations, when moving from DREAMING->LOCKSCREEN state */
                     launch {
-                        configurationBasedDimensions
-                            .flatMapLatest {
-                                transitionViewModel.dreamOverlayTranslationY(it.translationYPx)
-                            }
-                            .collect { px ->
-                                ComplicationLayoutParams.iteratePositions(
-                                    { position: Int ->
-                                        setElementsTranslationYAtPosition(px, position)
-                                    },
-                                    POSITION_TOP or POSITION_BOTTOM
-                                )
-                            }
+                        dreamViewModel.dreamOverlayTranslationY.collect { px ->
+                            ComplicationLayoutParams.iteratePositions(
+                                { position: Int ->
+                                    setElementsTranslationYAtPosition(px, position)
+                                },
+                                POSITION_TOP or POSITION_BOTTOM
+                            )
+                        }
                     }
 
-                    /* Alpha animations, when moving from DREAMING->LOCKSCREEN state */
                     launch {
-                        transitionViewModel.dreamOverlayAlpha.collect { alpha ->
+                        dreamViewModel.dreamOverlayTranslationX.collect { px ->
+                            ComplicationLayoutParams.iteratePositions(
+                                { position: Int ->
+                                    setElementsTranslationXAtPosition(px, position)
+                                },
+                                POSITION_TOP or POSITION_BOTTOM
+                            )
+                        }
+                    }
+
+                    launch {
+                        dreamViewModel.dreamOverlayAlpha.collect { alpha ->
                             ComplicationLayoutParams.iteratePositions(
                                 { position: Int ->
                                     setElementsAlphaAtPosition(
@@ -136,16 +131,16 @@ constructor(
                     }
 
                     launch {
-                        transitionViewModel.transitionEnded.collect { _ ->
+                        dreamViewModel.transitionEnded.collect { _ ->
                             mOverlayStateController.setExitAnimationsRunning(false)
                         }
                     }
                 }
-            } finally {
-                // Ensure the callback is removed when cancellation happens
-                configController.removeCallback(configCallback)
             }
-        }
+    }
+
+    fun destroy() {
+        mLifecycleFlowHandle?.dispose()
     }
 
     /**
@@ -260,10 +255,8 @@ constructor(
         return mAnimator as AnimatorSet
     }
 
-    /** Starts the dream content and dream overlay exit animations. */
-    fun wakeUp() {
+    fun onWakeUp() {
         cancelAnimations()
-        mOverlayStateController.setExitAnimationsRunning(true)
     }
 
     /** Cancels the dream content and dream overlay animations, if they're currently running. */
@@ -273,6 +266,7 @@ constructor(
                 it.cancel()
                 null
             }
+        mOverlayStateController.setExitAnimationsRunning(false)
     }
 
     private fun blurAnimator(
@@ -373,14 +367,10 @@ constructor(
         }
     }
 
-    private fun loadFromResources(view: View): ConfigurationBasedDimensions {
-        return ConfigurationBasedDimensions(
-            translationYPx =
-                view.resources.getDimensionPixelSize(R.dimen.dream_overlay_exit_y_offset),
-        )
+    /** Sets x translation of complications at the specified position. */
+    private fun setElementsTranslationXAtPosition(translationX: Float, position: Int) {
+        mComplicationHostViewController.getViewsAtPosition(position).forEach { v ->
+            v.translationX = translationX
+        }
     }
-
-    private data class ConfigurationBasedDimensions(
-        val translationYPx: Int,
-    )
 }

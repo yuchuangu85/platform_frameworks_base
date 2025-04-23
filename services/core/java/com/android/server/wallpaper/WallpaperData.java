@@ -16,7 +16,9 @@
 
 package com.android.server.wallpaper;
 
+import static android.app.Flags.liveWallpaperContentHandling;
 import static android.app.WallpaperManager.FLAG_LOCK;
+import static android.app.WallpaperManager.ORIENTATION_UNKNOWN;
 
 import static com.android.server.wallpaper.WallpaperUtils.WALLPAPER;
 import static com.android.server.wallpaper.WallpaperUtils.WALLPAPER_CROP;
@@ -24,9 +26,12 @@ import static com.android.server.wallpaper.WallpaperUtils.WALLPAPER_LOCK_CROP;
 import static com.android.server.wallpaper.WallpaperUtils.WALLPAPER_LOCK_ORIG;
 import static com.android.server.wallpaper.WallpaperUtils.getWallpaperDir;
 
+import android.annotation.NonNull;
 import android.app.IWallpaperManagerCallback;
 import android.app.WallpaperColors;
+import android.app.WallpaperManager.ScreenOrientation;
 import android.app.WallpaperManager.SetWallpaperFlags;
+import android.app.wallpaper.WallpaperDescription;
 import android.content.ComponentName;
 import android.graphics.Rect;
 import android.os.RemoteCallbackList;
@@ -75,11 +80,16 @@ class WallpaperData {
 
     /**
      * The component name of the currently set live wallpaper.
+     *
+     * @deprecated
      */
-    ComponentName wallpaperComponent;
+    private ComponentName mWallpaperComponent;
 
+    // TODO(b/347235611) Remove this field
     /**
      * The component name of the wallpaper that should be set next.
+     *
+     * @deprecated
      */
     ComponentName nextWallpaperComponent;
 
@@ -126,13 +136,57 @@ class WallpaperData {
     RemoteCallbackList<IWallpaperManagerCallback> callbacks = new RemoteCallbackList<>();
 
     /**
-     * The crop hint supplied for displaying a subset of the source image
+     * Defines which part of the {@link #getWallpaperFile()} image is in the {@link #getCropFile()}.
      */
     final Rect cropHint = new Rect(0, 0, 0, 0);
+
+    /**
+     * How much the crop is sub-sampled. A value > 1 means that the image quality was reduced.
+     * This is the ratio between the cropHint height and the actual {@link #getCropFile()} height.
+     */
+    float mSampleSize = 1f;
+
+    // Describes the context of a call to WallpaperManagerService#bindWallpaperComponentLocked
+    enum BindSource {
+        UNKNOWN,
+        CONNECT_LOCKED,
+        CONNECTION_TRY_TO_REBIND,
+        FALLBACK_DEFAULT_MISSING,
+        INITIALIZE_FALLBACK,
+        PACKAGE_UPDATE_FINISHED,
+        RESTORE_SETTINGS_LIVE_FAILURE,
+        RESTORE_SETTINGS_LIVE_SUCCESS,
+        RESTORE_SETTINGS_STATIC,
+        SET_LIVE,
+        SET_LIVE_TO_CLEAR,
+        SET_STATIC,
+        SWITCH_WALLPAPER_FAILURE,
+        SWITCH_WALLPAPER_SWITCH_USER,
+        SWITCH_WALLPAPER_UNLOCK_USER,
+    }
+
+    // Context in which this wallpaper was bound. Intended for use in resolving b/301073479 but may
+    // be useful after the issue is resolved as well.
+    BindSource mBindSource = BindSource.UNKNOWN;
 
     // map of which -> File
     private final SparseArray<File> mWallpaperFiles = new SparseArray<>();
     private final SparseArray<File> mCropFiles = new SparseArray<>();
+
+    /**
+     * Mapping of {@link ScreenOrientation} -> crop hint. The crop hints are relative to the
+     * original image stored in {@link #getWallpaperFile()}.
+     * Only used when multi crop flag is enabled.
+     */
+    SparseArray<Rect> mCropHints = new SparseArray<>();
+
+    /**
+     * The phone orientation when the wallpaper was set. Only relevant for image wallpapers
+     */
+    int mOrientationWhenSet = ORIENTATION_UNKNOWN;
+
+    /** Description of the current wallpaper */
+    private WallpaperDescription mDescription = new WallpaperDescription.Builder().build();
 
     WallpaperData(int userId, @SetWallpaperFlags int wallpaperType) {
         this.userId = userId;
@@ -150,14 +204,20 @@ class WallpaperData {
      */
     WallpaperData(WallpaperData source) {
         this.userId = source.userId;
-        this.wallpaperComponent = source.wallpaperComponent;
+        this.mWallpaperComponent = source.mWallpaperComponent;
         this.mWhich = source.mWhich;
         this.wallpaperId = source.wallpaperId;
         this.cropHint.set(source.cropHint);
+        if (source.mCropHints != null) {
+            this.mCropHints = source.mCropHints.clone();
+        }
         this.allowBackup = source.allowBackup;
         this.primaryColors = source.primaryColors;
         this.mWallpaperDimAmount = source.mWallpaperDimAmount;
         this.connection = source.connection;
+        if (liveWallpaperContentHandling()) {
+            this.setDescription(source.getDescription());
+        }
         if (this.connection != null) {
             this.connection.mWallpaper = this;
         }
@@ -180,6 +240,40 @@ class WallpaperData {
             map.put(userId, result);
         }
         return result;
+    }
+
+    @NonNull ComponentName getComponent() {
+        if (liveWallpaperContentHandling()) {
+            return mDescription.getComponent();
+        } else {
+            return mWallpaperComponent;
+        }
+    }
+
+    void setComponent(@NonNull ComponentName componentName) {
+        if (liveWallpaperContentHandling()) {
+            throw new IllegalStateException(
+                    "Use \"setDescription\" when content handling is enabled");
+        }
+        this.mWallpaperComponent = componentName;
+    }
+
+    @NonNull WallpaperDescription getDescription() {
+        return mDescription;
+    }
+
+    void setDescription(@NonNull WallpaperDescription description) {
+        if (!liveWallpaperContentHandling()) {
+            throw new IllegalStateException(
+                    "Use \"setContent\" when content handling is disabled");
+        }
+        if (description == null) {
+            throw new IllegalArgumentException("WallpaperDescription must not be null");
+        }
+        if (description.getComponent() == null) {
+            throw new IllegalArgumentException("WallpaperDescription component must not be null");
+        }
+        this.mDescription = description;
     }
 
     @Override

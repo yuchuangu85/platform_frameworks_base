@@ -31,12 +31,13 @@ android_test {
         "androidx.test.runner",
         "mockito-target-minus-junit4",
         "frameworks-base-testutils",
+        "androidx.test.rules",
     ],
 
     libs: [
-        "android.test.runner",
-        "android.test.base",
-        "android.test.mock",
+        "android.test.runner.stubs.system",
+        "android.test.base.stubs.system",
+        "android.test.mock.stubs.system",
     ],
 
     certificate: "platform",

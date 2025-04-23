@@ -18,11 +18,15 @@ package android.app.servertransaction;
 
 import static com.android.internal.annotations.VisibleForTesting.Visibility.PACKAGE;
 
+import static java.util.Objects.requireNonNull;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ClientTransactionHandler;
 import android.app.IApplicationThread;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.os.Build;
+import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.RemoteException;
@@ -43,31 +47,69 @@ import java.util.Objects;
  * @see ActivityLifecycleItem
  * @hide
  */
-public class ClientTransaction implements Parcelable, ObjectPoolItem {
+public class ClientTransaction implements Parcelable {
 
     /**
      * List of transaction items that should be executed in order. Including both
      * {@link ActivityLifecycleItem} and other {@link ClientTransactionItem}.
      */
-    @Nullable
-    private List<ClientTransactionItem> mTransactionItems;
+    @NonNull
+    private final List<ClientTransactionItem> mTransactionItems = new ArrayList<>();
 
-    /** A list of individual callbacks to a client. */
-    @UnsupportedAppUsage
+    /** @deprecated use {@link #getTransactionItems} instead. */
     @Nullable
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            trackingBug = 324203798,
+            publicAlternatives = "Use {@code #getTransactionItems()}")
+    @Deprecated
     private List<ClientTransactionItem> mActivityCallbacks;
 
     /**
      * Final lifecycle state in which the client activity should be after the transaction is
      * executed.
      */
+    // TODO(b/324203798): cleanup after remove UnsupportedAppUsage
     @Nullable
     private ActivityLifecycleItem mLifecycleStateRequest;
 
-    /** Target client. */
-    private IApplicationThread mClient;
+    /** Only kept for unsupportedAppUsage {@link #getActivityToken()}. Must not be used. */
+    // TODO(b/324203798): cleanup after remove UnsupportedAppUsage
+    @Nullable
+    private IBinder mActivityToken;
 
-    /** Get the target client of the transaction. */
+    /**
+     * The target client.
+     * <p>
+     * This field is null only if the object is:
+     * - Read from a Parcel on the client side.
+     * - Constructed for testing purposes.
+     * <p>
+     * When created directly on the server, this field represents the server's connection to the
+     * target client's application thread. It is omitted during parceling and not sent to the
+     * client. On the client side, this field becomes unnecessary.
+     */
+    @Nullable
+    private final IApplicationThread mClient;
+
+    @VisibleForTesting
+    public ClientTransaction() {
+        mClient = null;
+    }
+
+    public ClientTransaction(@NonNull IApplicationThread client) {
+        mClient = requireNonNull(client);
+    }
+
+    /**
+     * Gets the target client associated with this transaction.
+     * <p>
+     * This method is intended for server-side use only. Calling it from the client side
+     * will always return {@code null}.
+     *
+     * @return the {@link IApplicationThread} representing the target client, or {@code null} if
+     * called from the client side.
+     * @see #mClient
+     */
     public IApplicationThread getClient() {
         return mClient;
     }
@@ -77,17 +119,21 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
      * @param item A single message that can contain a client activity/window request/callback.
      */
     public void addTransactionItem(@NonNull ClientTransactionItem item) {
-        if (mTransactionItems == null) {
-            mTransactionItems = new ArrayList<>();
-        }
         mTransactionItems.add(item);
+
+        // TODO(b/324203798): cleanup after remove UnsupportedAppUsage
+        // Populate even if mTransactionItems is set to support the UnsupportedAppUsage.
+        if (item.isActivityLifecycleItem()) {
+            setLifecycleStateRequest((ActivityLifecycleItem) item);
+        } else {
+            addCallback(item);
+        }
     }
 
     /**
      * Gets the list of client window requests/callbacks.
-     * TODO(b/260873529): must be non null after remove the deprecated methods.
      */
-    @Nullable
+    @NonNull
     public List<ClientTransactionItem> getTransactionItems() {
         return mTransactionItems;
     }
@@ -97,34 +143,52 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
      * @param activityCallback A single message that can contain a lifecycle request/callback.
      * @deprecated use {@link #addTransactionItem(ClientTransactionItem)} instead.
      */
+    // TODO(b/324203798): cleanup after remove UnsupportedAppUsage
     @Deprecated
-    public void addCallback(@NonNull ClientTransactionItem activityCallback) {
+    private void addCallback(@NonNull ClientTransactionItem activityCallback) {
         if (mActivityCallbacks == null) {
             mActivityCallbacks = new ArrayList<>();
         }
         mActivityCallbacks.add(activityCallback);
+        setActivityTokenIfNotSet(activityCallback);
     }
 
-    /**
-     * Gets the list of callbacks.
-     * @deprecated use {@link #getTransactionItems()} instead.
-     */
-    @Nullable
+    /** @deprecated use {@link #getTransactionItems()} instead. */
     @VisibleForTesting
-    @UnsupportedAppUsage
+    @Nullable
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            trackingBug = 324203798,
+            publicAlternatives = "Use {@code #getTransactionItems()}")
     @Deprecated
     public List<ClientTransactionItem> getCallbacks() {
         return mActivityCallbacks;
     }
 
     /**
-     * Gets the target state lifecycle request.
-     * @deprecated use {@link #getTransactionItems()} instead.
+     * A transaction can contain {@link ClientTransactionItem} of different activities,
+     * this must not be used. For any unsupported app usages, please be aware that this is set to
+     * the activity of the first item in {@link #getTransactionItems()}.
+     *
+     * @deprecated use {@link ClientTransactionItem#getActivityToken()} instead.
      */
-    @VisibleForTesting(visibility = PACKAGE)
-    @UnsupportedAppUsage
-    @Deprecated
+    @VisibleForTesting
     @Nullable
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            trackingBug = 324203798,
+            publicAlternatives = "Use {@code android.app.servertransaction"
+                    + ".ClientTransactionItem#getActivityToken()}")
+    @Deprecated
+    public IBinder getActivityToken() {
+        return mActivityToken;
+    }
+
+    /** @deprecated use {@link #getTransactionItems()} instead. */
+    @VisibleForTesting(visibility = PACKAGE)
+    @Nullable
+    @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.UPSIDE_DOWN_CAKE,
+            trackingBug = 324203798,
+            publicAlternatives = "Use {@code #getTransactionItems()}")
+    @Deprecated
     public ActivityLifecycleItem getLifecycleStateRequest() {
         return mLifecycleStateRequest;
     }
@@ -134,9 +198,21 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
      * @param stateRequest A lifecycle request initialized with right parameters.
      * @deprecated use {@link #addTransactionItem(ClientTransactionItem)} instead.
      */
+    // TODO(b/324203798): cleanup after remove UnsupportedAppUsage
     @Deprecated
-    public void setLifecycleStateRequest(@NonNull ActivityLifecycleItem stateRequest) {
+    private void setLifecycleStateRequest(@NonNull ActivityLifecycleItem stateRequest) {
+        if (mLifecycleStateRequest != null) {
+            return;
+        }
         mLifecycleStateRequest = stateRequest;
+        setActivityTokenIfNotSet(stateRequest);
+    }
+
+    // TODO(b/324203798): cleanup after remove UnsupportedAppUsage
+    private void setActivityTokenIfNotSet(@Nullable ClientTransactionItem item) {
+        if (mActivityToken == null && item != null) {
+            mActivityToken = item.getActivityToken();
+        }
     }
 
     /**
@@ -145,22 +221,9 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
      *                                 requested by transaction items.
      */
     public void preExecute(@NonNull ClientTransactionHandler clientTransactionHandler) {
-        if (mTransactionItems != null) {
-            final int size = mTransactionItems.size();
-            for (int i = 0; i < size; ++i) {
-                mTransactionItems.get(i).preExecute(clientTransactionHandler);
-            }
-            return;
-        }
-
-        if (mActivityCallbacks != null) {
-            final int size = mActivityCallbacks.size();
-            for (int i = 0; i < size; ++i) {
-                mActivityCallbacks.get(i).preExecute(clientTransactionHandler);
-            }
-        }
-        if (mLifecycleStateRequest != null) {
-            mLifecycleStateRequest.preExecute(clientTransactionHandler);
+        final int size = mTransactionItems.size();
+        for (int i = 0; i < size; ++i) {
+            mTransactionItems.get(i).preExecute(clientTransactionHandler);
         }
     }
 
@@ -178,83 +241,32 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
         mClient.scheduleTransaction(this);
     }
 
-
-    // ObjectPoolItem implementation
-
-    private ClientTransaction() {}
-
-    /** Obtains an instance initialized with provided params. */
-    @NonNull
-    public static ClientTransaction obtain(@Nullable IApplicationThread client) {
-        ClientTransaction instance = ObjectPool.obtain(ClientTransaction.class);
-        if (instance == null) {
-            instance = new ClientTransaction();
-        }
-        instance.mClient = client;
-
-        return instance;
-    }
-
-    @Override
-    public void recycle() {
-        if (mTransactionItems != null) {
-            int size = mTransactionItems.size();
-            for (int i = 0; i < size; i++) {
-                mTransactionItems.get(i).recycle();
-            }
-            mTransactionItems = null;
-        }
-        if (mActivityCallbacks != null) {
-            int size = mActivityCallbacks.size();
-            for (int i = 0; i < size; i++) {
-                mActivityCallbacks.get(i).recycle();
-            }
-            mActivityCallbacks = null;
-        }
-        if (mLifecycleStateRequest != null) {
-            mLifecycleStateRequest.recycle();
-            mLifecycleStateRequest = null;
-        }
-        mClient = null;
-        ObjectPool.recycle(this);
-    }
-
     // Parcelable implementation
 
-    /** Write to Parcel. */
+    /** Writes to Parcel. */
     @SuppressWarnings("AndroidFrameworkEfficientParcelable") // Item class is not final.
     @Override
     public void writeToParcel(@NonNull Parcel dest, int flags) {
-        final boolean writeTransactionItems = mTransactionItems != null;
-        dest.writeBoolean(writeTransactionItems);
-        if (writeTransactionItems) {
-            dest.writeParcelableList(mTransactionItems, flags);
-        }
-
-        dest.writeParcelable(mLifecycleStateRequest, flags);
-        final boolean writeActivityCallbacks = mActivityCallbacks != null;
-        dest.writeBoolean(writeActivityCallbacks);
-        if (writeActivityCallbacks) {
-            dest.writeParcelableList(mActivityCallbacks, flags);
-        }
+        dest.writeParcelableList(mTransactionItems, flags);
     }
 
-    /** Read from Parcel. */
+    /** Reads from Parcel. */
     private ClientTransaction(@NonNull Parcel in) {
-        final boolean readTransactionItems = in.readBoolean();
-        if (readTransactionItems) {
-            mTransactionItems = new ArrayList<>();
-            in.readParcelableList(mTransactionItems, getClass().getClassLoader(),
-                    ClientTransactionItem.class);
-        }
+        mClient = null;  // This field is unnecessary on the client side.
+        in.readParcelableList(mTransactionItems, getClass().getClassLoader(),
+                ClientTransactionItem.class);
 
-        mLifecycleStateRequest = in.readParcelable(getClass().getClassLoader(),
-                ActivityLifecycleItem.class);
-        final boolean readActivityCallbacks = in.readBoolean();
-        if (readActivityCallbacks) {
-            mActivityCallbacks = new ArrayList<>();
-            in.readParcelableList(mActivityCallbacks, getClass().getClassLoader(),
-                    ClientTransactionItem.class);
+        // TODO(b/324203798): cleanup after remove UnsupportedAppUsage
+        // Populate mLifecycleStateRequest and mActivityCallbacks from mTransactionItems so
+        // that they have the same reference when there is UnsupportedAppUsage to those fields.
+        final int size = mTransactionItems.size();
+        for (int i = 0; i < size; i++) {
+            final ClientTransactionItem item = mTransactionItems.get(i);
+            if (item.isActivityLifecycleItem()) {
+                setLifecycleStateRequest((ActivityLifecycleItem) item);
+            } else {
+                addCallback(item);
+            }
         }
     }
 
@@ -285,7 +297,8 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
         return Objects.equals(mTransactionItems, other.mTransactionItems)
                 && Objects.equals(mActivityCallbacks, other.mActivityCallbacks)
                 && Objects.equals(mLifecycleStateRequest, other.mLifecycleStateRequest)
-                && mClient == other.mClient;
+                && mClient == other.mClient
+                && Objects.equals(mActivityToken, other.mActivityToken);
     }
 
     @Override
@@ -295,47 +308,39 @@ public class ClientTransaction implements Parcelable, ObjectPoolItem {
         result = 31 * result + Objects.hashCode(mActivityCallbacks);
         result = 31 * result + Objects.hashCode(mLifecycleStateRequest);
         result = 31 * result + Objects.hashCode(mClient);
+        result = 31 * result + Objects.hashCode(mActivityToken);
         return result;
+    }
+
+    @Override
+    public String toString() {
+        final StringBuilder sb = new StringBuilder();
+        sb.append("ClientTransaction{");
+        sb.append("\n  transactionItems=[");
+        final int size = mTransactionItems.size();
+        for (int i = 0; i < size; i++) {
+            sb.append("\n    ").append(mTransactionItems.get(i));
+        }
+        sb.append("\n  ]");
+        sb.append("\n}");
+        return sb.toString();
     }
 
     /** Dump transaction items callback items and final lifecycle state request. */
     void dump(@NonNull String prefix, @NonNull PrintWriter pw,
             @NonNull ClientTransactionHandler transactionHandler) {
         pw.append(prefix).println("ClientTransaction{");
-        if (mTransactionItems != null) {
-            pw.append(prefix).print("  transactionItems=[");
-            final String itemPrefix = prefix + "    ";
-            final int size = mTransactionItems.size();
-            if (size > 0) {
-                pw.println();
-                for (int i = 0; i < size; i++) {
-                    mTransactionItems.get(i).dump(itemPrefix, pw, transactionHandler);
-                }
-                pw.append(prefix).println("  ]");
-            } else {
-                pw.println("]");
-            }
-            pw.append(prefix).println("}");
-            return;
-        }
-        pw.append(prefix).print("  callbacks=[");
+        pw.append(prefix).print("  transactionItems=[");
         final String itemPrefix = prefix + "    ";
-        final int size = mActivityCallbacks != null ? mActivityCallbacks.size() : 0;
+        final int size = mTransactionItems.size();
         if (size > 0) {
             pw.println();
             for (int i = 0; i < size; i++) {
-                mActivityCallbacks.get(i).dump(itemPrefix, pw, transactionHandler);
+                mTransactionItems.get(i).dump(itemPrefix, pw, transactionHandler);
             }
             pw.append(prefix).println("  ]");
         } else {
             pw.println("]");
-        }
-
-        pw.append(prefix).println("  stateRequest=");
-        if (mLifecycleStateRequest != null) {
-            mLifecycleStateRequest.dump(itemPrefix, pw, transactionHandler);
-        } else {
-            pw.append(itemPrefix).println("null");
         }
         pw.append(prefix).println("}");
     }

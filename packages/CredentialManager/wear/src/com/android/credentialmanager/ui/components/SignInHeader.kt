@@ -16,68 +16,52 @@
 
 package com.android.credentialmanager.ui.components
 
-import androidx.annotation.DrawableRes
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import android.graphics.drawable.Drawable
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.dp
-import androidx.wear.compose.material.MaterialTheme
-import androidx.wear.compose.material.Text
-import com.android.credentialmanager.R
-import com.google.android.horologist.annotations.ExperimentalHorologistApi
-import com.google.android.horologist.compose.material.Icon
-import com.google.android.horologist.compose.material.util.DECORATIVE_ELEMENT_CONTENT_DESCRIPTION
-import com.google.android.horologist.compose.tools.WearPreview
+import androidx.core.graphics.drawable.toBitmap
+import com.android.credentialmanager.common.ui.components.WearTitleText
 
-@OptIn(ExperimentalHorologistApi::class)
+/* Used as header across Credential Selector screens. */
 @Composable
 fun SignInHeader(
-    @DrawableRes icon: Int,
+    icon: Drawable?,
     title: String,
-    modifier: Modifier = Modifier,
 ) {
-    SignInHeader(
-        iconContent = {
-            Icon(
-                id = icon,
-                contentDescription = DECORATIVE_ELEMENT_CONTENT_DESCRIPTION
+
+    Row {
+        Spacer(Modifier.weight(0.073f)) // 7.3% side margin
+        Column(
+            modifier = Modifier.weight(0.854f).fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            if (icon != null) {
+                Icon(
+                    bitmap = icon.toBitmap().asImageBitmap(),
+                    modifier = Modifier.size(24.dp),
+                    // Decorative purpose only.
+                    contentDescription = null,
+                    tint = Color.Unspecified,
+                    )
+            }
+            Spacer(modifier = Modifier.size(8.dp))
+
+            WearTitleText(
+                text = title,
             )
-        },
-        title = title,
-        modifier = modifier,
-    )
-}
 
-@Composable
-fun SignInHeader(
-    iconContent: @Composable ColumnScope.() -> Unit,
-    title: String,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        iconContent()
-        Text(
-            text = title,
-            modifier = Modifier
-                .padding(top = 6.dp)
-                .padding(horizontal = 10.dp),
-            style = MaterialTheme.typography.title3
-        )
+            Spacer(modifier = Modifier.size(8.dp))
+        }
+        Spacer(Modifier.weight(0.073f)) // 7.3% side margin
     }
-}
-
-@WearPreview
-@Composable
-fun SignInHeaderPreview() {
-    SignInHeader(
-        icon = R.drawable.passkey_icon,
-        title = stringResource(R.string.use_passkey_title)
-    )
 }

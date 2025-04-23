@@ -22,12 +22,14 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.os.SystemClock;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
 import com.android.internal.telephony.TelephonyIntents;
+import com.android.internal.telephony.flags.Flags;
 import com.android.server.FgThread;
 
 import java.util.Objects;
@@ -74,11 +76,12 @@ public class SystemEmergencyHelper extends EmergencyHelper {
                     try {
                         mIsInEmergencyCall = mTelephonyManager.isEmergencyNumber(
                                 intent.getStringExtra(Intent.EXTRA_PHONE_NUMBER));
-                        dispatchEmergencyStateChanged();
-                    } catch (IllegalStateException e) {
+                    } catch (IllegalStateException | UnsupportedOperationException e) {
                         Log.w(TAG, "Failed to call TelephonyManager.isEmergencyNumber().", e);
                     }
                 }
+
+                dispatchEmergencyStateChanged();
             }
         }, new IntentFilter(Intent.ACTION_NEW_OUTGOING_CALL));
 
@@ -104,10 +107,26 @@ public class SystemEmergencyHelper extends EmergencyHelper {
         boolean isInExtensionTime = mEmergencyCallEndRealtimeMs != Long.MIN_VALUE
                 && (SystemClock.elapsedRealtime() - mEmergencyCallEndRealtimeMs) < extensionTimeMs;
 
-        return mIsInEmergencyCall
-                || isInExtensionTime
-                || mTelephonyManager.getEmergencyCallbackMode()
-                || mTelephonyManager.isInEmergencySmsMode();
+        if (!Flags.enforceTelephonyFeatureMapping()) {
+            return mIsInEmergencyCall
+                    || isInExtensionTime
+                    || mTelephonyManager.getEmergencyCallbackMode()
+                    || mTelephonyManager.isInEmergencySmsMode();
+        } else {
+            boolean emergencyCallbackMode = false;
+            boolean emergencySmsMode = false;
+            PackageManager pm = mContext.getPackageManager();
+            if (pm.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_CALLING)) {
+                emergencyCallbackMode = mTelephonyManager.getEmergencyCallbackMode();
+            }
+            if (pm.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING)) {
+                emergencySmsMode = mTelephonyManager.isInEmergencySmsMode();
+            }
+            return mIsInEmergencyCall
+                    || isInExtensionTime
+                    || emergencyCallbackMode
+                    || emergencySmsMode;
+        }
     }
 
     private class EmergencyCallTelephonyCallback extends TelephonyCallback implements
@@ -122,9 +141,10 @@ public class SystemEmergencyHelper extends EmergencyHelper {
                     if (mIsInEmergencyCall) {
                         mEmergencyCallEndRealtimeMs = SystemClock.elapsedRealtime();
                         mIsInEmergencyCall = false;
-                        dispatchEmergencyStateChanged();
                     }
                 }
+
+                dispatchEmergencyStateChanged();
             }
         }
     }

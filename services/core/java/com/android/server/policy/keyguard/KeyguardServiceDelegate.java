@@ -176,8 +176,9 @@ public class KeyguardServiceDelegate {
 
         final DreamManagerInternal dreamManager =
                 LocalServices.getService(DreamManagerInternal.class);
-
-        dreamManager.registerDreamManagerStateListener(mDreamManagerStateListener);
+        if(dreamManager != null){
+            dreamManager.registerDreamManagerStateListener(mDreamManagerStateListener);
+        }
     }
 
     private final ServiceConnection mKeyguardConnection = new ServiceConnection() {
@@ -407,6 +408,15 @@ public class KeyguardServiceDelegate {
     public void doKeyguardTimeout(Bundle options) {
         if (mKeyguardService != null) {
             mKeyguardService.doKeyguardTimeout(options);
+        }
+    }
+
+    /**
+     * Request to show the keyguard immediately without immediately locking the device.
+     */
+    public void showDismissibleKeyguard() {
+        if (mKeyguardService != null) {
+            mKeyguardService.showDismissibleKeyguard();
         }
     }
 

@@ -18,7 +18,10 @@ package android.credentials;
 
 import android.annotation.Hide;
 import android.annotation.NonNull;
-import android.credentials.ui.GetCredentialProviderData;
+import android.annotation.Nullable;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.credentials.selection.GetCredentialProviderData;
 import android.os.Parcel;
 import android.os.Parcelable;
 
@@ -35,22 +38,30 @@ import java.util.List;
  */
 @Hide
 public final class GetCandidateCredentialsResponse implements Parcelable {
-    // TODO(b/299321990): Add members
-
     @NonNull
     private final List<GetCredentialProviderData> mCandidateProviderDataList;
+
+    @Nullable
+    private final ComponentName mPrimaryProviderComponentName;
+
+    @NonNull
+    private final Intent mIntent;
 
     /**
      * @hide
      */
     @Hide
     public GetCandidateCredentialsResponse(
-            List<GetCredentialProviderData> candidateProviderDataList
+            @NonNull List<GetCredentialProviderData> candidateProviderDataList,
+            @NonNull Intent intent,
+            @Nullable ComponentName primaryProviderComponentName
     ) {
         Preconditions.checkCollectionNotEmpty(
                 candidateProviderDataList,
                 /*valueName=*/ "candidateProviderDataList");
         mCandidateProviderDataList = new ArrayList<>(candidateProviderDataList);
+        mIntent = intent;
+        mPrimaryProviderComponentName = primaryProviderComponentName;
     }
 
     /**
@@ -62,17 +73,42 @@ public final class GetCandidateCredentialsResponse implements Parcelable {
         return mCandidateProviderDataList;
     }
 
+    /**
+     * Returns the primary provider component name.
+     *
+     * @hide
+     */
+    @Nullable
+    public ComponentName getPrimaryProviderComponentName() {
+        return mPrimaryProviderComponentName;
+    }
+
+    /**
+     * Returns candidate provider data list.
+     *
+     * @hide
+     */
+    @NonNull
+    public Intent getIntent() {
+        return mIntent;
+    }
+
     protected GetCandidateCredentialsResponse(Parcel in) {
         List<GetCredentialProviderData> candidateProviderDataList = new ArrayList<>();
         in.readTypedList(candidateProviderDataList, GetCredentialProviderData.CREATOR);
         mCandidateProviderDataList = candidateProviderDataList;
 
         AnnotationValidations.validate(NonNull.class, null, mCandidateProviderDataList);
+        mIntent = in.readTypedObject(Intent.CREATOR);
+
+        mPrimaryProviderComponentName = in.readTypedObject(ComponentName.CREATOR);
     }
 
     @Override
     public void writeToParcel(Parcel dest, int flags) {
         dest.writeTypedList(mCandidateProviderDataList);
+        dest.writeTypedObject(mIntent, flags);
+        dest.writeTypedObject(mPrimaryProviderComponentName, flags);
     }
 
     @Override

@@ -58,6 +58,7 @@ import android.os.UserHandle;
 import android.os.UserManager;
 import android.util.EventLog;
 import android.util.Log;
+import android.util.Slog;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.content.PackageMonitor;
@@ -287,6 +288,7 @@ public class MidiService extends IMidiManager.Stub {
         }
 
         public void deviceAdded(Device device) {
+            Log.d(TAG, "deviceAdded() " + device.getUserId() + " userId:" + getUserId());
             // ignore devices that our client cannot access
             if (!device.isUidAllowed(mUid) || !device.isUserIdAllowed(getUserId())) return;
 
@@ -301,6 +303,7 @@ public class MidiService extends IMidiManager.Stub {
         }
 
         public void deviceRemoved(Device device) {
+            Log.d(TAG, "deviceRemoved() " + device.getUserId() + " userId:" + getUserId());
             // ignore devices that our client cannot access
             if (!device.isUidAllowed(mUid) || !device.isUserIdAllowed(getUserId())) return;
 
@@ -315,6 +318,7 @@ public class MidiService extends IMidiManager.Stub {
         }
 
         public void deviceStatusChanged(Device device, MidiDeviceStatus status) {
+            Log.d(TAG, "deviceStatusChanged() " + device.getUserId() + " userId:" + getUserId());
             // ignore devices that our client cannot access
             if (!device.isUidAllowed(mUid) || !device.isUserIdAllowed(getUserId())) return;
 
@@ -1012,7 +1016,11 @@ public class MidiService extends IMidiManager.Stub {
             }
         }
 
-        if (user.getUserIdentifier() == mUserManager.getMainUser().getIdentifier()) {
+        // Allow only the main user to create BluetoothMidiService.
+        // If there is no main user, allow all users to create it.
+        UserHandle mainUser = mUserManager.getMainUser();
+        if ((mainUser == null)
+                || (user.getUserIdentifier() == mainUser.getIdentifier())) {
             PackageInfo info;
             try {
                 info = mPackageManager.getPackageInfoAsUser(
@@ -1299,7 +1307,7 @@ public class MidiService extends IMidiManager.Stub {
             String[] inputPortNames, String[] outputPortNames, Bundle properties,
             IMidiDeviceServer server, ServiceInfo serviceInfo,
             boolean isPrivate, int uid, int defaultProtocol, int userId) {
-        Log.d(TAG, "addDeviceLocked()" + uid + " type:" + type);
+        Log.d(TAG, "addDeviceLocked() " + uid + " type:" + type + " userId:" + userId);
 
         // Limit the number of devices per app.
         int deviceCountForApp = 0;
@@ -1728,6 +1736,11 @@ public class MidiService extends IMidiManager.Stub {
             }
         }
         pw.decreaseIndent();
+    }
+
+    @Override
+    protected void onUnhandledException(int code, int flags, Exception e) {
+        Slog.wtf(TAG, "Uncaught exception in AudioService: " + code + ", " + flags, e);
     }
 
     @GuardedBy("mUsbMidiLock")

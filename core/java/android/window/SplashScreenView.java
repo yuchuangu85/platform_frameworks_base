@@ -40,6 +40,7 @@ import android.os.RemoteCallback;
 import android.os.Trace;
 import android.util.AttributeSet;
 import android.util.Log;
+import android.view.AttachedSurfaceControl;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.SurfaceControlViewHost;
@@ -55,6 +56,8 @@ import com.android.internal.R;
 import com.android.internal.jank.InteractionJankMonitor;
 import com.android.internal.policy.DecorView;
 
+import java.io.Closeable;
+import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.function.Consumer;
@@ -332,9 +335,11 @@ public final class SplashScreenView extends FrameLayout {
                                     + Thread.currentThread().getId());
                 }
 
+                AttachedSurfaceControl attachedSurfaceControl = surfaceView.getRootSurfaceControl();
                 SurfaceControlViewHost viewHost = new SurfaceControlViewHost(viewContext,
                         viewContext.getDisplay(),
-                        surfaceView.getHostToken(),
+                        attachedSurfaceControl == null ? null
+                                : attachedSurfaceControl.getInputTransferToken(),
                         "SplashScreenView");
                 ImageView imageView = new ImageView(viewContext);
                 imageView.setBackground(mIconDrawable);
@@ -565,6 +570,12 @@ public final class SplashScreenView extends FrameLayout {
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
         releaseAnimationSurfaceHost();
+        if (mIconView instanceof ImageView imageView
+                && imageView.getDrawable() instanceof Closeable closeableDrawable) {
+            try {
+                closeableDrawable.close();
+            } catch (IOException ignore) { }
+        }
     }
 
     @Override

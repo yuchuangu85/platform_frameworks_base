@@ -18,6 +18,7 @@ package android.content.res;
 
 import android.annotation.NonNull;
 import android.annotation.StyleableRes;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
 
 import com.android.internal.R;
 
@@ -32,6 +33,7 @@ import java.util.ArrayDeque;
  *
  * {@hide}
  */
+@RavenwoodKeepWholeClass
 public class Validator {
 
     private final ArrayDeque<Element> mElements = new ArrayDeque<>();
@@ -81,7 +83,7 @@ public class Validator {
      * Validates the resource string of a manifest tag attribute.
      */
     public void validateResStrAttr(@NonNull XmlPullParser parser, @StyleableRes int index,
-            CharSequence stringValue) throws XmlPullParserException {
+            CharSequence stringValue) {
         if (parser.getDepth() > mElements.size()) {
             return;
         }

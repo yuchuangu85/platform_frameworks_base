@@ -22,21 +22,28 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyBoolean;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyZeroInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+import android.app.KeyguardManager;
 import android.content.ClipData;
 import android.content.ClipDescription;
 import android.content.ClipboardManager;
+import android.os.Build;
 import android.os.PersistableBundle;
+import android.os.UserHandle;
+import android.platform.test.annotations.DisableFlags;
+import android.platform.test.annotations.EnableFlags;
 import android.provider.Settings;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.logging.UiEventLogger;
+import com.android.systemui.Flags;
 import com.android.systemui.SysuiTestCase;
 
 import org.junit.Before;
@@ -59,11 +66,15 @@ public class ClipboardListenerTest extends SysuiTestCase {
     @Mock
     private ClipboardManager mClipboardManager;
     @Mock
+    private KeyguardManager mKeyguardManager;
+    @Mock
     private ClipboardOverlayController mOverlayController;
     @Mock
     private ClipboardToast mClipboardToast;
     @Mock
     private UiEventLogger mUiEventLogger;
+    @Mock
+    private ClipboardOverlaySuppressionController mClipboardOverlaySuppressionController;
 
     private ClipData mSampleClipData;
     private String mSampleSource = "Example source";
@@ -95,8 +106,19 @@ public class ClipboardListenerTest extends SysuiTestCase {
         when(mClipboardManager.getPrimaryClip()).thenReturn(mSampleClipData);
         when(mClipboardManager.getPrimaryClipSource()).thenReturn(mSampleSource);
 
-        mClipboardListener = new ClipboardListener(getContext(), mOverlayControllerProvider,
-                mClipboardToast, mClipboardManager, mUiEventLogger);
+        mClipboardListener = new ClipboardListener(
+                getContext(),
+                mOverlayControllerProvider,
+                mClipboardToast,
+                user -> {
+                    if (UserHandle.CURRENT.equals(user)) {
+                        return mClipboardManager;
+                    }
+                    return null;
+                },
+                mKeyguardManager,
+                mUiEventLogger,
+                mClipboardOverlaySuppressionController);
     }
 
 
@@ -104,7 +126,7 @@ public class ClipboardListenerTest extends SysuiTestCase {
     public void test_initialization() {
         mClipboardListener.start();
         verify(mClipboardManager).addPrimaryClipChangedListener(any());
-        verifyZeroInteractions(mUiEventLogger);
+        verifyNoMoreInteractions(mUiEventLogger);
     }
 
     @Test
@@ -138,6 +160,7 @@ public class ClipboardListenerTest extends SysuiTestCase {
     }
 
     @Test
+    @DisableFlags(Flags.FLAG_OVERRIDE_SUPPRESS_OVERLAY_CONDITION)
     public void test_shouldSuppressOverlay() {
         // Regardless of the package or emulator, nothing should be suppressed without the flag
         assertFalse(ClipboardListener.shouldSuppressOverlay(mSampleClipData, mSampleSource,
@@ -187,7 +210,93 @@ public class ClipboardListenerTest extends SysuiTestCase {
         verify(mUiEventLogger, times(1)).log(
                 ClipboardOverlayEvent.CLIPBOARD_TOAST_SHOWN, 0, mSampleSource);
         verify(mClipboardToast, times(1)).showCopiedToast();
-        verifyZeroInteractions(mOverlayControllerProvider);
+        verifyNoMoreInteractions(mOverlayControllerProvider);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_CLIPBOARD_NONINTERACTIVE_ON_LOCKSCREEN)
+    public void test_deviceLocked_showsToast() {
+        when(mKeyguardManager.isDeviceLocked()).thenReturn(true);
+
+        mClipboardListener.start();
+        mClipboardListener.onPrimaryClipChanged();
+
+        verify(mUiEventLogger, times(1)).log(
+                ClipboardOverlayEvent.CLIPBOARD_TOAST_SHOWN, 0, mSampleSource);
+        verify(mClipboardToast, times(1)).showCopiedToast();
+        verifyNoMoreInteractions(mOverlayControllerProvider);
+    }
+
+    @Test
+    @DisableFlags(Flags.FLAG_CLIPBOARD_NONINTERACTIVE_ON_LOCKSCREEN)
+    public void test_deviceLocked_legacyBehavior_showsInteractiveUI() {
+        when(mKeyguardManager.isDeviceLocked()).thenReturn(true);
+
+        mClipboardListener.start();
+        mClipboardListener.onPrimaryClipChanged();
+
+        verify(mUiEventLogger, times(1)).log(
+                ClipboardOverlayEvent.CLIPBOARD_OVERLAY_ENTERED, 0, mSampleSource);
+        verify(mOverlayController).setClipData(mSampleClipData, mSampleSource);
+        verifyNoMoreInteractions(mClipboardToast);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_OVERRIDE_SUPPRESS_OVERLAY_CONDITION)
+    public void test_onPrimaryClipChanged_notSuppressOverlay() {
+        when(mClipboardOverlaySuppressionController.shouldSuppressOverlay(any(), any(),
+                anyBoolean())).thenReturn(false);
+
+        mClipboardListener.start();
+        mClipboardListener.onPrimaryClipChanged();
+
+        verify(mClipboardOverlaySuppressionController).shouldSuppressOverlay(mSampleClipData,
+                mSampleSource, Build.IS_EMULATOR);
+        verify(mUiEventLogger, times(1)).log(
+                ClipboardOverlayEvent.CLIPBOARD_OVERLAY_ENTERED, 0, mSampleSource);
+        verify(mOverlayController).setClipData(mSampleClipData, mSampleSource);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_OVERRIDE_SUPPRESS_OVERLAY_CONDITION)
+    public void test_onPrimaryClipChanged_suppressOverlay() {
+        when(mClipboardOverlaySuppressionController.shouldSuppressOverlay(any(), any(),
+                anyBoolean())).thenReturn(true);
+
+        mClipboardListener.start();
+        mClipboardListener.onPrimaryClipChanged();
+
+        verify(mClipboardOverlaySuppressionController).shouldSuppressOverlay(mSampleClipData,
+                mSampleSource, Build.IS_EMULATOR);
+        verifyNoMoreInteractions(mOverlayControllerProvider);
+    }
+
+    @Test
+    @DisableFlags(Flags.FLAG_OVERRIDE_SUPPRESS_OVERLAY_CONDITION)
+    public void test_onPrimaryClipChanged_legacyBehavior_notSuppressOverlay() {
+        mClipboardListener.start();
+        mClipboardListener.onPrimaryClipChanged();
+
+        verify(mUiEventLogger, times(1)).log(
+                ClipboardOverlayEvent.CLIPBOARD_OVERLAY_ENTERED, 0, mSampleSource);
+        verify(mOverlayController).setClipData(mSampleClipData, mSampleSource);
+    }
+
+    @Test
+    @DisableFlags(Flags.FLAG_OVERRIDE_SUPPRESS_OVERLAY_CONDITION)
+    public void test_onPrimaryClipChanged_legacyBehavior_suppressOverlay() {
+        ClipDescription desc = new ClipDescription("Test", new String[]{"text/plain"});
+        PersistableBundle bundle = new PersistableBundle();
+        bundle.putBoolean(ClipboardListener.EXTRA_SUPPRESS_OVERLAY, true);
+        desc.setExtras(bundle);
+        ClipData suppressableClipData = new ClipData(desc, new ClipData.Item("Test Item"));
+        when(mClipboardManager.getPrimaryClip()).thenReturn(suppressableClipData);
+        when(mClipboardManager.getPrimaryClipSource()).thenReturn(ClipboardListener.SHELL_PACKAGE);
+
+        mClipboardListener.start();
+        mClipboardListener.onPrimaryClipChanged();
+
+        verifyNoMoreInteractions(mOverlayControllerProvider);
     }
 
     @Test
@@ -197,9 +306,9 @@ public class ClipboardListenerTest extends SysuiTestCase {
         mClipboardListener.start();
         mClipboardListener.onPrimaryClipChanged();
 
-        verifyZeroInteractions(mUiEventLogger);
-        verifyZeroInteractions(mClipboardToast);
-        verifyZeroInteractions(mOverlayControllerProvider);
+        verifyNoMoreInteractions(mUiEventLogger);
+        verifyNoMoreInteractions(mClipboardToast);
+        verifyNoMoreInteractions(mOverlayControllerProvider);
     }
 
     @Test
@@ -214,6 +323,6 @@ public class ClipboardListenerTest extends SysuiTestCase {
         verify(mUiEventLogger, times(1)).log(
                 ClipboardOverlayEvent.CLIPBOARD_TOAST_SHOWN, 0, mSampleSource);
         verify(mClipboardToast, times(1)).showCopiedToast();
-        verifyZeroInteractions(mOverlayControllerProvider);
+        verifyNoMoreInteractions(mOverlayControllerProvider);
     }
 }

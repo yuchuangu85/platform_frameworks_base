@@ -22,7 +22,9 @@ import android.content.pm.PackageInstaller.SessionParams.PERMISSION_STATE_DEFAUL
 import android.content.pm.PackageInstaller.SessionParams.PERMISSION_STATE_DENIED
 import android.content.pm.PackageInstaller.SessionParams.PERMISSION_STATE_GRANTED
 import android.content.pm.PackageManager
+import android.content.pm.verify.domain.DomainSet
 import android.os.Parcel
+import android.os.Process
 import android.platform.test.annotations.Presubmit
 import android.util.AtomicFile
 import android.util.Slog
@@ -173,7 +175,7 @@ class PackageInstallerSessionTest {
             /* stagingManager */ null,
             /* sessionId */ sessionId,
             /* userId */ 456,
-            /* installerUid */ -1,
+            /* installerUid */ Process.myUid(),
             /* installSource */ installSource,
             /* sessionParams */ params,
             /* createdMillis */ 0L,
@@ -183,8 +185,8 @@ class PackageInstallerSessionTest {
             /* files */ null,
             /* checksums */ null,
             /* prepared */ true,
-            /* committed */ true,
-            /* destroyed */ staged,
+            /* committed */ false,
+            /* destroyed */ false,
             /* sealed */ false, // Setting to true would trigger some PM logic.
             /* childSessionIds */ childSessionIds.toIntArray(),
             /* parentSessionId */ parentSessionId,
@@ -192,7 +194,9 @@ class PackageInstallerSessionTest {
             /* isFailed */ false,
             /* isApplied */ false,
             /* stagedSessionErrorCode */ PackageManager.INSTALL_FAILED_VERIFICATION_FAILURE,
-            /* stagedSessionErrorMessage */ "some error"
+            /* stagedSessionErrorMessage */ "some error",
+            /* preVerifiedDomains */ DomainSet(setOf("com.foo", "com.bar")),
+            /* installDependencyHelper */ null
         )
     }
 
@@ -246,7 +250,8 @@ class PackageInstallerSessionTest {
                                 mock(StagingManager::class.java),
                                 mTmpDir,
                                 mock(PackageSessionProvider::class.java),
-                                mock(SilentUpdatePolicy::class.java)
+                                mock(SilentUpdatePolicy::class.java),
+                                mock(InstallDependencyHelper::class.java)
                             )
                             ret.add(session)
                         } catch (e: Exception) {
@@ -332,6 +337,7 @@ class PackageInstallerSessionTest {
         assertThat(expected.parentSessionId).isEqualTo(actual.parentSessionId)
         assertThat(expected.childSessionIds).asList()
             .containsExactlyElementsIn(actual.childSessionIds.toList())
+        assertThat(expected.preVerifiedDomains).isEqualTo(actual.preVerifiedDomains)
     }
 
     private fun assertInstallSourcesEquivalent(expected: InstallSource, actual: InstallSource) {

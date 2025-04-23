@@ -16,15 +16,21 @@
 
 package com.android.systemui.statusbar.notification.dagger;
 
+import android.app.NotificationManager;
 import android.content.Context;
+import android.os.Handler;
+import android.service.notification.NotificationListenerService;
 
 import com.android.internal.jank.InteractionJankMonitor;
+import com.android.settingslib.notification.data.repository.ZenModeRepository;
+import com.android.settingslib.notification.data.repository.ZenModeRepositoryImpl;
+import com.android.settingslib.notification.domain.interactor.NotificationsSoundPolicyInteractor;
+import com.android.settingslib.notification.modes.ZenModesBackend;
 import com.android.systemui.CoreStartable;
 import com.android.systemui.dagger.SysUISingleton;
-import com.android.systemui.dagger.qualifiers.UiBackground;
-import com.android.systemui.plugins.statusbar.StatusBarStateController;
+import com.android.systemui.dagger.qualifiers.Application;
+import com.android.systemui.dagger.qualifiers.Background;
 import com.android.systemui.res.R;
-import com.android.systemui.scene.domain.interactor.WindowRootViewVisibilityInteractor;
 import com.android.systemui.statusbar.NotificationListener;
 import com.android.systemui.statusbar.notification.NotificationActivityStarter;
 import com.android.systemui.statusbar.notification.NotificationLaunchAnimatorControllerProvider;
@@ -53,6 +59,7 @@ import com.android.systemui.statusbar.notification.collection.render.NotifGutsVi
 import com.android.systemui.statusbar.notification.collection.render.NotifShadeEventSource;
 import com.android.systemui.statusbar.notification.collection.render.NotificationVisibilityProvider;
 import com.android.systemui.statusbar.notification.data.NotificationDataLayerModule;
+import com.android.systemui.statusbar.notification.domain.NotificationDomainLayerModule;
 import com.android.systemui.statusbar.notification.domain.interactor.NotificationLaunchAnimationInteractor;
 import com.android.systemui.statusbar.notification.footer.ui.viewmodel.FooterViewModelModule;
 import com.android.systemui.statusbar.notification.icon.ConversationIconManager;
@@ -67,9 +74,15 @@ import com.android.systemui.statusbar.notification.interruption.NotificationInte
 import com.android.systemui.statusbar.notification.interruption.VisualInterruptionDecisionProvider;
 import com.android.systemui.statusbar.notification.interruption.VisualInterruptionDecisionProviderImpl;
 import com.android.systemui.statusbar.notification.interruption.VisualInterruptionRefactor;
-import com.android.systemui.statusbar.notification.logging.NotificationLogger;
 import com.android.systemui.statusbar.notification.logging.NotificationPanelLogger;
 import com.android.systemui.statusbar.notification.logging.NotificationPanelLoggerImpl;
+import com.android.systemui.statusbar.notification.logging.dagger.NotificationsLogModule;
+import com.android.systemui.statusbar.notification.promoted.PromotedNotificationContentExtractor;
+import com.android.systemui.statusbar.notification.promoted.PromotedNotificationLogger;
+import com.android.systemui.statusbar.notification.promoted.PromotedNotificationsProvider;
+import com.android.systemui.statusbar.notification.promoted.shared.model.PromotedNotificationContentModel;
+import com.android.systemui.statusbar.notification.row.NotificationEntryProcessorFactory;
+import com.android.systemui.statusbar.notification.row.NotificationEntryProcessorFactoryLooperImpl;
 import com.android.systemui.statusbar.notification.row.NotificationGutsManager;
 import com.android.systemui.statusbar.notification.row.OnUserInteractionCallback;
 import com.android.systemui.statusbar.notification.row.ui.viewmodel.ActivatableNotificationViewModelModule;
@@ -79,8 +92,8 @@ import com.android.systemui.statusbar.notification.stack.NotificationStackScroll
 import com.android.systemui.statusbar.notification.stack.StackScrollAlgorithm;
 import com.android.systemui.statusbar.phone.KeyguardBypassController;
 import com.android.systemui.statusbar.phone.StatusBarNotificationActivityStarter;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
-import com.android.systemui.util.kotlin.JavaAdapter;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager;
+import com.android.systemui.statusbar.policy.ZenModesCleanupStartable;
 
 import dagger.Binds;
 import dagger.Module;
@@ -88,7 +101,11 @@ import dagger.Provides;
 import dagger.multibindings.ClassKey;
 import dagger.multibindings.IntoMap;
 
-import java.util.concurrent.Executor;
+import kotlin.coroutines.CoroutineContext;
+
+import kotlinx.coroutines.CoroutineScope;
+
+import java.util.Optional;
 
 import javax.inject.Provider;
 
@@ -100,10 +117,13 @@ import javax.inject.Provider;
         FooterViewModelModule.class,
         KeyguardNotificationVisibilityProviderModule.class,
         NotificationDataLayerModule.class,
+        NotificationDomainLayerModule.class,
         NotifPipelineChoreographerModule.class,
         NotificationSectionHeadersModule.class,
         ActivatableNotificationViewModelModule.class,
         NotificationMemoryModule.class,
+        NotificationStatsLoggerModule.class,
+        NotificationsLogModule.class,
 })
 public interface NotificationsModule {
     @Binds
@@ -127,39 +147,6 @@ public interface NotificationsModule {
     @Binds
     VisibilityLocationProvider bindVisibilityLocationProvider(
             VisibilityLocationProviderDelegator visibilityLocationProviderDelegator);
-
-    /** Provides an instance of {@link NotificationLogger} */
-    @SysUISingleton
-    @Provides
-    static NotificationLogger provideNotificationLogger(
-            NotificationListener notificationListener,
-            @UiBackground Executor uiBgExecutor,
-            NotifLiveDataStore notifLiveDataStore,
-            NotificationVisibilityProvider visibilityProvider,
-            NotifPipeline notifPipeline,
-            StatusBarStateController statusBarStateController,
-            WindowRootViewVisibilityInteractor windowRootViewVisibilityInteractor,
-            JavaAdapter javaAdapter,
-            NotificationLogger.ExpansionStateLogger expansionStateLogger,
-            NotificationPanelLogger notificationPanelLogger) {
-        return new NotificationLogger(
-                notificationListener,
-                uiBgExecutor,
-                notifLiveDataStore,
-                visibilityProvider,
-                notifPipeline,
-                statusBarStateController,
-                windowRootViewVisibilityInteractor,
-                javaAdapter,
-                expansionStateLogger,
-                notificationPanelLogger);
-    }
-
-    /** Binds {@link NotificationLogger} as a {@link CoreStartable}. */
-    @Binds
-    @IntoMap
-    @ClassKey(NotificationLogger.class)
-    CoreStartable bindsNotificationLogger(NotificationLogger notificationLogger);
 
     /** Provides an instance of {@link NotificationPanelLogger} */
     @SysUISingleton
@@ -205,11 +192,12 @@ public interface NotificationsModule {
     /** Provides notification launch animator. */
     @Provides
     @SysUISingleton
-    static NotificationLaunchAnimatorControllerProvider provideNotifLaunchAnimControllerProvider(
-            NotificationLaunchAnimationInteractor notificationLaunchAnimationInteractor,
-            NotificationListContainer notificationListContainer,
-            HeadsUpManager headsUpManager,
-            InteractionJankMonitor jankMonitor) {
+    static NotificationLaunchAnimatorControllerProvider
+            provideNotificationTransitionAnimatorControllerProvider(
+                    NotificationLaunchAnimationInteractor notificationLaunchAnimationInteractor,
+                    NotificationListContainer notificationListContainer,
+                    HeadsUpManager headsUpManager,
+                    InteractionJankMonitor jankMonitor) {
         return new NotificationLaunchAnimatorControllerProvider(
                 notificationLaunchAnimationInteractor,
                 notificationListContainer,
@@ -261,6 +249,11 @@ public interface NotificationsModule {
 
     /** */
     @Binds
+    NotificationEntryProcessorFactory bindNotificationEntryProcessorFactory(
+            NotificationEntryProcessorFactoryLooperImpl factoryImpl);
+
+    /** */
+    @Binds
     ConversationIconManager bindConversationIconManager(IconManager iconManager);
 
     /** */
@@ -270,6 +263,10 @@ public interface NotificationsModule {
     /** */
     @Binds
     NotifLiveDataStore bindNotifLiveDataStore(NotifLiveDataStoreImpl notifLiveDataStoreImpl);
+
+    /** */
+    @Binds
+    NotificationListenerService bindNotificationListener(NotificationListener notificationListener);
 
     /** */
     @Provides
@@ -290,4 +287,49 @@ public interface NotificationsModule {
     @ClassKey(VisualInterruptionDecisionProvider.class)
     CoreStartable startVisualInterruptionDecisionProvider(
             VisualInterruptionDecisionProvider provider);
+
+    @Provides
+    @SysUISingleton
+    static ZenModeRepository provideZenModeRepository(
+            Context context,
+            NotificationManager notificationManager,
+            @Application CoroutineScope coroutineScope,
+            @Background CoroutineContext coroutineContext,
+            @Background Handler handler
+    ) {
+        return new ZenModeRepositoryImpl(context, notificationManager,
+                ZenModesBackend.getInstance(context), context.getContentResolver(),
+                coroutineScope, coroutineContext, handler);
+    }
+
+    @Provides
+    @SysUISingleton
+    static NotificationsSoundPolicyInteractor provideNotificationsSoundPolicyInteractor(
+            ZenModeRepository repository) {
+        return new NotificationsSoundPolicyInteractor(repository);
+    }
+
+    /** Binds {@link ZenModesCleanupStartable} as a {@link CoreStartable}. */
+    @Binds
+    @IntoMap
+    @ClassKey(ZenModesCleanupStartable.class)
+    CoreStartable bindsZenModesCleanup(ZenModesCleanupStartable zenModesCleanup);
+
+    /**
+     * Provides {@link
+     * com.android.systemui.statusbar.notification.promoted.PromotedNotificationContentExtractor} if
+     * one of the relevant feature flags is enabled.
+     */
+    @Provides
+    @SysUISingleton
+    static Optional<PromotedNotificationContentExtractor>
+            providePromotedNotificationContentExtractor(
+                    PromotedNotificationsProvider provider, Context context,
+                    PromotedNotificationLogger logger) {
+        if (PromotedNotificationContentModel.featureFlagEnabled()) {
+            return Optional.of(new PromotedNotificationContentExtractor(provider, context, logger));
+        } else {
+            return Optional.empty();
+        }
+    }
 }

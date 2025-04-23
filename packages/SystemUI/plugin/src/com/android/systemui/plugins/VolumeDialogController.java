@@ -14,13 +14,14 @@
 
 package com.android.systemui.plugins;
 
-import android.annotation.IntegerRes;
 import android.content.ComponentName;
 import android.media.AudioManager;
 import android.media.AudioSystem;
 import android.os.Handler;
 import android.os.VibrationEffect;
 import android.util.SparseArray;
+
+import androidx.annotation.StringRes;
 
 import com.android.systemui.plugins.VolumeDialogController.Callbacks;
 import com.android.systemui.plugins.VolumeDialogController.State;
@@ -90,7 +91,7 @@ public interface VolumeDialogController {
         public int levelMax;
         public boolean muted;
         public boolean muteSupported;
-        public @IntegerRes int name;
+        public @StringRes int name;
         public String remoteLabel;
         public boolean routedToBluetooth;
 
@@ -227,5 +228,10 @@ public interface VolumeDialogController {
         void onCaptionEnabledStateChanged(Boolean isEnabled, Boolean checkBeforeSwitch);
         // requires version 2
         void onShowCsdWarning(@AudioManager.CsdWarning int csdWarning, int durationMs);
+
+        /**
+         * Callback function for when the volume changed due to a physical key press.
+         */
+        void onVolumeChangedFromKey();
     }
 }

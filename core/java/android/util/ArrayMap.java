@@ -53,6 +53,7 @@ import java.util.function.BiFunction;
  *
  * <p>This structure is <b>NOT</b> thread-safe.</p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class ArrayMap<K, V> implements Map<K, V> {
     private static final boolean DEBUG = false;
     private static final String TAG = "ArrayMap";
@@ -648,7 +649,6 @@ public final class ArrayMap<K, V> implements Map<K, V> {
         }
         if (index > 0 && mHashes[index-1] > hash) {
             RuntimeException e = new RuntimeException("here");
-            e.fillInStackTrace();
             Log.w(TAG, "New hash " + hash
                     + " is before end of array hash " + mHashes[index-1]
                     + " at index " + index + (DEBUG ? " key " + key : ""), e);

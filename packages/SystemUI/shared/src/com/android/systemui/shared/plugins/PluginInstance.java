@@ -32,12 +32,16 @@ import com.android.systemui.plugins.Plugin;
 import com.android.systemui.plugins.PluginFragment;
 import com.android.systemui.plugins.PluginLifecycleManager;
 import com.android.systemui.plugins.PluginListener;
+import com.android.systemui.plugins.PluginProtector;
+import com.android.systemui.plugins.PluginWrapper;
+import com.android.systemui.plugins.ProtectedPluginListener;
 
 import dalvik.system.PathClassLoader;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
 /**
@@ -48,7 +52,8 @@ import java.util.function.Supplier;
  *
  * @param <T> The type of plugin that this contains.
  */
-public class PluginInstance<T extends Plugin> implements PluginLifecycleManager {
+public class PluginInstance<T extends Plugin>
+        implements PluginLifecycleManager, ProtectedPluginListener {
     private static final String TAG = "PluginInstance";
 
     private final Context mAppContext;
@@ -57,7 +62,8 @@ public class PluginInstance<T extends Plugin> implements PluginLifecycleManager 
     private final PluginFactory<T> mPluginFactory;
     private final String mTag;
 
-    private boolean mIsDebug = false;
+    private boolean mHasError = false;
+    private BiConsumer<String, String> mLogConsumer = null;
     private Context mPluginContext;
     private T mPlugin;
 
@@ -86,39 +92,57 @@ public class PluginInstance<T extends Plugin> implements PluginLifecycleManager 
         return mTag;
     }
 
-    public boolean getIsDebug() {
-        return mIsDebug;
+    /** */
+    public boolean hasError() {
+        return mHasError;
     }
 
-    public void setIsDebug(boolean debug) {
-        mIsDebug = debug;
+    public void setLogFunc(BiConsumer logConsumer) {
+        mLogConsumer = logConsumer;
     }
 
-    private void logDebug(String message) {
-        if (mIsDebug) {
-            Log.i(mTag, message);
+    private void log(String message) {
+        if (mLogConsumer != null) {
+            mLogConsumer.accept(mTag, message);
         }
     }
 
+    @Override
+    public synchronized boolean onFail(String className, String methodName, LinkageError failure) {
+        mHasError = true;
+        unloadPlugin();
+        mListener.onPluginDetached(this);
+        return true;
+    }
+
     /** Alerts listener and plugin that the plugin has been created. */
-    public void onCreate() {
+    public synchronized void onCreate() {
+        if (mHasError) {
+            log("Previous LinkageError detected for plugin class");
+            return;
+        }
+
         boolean loadPlugin = mListener.onPluginAttached(this);
         if (!loadPlugin) {
             if (mPlugin != null) {
-                logDebug("onCreate: auto-unload");
+                log("onCreate: auto-unload");
                 unloadPlugin();
             }
             return;
         }
 
         if (mPlugin == null) {
-            logDebug("onCreate auto-load");
+            log("onCreate: auto-load");
             loadPlugin();
             return;
         }
 
-        logDebug("onCreate: load callbacks");
-        mPluginFactory.checkVersion(mPlugin);
+        if (!checkVersion()) {
+            log("onCreate: version check failed");
+            return;
+        }
+
+        log("onCreate: load callbacks");
         if (!(mPlugin instanceof PluginFragment)) {
             // Only call onCreate for plugins that aren't fragments, as fragments
             // will get the onCreate as part of the fragment lifecycle.
@@ -128,8 +152,14 @@ public class PluginInstance<T extends Plugin> implements PluginLifecycleManager 
     }
 
     /** Alerts listener and plugin that the plugin is being shutdown. */
-    public void onDestroy() {
-        logDebug("onDestroy");
+    public synchronized void onDestroy() {
+        if (mHasError) {
+            // Detached in error handler
+            log("onDestroy - no-op");
+            return;
+        }
+
+        log("onDestroy");
         unloadPlugin();
         mListener.onPluginDetached(this);
     }
@@ -137,27 +167,37 @@ public class PluginInstance<T extends Plugin> implements PluginLifecycleManager 
     /** Returns the current plugin instance (if it is loaded). */
     @Nullable
     public T getPlugin() {
-        return mPlugin;
+        return mHasError ? null : mPlugin;
     }
 
     /**
      * Loads and creates the plugin if it does not exist.
      */
-    public void loadPlugin() {
-        if (mPlugin != null) {
-            logDebug("Load request when already loaded");
+    public synchronized void loadPlugin() {
+        if (mHasError) {
+            log("Previous LinkageError detected for plugin class");
             return;
         }
 
-        mPlugin = mPluginFactory.createPlugin();
+        if (mPlugin != null) {
+            log("Load request when already loaded");
+            return;
+        }
+
+        // Both of these calls take about 1 - 1.5 seconds in test runs
+        mPlugin = mPluginFactory.createPlugin(this);
         mPluginContext = mPluginFactory.createPluginContext();
         if (mPlugin == null || mPluginContext == null) {
             Log.e(mTag, "Requested load, but failed");
             return;
         }
 
-        logDebug("Loaded plugin; running callbacks");
-        mPluginFactory.checkVersion(mPlugin);
+        if (!checkVersion()) {
+            log("loadPlugin: version check failed");
+            return;
+        }
+
+        log("Loaded plugin; running callbacks");
         if (!(mPlugin instanceof PluginFragment)) {
             // Only call onCreate for plugins that aren't fragments, as fragments
             // will get the onCreate as part of the fragment lifecycle.
@@ -167,17 +207,40 @@ public class PluginInstance<T extends Plugin> implements PluginLifecycleManager 
     }
 
     /**
+     * Checks the plugin version, and permanently destroys the plugin instance on a failure
+     */
+    private synchronized boolean checkVersion() {
+        if (mHasError) {
+            return false;
+        }
+
+        if (mPlugin == null) {
+            return true;
+        }
+
+        if (mPluginFactory.checkVersion(mPlugin)) {
+            return true;
+        }
+
+        Log.wtf(TAG, "Version check failed for " + mPlugin.getClass().getSimpleName());
+        mHasError = true;
+        unloadPlugin();
+        mListener.onPluginDetached(this);
+        return false;
+    }
+
+    /**
      * Unloads and destroys the current plugin instance if it exists.
      *
      * This will free the associated memory if there are not other references.
      */
-    public void unloadPlugin() {
+    public synchronized void unloadPlugin() {
         if (mPlugin == null) {
-            logDebug("Unload request when already unloaded");
+            log("Unload request when already unloaded");
             return;
         }
 
-        logDebug("Unloading plugin, running callbacks");
+        log("Unloading plugin, running callbacks");
         mListener.onPluginUnloaded(mPlugin, this);
         if (!(mPlugin instanceof PluginFragment)) {
             // Only call onDestroy for plugins that aren't fragments, as fragments
@@ -206,7 +269,7 @@ public class PluginInstance<T extends Plugin> implements PluginLifecycleManager 
     }
 
     public VersionInfo getVersionInfo() {
-        return mPluginFactory.checkVersion(mPlugin);
+        return mPluginFactory.getVersionInfo(mPlugin);
     }
 
     @VisibleForTesting
@@ -297,16 +360,19 @@ public class PluginInstance<T extends Plugin> implements PluginLifecycleManager 
 
     /** Class that compares a plugin class against an implementation for version matching. */
     public interface VersionChecker {
-        /** Compares two plugin classes. */
-        <T extends Plugin> VersionInfo checkVersion(
+        /** Compares two plugin classes. Returns true when match. */
+        <T extends Plugin> boolean checkVersion(
                 Class<T> instanceClass, Class<T> pluginClass, Plugin plugin);
+
+        /** Returns VersionInfo for the target class */
+        <T extends Plugin> VersionInfo getVersionInfo(Class<T> instanceclass);
     }
 
     /** Class that compares a plugin class against an implementation for version matching. */
     public static class VersionCheckerImpl implements VersionChecker {
         @Override
         /** Compares two plugin classes. */
-        public <T extends Plugin> VersionInfo checkVersion(
+        public <T extends Plugin> boolean checkVersion(
                 Class<T> instanceClass, Class<T> pluginClass, Plugin plugin) {
             VersionInfo pluginVersion = new VersionInfo().addClass(pluginClass);
             VersionInfo instanceVersion = new VersionInfo().addClass(instanceClass);
@@ -315,11 +381,17 @@ public class PluginInstance<T extends Plugin> implements PluginLifecycleManager 
             } else if (plugin != null) {
                 int fallbackVersion = plugin.getVersion();
                 if (fallbackVersion != pluginVersion.getDefaultVersion()) {
-                    throw new VersionInfo.InvalidVersionException("Invalid legacy version", false);
+                    return false;
                 }
-                return null;
             }
-            return instanceVersion;
+            return true;
+        }
+
+        @Override
+        /** Returns the version info for the class */
+        public <T extends Plugin> VersionInfo getVersionInfo(Class<T> instanceClass) {
+            VersionInfo instanceVersion = new VersionInfo().addClass(instanceClass);
+            return instanceVersion.hasVersionInfo() ? instanceVersion : null;
         }
     }
 
@@ -366,20 +438,16 @@ public class PluginInstance<T extends Plugin> implements PluginLifecycleManager 
         }
 
         /** Creates the related plugin object from the factory */
-        public T createPlugin() {
+        public T createPlugin(ProtectedPluginListener listener) {
             try {
                 ClassLoader loader = mClassLoaderFactory.get();
                 Class<T> instanceClass = (Class<T>) Class.forName(
                         mComponentName.getClassName(), true, loader);
                 T result = (T) mInstanceFactory.create(instanceClass);
                 Log.v(TAG, "Created plugin: " + result);
-                return result;
-            } catch (ClassNotFoundException ex) {
-                Log.e(TAG, "Failed to load plugin", ex);
-            } catch (IllegalAccessException ex) {
-                Log.e(TAG, "Failed to load plugin", ex);
-            } catch (InstantiationException ex) {
-                Log.e(TAG, "Failed to load plugin", ex);
+                return PluginProtector.protectIfAble(result, listener);
+            } catch (ReflectiveOperationException ex) {
+                Log.wtf(TAG, "Failed to load plugin", ex);
             }
             return null;
         }
@@ -396,13 +464,27 @@ public class PluginInstance<T extends Plugin> implements PluginLifecycleManager 
             return null;
         }
 
-        /** Check Version and create VersionInfo for instance */
-        public VersionInfo checkVersion(T instance) {
+        /** Check Version for the instance */
+        public boolean checkVersion(T instance) {
             if (instance == null) {
-                instance = createPlugin();
+                instance = createPlugin(null);
+            }
+            if (instance instanceof PluginWrapper) {
+                instance = ((PluginWrapper<T>) instance).getPlugin();
             }
             return mVersionChecker.checkVersion(
                     (Class<T>) instance.getClass(), mPluginClass, instance);
+        }
+
+        /** Get Version Info for the instance */
+        public VersionInfo getVersionInfo(T instance) {
+            if (instance == null) {
+                instance = createPlugin(null);
+            }
+            if (instance instanceof PluginWrapper) {
+                instance = ((PluginWrapper<T>) instance).getPlugin();
+            }
+            return mVersionChecker.getVersionInfo((Class<T>) instance.getClass());
         }
     }
 }

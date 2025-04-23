@@ -19,6 +19,9 @@ package com.android.systemui.statusbar.policy;
 import static android.hardware.SensorPrivacyManager.Sensors.CAMERA;
 import static android.hardware.SensorPrivacyManager.Sensors.MICROPHONE;
 
+import android.Manifest;
+import android.annotation.FlaggedApi;
+import android.annotation.RequiresPermission;
 import android.hardware.SensorPrivacyManager;
 import android.hardware.SensorPrivacyManager.Sensors.Sensor;
 import android.hardware.SensorPrivacyManager.Sources.Source;
@@ -28,6 +31,10 @@ import android.util.SparseBooleanArray;
 
 import androidx.annotation.NonNull;
 
+import com.android.internal.camera.flags.Flags;
+import com.android.systemui.settings.UserTracker;
+import com.android.systemui.util.ListenerSet;
+
 import java.util.Set;
 
 public class IndividualSensorPrivacyControllerImpl implements IndividualSensorPrivacyController {
@@ -35,14 +42,17 @@ public class IndividualSensorPrivacyControllerImpl implements IndividualSensorPr
     private static final int[] SENSORS = new int[] {CAMERA, MICROPHONE};
 
     private final @NonNull SensorPrivacyManager mSensorPrivacyManager;
+    private final @NonNull UserTracker mUserTracker;
     private final SparseBooleanArray mSoftwareToggleState = new SparseBooleanArray();
     private final SparseBooleanArray mHardwareToggleState = new SparseBooleanArray();
     private Boolean mRequiresAuthentication;
-    private final Set<Callback> mCallbacks = new ArraySet<>();
+    private final ListenerSet<Callback> mCallbacks = new ListenerSet<>();
 
     public IndividualSensorPrivacyControllerImpl(
-            @NonNull SensorPrivacyManager sensorPrivacyManager) {
+            @NonNull SensorPrivacyManager sensorPrivacyManager,
+            @NonNull UserTracker userTracker) {
         mSensorPrivacyManager = sensorPrivacyManager;
+        mUserTracker = userTracker;
     }
 
     @Override
@@ -88,12 +98,14 @@ public class IndividualSensorPrivacyControllerImpl implements IndividualSensorPr
 
     @Override
     public void setSensorBlocked(@Source int source, @Sensor int sensor, boolean blocked) {
-        mSensorPrivacyManager.setSensorPrivacyForProfileGroup(source, sensor, blocked);
+        mSensorPrivacyManager.setSensorPrivacyForProfileGroup(source, sensor, blocked,
+                mUserTracker.getUserId());
     }
 
     @Override
     public void suppressSensorPrivacyReminders(int sensor, boolean suppress) {
-        mSensorPrivacyManager.suppressSensorPrivacyReminders(sensor, suppress);
+        mSensorPrivacyManager.suppressSensorPrivacyReminders(sensor, suppress,
+                mUserTracker.getUserId());
     }
 
     @Override
@@ -102,8 +114,15 @@ public class IndividualSensorPrivacyControllerImpl implements IndividualSensorPr
     }
 
     @Override
+    @FlaggedApi(Flags.FLAG_CAMERA_PRIVACY_ALLOWLIST)
+    @RequiresPermission(Manifest.permission.OBSERVE_SENSOR_PRIVACY)
+    public boolean isCameraPrivacyEnabled(String packageName) {
+        return mSensorPrivacyManager.isCameraPrivacyEnabled(packageName);
+    }
+
+    @Override
     public void addCallback(@NonNull Callback listener) {
-        mCallbacks.add(listener);
+        mCallbacks.addIfAbsent(listener);
     }
 
     @Override
@@ -119,7 +138,8 @@ public class IndividualSensorPrivacyControllerImpl implements IndividualSensorPr
             mHardwareToggleState.put(sensor, enabled);
         }
 
-        for (Callback callback : mCallbacks) {
+        Set<Callback> copy = new ArraySet<>(mCallbacks);
+        for (Callback callback : copy) {
             callback.onSensorBlockedChanged(sensor, isSensorBlocked(sensor));
         }
     }

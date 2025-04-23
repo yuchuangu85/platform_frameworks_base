@@ -397,6 +397,8 @@ public class PackageInfoUtils {
         ai.privateFlags |= flag(state.isInstantApp(), ApplicationInfo.PRIVATE_FLAG_INSTANT)
                 | flag(state.isVirtualPreload(), ApplicationInfo.PRIVATE_FLAG_VIRTUAL_PRELOAD)
                 | flag(state.isHidden(), ApplicationInfo.PRIVATE_FLAG_HIDDEN);
+        ai.privateFlagsExt |=
+                flag(state.isNotLaunched(), ApplicationInfo.PRIVATE_FLAG_EXT_NOT_LAUNCHED);
         if (state.getEnabledState() == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
             ai.enabled = true;
         } else if (state.getEnabledState()
@@ -420,6 +422,11 @@ public class PackageInfoUtils {
         ai.isArchived = PackageArchiver.isArchived(state);
         if (ai.isArchived) {
             ai.nonLocalizedLabel = state.getArchiveState().getActivityInfos().get(0).getTitle();
+        }
+        if (!state.isInstalled() && !state.dataExists()
+                && android.content.pm.Flags.nullableDataDir()) {
+            // The data dir has been deleted
+            ai.dataDir = null;
         }
     }
 
@@ -589,6 +596,7 @@ public class PackageInfoUtils {
         }
         ai.applicationInfo = applicationInfo;
         ai.requiredDisplayCategory = a.getRequiredDisplayCategory();
+        ai.requireContentUriPermissionFromCaller = a.getRequireContentUriPermissionFromCaller();
         ai.setKnownActivityEmbeddingCerts(a.getKnownActivityEmbeddingCerts());
         assignFieldsComponentInfoParsedMainComponent(ai, a, pkgSetting, userId);
         return ai;
@@ -826,7 +834,7 @@ public class PackageInfoUtils {
             retProcs.put(proc.getName(),
                     new ProcessInfo(proc.getName(), new ArraySet<>(proc.getDeniedPermissions()),
                             proc.getGwpAsanMode(), proc.getMemtagMode(),
-                            proc.getNativeHeapZeroInitialized()));
+                            proc.getNativeHeapZeroInitialized(), proc.isUseEmbeddedDex()));
         }
         return retProcs;
     }

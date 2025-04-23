@@ -39,6 +39,7 @@ import dalvik.system.VMRuntime;
 
 import libcore.content.type.MimeMap;
 
+import java.io.PrintStream;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -50,6 +51,7 @@ import java.util.logging.LogManager;
  * public consumption.
  * @hide
  */
+@android.ravenwood.annotation.RavenwoodKeepPartialClass
 public class RuntimeInit {
     final static String TAG = "AndroidRuntime";
     final static boolean DEBUG = false;
@@ -67,7 +69,15 @@ public class RuntimeInit {
 
     private static volatile ApplicationWtfHandler sDefaultApplicationWtfHandler;
 
+    /**
+     * Stored values of System.out and System.err before they've been replaced by
+     * redirectLogStreams(). Kept open here for other Ravenwood internals to use.
+     */
+    public static PrintStream sOut$ravenwood;
+    public static PrintStream sErr$ravenwood;
+
     private static final native void nativeFinishInit();
+
     private static final native void nativeSetExitWithoutCleanup(boolean exitWithoutCleanup);
 
     private static int Clog_e(String tag, String msg, Throwable tr) {
@@ -164,7 +174,9 @@ public class RuntimeInit {
                     // System process is dead; ignore
                 } else {
                     try {
-                        Clog_e(TAG, "Error reporting crash", t2);
+                        // Log original crash and then log the error reporting exception.
+                        Clog_e(TAG, "Couldn't report crash. Here's the crash:", e);
+                        Clog_e(TAG, "Error reporting crash. Here's the error:", t2);
                     } catch (Throwable t3) {
                         // Even Clog_e() fails!  Oh well.
                     }
@@ -385,11 +397,34 @@ public class RuntimeInit {
     /**
      * Redirect System.out and System.err to the Android log.
      */
+    @android.ravenwood.annotation.RavenwoodReplace
     public static void redirectLogStreams() {
         System.out.close();
         System.setOut(new AndroidPrintStream(Log.INFO, "System.out"));
         System.err.close();
         System.setErr(new AndroidPrintStream(Log.WARN, "System.err"));
+    }
+
+    public static void redirectLogStreams$ravenwood() {
+        if (sOut$ravenwood != null && sErr$ravenwood != null) {
+            return; // Already initialized.
+        }
+
+        // Make sure the Log class is loaded and the JNI methods are hooked up,
+        // before redirecting System.out/err.
+        // Otherwise, because ClassLoadHook tries to write to System.out, this would cause
+        // a circular initialization problem and would cause a UnsatisfiedLinkError
+        // on the JNI methods.
+        Log.isLoggable("X", Log.VERBOSE);
+
+        if (sOut$ravenwood == null) {
+            sOut$ravenwood = System.out;
+            System.setOut(new AndroidPrintStream(Log.INFO, "System.out"));
+        }
+        if (sErr$ravenwood == null) {
+            sErr$ravenwood = System.err;
+            System.setErr(new AndroidPrintStream(Log.WARN, "System.err"));
+        }
     }
 
     /**
@@ -399,6 +434,7 @@ public class RuntimeInit {
      * @param tag to record with the error
      * @param t exception describing the error site and conditions
      */
+    @android.ravenwood.annotation.RavenwoodReplace
     public static void wtf(String tag, Throwable t, boolean system) {
         try {
             boolean exit = false;
@@ -434,6 +470,11 @@ public class RuntimeInit {
                 Slog.e(TAG, "Original WTF:", t);
             }
         }
+    }
+
+    public static void wtf$ravenwood(String tag, Throwable t, boolean system) {
+        // We've already emitted to logs, so there's nothing more to do here,
+        // as we don't have a DropBox pipeline configured
     }
 
     /**

@@ -16,6 +16,7 @@
 
 package android.app;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -47,6 +48,9 @@ import android.os.SystemProperties;
 import android.os.TestLooperManager;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.ravenwood.annotation.RavenwoodKeep;
+import android.ravenwood.annotation.RavenwoodKeepPartialClass;
+import android.ravenwood.annotation.RavenwoodReplace;
 import android.util.AndroidRuntimeException;
 import android.util.Log;
 import android.view.Display;
@@ -79,6 +83,7 @@ import java.util.concurrent.TimeoutException;
  * implementation is described to the system through an AndroidManifest.xml's
  * &lt;instrumentation&gt; tag.
  */
+@RavenwoodKeepPartialClass
 public class Instrumentation {
 
     /**
@@ -96,7 +101,7 @@ public class Instrumentation {
      */
     public static final String REPORT_KEY_STREAMRESULT = "stream";
 
-    private static final String TAG = "Instrumentation";
+    static final String TAG = "Instrumentation";
 
     private static final long CONNECT_TIMEOUT_MILLIS = 60_000;
 
@@ -105,6 +110,8 @@ public class Instrumentation {
     // If set, will print the stack trace for activity starts within the process
     static final boolean DEBUG_START_ACTIVITY = Build.IS_DEBUGGABLE &&
             SystemProperties.getBoolean("persist.wm.debug.start_activity", false);
+    static final boolean DEBUG_FINISH_ACTIVITY = Build.IS_DEBUGGABLE &&
+            SystemProperties.getBoolean("persist.wm.debug.finish_activity", false);
 
     /**
      * @hide
@@ -132,6 +139,7 @@ public class Instrumentation {
     private UiAutomation mUiAutomation;
     private final Object mAnimationCompleteLock = new Object();
 
+    @RavenwoodKeep
     public Instrumentation() {
     }
 
@@ -142,6 +150,7 @@ public class Instrumentation {
      * reflection, but it will serve as noticeable discouragement from
      * doing such a thing.
      */
+    @RavenwoodKeep
     private void checkInstrumenting(String method) {
         // Check if we have an instrumentation context, as init should only get called by
         // the system in startup processes that are being instrumented.
@@ -156,6 +165,7 @@ public class Instrumentation {
      *
      * @hide
      */
+    @RavenwoodKeep
     public boolean isInstrumenting() {
         // Check if we have an instrumentation context, as init should only get called by
         // the system in startup processes that are being instrumented.
@@ -180,6 +190,7 @@ public class Instrumentation {
      * @param arguments Any additional arguments that were supplied when the 
      *                  instrumentation was started.
      */
+    @android.ravenwood.annotation.RavenwoodKeep
     public void onCreate(Bundle arguments) {
     }
 
@@ -319,6 +330,7 @@ public class Instrumentation {
      * 
      * @see #getTargetContext
      */
+    @RavenwoodKeep
     public Context getContext() {
         return mInstrContext;
     }
@@ -343,6 +355,7 @@ public class Instrumentation {
      * 
      * @see #getContext
      */
+    @RavenwoodKeep
     public Context getTargetContext() {
         return mAppContext;
     }
@@ -1415,8 +1428,8 @@ public class Instrumentation {
                 info, title, parent, id,
                 (Activity.NonConfigurationInstances)lastNonConfigurationInstance,
                 new Configuration(), null /* referrer */, null /* voiceInteractor */,
-                null /* window */, null /* activityCallback */, null /*assistToken*/,
-                null /*shareableActivityToken*/);
+                null /* window */, null /* activityCallback */, null /* assistToken */,
+                null /* shareableActivityToken */, null /* initialCallerInfoAccessToken */);
         return activity;
     }
 
@@ -1616,7 +1629,51 @@ public class Instrumentation {
      * @param intent The new intent being received.
      */
     public void callActivityOnNewIntent(Activity activity, Intent intent) {
-        activity.performNewIntent(intent);
+        if (android.security.Flags.contentUriPermissionApis()) {
+            activity.performNewIntent(intent, new ComponentCaller(activity.getActivityToken(),
+                    /* callerToken */ null));
+        } else {
+            activity.performNewIntent(intent);
+        }
+    }
+
+    /**
+     * Same as {@link #callActivityOnNewIntent(Activity, Intent)}, but with an extra parameter for
+     * the {@link ComponentCaller} instance associated with the app that sent the intent.
+     *
+     * @param activity The activity receiving a new Intent.
+     * @param intent The new intent being received.
+     * @param caller The {@link ComponentCaller} instance that launched the activity with the new
+     *               intent.
+     */
+    @FlaggedApi(android.security.Flags.FLAG_CONTENT_URI_PERMISSION_APIS)
+    public void callActivityOnNewIntent(@NonNull Activity activity, @NonNull Intent intent,
+            @NonNull ComponentCaller caller) {
+        activity.performNewIntent(intent, caller);
+    }
+
+    /**
+     * @hide
+     */
+    @FlaggedApi(android.security.Flags.FLAG_CONTENT_URI_PERMISSION_APIS)
+    public void callActivityOnNewIntent(Activity activity, ReferrerIntent intent,
+            @NonNull ComponentCaller caller) {
+        internalCallActivityOnNewIntent(activity, intent, caller);
+    }
+
+    @FlaggedApi(android.security.Flags.FLAG_CONTENT_URI_PERMISSION_APIS)
+    private void internalCallActivityOnNewIntent(Activity activity, ReferrerIntent intent,
+            @NonNull ComponentCaller caller) {
+        final String oldReferrer = activity.mReferrer;
+        try {
+            if (intent != null) {
+                activity.mReferrer = intent.mReferrer;
+            }
+            Intent newIntent = intent != null ? new Intent(intent) : null;
+            callActivityOnNewIntent(activity, newIntent, caller);
+        } finally {
+            activity.mReferrer = oldReferrer;
+        }
     }
 
     /**
@@ -1624,14 +1681,19 @@ public class Instrumentation {
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public void callActivityOnNewIntent(Activity activity, ReferrerIntent intent) {
-        final String oldReferrer = activity.mReferrer;
-        try {
-            if (intent != null) {
-                activity.mReferrer = intent.mReferrer;
+        if (android.security.Flags.contentUriPermissionApis()) {
+            internalCallActivityOnNewIntent(activity, intent, new ComponentCaller(
+                    activity.getActivityToken(), /* callerToken */ null));
+        } else {
+            final String oldReferrer = activity.mReferrer;
+            try {
+                if (intent != null) {
+                    activity.mReferrer = intent.mReferrer;
+                }
+                callActivityOnNewIntent(activity, intent != null ? new Intent(intent) : null);
+            } finally {
+                activity.mReferrer = oldReferrer;
             }
-            callActivityOnNewIntent(activity, intent != null ? new Intent(intent) : null);
-        } finally {
-            activity.mReferrer = oldReferrer;
         }
     }
 
@@ -2344,6 +2406,18 @@ public class Instrumentation {
         mThread = thread;
     }
 
+    /**
+     * Only sets the Context up, keeps everything else null.
+     *
+     * @hide
+     */
+    @RavenwoodKeep
+    public final void basicInit(Context instrContext, Context appContext, UiAutomation ui) {
+        mInstrContext = instrContext;
+        mAppContext = appContext;
+        mUiAutomation = ui;
+    }
+
     /** @hide */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     public static void checkStartActivityResult(int res, Object intent) {
@@ -2432,6 +2506,7 @@ public class Instrumentation {
      *
      * @see UiAutomation
      */
+    @RavenwoodKeep
     public UiAutomation getUiAutomation() {
         return getUiAutomation(0);
     }
@@ -2470,6 +2545,7 @@ public class Instrumentation {
      *
      * @see UiAutomation
      */
+    @RavenwoodReplace
     public UiAutomation getUiAutomation(@UiAutomationFlags int flags) {
         boolean mustCreateNewAutomation = (mUiAutomation == null) || (mUiAutomation.isDestroyed());
 
@@ -2500,10 +2576,15 @@ public class Instrumentation {
         return null;
     }
 
+    private UiAutomation getUiAutomation$ravenwood(@UiAutomationFlags int flags) {
+        return mUiAutomation;
+    }
+
     /**
      * Takes control of the execution of messages on the specified looper until
      * {@link TestLooperManager#release} is called.
      */
+    @RavenwoodKeep
     public TestLooperManager acquireLooperManager(Looper looper) {
         checkInstrumenting("acquireLooperManager");
         return new TestLooperManager(looper);

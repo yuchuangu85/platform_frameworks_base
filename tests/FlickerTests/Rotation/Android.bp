@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_windowing_animations_transitions",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "frameworks_base_license"
@@ -28,7 +29,49 @@ android_test {
     defaults: ["FlickerTestsDefault"],
     manifest: "AndroidManifest.xml",
     test_config_template: "AndroidTestTemplate.xml",
+    test_suites: [
+        "device-tests",
+        "device-platinum-tests",
+    ],
     srcs: ["src/**/*"],
     static_libs: ["FlickerTestsBase"],
     data: ["trace_config/*"],
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// Begin breakdowns for FlickerTestsRotation module
+
+test_module_config {
+    name: "FlickerTestsAppRotation-CatchAll",
+    base: "FlickerTestsRotation",
+    exclude_filters: [
+        "com.android.server.wm.flicker.rotation.ChangeAppRotationTest",
+        "com.android.server.wm.flicker.rotation.OpenShowWhenLockedSeamlessAppRotationTest",
+        "com.android.server.wm.flicker.rotation.SeamlessAppRotationTest",
+    ],
+    test_suites: ["device-tests"],
+}
+
+test_module_config {
+    name: "FlickerTestsAppRotation-ChangeAppRotationTest",
+    base: "FlickerTestsRotation",
+    include_filters: ["com.android.server.wm.flicker.rotation.ChangeAppRotationTest"],
+    test_suites: ["device-tests"],
+}
+
+test_module_config {
+    name: "FlickerTestsAppRotation-OpenShowWhenLockedSeamlessAppRotationTest",
+    base: "FlickerTestsRotation",
+    include_filters: ["com.android.server.wm.flicker.rotation.OpenShowWhenLockedSeamlessAppRotationTest"],
+    test_suites: ["device-tests"],
+}
+
+test_module_config {
+    name: "FlickerTestsAppRotation-SeamlessAppRotationTest",
+    base: "FlickerTestsRotation",
+    include_filters: ["com.android.server.wm.flicker.rotation.SeamlessAppRotationTest"],
+    test_suites: ["device-tests"],
+}
+
+// End breakdowns for FlickerTestsRotation module
+////////////////////////////////////////////////////////////////////////////////

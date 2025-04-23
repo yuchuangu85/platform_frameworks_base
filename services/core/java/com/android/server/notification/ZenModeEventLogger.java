@@ -18,17 +18,24 @@ package com.android.server.notification;
 
 import static android.app.NotificationManager.Policy.STATE_CHANNELS_BYPASSING_DND;
 import static android.provider.Settings.Global.ZEN_MODE_OFF;
+import static android.service.notification.NotificationServiceProto.CHANNEL_POLICY_NONE;
+import static android.service.notification.NotificationServiceProto.CHANNEL_POLICY_PRIORITY;
 import static android.service.notification.NotificationServiceProto.RULE_TYPE_AUTOMATIC;
 import static android.service.notification.NotificationServiceProto.RULE_TYPE_MANUAL;
 import static android.service.notification.NotificationServiceProto.RULE_TYPE_UNKNOWN;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.app.Flags;
 import android.app.NotificationManager;
 import android.content.pm.PackageManager;
 import android.os.Process;
 import android.service.notification.DNDPolicyProto;
+import android.service.notification.ZenAdapters;
 import android.service.notification.ZenModeConfig;
+import android.service.notification.ZenModeConfig.ConfigOrigin;
+import android.service.notification.ZenModeConfig.ZenRule;
 import android.service.notification.ZenModeDiff;
 import android.service.notification.ZenPolicy;
 import android.util.ArrayMap;
@@ -42,6 +49,9 @@ import com.android.internal.logging.UiEventLogger;
 import com.android.internal.util.FrameworkStatsLog;
 
 import java.io.ByteArrayOutputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -54,11 +64,14 @@ class ZenModeEventLogger {
     // Placeholder int for unknown zen mode, to distinguish from "off".
     static final int ZEN_MODE_UNKNOWN = -1;
 
+    // Special rule type for manual rule. Keep in sync with ActiveRuleType in dnd_enums.proto.
+    protected static final int ACTIVE_RULE_TYPE_MANUAL = 999;
+
     // Object for tracking config changes and policy changes associated with an overall zen
     // mode change.
     ZenModeEventLogger.ZenStateChanges mChangeState = new ZenModeEventLogger.ZenStateChanges();
 
-    private PackageManager mPm;
+    private final PackageManager mPm;
 
     ZenModeEventLogger(PackageManager pm) {
         mPm = pm;
@@ -93,15 +106,15 @@ class ZenModeEventLogger {
     /**
      * Potentially log a zen mode change if the provided config and policy changes warrant it.
      *
-     * @param prevInfo    ZenModeInfo (zen mode setting, config, policy) prior to this change
-     * @param newInfo     ZenModeInfo after this change takes effect
-     * @param callingUid  the calling UID associated with the change; may be used to attribute the
-     *                    change to a particular package or determine if this is a user action
-     * @param fromSystemOrSystemUi whether the calling UID is either system UID or system UI
+     * @param prevInfo   ZenModeInfo (zen mode setting, config, policy) prior to this change
+     * @param newInfo    ZenModeInfo after this change takes effect
+     * @param callingUid the calling UID associated with the change; may be used to attribute the
+     *                   change to a particular package or determine if this is a user action
+     * @param origin     The origin of the Zen change.
      */
     public final void maybeLogZenChange(ZenModeInfo prevInfo, ZenModeInfo newInfo, int callingUid,
-            boolean fromSystemOrSystemUi) {
-        mChangeState.init(prevInfo, newInfo, callingUid, fromSystemOrSystemUi);
+            @ConfigOrigin int origin) {
+        mChangeState.init(prevInfo, newInfo, callingUid, origin);
         if (mChangeState.shouldLogChanges()) {
             maybeReassignCallingUid();
             logChanges();
@@ -114,6 +127,9 @@ class ZenModeEventLogger {
     /**
      * Reassign callingUid in mChangeState if we have more specific information that warrants it
      * (for instance, if the change is automatic and due to an automatic rule change).
+     *
+     * <p>When Flags.modesUi() is enabled, we reassign the calling UID to the package UID in all
+     * changes whose source is not system or system UI, as long as there is only one rule changed.
      */
     private void maybeReassignCallingUid() {
         int userId = Process.INVALID_UID;
@@ -124,7 +140,7 @@ class ZenModeEventLogger {
         // We don't consider the manual rule in the old config because if a manual rule is turning
         // off with a call from system, that could easily be a user action to explicitly turn it off
         if (mChangeState.getChangedRuleType() == RULE_TYPE_MANUAL) {
-            if (!mChangeState.mFromSystemOrSystemUi
+            if (!mChangeState.isFromSystemOrSystemUi()
                     || mChangeState.getNewManualRuleEnabler() == null) {
                 return;
             }
@@ -132,12 +148,23 @@ class ZenModeEventLogger {
             userId = mChangeState.mNewConfig.user;  // mNewConfig must not be null if enabler exists
         }
 
-        // The conditions where we should consider reassigning UID for an automatic rule change:
+        // The conditions where we should consider reassigning UID for an automatic rule change
+        // (pre-modes_ui):
         //   - we've determined it's not a user action
         //   - our current best guess is that the calling uid is system/sysui
+        // When Flags.modesUi() is true, we get the package UID for the changed rule, as long as:
+        //   - the change does not originate from the system based on change origin
+        //   - there is only one rule changed
         if (mChangeState.getChangedRuleType() == RULE_TYPE_AUTOMATIC) {
-            if (mChangeState.getIsUserAction() || !mChangeState.mFromSystemOrSystemUi) {
-                return;
+            if (Flags.modesUi()) {
+                // ignore anything whose origin is system
+                if (mChangeState.isFromSystemOrSystemUi()) {
+                    return;
+                }
+            } else {
+                if (mChangeState.getIsUserAction() || !mChangeState.isFromSystemOrSystemUi()) {
+                    return;
+                }
             }
 
             // Only try to get the package UID if there's exactly one changed automatic rule. If
@@ -188,7 +215,9 @@ class ZenModeEventLogger {
                 /* bool user_action = 6 */ mChangeState.getIsUserAction(),
                 /* int32 package_uid = 7 */ mChangeState.getPackageUid(),
                 /* DNDPolicyProto current_policy = 8 */ mChangeState.getDNDPolicyProto(),
-                /* bool are_channels_bypassing = 9 */ mChangeState.getAreChannelsBypassing());
+                /* bool are_channels_bypassing = 9 */ mChangeState.getAreChannelsBypassing(),
+                /* ActiveRuleType active_rule_types = 10 */ mChangeState.getActiveRuleTypes(),
+                /* ChangeOrigin change_origin = 11 */ mChangeState.getChangeOrigin());
     }
 
     /**
@@ -221,10 +250,11 @@ class ZenModeEventLogger {
         ZenModeConfig mPrevConfig, mNewConfig;
         NotificationManager.Policy mPrevPolicy, mNewPolicy;
         int mCallingUid = Process.INVALID_UID;
-        boolean mFromSystemOrSystemUi = false;
+        @ConfigOrigin
+        int mOrigin = ZenModeConfig.ORIGIN_UNKNOWN;
 
         private void init(ZenModeInfo prevInfo, ZenModeInfo newInfo, int callingUid,
-                boolean fromSystemOrSystemUi) {
+                @ConfigOrigin int origin) {
             // previous & new may be the same -- that would indicate that zen mode hasn't changed.
             mPrevZenMode = prevInfo.mZenMode;
             mNewZenMode = newInfo.mZenMode;
@@ -233,7 +263,7 @@ class ZenModeEventLogger {
             mPrevPolicy = prevInfo.mPolicy;
             mNewPolicy = newInfo.mPolicy;
             mCallingUid = callingUid;
-            mFromSystemOrSystemUi = fromSystemOrSystemUi;
+            mOrigin = origin;
         }
 
         /**
@@ -255,13 +285,21 @@ class ZenModeEventLogger {
                 return true;
             }
 
+            if (Flags.modesApi() && hasActiveRuleCountDiff()) {
+                // Rules with INTERRUPTION_FILTER_ALL were always possible but before MODES_API
+                // they were completely useless; now they can apply effects, so we want to log
+                // when they become active/inactive, even though DND itself (as in "notification
+                // blocking") is off.
+                return true;
+            }
+
             // If zen mode didn't change, did the policy or number of active rules change? We only
             // care about changes that take effect while zen mode is on, so make sure the current
             // zen mode is not "OFF"
             if (mNewZenMode == ZEN_MODE_OFF) {
                 return false;
             }
-            return hasPolicyDiff() || hasRuleCountDiff();
+            return hasPolicyDiff() || hasActiveRuleCountDiff();
         }
 
         // Does the difference in zen mode go from off to on or vice versa?
@@ -293,6 +331,16 @@ class ZenModeEventLogger {
                 }
             }
 
+            if (Flags.modesApi() && mNewZenMode == ZEN_MODE_OFF) {
+                // If the mode is OFF -> OFF then there cannot be any *effective* change to policy.
+                // (Note that, in theory, a policy diff is impossible since we don't merge the
+                // policies of INTERRUPTION_FILTER_ALL rules; this is a "just in case" check).
+                if (hasPolicyDiff() || hasChannelsBypassingDiff()) {
+                    Log.wtf(TAG, "Detected policy diff even though DND is OFF and not toggled");
+                }
+                return ZenStateChangedEvent.DND_ACTIVE_RULES_CHANGED;
+            }
+
             // zen mode didn't change; we must be here because of a policy change or rule change
             if (hasPolicyDiff() || hasChannelsBypassingDiff()) {
                 return ZenStateChangedEvent.DND_POLICY_CHANGED;
@@ -320,8 +368,10 @@ class ZenModeEventLogger {
             ZenModeDiff.RuleDiff manualDiff = diff.getManualRuleDiff();
             if (manualDiff != null && manualDiff.hasDiff()) {
                 // a diff in the manual rule doesn't *necessarily* mean that it's responsible for
-                // the change -- only if it's been added or removed.
-                if (manualDiff.wasAdded() || manualDiff.wasRemoved()) {
+                // the change -- only if it's been added or removed or updated.
+                if (manualDiff.wasAdded() || manualDiff.wasRemoved()
+                        || (Flags.modesUi()
+                        && (manualDiff.becameActive() || manualDiff.becameInactive()))) {
                     return RULE_TYPE_MANUAL;
                 }
             }
@@ -344,8 +394,37 @@ class ZenModeEventLogger {
          * Returns whether the previous config and new config have a different number of active
          * automatic or manual rules.
          */
-        private boolean hasRuleCountDiff() {
+        private boolean hasActiveRuleCountDiff() {
             return numActiveRulesInConfig(mPrevConfig) != numActiveRulesInConfig(mNewConfig);
+        }
+
+        /**
+         * Get a list of the active rules in the provided config. This is a helper function for
+         * other methods that then use this information to get the number and type of active
+         * rules available.
+         */
+        @SuppressLint("WrongConstant")  // special case for log-only type on manual rule
+        @NonNull
+        List<ZenRule> activeRulesList(ZenModeConfig config) {
+            ArrayList<ZenRule> rules = new ArrayList<>();
+            if (config == null) {
+                return rules;
+            }
+            if (config.isManualActive()) {
+                // We make a copy and set the rule type so that the correct value gets logged.
+                ZenRule rule = config.manualRule.copy();
+                rule.type = ACTIVE_RULE_TYPE_MANUAL;
+                rules.add(rule);
+            }
+
+            if (config.automaticRules != null) {
+                for (ZenModeConfig.ZenRule rule : config.automaticRules.values()) {
+                    if (rule != null && rule.isActive()) {
+                        rules.add(rule);
+                    }
+                }
+            }
+            return rules;
         }
 
         /**
@@ -355,46 +434,61 @@ class ZenModeEventLogger {
          * actually active.
          */
         int numActiveRulesInConfig(ZenModeConfig config) {
-            // If the config is null, return early
-            if (config == null) {
-                return 0;
-            }
-
-            int rules = 0;
-            // Loop through the config and check:
-            //  - does a manual rule exist? (if it's non-null, it's active)
-            //  - how many automatic rules are active, as defined by isAutomaticActive()?
-            if (config.manualRule != null) {
-                rules++;
-            }
-
-            if (config.automaticRules != null) {
-                for (ZenModeConfig.ZenRule rule : config.automaticRules.values()) {
-                    if (rule != null && rule.isAutomaticActive()) {
-                        rules++;
-                    }
-                }
-            }
-            return rules;
+            return activeRulesList(config).size();
         }
 
         // Determine the number of (automatic & manual) rules active after the change takes place.
         int getNumRulesActive() {
-            // If the zen mode has turned off, that means nothing can be active.
-            if (mNewZenMode == ZEN_MODE_OFF) {
-                return 0;
+            if (!Flags.modesApi()) {
+                // If the zen mode has turned off, that means nothing can be active.
+                if (mNewZenMode == ZEN_MODE_OFF) {
+                    return 0;
+                }
             }
             return numActiveRulesInConfig(mNewConfig);
         }
 
         /**
+         * Return a list of the types of each of the active rules in the configuration.
+         * Only available when {@code MODES_API} is active; otherwise returns an empty list.
+         */
+        int[] getActiveRuleTypes() {
+            if (!Flags.modesApi()) {
+                return new int[0];
+            }
+
+            ArrayList<Integer> activeTypes = new ArrayList<>();
+            List<ZenRule> activeRules = activeRulesList(mNewConfig);
+            if (activeRules.size() == 0) {
+                return new int[0];
+            }
+
+            for (ZenRule rule : activeRules) {
+                activeTypes.add(rule.type);
+            }
+
+            // Sort the list of active types to have a consistent order in the atom
+            Collections.sort(activeTypes);
+            int[] out = new int[activeTypes.size()];
+            for (int i = 0; i < activeTypes.size(); i++) {
+                out[i] = activeTypes.get(i);
+            }
+            return out;
+        }
+
+        /**
          * Return our best guess as to whether the changes observed are due to a user action.
-         * Note that this won't be 100% accurate as we can't necessarily distinguish between a
-         * system uid call indicating "user interacted with Settings" vs "a system app changed
-         * something automatically".
+         * Note that this (before {@code MODES_API}) won't be 100% accurate as we can't necessarily
+         * distinguish between a system uid call indicating "user interacted with Settings" vs "a
+         * system app changed something automatically".
          */
         boolean getIsUserAction() {
-            // Approach:
+            if (Flags.modesApi()) {
+                return mOrigin == ZenModeConfig.ORIGIN_USER_IN_SYSTEMUI
+                        || mOrigin == ZenModeConfig.ORIGIN_USER_IN_APP;
+            }
+
+            // Approach for pre-MODES_API:
             //   - if manual rule turned on or off, the calling UID is system, and the new manual
             //     rule does not have an enabler set, guess that this is likely to be a user action.
             //     This may represent a system app turning on DND automatically, but we guess "user"
@@ -419,13 +513,13 @@ class ZenModeEventLogger {
             switch (getChangedRuleType()) {
                 case RULE_TYPE_MANUAL:
                     // TODO(b/278888961): Distinguish the automatically-turned-off state
-                    return mFromSystemOrSystemUi && (getNewManualRuleEnabler() == null);
+                    return isFromSystemOrSystemUi() && (getNewManualRuleEnabler() == null);
                 case RULE_TYPE_AUTOMATIC:
                     for (ZenModeDiff.RuleDiff d : getChangedAutomaticRules().values()) {
                         if (d.wasAdded() || d.wasRemoved()) {
                             // If the change comes from system, a rule being added/removed indicates
                             // a likely user action. From an app, it's harder to know for sure.
-                            return mFromSystemOrSystemUi;
+                            return isFromSystemOrSystemUi();
                         }
                         ZenModeDiff.FieldDiff enabled = d.getDiffForField(
                                 ZenModeDiff.RuleDiff.FIELD_ENABLED);
@@ -455,6 +549,13 @@ class ZenModeEventLogger {
             return false;
         }
 
+        boolean isFromSystemOrSystemUi() {
+            return mOrigin == ZenModeConfig.ORIGIN_INIT
+                    || mOrigin == ZenModeConfig.ORIGIN_INIT_USER
+                    || mOrigin == ZenModeConfig.ORIGIN_SYSTEM
+                    || mOrigin == ZenModeConfig.ORIGIN_RESTORE_BACKUP;
+        }
+
         /**
          * Get the package UID associated with this change, which is just the calling UID for the
          * relevant method changes. This may get reset by ZenModeEventLogger, which has access to
@@ -465,9 +566,31 @@ class ZenModeEventLogger {
         }
 
         /**
-         * Convert the new policy to a DNDPolicyProto format for output in logs.
+         * Get the config change origin associated with this change, which is stored in mOrigin.
+         * Only useable if modes_ui is true.
          */
+        int getChangeOrigin() {
+            if (Flags.modesUi()) {
+                return mOrigin;
+            }
+            return 0;
+        }
+
+        /**
+         * Convert the new policy to a DNDPolicyProto format for output in logs.
+         *
+         * <p>If {@code mNewZenMode} is {@code ZEN_MODE_OFF} (which can mean either no rules
+         * active, or only rules with {@code INTERRUPTION_FILTER_ALL} active) then this returns
+         * {@code null} (which will be mapped to a missing submessage in the proto). Although this
+         * is not the value of {@code NotificationManager#getConsolidatedNotificationPolicy()}, it
+         * makes sense for logging since that policy is not actually influencing anything.
+         */
+        @Nullable
         byte[] getDNDPolicyProto() {
+            if (Flags.modesApi() && mNewZenMode == ZEN_MODE_OFF) {
+                return null;
+            }
+
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             ProtoOutputStream proto = new ProtoOutputStream(bytes);
 
@@ -498,17 +621,19 @@ class ZenModeEventLogger {
                 // This applies to both call and message senders, but not conversation senders,
                 // where they use the same enum values.
                 proto.write(DNDPolicyProto.ALLOW_CALLS_FROM,
-                        ZenModeConfig.getZenPolicySenders(mNewPolicy.allowCallsFrom()));
+                        ZenAdapters.prioritySendersToPeopleType(
+                                mNewPolicy.allowCallsFrom()));
                 proto.write(DNDPolicyProto.ALLOW_MESSAGES_FROM,
-                        ZenModeConfig.getZenPolicySenders(mNewPolicy.allowMessagesFrom()));
+                        ZenAdapters.prioritySendersToPeopleType(
+                                mNewPolicy.allowMessagesFrom()));
                 proto.write(DNDPolicyProto.ALLOW_CONVERSATIONS_FROM,
                         mNewPolicy.allowConversationsFrom());
 
                 if (Flags.modesApi()) {
                     proto.write(DNDPolicyProto.ALLOW_CHANNELS,
                             mNewPolicy.allowPriorityChannels()
-                                    ? ZenPolicy.CHANNEL_TYPE_PRIORITY
-                                    : ZenPolicy.CHANNEL_TYPE_NONE);
+                                    ? CHANNEL_POLICY_PRIORITY
+                                    : CHANNEL_POLICY_NONE);
                 }
             } else {
                 Log.wtf(TAG, "attempted to write zen mode log event with null policy");
@@ -612,7 +737,7 @@ class ZenModeEventLogger {
             copy.mPrevPolicy = mPrevPolicy.copy();
             copy.mNewPolicy = mNewPolicy.copy();
             copy.mCallingUid = mCallingUid;
-            copy.mFromSystemOrSystemUi = mFromSystemOrSystemUi;
+            copy.mOrigin = mOrigin;
             return copy;
         }
     }

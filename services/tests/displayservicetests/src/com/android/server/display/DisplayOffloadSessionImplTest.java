@@ -19,13 +19,13 @@ package com.android.server.display;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyFloat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.hardware.display.DisplayManagerInternal;
-import android.os.PowerManager;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -38,7 +38,7 @@ public class DisplayOffloadSessionImplTest {
     private DisplayManagerInternal.DisplayOffloader mDisplayOffloader;
 
     @Mock
-    private DisplayPowerControllerInterface mDisplayPowerController;
+    private DisplayPowerController mDisplayPowerController;
 
     private DisplayOffloadSessionImpl mSession;
 
@@ -65,8 +65,6 @@ public class DisplayOffloadSessionImplTest {
         mSession.stopOffload();
 
         assertFalse(mSession.isActive());
-        verify(mDisplayPowerController).setBrightnessFromOffload(
-                PowerManager.BRIGHTNESS_INVALID_FLOAT);
 
         // An inactive session shouldn't be stopped again
         mSession.stopOffload();
@@ -87,5 +85,20 @@ public class DisplayOffloadSessionImplTest {
         mSession.updateBrightness(brightness);
 
         verify(mDisplayPowerController).setBrightnessFromOffload(brightness);
+    }
+
+    @Test
+    public void testBlockScreenOn() {
+        Runnable unblocker = () -> {};
+        mSession.blockScreenOn(unblocker);
+
+        verify(mDisplayOffloader).onBlockingScreenOn(eq(unblocker));
+    }
+
+    @Test
+    public void testUnblockScreenOn() {
+        mSession.cancelBlockScreenOn();
+
+        verify(mDisplayOffloader).cancelBlockScreenOn();
     }
 }

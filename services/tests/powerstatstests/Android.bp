@@ -1,20 +1,7 @@
 package {
+    default_team: "trendy_team_framework_backstage_power",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["frameworks_base_license"],
-}
-
-filegroup {
-    name: "power_stats_ravenwood_tests",
-    srcs: [
-        "src/com/android/server/power/stats/AggregatedPowerStatsProcessorTest.java",
-        "src/com/android/server/power/stats/AggregatedPowerStatsTest.java",
-        "src/com/android/server/power/stats/MultiStateStatsTest.java",
-        "src/com/android/server/power/stats/PowerStatsAggregatorTest.java",
-        "src/com/android/server/power/stats/PowerStatsCollectorTest.java",
-        "src/com/android/server/power/stats/PowerStatsSchedulerTest.java",
-        "src/com/android/server/power/stats/PowerStatsStoreTest.java",
-        "src/com/android/server/power/stats/PowerStatsUidResolverTest.java",
-    ],
 }
 
 android_test {
@@ -23,10 +10,6 @@ android_test {
     // Include all test java files.
     srcs: [
         "src/**/*.java",
-    ],
-
-    exclude_srcs: [
-        ":power_stats_ravenwood_tests",
     ],
 
     static_libs: [
@@ -40,13 +23,14 @@ android_test {
         "androidx.test.ext.truth",
         "androidx.test.uiautomator_uiautomator",
         "mockito-target-minus-junit4",
+        "ravenwood-junit",
         "servicestests-utils",
         "platform-test-annotations",
         "flag-junit",
     ],
 
     libs: [
-        "android.test.base",
+        "android.test.base.stubs.system",
     ],
 
     resource_dirs: ["res/"],
@@ -75,15 +59,43 @@ android_ravenwood_test {
     name: "PowerStatsTestsRavenwood",
     static_libs: [
         "services.core",
-        "modules-utils-binary-xml",
+        "platformprotosnano",
+        "coretests-aidl",
+        "ravenwood-junit",
+        "truth",
         "androidx.annotation_annotation",
         "androidx.test.rules",
-        "truth",
-        "mockito_ravenwood",
+        "androidx.test.uiautomator_uiautomator",
+        "modules-utils-binary-xml",
+        "flag-junit",
     ],
     srcs: [
-        ":power_stats_ravenwood_tests",
-        "src/com/android/server/power/stats/MockClock.java",
+        "src/com/android/server/power/stats/*.java",
+        "src/com/android/server/power/stats/format/*.java",
+        "src/com/android/server/power/stats/processor/*.java",
+    ],
+    java_resources: [
+        "res/xml/power_profile*.xml",
     ],
     auto_gen_config: true,
+}
+
+test_module_config {
+    name: "PowerStatsTests_stats_bstatscputimesvalidationtest",
+    base: "PowerStatsTests",
+    test_suites: [
+        "automotive-tests",
+        "device-tests",
+    ],
+    include_filters: ["com.android.server.power.stats.BstatsCpuTimesValidationTest"],
+}
+
+test_module_config {
+    name: "PowerStatsTests_power_stats",
+    base: "PowerStatsTests",
+    test_suites: [
+        "automotive-tests",
+        "device-tests",
+    ],
+    include_filters: ["com.android.server.power.stats"],
 }

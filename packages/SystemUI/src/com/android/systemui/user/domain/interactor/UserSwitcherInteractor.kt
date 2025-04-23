@@ -27,16 +27,17 @@ import android.content.pm.UserInfo
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
-import android.os.Process
 import android.os.RemoteException
 import android.os.UserHandle
 import android.os.UserManager
 import android.provider.Settings
 import android.util.Log
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.internal.logging.UiEventLogger
 import com.android.internal.util.UserIcons
 import com.android.keyguard.KeyguardUpdateMonitor
 import com.android.keyguard.KeyguardUpdateMonitorCallback
+import com.android.systemui.Flags.switchUserOnBg
 import com.android.systemui.SystemUISecondaryUserService
 import com.android.systemui.animation.Expandable
 import com.android.systemui.broadcast.BroadcastDispatcher
@@ -44,10 +45,12 @@ import com.android.systemui.common.shared.model.Text
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Background
+import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.flags.FeatureFlags
 import com.android.systemui.flags.Flags
 import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor
 import com.android.systemui.plugins.ActivityStarter
+import com.android.systemui.process.ProcessWrapper
 import com.android.systemui.qs.user.UserSwitchDialogController
 import com.android.systemui.res.R
 import com.android.systemui.telephony.domain.interactor.TelephonyInteractor
@@ -74,11 +77,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -100,11 +103,13 @@ constructor(
     broadcastDispatcher: BroadcastDispatcher,
     keyguardUpdateMonitor: KeyguardUpdateMonitor,
     @Background private val backgroundDispatcher: CoroutineDispatcher,
+    @Main private val mainDispatcher: CoroutineDispatcher,
     private val activityManager: ActivityManager,
     private val refreshUsersScheduler: RefreshUsersScheduler,
     private val guestUserInteractor: GuestUserInteractor,
     private val uiEventLogger: UiEventLogger,
     private val userRestrictionChecker: UserRestrictionChecker,
+    private val processWrapper: ProcessWrapper,
 ) {
     /**
      * Defines interface for classes that can be notified when the state of users on the device is
@@ -132,11 +137,10 @@ constructor(
     /** List of current on-device users to select from. */
     val users: Flow<List<UserModel>>
         get() =
-            combine(
+            combine(userInfos, repository.selectedUserInfo, repository.userSwitcherSettings) {
                 userInfos,
-                repository.selectedUserInfo,
-                repository.userSwitcherSettings,
-            ) { userInfos, selectedUserInfo, settings ->
+                selectedUserInfo,
+                settings ->
                 toUserModels(
                     userInfos = userInfos,
                     selectedUserId = selectedUserInfo.id,
@@ -152,7 +156,7 @@ constructor(
                 toUserModel(
                     userInfo = selectedUserInfo,
                     selectedUserId = selectedUserId,
-                    canSwitchUsers = canSwitchUsers(selectedUserId)
+                    canSwitchUsers = canSwitchUsers(selectedUserId),
                 )
             }
 
@@ -160,95 +164,97 @@ constructor(
     val actions: Flow<List<UserActionModel>>
         get() =
             combine(
-                repository.selectedUserInfo,
-                userInfos,
-                repository.userSwitcherSettings,
-                keyguardInteractor.isKeyguardShowing,
-            ) { _, userInfos, settings, isDeviceLocked ->
-                buildList {
-                    if (!isDeviceLocked || settings.isAddUsersFromLockscreen) {
-                        // The device is locked and our setting to allow actions that add users
-                        // from the lock-screen is not enabled. We can finish building the list
-                        // here.
-                        val isFullScreen = featureFlags.isEnabled(Flags.FULL_SCREEN_USER_SWITCHER)
+                    repository.selectedUserInfo,
+                    userInfos,
+                    repository.userSwitcherSettings,
+                    keyguardInteractor.isKeyguardShowing,
+                ) { _, userInfos, settings, isDeviceLocked ->
+                    buildList {
+                        val canAccessUserSwitcher =
+                            !isDeviceLocked || settings.isAddUsersFromLockscreen
+                        if (canAccessUserSwitcher) {
+                            // The device is locked and our setting to allow actions that add users
+                            // from the lock-screen is not enabled. We can finish building the list
+                            // here.
+                            val isFullScreen =
+                                featureFlags.isEnabled(Flags.FULL_SCREEN_USER_SWITCHER)
 
-                        val actionList: List<UserActionModel> =
-                            if (isFullScreen) {
-                                listOf(
-                                    UserActionModel.ADD_USER,
-                                    UserActionModel.ADD_SUPERVISED_USER,
-                                    UserActionModel.ENTER_GUEST_MODE,
-                                )
-                            } else {
-                                listOf(
-                                    UserActionModel.ENTER_GUEST_MODE,
-                                    UserActionModel.ADD_USER,
-                                    UserActionModel.ADD_SUPERVISED_USER,
-                                )
-                            }
-                        actionList.map {
-                            when (it) {
-                                UserActionModel.ENTER_GUEST_MODE -> {
-                                    val hasGuestUser = userInfos.any { it.isGuest }
-                                    if (!hasGuestUser && canCreateGuestUser(settings)) {
-                                        add(UserActionModel.ENTER_GUEST_MODE)
-                                    }
+                            val actionList: List<UserActionModel> =
+                                if (isFullScreen) {
+                                    listOf(
+                                        UserActionModel.ADD_USER,
+                                        UserActionModel.ADD_SUPERVISED_USER,
+                                        UserActionModel.ENTER_GUEST_MODE,
+                                    )
+                                } else {
+                                    listOf(
+                                        UserActionModel.ENTER_GUEST_MODE,
+                                        UserActionModel.ADD_USER,
+                                        UserActionModel.ADD_SUPERVISED_USER,
+                                    )
                                 }
-                                UserActionModel.ADD_USER -> {
-                                    val canCreateUsers =
-                                        UserActionsUtil.canCreateUser(
-                                            manager,
-                                            repository,
-                                            settings.isUserSwitcherEnabled,
-                                            settings.isAddUsersFromLockscreen,
-                                        )
+                            actionList.map {
+                                when (it) {
+                                    UserActionModel.ENTER_GUEST_MODE -> {
+                                        val hasGuestUser = userInfos.any { it.isGuest }
+                                        if (
+                                            !hasGuestUser &&
+                                                canCreateGuestUser(settings, canAccessUserSwitcher)
+                                        ) {
+                                            add(UserActionModel.ENTER_GUEST_MODE)
+                                        }
+                                    }
+                                    UserActionModel.ADD_USER -> {
+                                        val canCreateUsers =
+                                            UserActionsUtil.canCreateUser(
+                                                manager,
+                                                repository,
+                                                settings.isUserSwitcherEnabled,
+                                                canAccessUserSwitcher,
+                                            )
 
-                                    if (canCreateUsers) {
-                                        add(UserActionModel.ADD_USER)
+                                        if (canCreateUsers) {
+                                            add(UserActionModel.ADD_USER)
+                                        }
                                     }
-                                }
-                                UserActionModel.ADD_SUPERVISED_USER -> {
-                                    if (
-                                        UserActionsUtil.canCreateSupervisedUser(
-                                            manager,
-                                            repository,
-                                            settings.isUserSwitcherEnabled,
-                                            settings.isAddUsersFromLockscreen,
-                                            supervisedUserPackageName,
-                                        )
-                                    ) {
-                                        add(UserActionModel.ADD_SUPERVISED_USER)
+                                    UserActionModel.ADD_SUPERVISED_USER -> {
+                                        if (
+                                            UserActionsUtil.canCreateSupervisedUser(
+                                                manager,
+                                                repository,
+                                                settings.isUserSwitcherEnabled,
+                                                canAccessUserSwitcher,
+                                                supervisedUserPackageName,
+                                            )
+                                        ) {
+                                            add(UserActionModel.ADD_SUPERVISED_USER)
+                                        }
                                     }
+                                    else -> Unit
                                 }
-                                else -> Unit
                             }
                         }
-                    }
-                    if (
-                        UserActionsUtil.canManageUsers(
-                            repository,
-                            settings.isUserSwitcherEnabled,
-                            settings.isAddUsersFromLockscreen,
-                        )
-                    ) {
-                        add(UserActionModel.NAVIGATE_TO_USER_MANAGEMENT)
+                        if (
+                            UserActionsUtil.canManageUsers(
+                                repository,
+                                settings.isUserSwitcherEnabled,
+                            )
+                        ) {
+                            add(UserActionModel.NAVIGATE_TO_USER_MANAGEMENT)
+                        }
                     }
                 }
-            }
+                .flowOn(backgroundDispatcher)
 
     val userRecords: StateFlow<ArrayList<UserRecord>> =
-        combine(
+        combine(userInfos, repository.selectedUserInfo, actions, repository.userSwitcherSettings) {
                 userInfos,
-                repository.selectedUserInfo,
-                actions,
-                repository.userSwitcherSettings,
-            ) { userInfos, selectedUserInfo, actionModels, settings ->
+                selectedUserInfo,
+                actionModels,
+                settings ->
                 ArrayList(
                     userInfos.map {
-                        toRecord(
-                            userInfo = it,
-                            selectedUserId = selectedUserInfo.id,
-                        )
+                        toRecord(userInfo = it, selectedUserId = selectedUserInfo.id)
                     } +
                         actionModels.map {
                             toRecord(
@@ -287,7 +293,8 @@ constructor(
     val isGuestUserResetting: Boolean = guestUserInteractor.isGuestUserResetting
 
     /** Whether to enable the user chip in the status bar */
-    val isStatusBarUserChipEnabled: Boolean = repository.isStatusBarUserChipEnabled
+    val isStatusBarUserChipEnabled: Boolean
+        get() = repository.isStatusBarUserChipEnabled
 
     private val _dialogShowRequests = MutableStateFlow<ShowDialogRequestModel?>(null)
     val dialogShowRequests: Flow<ShowDialogRequestModel?> = _dialogShowRequests.asStateFlow()
@@ -339,7 +346,11 @@ constructor(
             }
             .launchIn(applicationScope)
         restartSecondaryService(repository.getSelectedUserInfo().id)
-        keyguardUpdateMonitor.registerCallback(keyguardUpdateMonitorCallback)
+        applicationScope.launch {
+            withContext(mainDispatcher) {
+                keyguardUpdateMonitor.registerCallback(keyguardUpdateMonitorCallback)
+            }
+        }
     }
 
     fun addCallback(callback: UserCallback) {
@@ -452,10 +463,8 @@ constructor(
         when (action) {
             UserActionModel.ENTER_GUEST_MODE -> {
                 uiEventLogger.log(MultiUserActionsEvent.CREATE_GUEST_FROM_USER_SWITCHER)
-                guestUserInteractor.createAndSwitchTo(
-                    this::showDialog,
-                    this::dismissDialog,
-                ) { userId ->
+                guestUserInteractor.createAndSwitchTo(this::showDialog, this::dismissDialog) {
+                    userId ->
                     selectUser(userId, dialogShower)
                 }
             }
@@ -466,7 +475,7 @@ constructor(
                 activityStarter.startActivity(
                     CreateUserActivity.createIntentForStart(
                         applicationContext,
-                        keyguardInteractor.isKeyguardShowing()
+                        keyguardInteractor.isKeyguardShowing(),
                     ),
                     /* dismissShade= */ true,
                     /* animationController */ null,
@@ -508,17 +517,14 @@ constructor(
         )
     }
 
-    fun removeGuestUser(
-        @UserIdInt guestUserId: Int,
-        @UserIdInt targetUserId: Int,
-    ) {
+    fun removeGuestUser(@UserIdInt guestUserId: Int, @UserIdInt targetUserId: Int) {
         applicationScope.launch {
             guestUserInteractor.remove(
                 guestUserId = guestUserId,
                 targetUserId = targetUserId,
                 ::showDialog,
                 ::dismissDialog,
-                ::selectUser,
+                ::switchUser,
             )
         }
     }
@@ -555,10 +561,7 @@ constructor(
         }
     }
 
-    private suspend fun toRecord(
-        userInfo: UserInfo,
-        selectedUserId: Int,
-    ): UserRecord {
+    private suspend fun toRecord(userInfo: UserInfo, selectedUserId: Int): UserRecord {
         return LegacyUserDataHelper.createRecord(
             context = applicationContext,
             manager = manager,
@@ -580,10 +583,7 @@ constructor(
             actionType = action,
             isRestricted = isRestricted,
             isSwitchToEnabled =
-                canSwitchUsers(
-                    selectedUserId = selectedUserId,
-                    isAction = true,
-                ) &&
+                canSwitchUsers(selectedUserId = selectedUserId, isAction = true) &&
                     // If the user is auto-created is must not be currently resetting.
                     !(isGuestUserAutoCreated && isGuestUserResetting),
             userRestrictionChecker = userRestrictionChecker,
@@ -593,17 +593,22 @@ constructor(
     private fun switchUser(userId: Int) {
         // TODO(b/246631653): track jank and latency like in the old impl.
         refreshUsersScheduler.pause()
-        try {
-            activityManager.switchUser(userId)
-        } catch (e: RemoteException) {
-            Log.e(TAG, "Couldn't switch user.", e)
+        val runnable = Runnable {
+            try {
+                activityManager.switchUser(userId)
+            } catch (e: RemoteException) {
+                Log.e(TAG, "Couldn't switch user.", e)
+            }
+        }
+
+        if (switchUserOnBg()) {
+            applicationScope.launch { withContext(backgroundDispatcher) { runnable.run() } }
+        } else {
+            runnable.run()
         }
     }
 
-    private suspend fun onBroadcastReceived(
-        intent: Intent,
-        previousUserInfo: UserInfo?,
-    ) {
+    private suspend fun onBroadcastReceived(intent: Intent, previousUserInfo: UserInfo?) {
         val shouldRefreshAllUsers =
             when (intent.action) {
                 Intent.ACTION_LOCALE_CHANGED -> true
@@ -622,10 +627,8 @@ constructor(
                 Intent.ACTION_USER_INFO_CHANGED -> true
                 Intent.ACTION_USER_UNLOCKED -> {
                     // If we unlocked the system user, we should refresh all users.
-                    intent.getIntExtra(
-                        Intent.EXTRA_USER_HANDLE,
-                        UserHandle.USER_NULL,
-                    ) == UserHandle.USER_SYSTEM
+                    intent.getIntExtra(Intent.EXTRA_USER_HANDLE, UserHandle.USER_NULL) ==
+                        UserHandle.USER_SYSTEM
                 }
                 else -> true
             }
@@ -645,20 +648,14 @@ constructor(
         // Disconnect from the old secondary user's service
         val secondaryUserId = repository.secondaryUserId
         if (secondaryUserId != UserHandle.USER_NULL) {
-            applicationContext.stopServiceAsUser(
-                intent,
-                UserHandle.of(secondaryUserId),
-            )
+            applicationContext.stopServiceAsUser(intent, UserHandle.of(secondaryUserId))
             repository.secondaryUserId = UserHandle.USER_NULL
         }
 
         // Connect to the new secondary user's service (purely to ensure that a persistent
         // SystemUI application is created for that user)
-        if (userId != Process.myUserHandle().identifier) {
-            applicationContext.startServiceAsUser(
-                intent,
-                UserHandle.of(userId),
-            )
+        if (userId != processWrapper.myUserHandle().identifier && !processWrapper.isSystemUser) {
+            applicationContext.startServiceAsUser(intent, UserHandle.of(userId))
             repository.secondaryUserId = userId
         }
     }
@@ -709,7 +706,7 @@ constructor(
     private suspend fun toUserModel(
         userInfo: UserInfo,
         selectedUserId: Int,
-        canSwitchUsers: Boolean
+        canSwitchUsers: Boolean,
     ): UserModel {
         val userId = userInfo.id
         val isSelected = userId == selectedUserId
@@ -717,11 +714,7 @@ constructor(
             UserModel(
                 id = userId,
                 name = Text.Loaded(userInfo.name),
-                image =
-                    getUserImage(
-                        isGuest = true,
-                        userId = userId,
-                    ),
+                image = getUserImage(isGuest = true, userId = userId),
                 isSelected = isSelected,
                 isSelectable = canSwitchUsers,
                 isGuest = true,
@@ -730,11 +723,7 @@ constructor(
             UserModel(
                 id = userId,
                 name = Text.Loaded(userInfo.name),
-                image =
-                    getUserImage(
-                        isGuest = false,
-                        userId = userId,
-                    ),
+                image = getUserImage(isGuest = false, userId = userId),
                 isSelected = isSelected,
                 isSelectable = canSwitchUsers || isSelected,
                 isGuest = false,
@@ -742,10 +731,7 @@ constructor(
         }
     }
 
-    private suspend fun canSwitchUsers(
-        selectedUserId: Int,
-        isAction: Boolean = false,
-    ): Boolean {
+    private suspend fun canSwitchUsers(selectedUserId: Int, isAction: Boolean = false): Boolean {
         val isHeadlessSystemUserMode =
             withContext(backgroundDispatcher) { headlessSystemUserMode.isHeadlessSystemUserMode() }
         // Whether menu item should be active. True if item is a user or if any user has
@@ -762,7 +748,7 @@ constructor(
             .getUsers(
                 /* excludePartial= */ true,
                 /* excludeDying= */ true,
-                /* excludePreCreated= */ true
+                /* excludePreCreated= */ true,
             )
             .any { user ->
                 user.id != UserHandle.USER_SYSTEM &&
@@ -771,10 +757,7 @@ constructor(
     }
 
     @SuppressLint("UseCompatLoadingForDrawables")
-    private suspend fun getUserImage(
-        isGuest: Boolean,
-        userId: Int,
-    ): Drawable {
+    private suspend fun getUserImage(isGuest: Boolean, userId: Int): Drawable {
         if (isGuest) {
             return checkNotNull(
                 applicationContext.getDrawable(com.android.settingslib.R.drawable.ic_account_circle)
@@ -800,17 +783,20 @@ constructor(
         return UserIcons.getDefaultUserIcon(
             applicationContext.resources,
             userId,
-            /* light= */ false
+            /* light= */ false,
         )
     }
 
-    private fun canCreateGuestUser(settings: UserSwitcherSettingsModel): Boolean {
+    private fun canCreateGuestUser(
+        settings: UserSwitcherSettingsModel,
+        canAccessUserSwitcher: Boolean,
+    ): Boolean {
         return guestUserInteractor.isGuestUserAutoCreated ||
             UserActionsUtil.canCreateGuest(
                 manager,
                 repository,
                 settings.isUserSwitcherEnabled,
-                settings.isAddUsersFromLockscreen,
+                canAccessUserSwitcher,
             )
     }
 

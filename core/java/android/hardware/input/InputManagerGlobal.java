@@ -25,8 +25,11 @@ import android.hardware.BatteryState;
 import android.hardware.SensorManager;
 import android.hardware.input.InputManager.InputDeviceBatteryListener;
 import android.hardware.input.InputManager.InputDeviceListener;
+import android.hardware.input.InputManager.KeyGestureEventHandler;
+import android.hardware.input.InputManager.KeyGestureEventListener;
 import android.hardware.input.InputManager.KeyboardBacklightListener;
 import android.hardware.input.InputManager.OnTabletModeChangedListener;
+import android.hardware.input.InputManager.StickyModifierStateListener;
 import android.hardware.lights.Light;
 import android.hardware.lights.LightState;
 import android.hardware.lights.LightsManager;
@@ -52,6 +55,7 @@ import android.view.InputDevice;
 import android.view.InputEvent;
 import android.view.InputMonitor;
 import android.view.KeyCharacterMap;
+import android.view.KeyEvent;
 import android.view.PointerIcon;
 
 import com.android.internal.annotations.GuardedBy;
@@ -99,6 +103,30 @@ public final class InputManagerGlobal {
     @Nullable private ArrayList<KeyboardBacklightListenerDelegate> mKeyboardBacklightListeners;
     @GuardedBy("mKeyboardBacklightListenerLock")
     @Nullable private IKeyboardBacklightListener mKeyboardBacklightListener;
+
+    private final Object mStickyModifierStateListenerLock = new Object();
+    @GuardedBy("mStickyModifierStateListenerLock")
+    @Nullable
+    private ArrayList<StickyModifierStateListenerDelegate> mStickyModifierStateListeners;
+    @GuardedBy("mStickyModifierStateListenerLock")
+    @Nullable
+    private IStickyModifierStateListener mStickyModifierStateListener;
+
+    private final Object mKeyGestureEventListenerLock = new Object();
+    @GuardedBy("mKeyGestureEventListenerLock")
+    @Nullable
+    private ArrayList<KeyGestureEventListenerDelegate> mKeyGestureEventListeners;
+    @GuardedBy("mKeyGestureEventListenerLock")
+    @Nullable
+    private IKeyGestureEventListener mKeyGestureEventListener;
+
+    private final Object mKeyGestureEventHandlerLock = new Object();
+    @GuardedBy("mKeyGestureEventHandlerLock")
+    @Nullable
+    private ArrayList<KeyGestureEventHandler> mKeyGestureEventHandlers;
+    @GuardedBy("mKeyGestureEventHandlerLock")
+    @Nullable
+    private IKeyGestureHandler mKeyGestureHandler;
 
     // InputDeviceSensorManager gets notified synchronously from the binder thread when input
     // devices change, so it must be synchronized with the input device listeners.
@@ -401,18 +429,6 @@ public final class InputManagerGlobal {
     }
 
     /**
-     * @see InputManager#isInputDeviceEnabled(int)
-     */
-    public boolean isInputDeviceEnabled(int id) {
-        try {
-            return mIm.isInputDeviceEnabled(id);
-        } catch (RemoteException ex) {
-            Log.w(TAG, "Could not check enabled status of input device with id = " + id);
-            throw ex.rethrowFromSystemServer();
-        }
-    }
-
-    /**
      * @see InputManager#enableInputDevice(int)
      */
     public void enableInputDevice(int id) {
@@ -560,7 +576,7 @@ public final class InputManagerGlobal {
         Objects.requireNonNull(listener, "listener must not be null");
 
         synchronized (mOnTabletModeChangedListeners) {
-            if (mOnTabletModeChangedListeners == null) {
+            if (mOnTabletModeChangedListeners.isEmpty()) {
                 initializeTabletModeListenerLocked();
             }
             int idx = findOnTabletModeChangedListenerLocked(listener);
@@ -905,37 +921,350 @@ public final class InputManagerGlobal {
         }
     }
 
-    /**
-     * @see InputManager#getKeyboardLayoutsForInputDevice(InputDeviceIdentifier)
-     */
-    @NonNull
-    public KeyboardLayout[] getKeyboardLayoutsForInputDevice(
-            @NonNull InputDeviceIdentifier identifier) {
-        try {
-            return mIm.getKeyboardLayoutsForInputDevice(identifier);
-        } catch (RemoteException ex) {
-            throw ex.rethrowFromSystemServer();
+    private static final class StickyModifierStateListenerDelegate {
+        final InputManager.StickyModifierStateListener mListener;
+        final Executor mExecutor;
+
+        StickyModifierStateListenerDelegate(StickyModifierStateListener listener,
+                Executor executor) {
+            mListener = listener;
+            mExecutor = executor;
+        }
+
+        void notifyStickyModifierStateChange(int modifierState, int lockedModifierState) {
+            mExecutor.execute(() ->
+                    mListener.onStickyModifierStateChanged(
+                            new LocalStickyModifierState(modifierState, lockedModifierState)));
+        }
+    }
+
+    private class LocalStickyModifierStateListener extends IStickyModifierStateListener.Stub {
+
+        @Override
+        public void onStickyModifierStateChanged(int modifierState, int lockedModifierState) {
+            synchronized (mStickyModifierStateListenerLock) {
+                if (mStickyModifierStateListeners == null) return;
+                final int numListeners = mStickyModifierStateListeners.size();
+                for (int i = 0; i < numListeners; i++) {
+                    mStickyModifierStateListeners.get(i)
+                            .notifyStickyModifierStateChange(modifierState, lockedModifierState);
+                }
+            }
+        }
+    }
+
+    // Implementation of the android.hardware.input.StickyModifierState interface used to report
+    // the sticky modifier state via the StickyModifierStateListener interfaces.
+    private static final class LocalStickyModifierState extends StickyModifierState {
+
+        private final int mModifierState;
+        private final int mLockedModifierState;
+
+        LocalStickyModifierState(int modifierState, int lockedModifierState) {
+            mModifierState = modifierState;
+            mLockedModifierState = lockedModifierState;
+        }
+
+        @Override
+        public boolean isShiftModifierOn() {
+            return (mModifierState & KeyEvent.META_SHIFT_ON) != 0;
+        }
+
+        @Override
+        public boolean isShiftModifierLocked() {
+            return (mLockedModifierState & KeyEvent.META_SHIFT_ON) != 0;
+        }
+
+        @Override
+        public boolean isCtrlModifierOn() {
+            return (mModifierState & KeyEvent.META_CTRL_ON) != 0;
+        }
+
+        @Override
+        public boolean isCtrlModifierLocked() {
+            return (mLockedModifierState & KeyEvent.META_CTRL_ON) != 0;
+        }
+
+        @Override
+        public boolean isMetaModifierOn() {
+            return (mModifierState & KeyEvent.META_META_ON) != 0;
+        }
+
+        @Override
+        public boolean isMetaModifierLocked() {
+            return (mLockedModifierState & KeyEvent.META_META_ON) != 0;
+        }
+
+        @Override
+        public boolean isAltModifierOn() {
+            return (mModifierState & KeyEvent.META_ALT_LEFT_ON) != 0;
+        }
+
+        @Override
+        public boolean isAltModifierLocked() {
+            return (mLockedModifierState & KeyEvent.META_ALT_LEFT_ON) != 0;
+        }
+
+        @Override
+        public boolean isAltGrModifierOn() {
+            return (mModifierState & KeyEvent.META_ALT_RIGHT_ON) != 0;
+        }
+
+        @Override
+        public boolean isAltGrModifierLocked() {
+            return (mLockedModifierState & KeyEvent.META_ALT_RIGHT_ON) != 0;
         }
     }
 
     /**
-     * @see InputManager#setCurrentKeyboardLayoutForInputDevice
-     * (InputDeviceIdentifier, String)
+     * @see InputManager#registerStickyModifierStateListener(Executor, StickyModifierStateListener)
      */
-    @RequiresPermission(Manifest.permission.SET_KEYBOARD_LAYOUT)
-    public void setCurrentKeyboardLayoutForInputDevice(
-            @NonNull InputDeviceIdentifier identifier,
-            @NonNull String keyboardLayoutDescriptor) {
-        Objects.requireNonNull(identifier, "identifier must not be null");
-        Objects.requireNonNull(keyboardLayoutDescriptor,
-                "keyboardLayoutDescriptor must not be null");
-        try {
-            mIm.setCurrentKeyboardLayoutForInputDevice(identifier,
-                    keyboardLayoutDescriptor);
-        } catch (RemoteException ex) {
-            throw ex.rethrowFromSystemServer();
+    @RequiresPermission(Manifest.permission.MONITOR_STICKY_MODIFIER_STATE)
+    void registerStickyModifierStateListener(@NonNull Executor executor,
+            @NonNull StickyModifierStateListener listener) throws IllegalArgumentException {
+        Objects.requireNonNull(executor, "executor should not be null");
+        Objects.requireNonNull(listener, "listener should not be null");
+
+        synchronized (mStickyModifierStateListenerLock) {
+            if (mStickyModifierStateListener == null) {
+                mStickyModifierStateListeners = new ArrayList<>();
+                mStickyModifierStateListener = new LocalStickyModifierStateListener();
+
+                try {
+                    mIm.registerStickyModifierStateListener(mStickyModifierStateListener);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                }
+            }
+            final int numListeners = mStickyModifierStateListeners.size();
+            for (int i = 0; i < numListeners; i++) {
+                if (mStickyModifierStateListeners.get(i).mListener == listener) {
+                    throw new IllegalArgumentException("Listener has already been registered!");
+                }
+            }
+            StickyModifierStateListenerDelegate delegate =
+                    new StickyModifierStateListenerDelegate(listener, executor);
+            mStickyModifierStateListeners.add(delegate);
         }
     }
+
+    /**
+     * @see InputManager#unregisterStickyModifierStateListener(StickyModifierStateListener)
+     */
+    @RequiresPermission(Manifest.permission.MONITOR_STICKY_MODIFIER_STATE)
+    void unregisterStickyModifierStateListener(
+            @NonNull StickyModifierStateListener listener) {
+        Objects.requireNonNull(listener, "listener should not be null");
+
+        synchronized (mStickyModifierStateListenerLock) {
+            if (mStickyModifierStateListeners == null) {
+                return;
+            }
+            mStickyModifierStateListeners.removeIf((delegate) -> delegate.mListener == listener);
+            if (mStickyModifierStateListeners.isEmpty()) {
+                try {
+                    mIm.unregisterStickyModifierStateListener(mStickyModifierStateListener);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                }
+                mStickyModifierStateListeners = null;
+                mStickyModifierStateListener = null;
+            }
+        }
+    }
+
+    private static final class KeyGestureEventListenerDelegate {
+        final KeyGestureEventListener mListener;
+        final Executor mExecutor;
+
+        KeyGestureEventListenerDelegate(KeyGestureEventListener listener,
+                Executor executor) {
+            mListener = listener;
+            mExecutor = executor;
+        }
+
+        void onKeyGestureEvent(KeyGestureEvent event) {
+            mExecutor.execute(() -> mListener.onKeyGestureEvent(event));
+        }
+    }
+
+    private class LocalKeyGestureEventListener extends IKeyGestureEventListener.Stub {
+        @Override
+        public void onKeyGestureEvent(@NonNull AidlKeyGestureEvent ev) {
+            synchronized (mKeyGestureEventListenerLock) {
+                if (mKeyGestureEventListeners == null) return;
+                final int numListeners = mKeyGestureEventListeners.size();
+                final KeyGestureEvent event = new KeyGestureEvent(ev);
+                for (int i = 0; i < numListeners; i++) {
+                    mKeyGestureEventListeners.get(i).onKeyGestureEvent(event);
+                }
+            }
+        }
+    }
+
+    /**
+     * @see InputManager#registerKeyGestureEventListener(Executor,
+     * KeyGestureEventListener)
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_KEY_GESTURES)
+    void registerKeyGestureEventListener(@NonNull Executor executor,
+            @NonNull KeyGestureEventListener listener) throws IllegalArgumentException {
+        Objects.requireNonNull(executor, "executor should not be null");
+        Objects.requireNonNull(listener, "listener should not be null");
+
+        synchronized (mKeyGestureEventListenerLock) {
+            if (mKeyGestureEventListener == null) {
+                mKeyGestureEventListeners = new ArrayList<>();
+                mKeyGestureEventListener = new LocalKeyGestureEventListener();
+
+                try {
+                    mIm.registerKeyGestureEventListener(mKeyGestureEventListener);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                }
+            }
+            final int numListeners = mKeyGestureEventListeners.size();
+            for (int i = 0; i < numListeners; i++) {
+                if (mKeyGestureEventListeners.get(i).mListener == listener) {
+                    throw new IllegalArgumentException("Listener has already been registered!");
+                }
+            }
+            KeyGestureEventListenerDelegate delegate =
+                    new KeyGestureEventListenerDelegate(listener, executor);
+            mKeyGestureEventListeners.add(delegate);
+        }
+    }
+
+    /**
+     * @see InputManager#unregisterKeyGestureEventListener(KeyGestureEventListener)
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_KEY_GESTURES)
+    void unregisterKeyGestureEventListener(@NonNull KeyGestureEventListener listener) {
+        Objects.requireNonNull(listener, "listener should not be null");
+
+        synchronized (mKeyGestureEventListenerLock) {
+            if (mKeyGestureEventListeners == null) {
+                return;
+            }
+            mKeyGestureEventListeners.removeIf((delegate) -> delegate.mListener == listener);
+            if (mKeyGestureEventListeners.isEmpty()) {
+                try {
+                    mIm.unregisterKeyGestureEventListener(mKeyGestureEventListener);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                }
+                mKeyGestureEventListeners = null;
+                mKeyGestureEventListener = null;
+            }
+        }
+    }
+
+    private class LocalKeyGestureHandler extends IKeyGestureHandler.Stub {
+        @Override
+        public boolean handleKeyGesture(@NonNull AidlKeyGestureEvent ev, IBinder focusedToken) {
+            synchronized (mKeyGestureEventHandlerLock) {
+                if (mKeyGestureEventHandlers == null) {
+                    return false;
+                }
+                final int numHandlers = mKeyGestureEventHandlers.size();
+                final KeyGestureEvent event = new KeyGestureEvent(ev);
+                for (int i = 0; i < numHandlers; i++) {
+                    KeyGestureEventHandler handler = mKeyGestureEventHandlers.get(i);
+                    if (handler.handleKeyGestureEvent(event, focusedToken)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public boolean isKeyGestureSupported(@KeyGestureEvent.KeyGestureType int gestureType) {
+            synchronized (mKeyGestureEventHandlerLock) {
+                if (mKeyGestureEventHandlers == null) {
+                    return false;
+                }
+                final int numHandlers = mKeyGestureEventHandlers.size();
+                for (int i = 0; i < numHandlers; i++) {
+                    KeyGestureEventHandler handler = mKeyGestureEventHandlers.get(i);
+                    if (handler.isKeyGestureSupported(gestureType)) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+    }
+
+    /**
+     * @see InputManager#registerKeyGestureEventHandler(KeyGestureEventHandler)
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_KEY_GESTURES)
+    void registerKeyGestureEventHandler(@NonNull KeyGestureEventHandler handler)
+            throws IllegalArgumentException {
+        Objects.requireNonNull(handler, "handler should not be null");
+
+        synchronized (mKeyGestureEventHandlerLock) {
+            if (mKeyGestureHandler == null) {
+                mKeyGestureEventHandlers = new ArrayList<>();
+                mKeyGestureHandler = new LocalKeyGestureHandler();
+
+                try {
+                    mIm.registerKeyGestureHandler(mKeyGestureHandler);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                }
+            }
+            final int numHandlers = mKeyGestureEventHandlers.size();
+            for (int i = 0; i < numHandlers; i++) {
+                if (mKeyGestureEventHandlers.get(i) == handler) {
+                    throw new IllegalArgumentException("Handler has already been registered!");
+                }
+            }
+            mKeyGestureEventHandlers.add(handler);
+        }
+    }
+
+    /**
+     * @see InputManager#unregisterKeyGestureEventHandler(KeyGestureEventHandler)
+     */
+    @RequiresPermission(Manifest.permission.MANAGE_KEY_GESTURES)
+    void unregisterKeyGestureEventHandler(@NonNull KeyGestureEventHandler handler) {
+        Objects.requireNonNull(handler, "handler should not be null");
+
+        synchronized (mKeyGestureEventHandlerLock) {
+            if (mKeyGestureEventHandlers == null) {
+                return;
+            }
+            mKeyGestureEventHandlers.removeIf(existingHandler -> existingHandler == handler);
+            if (mKeyGestureEventHandlers.isEmpty()) {
+                try {
+                    mIm.unregisterKeyGestureHandler(mKeyGestureHandler);
+                } catch (RemoteException e) {
+                    throw e.rethrowFromSystemServer();
+                }
+                mKeyGestureEventHandlers = null;
+                mKeyGestureHandler = null;
+            }
+        }
+    }
+
+    /**
+     * TODO(b/330517633): Cleanup the unsupported API
+     */
+    @NonNull
+    public KeyboardLayout[] getKeyboardLayoutsForInputDevice(
+            @NonNull InputDeviceIdentifier identifier) {
+        return new KeyboardLayout[0];
+    }
+
+    /**
+     * TODO(b/330517633): Cleanup the unsupported API
+     */
+    public void setCurrentKeyboardLayoutForInputDevice(
+            @NonNull InputDeviceIdentifier identifier,
+            @NonNull String keyboardLayoutDescriptor) {}
+
 
     /**
      * @see InputDevice#getSensorManager()
@@ -1264,28 +1593,6 @@ public final class InputManagerGlobal {
     }
 
     /**
-     * @see InputManager#setPointerIconType(int)
-     */
-    public void setPointerIconType(int iconId) {
-        try {
-            mIm.setPointerIconType(iconId);
-        } catch (RemoteException ex) {
-            throw ex.rethrowFromSystemServer();
-        }
-    }
-
-    /**
-     * @see InputManager#setCustomPointerIcon(PointerIcon)
-     */
-    public void setCustomPointerIcon(PointerIcon icon) {
-        try {
-            mIm.setCustomPointerIcon(icon);
-        } catch (RemoteException ex) {
-            throw ex.rethrowFromSystemServer();
-        }
-    }
-
-    /**
      * @see InputManager#setPointerIcon(PointerIcon, int, int, int, IBinder)
      */
     public boolean setPointerIcon(PointerIcon icon, int displayId, int deviceId, int pointerId,
@@ -1320,22 +1627,46 @@ public final class InputManagerGlobal {
     }
 
     /**
-     * @see InputManager#addUniqueIdAssociation(String, String)
+     * @see InputManager#addUniqueIdAssociationByPort(String, String)
      */
-    public void addUniqueIdAssociation(@NonNull String inputPort, @NonNull String displayUniqueId) {
+    public void addUniqueIdAssociationByPort(@NonNull String inputPort,
+            @NonNull String displayUniqueId) {
         try {
-            mIm.addUniqueIdAssociation(inputPort, displayUniqueId);
+            mIm.addUniqueIdAssociationByPort(inputPort, displayUniqueId);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
     }
 
     /**
-     * @see InputManager#removeUniqueIdAssociation(String)
+     * @see InputManager#removeUniqueIdAssociationByPort(String)
      */
-    public void removeUniqueIdAssociation(@NonNull String inputPort) {
+    public void removeUniqueIdAssociationByPort(@NonNull String inputPort) {
         try {
-            mIm.removeUniqueIdAssociation(inputPort);
+            mIm.removeUniqueIdAssociationByPort(inputPort);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @see InputManager#addUniqueIdAssociationByDescriptor(String, String)
+     */
+    public void addUniqueIdAssociationByDescriptor(@NonNull String inputDeviceDescriptor,
+                                                   @NonNull String displayUniqueId) {
+        try {
+            mIm.addUniqueIdAssociationByDescriptor(inputDeviceDescriptor, displayUniqueId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * @see InputManager#removeUniqueIdAssociationByDescriptor(String)
+     */
+    public void removeUniqueIdAssociationByDescriptor(@NonNull String inputDeviceDescriptor) {
+        try {
+            mIm.removeUniqueIdAssociationByDescriptor(inputDeviceDescriptor);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }

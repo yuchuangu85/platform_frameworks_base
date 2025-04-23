@@ -24,10 +24,13 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.Context;
 import android.media.AudioDeviceInfo;
 import android.media.AudioFormat;
 import android.media.AudioSystem;
+import android.os.Binder;
 import android.os.Build;
+import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
 
@@ -52,6 +55,8 @@ public class AudioMix implements Parcelable {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private int mMixType = MIX_TYPE_INVALID;
 
+    private final IBinder mToken;
+
     // written by AudioPolicy
     int mMixState = MIX_STATE_DISABLED;
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
@@ -63,12 +68,19 @@ public class AudioMix implements Parcelable {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     final int mDeviceSystemType; // an AudioSystem.DEVICE_* value, not AudioDeviceInfo.TYPE_*
 
+    // The (virtual) device ID that this AudioMix was registered for. This value is overwritten
+    // when registering this AudioMix with an AudioPolicy or attaching this AudioMix to an
+    // AudioPolicy to match the AudioPolicy attribution. Does not imply that it only modifies
+    // audio routing for this device ID.
+    private int mVirtualDeviceId;
+
     /**
      * All parameters are guaranteed valid through the Builder.
      */
     private AudioMix(@NonNull AudioMixingRule rule, @NonNull AudioFormat format,
             int routeFlags, int callbackFlags,
-            int deviceType, @Nullable String deviceAddress) {
+            int deviceType, @Nullable String deviceAddress, IBinder token,
+            int virtualDeviceId) {
         mRule = Objects.requireNonNull(rule);
         mFormat = Objects.requireNonNull(format);
         mRouteFlags = routeFlags;
@@ -76,6 +88,8 @@ public class AudioMix implements Parcelable {
         mCallbackFlags = callbackFlags;
         mDeviceSystemType = deviceType;
         mDeviceAddress = (deviceAddress == null) ? new String("") : deviceAddress;
+        mToken = token;
+        mVirtualDeviceId = virtualDeviceId;
     }
 
     // CALLBACK_FLAG_* values: keep in sync with AudioMix::kCbFlag* values defined
@@ -264,21 +278,33 @@ public class AudioMix implements Parcelable {
     }
 
     /** @hide */
+    public boolean matchesVirtualDeviceId(int deviceId) {
+        return mVirtualDeviceId == deviceId;
+    }
+
+    /** @hide */
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
 
         final AudioMix that = (AudioMix) o;
+        boolean tokenMatch = android.media.audiopolicy.Flags.audioMixOwnership()
+                ? Objects.equals(this.mToken, that.mToken)
+                : true;
         return Objects.equals(this.mRouteFlags, that.mRouteFlags)
             && Objects.equals(this.mRule, that.mRule)
             && Objects.equals(this.mMixType, that.mMixType)
-            && Objects.equals(this.mFormat, that.mFormat);
+            && Objects.equals(this.mFormat, that.mFormat)
+            && tokenMatch;
     }
 
     /** @hide */
     @Override
     public int hashCode() {
+        if (android.media.audiopolicy.Flags.audioMixOwnership()) {
+            return Objects.hash(mRouteFlags, mRule, mMixType, mFormat, mToken);
+        }
         return Objects.hash(mRouteFlags, mRule, mMixType, mFormat);
     }
 
@@ -298,6 +324,8 @@ public class AudioMix implements Parcelable {
         dest.writeString8(mDeviceAddress);
         mFormat.writeToParcel(dest, flags);
         mRule.writeToParcel(dest, flags);
+        dest.writeStrongBinder(mToken);
+        dest.writeInt(mVirtualDeviceId);
     }
 
     public static final @NonNull Parcelable.Creator<AudioMix> CREATOR = new Parcelable.Creator<>() {
@@ -317,6 +345,8 @@ public class AudioMix implements Parcelable {
             mixBuilder.setDevice(p.readInt(), p.readString8());
             mixBuilder.setFormat(AudioFormat.CREATOR.createFromParcel(p));
             mixBuilder.setMixingRule(AudioMixingRule.CREATOR.createFromParcel(p));
+            mixBuilder.setToken(p.readStrongBinder());
+            mixBuilder.setVirtualDeviceId(p.readInt());
             return mixBuilder.build();
         }
 
@@ -324,6 +354,15 @@ public class AudioMix implements Parcelable {
             return new AudioMix[size];
         }
     };
+
+    /**
+     * Updates the deviceId of the AudioMix to match with the AudioPolicy the mix is registered
+     * through.
+     * @hide
+     */
+    public void setVirtualDeviceId(int virtualDeviceId) {
+        mVirtualDeviceId = virtualDeviceId;
+    }
 
     /** @hide */
     @IntDef(flag = true,
@@ -339,6 +378,8 @@ public class AudioMix implements Parcelable {
         private AudioFormat mFormat = null;
         private int mRouteFlags = 0;
         private int mCallbackFlags = 0;
+        private IBinder mToken = null;
+        private int mVirtualDeviceId = Context.DEVICE_ID_DEFAULT;
         // an AudioSystem.DEVICE_* value, not AudioDeviceInfo.TYPE_*
         private int mDeviceSystemType = AudioSystem.DEVICE_NONE;
         private String mDeviceAddress = null;
@@ -375,6 +416,24 @@ public class AudioMix implements Parcelable {
                 throw new IllegalArgumentException("Illegal null AudioMixingRule argument");
             }
             mRule = rule;
+            return this;
+        }
+
+        /**
+         * @hide
+         * Only used by AudioMix internally.
+         */
+        Builder setToken(IBinder token) {
+            mToken = token;
+            return this;
+        }
+
+        /**
+         * @hide
+         * Only used by AudioMix internally.
+         */
+        Builder setVirtualDeviceId(int virtualDeviceId) {
+            mVirtualDeviceId = virtualDeviceId;
             return this;
         }
 
@@ -540,8 +599,13 @@ public class AudioMix implements Parcelable {
                     throw new IllegalArgumentException(error);
                 }
             }
+
+            if (mToken == null) {
+                mToken = new Binder();
+            }
+
             return new AudioMix(mRule, mFormat, mRouteFlags, mCallbackFlags, mDeviceSystemType,
-                    mDeviceAddress);
+                    mDeviceAddress, mToken, mVirtualDeviceId);
         }
 
         private int getLoopbackDeviceSystemTypeForAudioMixingRule(AudioMixingRule rule) {

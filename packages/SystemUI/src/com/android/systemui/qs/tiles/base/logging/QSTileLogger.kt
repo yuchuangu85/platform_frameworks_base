@@ -88,6 +88,7 @@ constructor(
     fun logUserActionRejectedByPolicy(
         userAction: QSTileUserAction,
         tileSpec: TileSpec,
+        restriction: String,
     ) {
         tileSpec
             .getLogBuffer()
@@ -95,7 +96,7 @@ constructor(
                 tileSpec.getLogTag(),
                 LogLevel.DEBUG,
                 { str1 = userAction.toLogString() },
-                { "tile $str1: rejected by policy" }
+                { "tile $str1: rejected by policy, restriction: $restriction" }
             )
     }
 
@@ -158,6 +159,53 @@ constructor(
             )
     }
 
+    fun logError(
+        tileSpec: TileSpec,
+        message: String,
+        error: Throwable,
+    ) {
+        tileSpec
+            .getLogBuffer()
+            .log(
+                tileSpec.getLogTag(),
+                LogLevel.ERROR,
+                {},
+                { message },
+                error,
+            )
+    }
+
+    /** Log with level [LogLevel.WARNING] */
+    fun logWarning(
+        tileSpec: TileSpec,
+        message: String,
+    ) {
+        tileSpec
+            .getLogBuffer()
+            .log(tileSpec.getLogTag(), LogLevel.WARNING, { str1 = message }, { str1!! })
+    }
+
+    /** Log with level [LogLevel.INFO] */
+    fun logInfo(
+        tileSpec: TileSpec,
+        message: String,
+    ) {
+        tileSpec
+            .getLogBuffer()
+            .log(tileSpec.getLogTag(), LogLevel.INFO, { str1 = message }, { str1!! })
+    }
+
+    fun logCustomTileUserActionDelivered(tileSpec: TileSpec) {
+        tileSpec
+            .getLogBuffer()
+            .log(
+                tileSpec.getLogTag(),
+                LogLevel.DEBUG,
+                {},
+                { "user action delivered to the service" },
+            )
+    }
+
     private fun TileSpec.getLogTag(): String = "${TAG_FORMAT_PREFIX}_${this.spec}"
 
     private fun TileSpec.getLogBuffer(): LogBuffer =
@@ -174,6 +222,7 @@ constructor(
     private fun QSTileUserAction.toLogString(): String =
         when (this) {
             is QSTileUserAction.Click -> "click"
+            is QSTileUserAction.ToggleClick -> "toggle click"
             is QSTileUserAction.LongClick -> "long click"
         }
 

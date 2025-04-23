@@ -43,7 +43,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @SysUISingleton
@@ -84,7 +84,9 @@ constructor(
                         walletController.setupWalletChangeObservers(
                             callback,
                             QuickAccessWalletController.WalletChangeEvent.WALLET_PREFERENCE_CHANGE,
-                            QuickAccessWalletController.WalletChangeEvent.DEFAULT_PAYMENT_APP_CHANGE
+                            QuickAccessWalletController.WalletChangeEvent
+                                .DEFAULT_PAYMENT_APP_CHANGE,
+                            QuickAccessWalletController.WalletChangeEvent.DEFAULT_WALLET_APP_CHANGE
                         )
                         walletController.updateWalletPreference()
                         walletController.queryWalletCards(callback, MAX_CARDS)
@@ -94,7 +96,9 @@ constructor(
                                 QuickAccessWalletController.WalletChangeEvent
                                     .WALLET_PREFERENCE_CHANGE,
                                 QuickAccessWalletController.WalletChangeEvent
-                                    .DEFAULT_PAYMENT_APP_CHANGE
+                                    .DEFAULT_PAYMENT_APP_CHANGE,
+                                QuickAccessWalletController.WalletChangeEvent
+                                    .DEFAULT_WALLET_APP_CHANGE
                             )
                         }
                     }

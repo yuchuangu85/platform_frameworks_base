@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#undef ANDROID_UTILS_REF_BASE_DISABLE_IMPLICIT_CONSTRUCTION // TODO:remove this and fix code
 
 #define LOG_TAG "InputQueue"
 
@@ -221,7 +222,7 @@ static jlong nativeSendKeyEvent(JNIEnv* env, jobject clazz, jlong ptr, jobject e
         jboolean predispatch) {
     InputQueue* queue = reinterpret_cast<InputQueue*>(ptr);
     KeyEvent* event = queue->createKeyEvent();
-    *event = android_view_KeyEvent_toNative(env, eventObj);
+    *event = android_view_KeyEvent_obtainAsCopy(env, eventObj);
 
     if (predispatch) {
         event->setFlags(event->getFlags() | AKEY_EVENT_FLAG_PREDISPATCH);

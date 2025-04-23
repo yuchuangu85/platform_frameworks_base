@@ -173,12 +173,33 @@ public final class DeviceAdminInfo implements Parcelable {
      * provisioned into "affiliated" mode when on a Headless System User Mode device.
      *
      * <p>This mode adds a Profile Owner to all users other than the user the Device Owner is on.
+     *
+     * <p>Starting from Android version {@link android.os.Build.VERSION_CODES#VANILLA_ICE_CREAM},
+     * DPCs should set the value of attribute "headless-device-owner-mode" inside the
+     * "headless-system-user" tag as "affiliated".
      */
     public static final int HEADLESS_DEVICE_OWNER_MODE_AFFILIATED = 1;
 
-    @IntDef({HEADLESS_DEVICE_OWNER_MODE_UNSUPPORTED, HEADLESS_DEVICE_OWNER_MODE_AFFILIATED})
+    /**
+     * Value for {@link #getHeadlessDeviceOwnerMode} which indicates that this DPC should be
+     * provisioned into the first secondary user when on a Headless System User Mode device.
+     *
+     * <p>This mode only allows a single secondary user on the device blocking the creation of
+     * additional secondary users.
+     *
+     * <p>Starting from Android version {@link android.os.Build.VERSION_CODES#VANILLA_ICE_CREAM},
+     * DPCs should set the value of attribute "headless-device-owner-mode" inside the
+     * "headless-system-user" tag as "single_user".
+     */
+    public static final int HEADLESS_DEVICE_OWNER_MODE_SINGLE_USER = 2;
+
+    /**
+     * @hide
+     */
+    @IntDef({HEADLESS_DEVICE_OWNER_MODE_UNSUPPORTED, HEADLESS_DEVICE_OWNER_MODE_AFFILIATED,
+            HEADLESS_DEVICE_OWNER_MODE_SINGLE_USER})
     @Retention(RetentionPolicy.SOURCE)
-    private @interface HeadlessDeviceOwnerMode {}
+    public @interface HeadlessDeviceOwnerMode {}
 
     /** @hide */
     public static class PolicyInfo {
@@ -366,15 +387,22 @@ public final class DeviceAdminInfo implements Parcelable {
                     }
                     mSupportsTransferOwnership = true;
                 } else if (tagName.equals("headless-system-user")) {
-                    String deviceOwnerModeStringValue =
-                            parser.getAttributeValue(null, "device-owner-mode");
+                    String deviceOwnerModeStringValue = parser.getAttributeValue(
+                            null, "headless-device-owner-mode");
+                    if (deviceOwnerModeStringValue == null) {
+                        deviceOwnerModeStringValue =
+                                parser.getAttributeValue(null, "device-owner-mode");
+                    }
 
-                    if (deviceOwnerModeStringValue.equalsIgnoreCase("unsupported")) {
+                    if ("unsupported".equalsIgnoreCase(deviceOwnerModeStringValue)) {
                         mHeadlessDeviceOwnerMode = HEADLESS_DEVICE_OWNER_MODE_UNSUPPORTED;
-                    } else if (deviceOwnerModeStringValue.equalsIgnoreCase("affiliated")) {
+                    } else if ("affiliated".equalsIgnoreCase(deviceOwnerModeStringValue)) {
                         mHeadlessDeviceOwnerMode = HEADLESS_DEVICE_OWNER_MODE_AFFILIATED;
+                    } else if ("single_user".equalsIgnoreCase(deviceOwnerModeStringValue)) {
+                        mHeadlessDeviceOwnerMode = HEADLESS_DEVICE_OWNER_MODE_SINGLE_USER;
                     } else {
-                        throw new XmlPullParserException("headless-system-user mode must be valid");
+                        Log.e(TAG, "Unknown headless-system-user mode: "
+                                + deviceOwnerModeStringValue);
                     }
                 }
             }

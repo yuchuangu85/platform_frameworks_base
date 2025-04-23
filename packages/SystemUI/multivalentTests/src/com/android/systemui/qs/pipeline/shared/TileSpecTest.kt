@@ -17,6 +17,7 @@
 package com.android.systemui.qs.pipeline.shared
 
 import android.content.ComponentName
+import android.platform.test.annotations.EnabledOnRavenwood
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
@@ -25,6 +26,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 @SmallTest
+@EnabledOnRavenwood
 @RunWith(AndroidJUnit4::class)
 class TileSpecTest : SysuiTestCase() {
 
@@ -81,6 +83,24 @@ class TileSpecTest : SysuiTestCase() {
     @Test
     fun emptySpec_invalid() {
         assertThat(TileSpec.create("")).isEqualTo(TileSpec.Invalid)
+    }
+
+    @Test
+    fun metricSpec_invalid() {
+        assertThat(TileSpec.Invalid.metricSpec).isEmpty()
+    }
+
+    @Test
+    fun metricSpec_platform_specName() {
+        val tile = "spec"
+        assertThat(TileSpec.create(tile).metricSpec).isEqualTo(tile)
+    }
+
+    @Test
+    fun metricSpec_custom_packageName() {
+        val componentName = ComponentName("test_pkg", "test_cls")
+
+        assertThat(TileSpec.create(componentName).metricSpec).isEqualTo(componentName.packageName)
     }
 
     companion object {

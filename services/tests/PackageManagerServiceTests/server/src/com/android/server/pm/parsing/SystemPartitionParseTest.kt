@@ -17,9 +17,10 @@
 package com.android.server.pm.parsing
 
 import android.content.pm.PackageManager
+import android.content.pm.parsing.ApkLiteParseUtils
 import android.platform.test.annotations.Postsubmit
+import com.android.internal.pm.parsing.PackageParserException
 import com.android.internal.pm.pkg.parsing.ParsingPackageUtils
-import com.android.server.pm.PackageManagerException
 import com.android.server.pm.PackageManagerService
 import com.android.server.pm.PackageManagerServiceUtils
 import java.io.File
@@ -39,7 +40,7 @@ import org.junit.rules.TemporaryFolder
 @Postsubmit
 class SystemPartitionParseTest {
 
-    private val parser = PackageParser2.forParsingFileWithDefaults()
+    private val parser = PackageParserUtils.forParsingFileWithDefaults()
 
     @get:Rule
     val tempFolder = TemporaryFolder()
@@ -81,12 +82,14 @@ class SystemPartitionParseTest {
         val exceptions = buildApks()
                 .map {
                     runCatching {
-                        parser.parsePackage(
+                        if (ApkLiteParseUtils.isApkFile(it) || it.isDirectory()) {
+                            parser.parsePackage(
                                 it, ParsingPackageUtils.PARSE_IS_SYSTEM_DIR, false /*useCaches*/)
+                        }
                     }
                 }
                 .mapNotNull { it.exceptionOrNull() }
-                .filterNot { (it as? PackageManagerException)?.error ==
+                .filterNot { (it as? PackageParserException)?.error ==
                         PackageManager.INSTALL_PARSE_FAILED_SKIPPED }
 
         if (exceptions.isEmpty()) return

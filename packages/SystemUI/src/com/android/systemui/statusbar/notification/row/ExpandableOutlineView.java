@@ -28,8 +28,6 @@ import android.util.IndentingPrintWriter;
 import android.view.View;
 import android.view.ViewOutlineProvider;
 
-import com.android.systemui.flags.Flags;
-import com.android.systemui.flags.RefactorFlag;
 import com.android.systemui.res.R;
 import com.android.systemui.statusbar.notification.RoundableState;
 import com.android.systemui.statusbar.notification.stack.NotificationChildrenContainer;
@@ -49,8 +47,6 @@ public abstract class ExpandableOutlineView extends ExpandableView {
     private float mOutlineAlpha = -1f;
     private boolean mAlwaysRoundBothCorners;
     private Path mTmpPath = new Path();
-    protected final RefactorFlag mImprovedHunAnimation =
-            RefactorFlag.forView(Flags.IMPROVED_HUN_ANIMATIONS);
 
     /**
      * {@code false} if the children views of the {@link ExpandableOutlineView} are translated when
@@ -126,15 +122,6 @@ public abstract class ExpandableOutlineView extends ExpandableView {
             return EMPTY_PATH;
         }
         float bottomRadius = mAlwaysRoundBothCorners ? getMaxRadius() : getBottomCornerRadius();
-        if (!mImprovedHunAnimation.isEnabled() && (topRadius + bottomRadius > height)) {
-            float overShoot = topRadius + bottomRadius - height;
-            float currentTopRoundness = getTopRoundness();
-            float currentBottomRoundness = getBottomRoundness();
-            topRadius -= overShoot * currentTopRoundness
-                    / (currentTopRoundness + currentBottomRoundness);
-            bottomRadius -= overShoot * currentBottomRoundness
-                    / (currentTopRoundness + currentBottomRoundness);
-        }
         getRoundedRectPath(left, top, right, bottom, topRadius, bottomRadius, mTmpPath);
         return mTmpPath;
     }
@@ -368,11 +355,17 @@ public abstract class ExpandableOutlineView extends ExpandableView {
         DumpUtilsKt.withIncreasedIndent(pw, () -> {
             pw.println(getRoundableState().debugString());
             if (DUMP_VERBOSE) {
-                pw.println("mCustomOutline: " + mCustomOutline + " mOutlineRect: " + mOutlineRect);
-                pw.println("mOutlineAlpha: " + mOutlineAlpha);
-                pw.println("mAlwaysRoundBothCorners: " + mAlwaysRoundBothCorners);
+                dumpCustomOutline(pw, args);
             }
         });
     }
 
+    protected void dumpCustomOutline(IndentingPrintWriter pw, String[] args) {
+        pw.print("CustomOutline: ");
+        pw.print("mCustomOutline", mCustomOutline);
+        pw.print("mOutlineRect", mOutlineRect);
+        pw.print("mOutlineAlpha", mOutlineAlpha);
+        pw.print("mAlwaysRoundBothCorners", mAlwaysRoundBothCorners);
+        pw.println();
+    }
 }

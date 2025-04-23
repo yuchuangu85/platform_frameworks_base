@@ -16,6 +16,9 @@
 
 package com.android.server.biometrics.sensors.face.aidl;
 
+import static android.hardware.face.FaceSensorConfigurations.getIFace;
+import static android.hardware.face.FaceSensorConfigurations.remapFqName;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
@@ -24,22 +27,24 @@ import android.app.SynchronousUserSwitchObserver;
 import android.app.TaskStackListener;
 import android.content.Context;
 import android.content.pm.UserInfo;
+import android.hardware.biometrics.BiometricAuthenticator;
+import android.hardware.biometrics.BiometricFaceConstants;
 import android.hardware.biometrics.BiometricsProtoEnums;
-import android.hardware.biometrics.ComponentInfoInternal;
 import android.hardware.biometrics.IInvalidationCallback;
 import android.hardware.biometrics.ITestSession;
 import android.hardware.biometrics.ITestSessionCallback;
-import android.hardware.biometrics.common.ComponentInfo;
 import android.hardware.biometrics.face.IFace;
 import android.hardware.biometrics.face.SensorProps;
+import android.hardware.biometrics.face.virtualhal.IVirtualHal;
 import android.hardware.face.Face;
 import android.hardware.face.FaceAuthenticateOptions;
+import android.hardware.face.FaceEnrollOptions;
 import android.hardware.face.FaceSensorPropertiesInternal;
 import android.hardware.face.IFaceServiceReceiver;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.UserHandle;
@@ -51,24 +56,30 @@ import android.view.Surface;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.biometrics.AuthenticationStatsBroadcastReceiver;
 import com.android.server.biometrics.AuthenticationStatsCollector;
+import com.android.server.biometrics.BiometricDanglingReceiver;
+import com.android.server.biometrics.BiometricHandlerProvider;
+import com.android.server.biometrics.Flags;
 import com.android.server.biometrics.Utils;
 import com.android.server.biometrics.log.BiometricContext;
 import com.android.server.biometrics.log.BiometricLogger;
 import com.android.server.biometrics.sensors.AuthSessionCoordinator;
 import com.android.server.biometrics.sensors.AuthenticationClient;
+import com.android.server.biometrics.sensors.AuthenticationStateListeners;
 import com.android.server.biometrics.sensors.BaseClientMonitor;
 import com.android.server.biometrics.sensors.BiometricScheduler;
 import com.android.server.biometrics.sensors.BiometricStateCallback;
+import com.android.server.biometrics.sensors.BiometricUtils;
 import com.android.server.biometrics.sensors.ClientMonitorCallback;
 import com.android.server.biometrics.sensors.ClientMonitorCallbackConverter;
 import com.android.server.biometrics.sensors.ClientMonitorCompositeCallback;
 import com.android.server.biometrics.sensors.InvalidationRequesterClient;
 import com.android.server.biometrics.sensors.LockoutResetDispatcher;
+import com.android.server.biometrics.sensors.LockoutTracker;
 import com.android.server.biometrics.sensors.PerformanceTracker;
 import com.android.server.biometrics.sensors.SensorList;
-import com.android.server.biometrics.sensors.face.FaceUtils;
 import com.android.server.biometrics.sensors.face.ServiceProvider;
 import com.android.server.biometrics.sensors.face.UsageStats;
+import com.android.server.biometrics.sensors.face.hidl.HidlToAidlSensorAdapter;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -84,6 +95,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * Provider for a single instance of the {@link IFace} HAL.
  */
 public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
+
+    private static final String TAG = "FaceProvider";
     private static final int ENROLL_TIMEOUT_SEC = 75;
 
     private boolean mTestHalEnabled;
@@ -95,6 +108,8 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
     private final Context mContext;
     @NonNull
     private final BiometricStateCallback mBiometricStateCallback;
+    @NonNull
+    private final AuthenticationStateListeners mAuthenticationStateListeners;
     @NonNull
     private final String mHalInstanceName;
     @NonNull
@@ -114,10 +129,17 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
     private final BiometricContext mBiometricContext;
     @NonNull
     private final AuthSessionCoordinator mAuthSessionCoordinator;
+    @NonNull
+    private final BiometricHandlerProvider mBiometricHandlerProvider;
     @Nullable
     private AuthenticationStatsCollector mAuthenticationStatsCollector;
     @Nullable
     private IFace mDaemon;
+    @Nullable
+    private IVirtualHal mVhal;
+    @Nullable
+    private String mHalInstanceNameCurrent;
+
 
     private final class BiometricTaskStackListener extends TaskStackListener {
         @Override
@@ -149,26 +171,35 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
 
     public FaceProvider(@NonNull Context context,
             @NonNull BiometricStateCallback biometricStateCallback,
-            @NonNull SensorProps[] props,
-            @NonNull String halInstanceName,
-            @NonNull LockoutResetDispatcher lockoutResetDispatcher,
-            @NonNull BiometricContext biometricContext) {
-        this(context, biometricStateCallback, props, halInstanceName, lockoutResetDispatcher,
-                biometricContext, null /* daemon */);
-    }
-
-    @VisibleForTesting FaceProvider(@NonNull Context context,
-            @NonNull BiometricStateCallback biometricStateCallback,
+            @NonNull AuthenticationStateListeners authenticationStateListeners,
             @NonNull SensorProps[] props,
             @NonNull String halInstanceName,
             @NonNull LockoutResetDispatcher lockoutResetDispatcher,
             @NonNull BiometricContext biometricContext,
-            IFace daemon) {
+            boolean resetLockoutRequiresChallenge) {
+        this(context, biometricStateCallback, authenticationStateListeners, props, halInstanceName,
+                lockoutResetDispatcher, biometricContext, null /* daemon */,
+                BiometricHandlerProvider.getInstance(), resetLockoutRequiresChallenge,
+                false /* testHalEnabled */);
+    }
+
+    @VisibleForTesting FaceProvider(@NonNull Context context,
+            @NonNull BiometricStateCallback biometricStateCallback,
+            @NonNull AuthenticationStateListeners authenticationStateListeners,
+            @NonNull SensorProps[] props,
+            @NonNull String halInstanceName,
+            @NonNull LockoutResetDispatcher lockoutResetDispatcher,
+            @NonNull BiometricContext biometricContext,
+            @Nullable IFace daemon,
+            @NonNull BiometricHandlerProvider biometricHandlerProvider,
+            boolean resetLockoutRequiresChallenge,
+            boolean testHalEnabled) {
         mContext = context;
         mBiometricStateCallback = biometricStateCallback;
+        mAuthenticationStateListeners = authenticationStateListeners;
         mHalInstanceName = halInstanceName;
         mFaceSensors = new SensorList<>(ActivityManager.getService());
-        mHandler = new Handler(Looper.getMainLooper());
+        mHandler = biometricHandlerProvider.getFaceHandler();
         mUsageStats = new UsageStats(context);
         mLockoutResetDispatcher = lockoutResetDispatcher;
         mActivityTaskManager = ActivityTaskManager.getInstance();
@@ -176,64 +207,126 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
         mBiometricContext = biometricContext;
         mAuthSessionCoordinator = mBiometricContext.getAuthSessionCoordinator();
         mDaemon = daemon;
+        mTestHalEnabled = testHalEnabled;
+        mBiometricHandlerProvider = biometricHandlerProvider;
 
-        AuthenticationStatsBroadcastReceiver mBroadcastReceiver =
-                new AuthenticationStatsBroadcastReceiver(
-                        mContext,
-                        BiometricsProtoEnums.MODALITY_FACE,
-                        (AuthenticationStatsCollector collector) -> {
-                            Slog.d(getTag(), "Initializing AuthenticationStatsCollector");
-                            mAuthenticationStatsCollector = collector;
-                        });
+        initAuthenticationBroadcastReceiver();
+        initFaceDanglingBroadcastReceiver();
+        initSensors(resetLockoutRequiresChallenge, props);
+    }
 
-        for (SensorProps prop : props) {
-            final int sensorId = prop.commonProps.sensorId;
+    private void initAuthenticationBroadcastReceiver() {
+        new AuthenticationStatsBroadcastReceiver(
+                mContext,
+                BiometricsProtoEnums.MODALITY_FACE,
+                (AuthenticationStatsCollector collector) -> {
+                    Slog.d(getTag(), "Initializing AuthenticationStatsCollector");
+                    mAuthenticationStatsCollector = collector;
+                });
+    }
 
-            final List<ComponentInfoInternal> componentInfo = new ArrayList<>();
-            if (prop.commonProps.componentInfo != null) {
-                for (ComponentInfo info : prop.commonProps.componentInfo) {
-                    componentInfo.add(new ComponentInfoInternal(info.componentId,
-                            info.hardwareVersion, info.firmwareVersion, info.serialNumber,
-                            info.softwareVersion));
-                }
+    private void initFaceDanglingBroadcastReceiver() {
+        new BiometricDanglingReceiver(mContext, BiometricsProtoEnums.MODALITY_FACE);
+    }
+
+    private void initSensors(boolean resetLockoutRequiresChallenge, SensorProps[] props) {
+        if (resetLockoutRequiresChallenge) {
+            Slog.d(getTag(), "Adding HIDL configs");
+            for (SensorProps prop : props) {
+                addHidlSensors(prop, resetLockoutRequiresChallenge);
             }
-
-            final FaceSensorPropertiesInternal internalProp = new FaceSensorPropertiesInternal(
-                    prop.commonProps.sensorId, prop.commonProps.sensorStrength,
-                    prop.commonProps.maxEnrollmentsPerUser, componentInfo, prop.sensorType,
-                    prop.supportsDetectInteraction, prop.halControlsPreview,
-                    false /* resetLockoutRequiresChallenge */);
-            final Sensor sensor = new Sensor(getTag() + "/" + sensorId, this, mContext, mHandler,
-                    internalProp, lockoutResetDispatcher, mBiometricContext);
-            final int userId = sensor.getLazySession().get() == null ? UserHandle.USER_NULL :
-                    sensor.getLazySession().get().getUserId();
-            mFaceSensors.addSensor(sensorId, sensor, userId,
-                    new SynchronousUserSwitchObserver() {
-                        @Override
-                        public void onUserSwitching(int newUserId) {
-                            scheduleInternalCleanup(sensorId, newUserId, null /* callback */);
-                        }
-                    });
-            Slog.d(getTag(), "Added: " + internalProp);
+        } else {
+            Slog.d(getTag(), "Adding AIDL configs");
+            for (SensorProps prop : props) {
+                addAidlSensors(prop, resetLockoutRequiresChallenge);
+            }
         }
     }
 
+    private void addHidlSensors(SensorProps prop, boolean resetLockoutRequiresChallenge) {
+        final int sensorId = prop.commonProps.sensorId;
+        final Sensor sensor = new HidlToAidlSensorAdapter(this, mContext, mHandler, prop,
+                mLockoutResetDispatcher, mBiometricContext, resetLockoutRequiresChallenge,
+                () -> {
+                    //TODO: update to make this testable
+                    scheduleInternalCleanup(sensorId, ActivityManager.getCurrentUser(),
+                            null /* callback */);
+                    scheduleGetFeature(sensorId, new Binder(), ActivityManager.getCurrentUser(),
+                            BiometricFaceConstants.FEATURE_REQUIRE_ATTENTION, null,
+                            mContext.getOpPackageName());
+                });
+        sensor.init(mLockoutResetDispatcher, this);
+        final int userId = sensor.getLazySession().get() == null ? UserHandle.USER_NULL :
+                sensor.getLazySession().get().getUserId();
+        mFaceSensors.addSensor(sensorId, sensor, userId,
+                new SynchronousUserSwitchObserver() {
+                    @Override
+                    public void onUserSwitching(int newUserId) {
+                        scheduleInternalCleanup(sensorId, newUserId, null /* callback */);
+                        scheduleGetFeature(sensorId, new Binder(), newUserId,
+                                BiometricFaceConstants.FEATURE_REQUIRE_ATTENTION,
+                                null, mContext.getOpPackageName());
+                    }
+                });
+        Slog.d(getTag(), "Added: " + mFaceSensors.get(sensorId));
+    }
+
+    private void addAidlSensors(SensorProps prop, boolean resetLockoutRequiresChallenge) {
+        final int sensorId = prop.commonProps.sensorId;
+        final Sensor sensor = new Sensor(this, mContext, mHandler, prop, mBiometricContext,
+                resetLockoutRequiresChallenge);
+        sensor.init(mLockoutResetDispatcher, this);
+        final int userId = sensor.getLazySession().get() == null ? UserHandle.USER_NULL :
+                sensor.getLazySession().get().getUserId();
+        mFaceSensors.addSensor(sensorId, sensor, userId,
+                new SynchronousUserSwitchObserver() {
+                    @Override
+                    public void onUserSwitching(int newUserId) {
+                        scheduleInternalCleanup(sensorId, newUserId, null /* callback */);
+                    }
+                });
+        Slog.d(getTag(), "Added: " + mFaceSensors.get(sensorId));
+    }
+
     private String getTag() {
-        return "FaceProvider/" + mHalInstanceName;
+        return TAG + "/" + mHalInstanceName;
     }
 
     boolean hasHalInstance() {
         if (mTestHalEnabled) {
             return true;
         }
-        return ServiceManager.checkService(IFace.DESCRIPTOR + "/" + mHalInstanceName) != null;
+        return ServiceManager.checkService(
+                remapFqName(IFace.DESCRIPTOR + "/" + mHalInstanceName)) != null;
     }
 
     @Nullable
     @VisibleForTesting
     synchronized IFace getHalInstance() {
         if (mTestHalEnabled) {
-            return new TestHal();
+            if (Flags.useVhalForTesting()) {
+                if (!mHalInstanceNameCurrent.contains("virtual")) {
+                    Slog.i(getTag(), "Switching face hal from " + mHalInstanceName
+                            + " to virtual hal");
+                    mHalInstanceNameCurrent = "virtual";
+                    mDaemon = null;
+                }
+            } else {
+                // Enabling the test HAL for a single sensor in a multi-sensor HAL currently enables
+                // the test HAL for all sensors under that HAL. This can be updated in the future if
+                // necessary.
+                return new TestHal();
+            }
+        } else {
+            if (mHalInstanceNameCurrent == null) {
+                mHalInstanceNameCurrent = mHalInstanceName;
+            } else if (mHalInstanceNameCurrent.contains("virtual")
+                    && mHalInstanceNameCurrent != mHalInstanceName) {
+                Slog.i(getTag(), "Switching face from virtual hal " + "to "
+                        + mHalInstanceName);
+                mHalInstanceNameCurrent = mHalInstanceName;
+                mDaemon = null;
+            }
         }
 
         if (mDaemon != null) {
@@ -242,10 +335,7 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
 
         Slog.d(getTag(), "Daemon was null, reconnecting");
 
-        mDaemon = IFace.Stub.asInterface(
-                Binder.allowBlocking(
-                        ServiceManager.waitForDeclaredService(
-                                IFace.DESCRIPTOR + "/" + mHalInstanceName)));
+        mDaemon = getIFace(IFace.DESCRIPTOR + "/" + mHalInstanceNameCurrent);
         if (mDaemon == null) {
             Slog.e(getTag(), "Unable to get daemon");
             return null;
@@ -262,6 +352,17 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
             scheduleLoadAuthenticatorIds(sensorId);
             scheduleInternalCleanup(sensorId, ActivityManager.getCurrentUser(),
                     null /* callback */);
+        }
+
+        if (Build.isDebuggable()) {
+            BiometricUtils<Face> utils = mFaceSensors.get(
+                    mFaceSensors.keyAt(0)).getFaceUtilsInstance();
+            for (UserInfo user : UserManager.get(mContext).getAliveUsers()) {
+                List<Face> enrollments = utils.getBiometricsForUser(mContext, user.id);
+                Slog.d(getTag(), "Expecting enrollments for user " + user.id + ": "
+                        + enrollments.stream().map(
+                        BiometricAuthenticator.Identifier::getBiometricId).toList());
+            }
         }
 
         return mDaemon;
@@ -290,7 +391,10 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
         }
     }
 
-    private void scheduleLoadAuthenticatorIdsForUser(int sensorId, int userId) {
+    /**
+     * Schedules FaceGetAuthenticatorIdClient for specific sensor and user.
+     */
+    protected void scheduleLoadAuthenticatorIdsForUser(int sensorId, int userId) {
         mHandler.post(() -> {
             final FaceGetAuthenticatorIdClient client = new FaceGetAuthenticatorIdClient(
                     mContext, mFaceSensors.get(sensorId).getLazySession(), userId,
@@ -311,7 +415,7 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
                     new InvalidationRequesterClient<>(mContext, userId, sensorId,
                             BiometricLogger.ofUnknown(mContext),
                             mBiometricContext,
-                            FaceUtils.getInstance(sensorId));
+                            mFaceSensors.get(sensorId).getFaceUtilsInstance());
             scheduleForSensor(sensorId, client);
         });
     }
@@ -340,7 +444,8 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
     @NonNull
     @Override
     public List<Face> getEnrolledFaces(int sensorId, int userId) {
-        return FaceUtils.getInstance(sensorId).getBiometricsForUser(mContext, userId);
+        return mFaceSensors.get(sensorId).getFaceUtilsInstance()
+                .getBiometricsForUser(mContext, userId);
     }
 
     @Override
@@ -365,8 +470,7 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
 
     @Override
     public int getLockoutModeForUser(int sensorId, int userId) {
-        return mBiometricContext.getAuthSessionCoordinator().getLockoutStateFor(userId,
-                Utils.getCurrentStrength(sensorId));
+        return mFaceSensors.get(sensorId).getLockoutModeForUser(userId);
     }
 
     @Override
@@ -376,13 +480,14 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
 
     @Override
     public boolean isHardwareDetected(int sensorId) {
-        return hasHalInstance();
+        return mFaceSensors.get(sensorId).isHardwareDetected(mHalInstanceName);
     }
 
     @Override
     public void scheduleGenerateChallenge(int sensorId, int userId, @NonNull IBinder token,
             @NonNull IFaceServiceReceiver receiver, String opPackageName) {
         mHandler.post(() -> {
+            mFaceSensors.get(sensorId).scheduleFaceUpdateActiveUserClient(userId);
             final FaceGenerateChallengeClient client = new FaceGenerateChallengeClient(mContext,
                     mFaceSensors.get(sensorId).getLazySession(), token,
                     new ClientMonitorCallbackConverter(receiver), userId, opPackageName, sensorId,
@@ -413,32 +518,24 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
     public long scheduleEnroll(int sensorId, @NonNull IBinder token,
             @NonNull byte[] hardwareAuthToken, int userId, @NonNull IFaceServiceReceiver receiver,
             @NonNull String opPackageName, @NonNull int[] disabledFeatures,
-            @Nullable Surface previewSurface, boolean debugConsent) {
+            @Nullable Surface previewSurface, boolean debugConsent, FaceEnrollOptions options) {
         final long id = mRequestCounter.incrementAndGet();
         mHandler.post(() -> {
+            mFaceSensors.get(sensorId).scheduleFaceUpdateActiveUserClient(userId);
             final int maxTemplatesPerUser = mFaceSensors.get(
                     sensorId).getSensorProperties().maxEnrollmentsPerUser;
             final FaceEnrollClient client = new FaceEnrollClient(mContext,
                     mFaceSensors.get(sensorId).getLazySession(), token,
                     new ClientMonitorCallbackConverter(receiver), userId, hardwareAuthToken,
-                    opPackageName, id, FaceUtils.getInstance(sensorId), disabledFeatures,
-                    ENROLL_TIMEOUT_SEC, previewSurface, sensorId,
+                    opPackageName, id, mFaceSensors.get(sensorId).getFaceUtilsInstance(),
+                    disabledFeatures, ENROLL_TIMEOUT_SEC, previewSurface, sensorId,
                     createLogger(BiometricsProtoEnums.ACTION_ENROLL,
                             BiometricsProtoEnums.CLIENT_UNKNOWN,
                             mAuthenticationStatsCollector),
-                    mBiometricContext, maxTemplatesPerUser, debugConsent);
-            scheduleForSensor(sensorId, client, new ClientMonitorCompositeCallback(
-                            mBiometricStateCallback, new ClientMonitorCallback() {
-                        @Override
-                        public void onClientFinished(@NonNull BaseClientMonitor clientMonitor,
-                                boolean success) {
-                            ClientMonitorCallback.super.onClientFinished(clientMonitor, success);
-                            if (success) {
-                                scheduleLoadAuthenticatorIdsForUser(sensorId, userId);
-                                scheduleInvalidationRequest(sensorId, userId);
-                            }
-                        }
-                    }));
+                    mBiometricContext, maxTemplatesPerUser, debugConsent, options,
+                    mAuthenticationStateListeners,
+                    mFaceSensors.get(sensorId).getFaceUtilsInstance());
+            scheduleForSensor(sensorId, client, mBiometricStateCallback);
         });
         return id;
     }
@@ -463,7 +560,7 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
                     token, id, callback, options,
                     createLogger(BiometricsProtoEnums.ACTION_AUTHENTICATE, statsClient,
                             mAuthenticationStatsCollector),
-                    mBiometricContext, isStrongBiometric);
+                    mBiometricContext, mAuthenticationStateListeners, isStrongBiometric);
             scheduleForSensor(sensorId, client, mBiometricStateCallback);
         });
 
@@ -486,6 +583,9 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
             final int userId = options.getUserId();
             final int sensorId = options.getSensorId();
             final boolean isStrongBiometric = Utils.isStrongBiometric(sensorId);
+            mFaceSensors.get(sensorId).scheduleFaceUpdateActiveUserClient(userId);
+            final LockoutTracker lockoutTracker = mFaceSensors.get(sensorId).getLockoutTracker(
+                    true /* forAuth */);
             final FaceAuthenticationClient client = new FaceAuthenticationClient(
                     mContext, mFaceSensors.get(sensorId).getLazySession(), token, requestId,
                     callback, operationId, restricted, options, cookie,
@@ -493,21 +593,25 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
                     createLogger(BiometricsProtoEnums.ACTION_AUTHENTICATE, statsClient,
                             mAuthenticationStatsCollector),
                     mBiometricContext, isStrongBiometric,
-                    mUsageStats, null /* lockoutTracker */,
-                    allowBackgroundAuthentication, Utils.getCurrentStrength(sensorId));
+                    mUsageStats, lockoutTracker,
+                    allowBackgroundAuthentication, Utils.getCurrentStrength(sensorId),
+                    mAuthenticationStateListeners);
             scheduleForSensor(sensorId, client, new ClientMonitorCallback() {
                 @Override
                 public void onClientStarted(
                          BaseClientMonitor clientMonitor) {
-                    mAuthSessionCoordinator.authStartedFor(userId, sensorId, requestId);
+                    mBiometricHandlerProvider.getBiometricCallbackHandler().post(() ->
+                            mAuthSessionCoordinator.authStartedFor(userId, sensorId, requestId));
                 }
 
                 @Override
                 public void onClientFinished(
                         BaseClientMonitor clientMonitor,
                         boolean success) {
-                    mAuthSessionCoordinator.authEndedFor(userId, Utils.getCurrentStrength(sensorId),
-                            sensorId, requestId, client.wasAuthSuccessful());
+                    mBiometricHandlerProvider.getBiometricCallbackHandler().post(() ->
+                            mAuthSessionCoordinator.authEndedFor(userId,
+                                    Utils.getCurrentStrength(sensorId), sensorId, requestId,
+                                    client.wasAuthSuccessful()));
                 }
             });
         });
@@ -542,7 +646,7 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
     @Override
     public void scheduleRemoveAll(int sensorId, @NonNull IBinder token, int userId,
             @NonNull IFaceServiceReceiver receiver, @NonNull String opPackageName) {
-        final List<Face> faces = FaceUtils.getInstance(sensorId)
+        final List<Face> faces = mFaceSensors.get(sensorId).getFaceUtilsInstance()
                 .getBiometricsForUser(mContext, userId);
         final int[] faceIds = new int[faces.size()];
         for (int i = 0; i < faces.size(); i++) {
@@ -555,15 +659,17 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
     private void scheduleRemoveSpecifiedIds(int sensorId, @NonNull IBinder token, int[] faceIds,
             int userId, @NonNull IFaceServiceReceiver receiver, @NonNull String opPackageName) {
         mHandler.post(() -> {
+            mFaceSensors.get(sensorId).scheduleFaceUpdateActiveUserClient(userId);
             final FaceRemovalClient client = new FaceRemovalClient(mContext,
                     mFaceSensors.get(sensorId).getLazySession(), token,
                     new ClientMonitorCallbackConverter(receiver), faceIds, userId,
-                    opPackageName, FaceUtils.getInstance(sensorId), sensorId,
+                    opPackageName, mFaceSensors.get(sensorId).getFaceUtilsInstance(), sensorId,
                     createLogger(BiometricsProtoEnums.ACTION_REMOVE,
                             BiometricsProtoEnums.CLIENT_UNKNOWN,
                             mAuthenticationStatsCollector),
                     mBiometricContext,
-                    mFaceSensors.get(sensorId).getAuthenticatorIds());
+                    mFaceSensors.get(sensorId).getAuthenticatorIds(),
+                    BiometricsProtoEnums.UNENROLL_REASON_USER_REQUEST);
             scheduleForSensor(sensorId, client, mBiometricStateCallback);
         });
     }
@@ -571,6 +677,7 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
     @Override
     public void scheduleResetLockout(int sensorId, int userId, @NonNull byte[] hardwareAuthToken) {
         mHandler.post(() -> {
+            mFaceSensors.get(sensorId).scheduleFaceUpdateActiveUserClient(userId);
             final FaceResetLockoutClient client = new FaceResetLockoutClient(
                     mContext, mFaceSensors.get(sensorId).getLazySession(), userId,
                     mContext.getOpPackageName(), sensorId,
@@ -578,8 +685,8 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
                             BiometricsProtoEnums.CLIENT_UNKNOWN,
                             mAuthenticationStatsCollector),
                     mBiometricContext, hardwareAuthToken,
-                    mFaceSensors.get(sensorId).getLockoutCache(), mLockoutResetDispatcher,
-                    Utils.getCurrentStrength(sensorId));
+                    mFaceSensors.get(sensorId).getLockoutTracker(false/* forAuth */),
+                    mLockoutResetDispatcher, Utils.getCurrentStrength(sensorId));
 
             scheduleForSensor(sensorId, client);
         });
@@ -590,7 +697,8 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
             boolean enabled, @NonNull byte[] hardwareAuthToken,
             @NonNull IFaceServiceReceiver receiver, @NonNull String opPackageName) {
         mHandler.post(() -> {
-            final List<Face> faces = FaceUtils.getInstance(sensorId)
+            mFaceSensors.get(sensorId).scheduleFaceUpdateActiveUserClient(userId);
+            final List<Face> faces = mFaceSensors.get(sensorId).getFaceUtilsInstance()
                     .getBiometricsForUser(mContext, userId);
             if (faces.isEmpty()) {
                 Slog.w(getTag(), "Ignoring setFeature, no templates enrolled for user: " + userId);
@@ -610,7 +718,8 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
     public void scheduleGetFeature(int sensorId, @NonNull IBinder token, int userId, int feature,
             @NonNull ClientMonitorCallbackConverter callback, @NonNull String opPackageName) {
         mHandler.post(() -> {
-            final List<Face> faces = FaceUtils.getInstance(sensorId)
+            mFaceSensors.get(sensorId).scheduleFaceUpdateActiveUserClient(userId);
+            final List<Face> faces = mFaceSensors.get(sensorId).getFaceUtilsInstance()
                     .getBiometricsForUser(mContext, userId);
             if (faces.isEmpty()) {
                 Slog.w(getTag(), "Ignoring getFeature, no templates enrolled for user: " + userId);
@@ -641,6 +750,7 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
     public void scheduleInternalCleanup(int sensorId, int userId,
             @Nullable ClientMonitorCallback callback, boolean favorHalEnrollments) {
         mHandler.post(() -> {
+            mFaceSensors.get(sensorId).scheduleFaceUpdateActiveUserClient(userId);
             final FaceInternalCleanupClient client =
                     new FaceInternalCleanupClient(mContext,
                             mFaceSensors.get(sensorId).getLazySession(), userId,
@@ -649,7 +759,7 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
                                     BiometricsProtoEnums.CLIENT_UNKNOWN,
                                     mAuthenticationStatsCollector),
                             mBiometricContext,
-                            FaceUtils.getInstance(sensorId),
+                            mFaceSensors.get(sensorId).getFaceUtilsInstance(),
                             mFaceSensors.get(sensorId).getAuthenticatorIds());
             if (favorHalEnrollments) {
                 client.setFavorHalEnrollments();
@@ -690,7 +800,7 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
             JSONArray sets = new JSONArray();
             for (UserInfo user : UserManager.get(mContext).getUsers()) {
                 final int userId = user.getUserHandle().getIdentifier();
-                final int c = FaceUtils.getInstance(sensorId)
+                final int c = mFaceSensors.get(sensorId).getFaceUtilsInstance()
                         .getBiometricsForUser(mContext, userId).size();
                 JSONObject set = new JSONObject();
                 set.put("id", userId);
@@ -741,14 +851,21 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
             for (int i = 0; i < mFaceSensors.size(); i++) {
                 final Sensor sensor = mFaceSensors.valueAt(i);
                 final int sensorId = mFaceSensors.keyAt(i);
-                PerformanceTracker.getInstanceForSensorId(sensorId).incrementHALDeathCount();
+                PerformanceTracker.getInstanceForSensorId(sensorId)
+                        .incrementHALDeathCount();
                 sensor.onBinderDied();
             }
         });
     }
 
     void setTestHalEnabled(boolean enabled) {
+        final boolean changed = enabled != mTestHalEnabled;
         mTestHalEnabled = enabled;
+        Slog.i(getTag(), "setTestHalEnabled(): isVhalForTestingFlags=" + Flags.useVhalForTesting()
+                + " mTestHalEnabled=" + mTestHalEnabled + " changed=" + changed);
+        if (changed && isVhalForTesting()) {
+            getHalInstance();
+        }
     }
 
     @Override
@@ -759,5 +876,47 @@ public class FaceProvider implements IBinder.DeathRecipient, ServiceProvider {
             return;
         }
         biometricScheduler.startWatchdog();
+    }
+
+    public boolean getTestHalEnabled() {
+        return mTestHalEnabled;
+    }
+
+    /**
+     * Return true if vhal_for_testing feature is enabled and test is active
+     */
+    public boolean isVhalForTesting() {
+        return (Flags.useVhalForTesting() && mTestHalEnabled);
+    }
+
+
+    /**
+     * Sends a face re enroll notification.
+     */
+    public void sendFaceReEnrollNotification() {
+        mAuthenticationStatsCollector.sendFaceReEnrollNotification();
+    }
+
+    /**
+     * Sends a fingerprint enroll notification.
+     */
+    public void sendFingerprintReEnrollNotification() {
+        mAuthenticationStatsCollector.sendFingerprintReEnrollNotification();
+    }
+
+    /**
+     * Return virtual hal AIDL interface if it is used for testing
+     *
+     */
+    public IVirtualHal getVhal() throws RemoteException {
+        if (mVhal == null && isVhalForTesting()) {
+            mVhal = IVirtualHal.Stub.asInterface(
+                    Binder.allowBlocking(
+                            ServiceManager.waitForService(
+                                    IVirtualHal.DESCRIPTOR + "/"
+                                            + mHalInstanceNameCurrent)));
+            Slog.d(getTag(), "getVhal " + mHalInstanceNameCurrent);
+        }
+        return mVhal;
     }
 }

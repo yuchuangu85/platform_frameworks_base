@@ -24,7 +24,7 @@
     <string name="keyguard_enter_pin" msgid="8114529922480276834">"輸入 PIN 碼"</string>
     <string name="keyguard_enter_your_pattern" msgid="351503370332324745">"畫出解鎖圖案"</string>
     <string name="keyguard_enter_pattern" msgid="7616595160901084119">"畫出解鎖圖案"</string>
-    <string name="keyguard_enter_your_password" msgid="7225626204122735501">"輸入密碼"</string>
+    <string name="keyguard_enter_your_password" msgid="7225626204122735501">"請輸入密碼"</string>
     <string name="keyguard_enter_password" msgid="6483623792371009758">"輸入密碼"</string>
     <string name="keyguard_sim_error_message_short" msgid="633630844240494070">"卡片無效。"</string>
     <string name="keyguard_charged" msgid="5478247181205188995">"充電完成"</string>
@@ -33,8 +33,8 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 充電中"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 快速充電中"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 慢速充電中"</string>
-    <string name="keyguard_plugged_in_charging_limited" msgid="1053130519456324630">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 為保護電池，充電效能已最佳化"</string>
-    <string name="keyguard_plugged_in_incompatible_charger" msgid="3687961801947819076">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 充電配件有問題"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="5369697538556777542">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 為保護電池，目前暫停充電"</string>
+    <string name="keyguard_plugged_in_incompatible_charger" msgid="6384203333154532125">"<xliff:g id="PERCENTAGE">%s</xliff:g> • 請檢查充電配件"</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"網路已鎖定"</string>
     <string name="keyguard_missing_sim_message_short" msgid="685029586173458728">"沒有 SIM 卡"</string>
     <string name="keyguard_permanent_disabled_sim_message_short" msgid="3955052454216046100">"SIM 卡無法使用。"</string>
@@ -111,6 +111,9 @@
     <string name="kg_prompt_reason_timeout_pattern" msgid="5514969660010197363">"為強化安全性，請改用解鎖圖案"</string>
     <string name="kg_prompt_reason_timeout_pin" msgid="4227962059353859376">"為強化安全性，請改用 PIN 碼"</string>
     <string name="kg_prompt_reason_timeout_password" msgid="8810879144143933690">"為強化安全性，請改用密碼"</string>
+    <string name="kg_prompt_added_security_pin" msgid="5487992065995475528">"請輸入 PIN 碼，加強安全防護"</string>
+    <string name="kg_prompt_added_security_pattern" msgid="1017068086102168544">"請畫出解鎖圖案，加強安全防護"</string>
+    <string name="kg_prompt_added_security_password" msgid="6053156069765029006">"請輸入密碼，加強安全防護"</string>
     <string name="kg_prompt_reason_device_admin" msgid="6961159596224055685">"管理員已鎖定裝置"</string>
     <string name="kg_prompt_reason_user_request" msgid="6015774877733717904">"裝置已手動鎖定"</string>
     <string name="kg_face_not_recognized" msgid="7903950626744419160">"無法識別"</string>

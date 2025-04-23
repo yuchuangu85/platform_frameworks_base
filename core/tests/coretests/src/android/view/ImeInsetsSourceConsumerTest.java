@@ -24,8 +24,11 @@ import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
 
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.AdditionalMatchers.and;
+import static org.mockito.AdditionalMatchers.not;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.notNull;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
@@ -34,14 +37,20 @@ import android.graphics.Insets;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.platform.test.annotations.Presubmit;
+import android.platform.test.annotations.RequiresFlagsDisabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.view.WindowManager.BadTokenException;
 import android.view.WindowManager.LayoutParams;
+import android.view.inputmethod.Flags;
+import android.view.inputmethod.ImeTracker;
 import android.widget.TextView;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
@@ -56,6 +65,9 @@ import org.mockito.Spy;
 @Presubmit
 @RunWith(AndroidJUnit4.class)
 public class ImeInsetsSourceConsumerTest {
+
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
 
     Context mContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
     InsetsSourceConsumer mImeConsumer;
@@ -96,26 +108,32 @@ public class ImeInsetsSourceConsumerTest {
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             // test if setVisibility can show IME
             mImeConsumer.onWindowFocusGained(true);
-            mController.show(WindowInsets.Type.ime(), true /* fromIme */, null /* statsToken */);
+            mController.show(WindowInsets.Type.ime(), true /* fromIme */, ImeTracker.Token.empty());
             mController.cancelExistingAnimations();
             assertTrue((mController.getRequestedVisibleTypes() & WindowInsets.Type.ime()) != 0);
 
             // test if setVisibility can hide IME
-            mController.hide(WindowInsets.Type.ime(), true /* fromIme */, null /* statsToken */);
+            mController.hide(WindowInsets.Type.ime(), true /* fromIme */, ImeTracker.Token.empty());
             mController.cancelExistingAnimations();
             assertFalse((mController.getRequestedVisibleTypes() & WindowInsets.Type.ime()) != 0);
         });
     }
 
     @Test
+    @RequiresFlagsDisabled(Flags.FLAG_REFACTOR_INSETS_CONTROLLER)
     public void testImeRequestedVisibleAwaitingControl() {
         // Set null control and then request show.
         mController.onControlsChanged(new InsetsSourceControl[] { null });
 
         InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
             // Request IME visible before control is available.
+            final var statsToken = ImeTracker.Token.empty();
             mImeConsumer.onWindowFocusGained(true);
-            mController.show(WindowInsets.Type.ime(), true /* fromIme */, null /* statsToken */);
+            mController.show(WindowInsets.Type.ime(), true /* fromIme */, statsToken);
+            // Called once through the show flow.
+            verify(mController).applyAnimation(
+                    eq(WindowInsets.Type.ime()), eq(true) /* show */, eq(true) /* fromIme */,
+                    eq(statsToken));
 
             // set control and verify visibility is applied.
             InsetsSourceControl control = new InsetsSourceControl(ID_IME,
@@ -123,15 +141,61 @@ public class ImeInsetsSourceConsumerTest {
             mController.onControlsChanged(new InsetsSourceControl[] { control });
             // IME show animation should be triggered when control becomes available.
             verify(mController).applyAnimation(
-                    eq(WindowInsets.Type.ime()), eq(true) /* show */, eq(true) /* fromIme */,
-                    any() /* statsToken */);
+                    eq(WindowInsets.Type.ime()), eq(true) /* show */, eq(false) /* fromIme */,
+                    and(not(eq(statsToken)), notNull()));
             verify(mController, never()).applyAnimation(
-                    eq(WindowInsets.Type.ime()), eq(false) /* show */, eq(true) /* fromIme */,
-                    any() /* statsToken */);
+                    eq(WindowInsets.Type.ime()), eq(false) /* show */, eq(false) /* fromIme */,
+                    and(not(eq(statsToken)), notNull()));
         });
     }
 
     @Test
+    @RequiresFlagsDisabled(Flags.FLAG_REFACTOR_INSETS_CONTROLLER)
+    public void testImeRequestedVisibleAwaitingLeash() {
+        // Set null control, then request show.
+        mController.onControlsChanged(new InsetsSourceControl[] { null });
+
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            // Request IME visible before control is available.
+            final var statsToken = ImeTracker.Token.empty();
+            mImeConsumer.onWindowFocusGained(true);
+            mController.show(WindowInsets.Type.ime(), true /* fromIme */, statsToken);
+            // Called once through the show flow.
+            verify(mController).applyAnimation(
+                    eq(WindowInsets.Type.ime()), eq(true) /* show */, eq(true) /* fromIme */,
+                    eq(statsToken));
+            // Clear previous invocations to verify this is never called with control without leash.
+            clearInvocations(mController);
+
+            // set control without leash and verify visibility is not applied.
+            InsetsSourceControl control = new InsetsSourceControl(ID_IME,
+                    WindowInsets.Type.ime(), null /* leash */, false, new Point(), Insets.NONE);
+            mController.onControlsChanged(new InsetsSourceControl[] { control });
+            // IME show animation should not be triggered when control becomes available,
+            // as we have no leash.
+            verify(mController, never()).applyAnimation(
+                    eq(WindowInsets.Type.ime()), eq(true) /* show */, eq(false) /* fromIme */,
+                    and(not(eq(statsToken)), notNull()));
+            verify(mController, never()).applyAnimation(
+                    eq(WindowInsets.Type.ime()), eq(false) /* show */, eq(false) /* fromIme */,
+                    and(not(eq(statsToken)), notNull()));
+
+            // set control with leash and verify visibility is applied.
+            InsetsSourceControl controlWithLeash = new InsetsSourceControl(ID_IME,
+                    WindowInsets.Type.ime(), mLeash, false, new Point(), Insets.NONE);
+            mController.onControlsChanged(new InsetsSourceControl[] { controlWithLeash });
+            // IME show animation should be triggered when control with leash becomes available.
+            verify(mController).applyAnimation(
+                    eq(WindowInsets.Type.ime()), eq(true) /* show */, eq(false) /* fromIme */,
+                    and(not(eq(statsToken)), notNull()));
+            verify(mController, never()).applyAnimation(
+                    eq(WindowInsets.Type.ime()), eq(false) /* show */, eq(false) /* fromIme */,
+                    and(not(eq(statsToken)), notNull()));
+        });
+    }
+
+    @Test
+    @RequiresFlagsDisabled(Flags.FLAG_REFACTOR_INSETS_CONTROLLER)
     public void testImeGetAndClearSkipAnimationOnce_expectSkip() {
         // Expect IME animation will skipped when the IME is visible at first place.
         verifyImeGetAndClearSkipAnimationOnce(true /* hasWindowFocus */, true /* hasViewFocus */,
@@ -139,6 +203,7 @@ public class ImeInsetsSourceConsumerTest {
     }
 
     @Test
+    @RequiresFlagsDisabled(Flags.FLAG_REFACTOR_INSETS_CONTROLLER)
     public void testImeGetAndClearSkipAnimationOnce_expectNoSkip() {
         // Expect IME animation will not skipped if previously no view focused when gained the
         // window focus and requesting the IME visible next time.
@@ -152,9 +217,13 @@ public class ImeInsetsSourceConsumerTest {
             // Request IME visible before control is available.
             mImeConsumer.onWindowFocusGained(hasWindowFocus);
             final boolean imeVisible = hasWindowFocus && hasViewFocus;
+            final var statsToken = ImeTracker.Token.empty();
             if (imeVisible) {
-                mController.show(WindowInsets.Type.ime(), true /* fromIme */,
-                        null /* statsToken */);
+                mController.show(WindowInsets.Type.ime(), true /* fromIme */, statsToken);
+                // Called once through the show flow.
+                verify(mController).applyAnimation(eq(WindowInsets.Type.ime()),
+                        eq(true) /* show */, eq(true) /* fromIme */,
+                        eq(false) /* skipAnim */, eq(statsToken));
             }
 
             // set control and verify visibility is applied.
@@ -168,23 +237,29 @@ public class ImeInsetsSourceConsumerTest {
                 // and expect skip animation state after getAndClearSkipAnimationOnce invoked.
                 mController.onControlsChanged(new InsetsSourceControl[]{ control });
                 verify(control).getAndClearSkipAnimationOnce();
+                // This ends up creating a new request when we gain control,
+                // so the statsToken won't match.
                 verify(mController).applyAnimation(eq(WindowInsets.Type.ime()),
                         eq(true) /* show */, eq(false) /* fromIme */,
-                        eq(expectSkipAnim) /* skipAnim */, eq(null) /* statsToken */);
+                        eq(expectSkipAnim) /* skipAnim */, and(not(eq(statsToken)), notNull()));
             }
 
             // If previously hasViewFocus is false, verify when requesting the IME visible next
             // time will not skip animation.
             if (!hasViewFocus) {
-                mController.show(WindowInsets.Type.ime(), true /* fromIme */,
-                        null /* statsToken */);
+                final var statsTokenNext = ImeTracker.Token.empty();
+                mController.show(WindowInsets.Type.ime(), true /* fromIme */, statsTokenNext);
+                // Called once through the show flow.
+                verify(mController).applyAnimation(eq(WindowInsets.Type.ime()),
+                        eq(true) /* show */, eq(true) /* fromIme */,
+                        eq(false) /* skipAnim */, eq(statsTokenNext));
                 mController.onControlsChanged(new InsetsSourceControl[]{ control });
                 // Verify IME show animation should be triggered when control becomes available and
                 // the animation will be skipped by getAndClearSkipAnimationOnce invoked.
                 verify(control).getAndClearSkipAnimationOnce();
                 verify(mController).applyAnimation(eq(WindowInsets.Type.ime()),
-                        eq(true) /* show */, eq(true) /* fromIme */,
-                        eq(false) /* skipAnim */, eq(null) /* statsToken */);
+                        eq(true) /* show */, eq(false) /* fromIme */,
+                        eq(true) /* skipAnim */, and(not(eq(statsToken)), notNull()));
             }
         });
     }

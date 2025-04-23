@@ -17,9 +17,14 @@
 package com.android.keyguard;
 
 import static com.android.systemui.flags.Flags.LOCKSCREEN_ENABLE_LANDSCAPE;
+import static com.android.systemui.util.kotlin.JavaAdapterKt.collectFlow;
 
+import android.content.Context;
+import android.content.pm.PackageManager;
 import android.content.res.Resources;
+import android.graphics.drawable.Drawable;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextUtils;
@@ -27,6 +32,7 @@ import android.text.TextWatcher;
 import android.text.method.TextKeyListener;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.ViewGroup.MarginLayoutParams;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodInfo;
@@ -39,6 +45,9 @@ import android.widget.TextView.OnEditorActionListener;
 import com.android.internal.util.LatencyTracker;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.keyguard.KeyguardSecurityModel.SecurityMode;
+import com.android.keyguard.domain.interactor.KeyguardKeyboardInteractor;
+import com.android.systemui.Flags;
+import com.android.systemui.bouncer.ui.helper.BouncerHapticPlayer;
 import com.android.systemui.classifier.FalsingCollector;
 import com.android.systemui.dagger.qualifiers.Main;
 import com.android.systemui.flags.FeatureFlags;
@@ -52,6 +61,7 @@ import java.util.List;
 public class KeyguardPasswordViewController
         extends KeyguardAbsKeyInputViewController<KeyguardPasswordView> {
 
+    private final KeyguardKeyboardInteractor mKeyguardKeyboardInteractor;
     private final KeyguardSecurityCallback mKeyguardSecurityCallback;
     private final DevicePostureController mPostureController;
     private final DevicePostureController.Callback mPostureCallback = posture ->
@@ -60,6 +70,8 @@ public class KeyguardPasswordViewController
     private final DelayableExecutor mMainExecutor;
     private final KeyguardViewController mKeyguardViewController;
     private final boolean mShowImeAtScreenOn;
+    private Drawable mDefaultPasswordFieldBackground;
+    private Drawable mFocusedPasswordFieldBackground;
     private EditText mPasswordEntry;
     private ImageView mSwitchImeButton;
     private boolean mPaused;
@@ -78,8 +90,9 @@ public class KeyguardPasswordViewController
     };
 
     private final View.OnKeyListener mKeyListener = (v, keyCode, keyEvent) -> {
+        // Ignore SPACE as a confirm key to allow the space character within passwords.
         final boolean isKeyboardEnterKey = keyEvent != null
-                && KeyEvent.isConfirmKey(keyCode)
+                && KeyEvent.isConfirmKey(keyCode) && keyCode != KeyEvent.KEYCODE_SPACE
                 && keyEvent.getAction() == KeyEvent.ACTION_UP;
         if (isKeyboardEnterKey) {
             verifyPasswordAndUnlock();
@@ -121,20 +134,28 @@ public class KeyguardPasswordViewController
             KeyguardViewController keyguardViewController,
             DevicePostureController postureController,
             FeatureFlags featureFlags,
-            SelectedUserInteractor selectedUserInteractor) {
+            SelectedUserInteractor selectedUserInteractor,
+            KeyguardKeyboardInteractor keyguardKeyboardInteractor,
+            BouncerHapticPlayer bouncerHapticPlayer,
+            UserActivityNotifier userActivityNotifier) {
         super(view, keyguardUpdateMonitor, securityMode, lockPatternUtils, keyguardSecurityCallback,
                 messageAreaControllerFactory, latencyTracker, falsingCollector,
-                emergencyButtonController, featureFlags, selectedUserInteractor);
+                emergencyButtonController, featureFlags, selectedUserInteractor,
+                bouncerHapticPlayer, userActivityNotifier);
         mKeyguardSecurityCallback = keyguardSecurityCallback;
         mInputMethodManager = inputMethodManager;
         mPostureController = postureController;
         mMainExecutor = mainExecutor;
         mKeyguardViewController = keyguardViewController;
+        mKeyguardKeyboardInteractor = keyguardKeyboardInteractor;
         if (featureFlags.isEnabled(LOCKSCREEN_ENABLE_LANDSCAPE)) {
             view.setIsLockScreenLandscapeEnabled();
         }
         mShowImeAtScreenOn = resources.getBoolean(R.bool.kg_show_ime_at_screen_on);
         mPasswordEntry = mView.findViewById(mView.getPasswordTextViewId());
+        mDefaultPasswordFieldBackground = mPasswordEntry.getBackground();
+        mFocusedPasswordFieldBackground = getResources().getDrawable(
+                R.drawable.bouncer_password_view_background);
         mSwitchImeButton = mView.findViewById(R.id.switch_ime_button);
     }
 
@@ -156,8 +177,33 @@ public class KeyguardPasswordViewController
         mPasswordEntry.setOnEditorActionListener(mOnEditorActionListener);
         mPasswordEntry.setOnKeyListener(mKeyListener);
         mPasswordEntry.addTextChangedListener(mTextWatcher);
+
         // Poke the wakelock any time the text is selected or modified
-        mPasswordEntry.setOnClickListener(v -> mKeyguardSecurityCallback.userActivity());
+        // TODO(b/362362385): Revert to the previous onClickListener implementation once this bug is
+        //  fixed.
+        mPasswordEntry.setOnClickListener(new View.OnClickListener() {
+
+            private final boolean mAutomotiveAndVisibleBackgroundUsers =
+                    isAutomotiveAndVisibleBackgroundUsers();
+
+            @Override
+            public void onClick(View v) {
+                if (mAutomotiveAndVisibleBackgroundUsers) {
+                    mInputMethodManager.restartInput(v);
+                }
+                mKeyguardSecurityCallback.userActivity();
+            }
+
+            private boolean isAutomotiveAndVisibleBackgroundUsers() {
+                final Context context = getContext();
+                return context.getPackageManager().hasSystemFeature(
+                        PackageManager.FEATURE_AUTOMOTIVE)
+                        && UserManager.isVisibleBackgroundUsersEnabled()
+                        && context.getResources().getBoolean(
+                        android.R.bool.config_perDisplayFocusEnabled);
+            }
+        });
+
         mSwitchImeButton.setOnClickListener(v -> {
             mKeyguardSecurityCallback.userActivity(); // Leave the screen on a bit longer
             // Do not show auxiliary subtypes in password lock screen.
@@ -175,6 +221,27 @@ public class KeyguardPasswordViewController
 
         // If there's more than one IME, enable the IME switcher button
         updateSwitchImeButton();
+
+        if (Flags.pinInputFieldStyledFocusState()) {
+            collectFlow(mPasswordEntry,
+                    mKeyguardKeyboardInteractor.isAnyKeyboardConnected(),
+                    this::setPasswordFieldFocusBackground);
+
+            ViewGroup.LayoutParams layoutParams = mPasswordEntry.getLayoutParams();
+            layoutParams.height = (int) getResources()
+                    .getDimension(R.dimen.keyguard_password_field_height);
+            layoutParams.width = (int) getResources()
+                    .getDimension(R.dimen.keyguard_password_field_width);
+        }
+
+    }
+
+    private void setPasswordFieldFocusBackground(boolean isAnyKeyboardConnected) {
+        if (isAnyKeyboardConnected) {
+            mPasswordEntry.setBackground(mFocusedPasswordFieldBackground);
+        } else {
+            mPasswordEntry.setBackground(mDefaultPasswordFieldBackground);
+        }
     }
 
     @Override

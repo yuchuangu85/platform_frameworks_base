@@ -18,11 +18,11 @@ package com.android.server.wm.flicker.ime
 
 import android.platform.test.annotations.PlatinumTest
 import android.platform.test.annotations.Presubmit
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.traces.component.ComponentNameMatcher
 import com.android.server.wm.flicker.BaseTest
 import com.android.server.wm.flicker.helpers.ImeAppHelper
 import com.android.server.wm.flicker.navBarLayerPositionAtStartAndEnd
@@ -34,8 +34,8 @@ import org.junit.runners.MethodSorters
 import org.junit.runners.Parameterized
 
 /**
- * Test IME window closing back to app window transitions. To run this test: `atest
- * FlickerTests:CloseImeWindowToAppTest`
+ * Test IME window closing back to app window transitions.
+ * To run this test: `atest FlickerTestsIme:CloseImeToAppOnPressBackTest`
  */
 @RunWith(Parameterized::class)
 @Parameterized.UseParametersRunnerFactory(FlickerParametersRunnerFactory::class)
@@ -72,7 +72,7 @@ class CloseImeToAppOnPressBackTest(flicker: LegacyFlickerTest) : BaseTest(flicke
     @Presubmit
     @Test
     override fun navBarLayerPositionAtStartAndEnd() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         Assume.assumeFalse(flicker.scenario.isLandscapeOrSeascapeAtStart)
         flicker.navBarLayerPositionAtStartAndEnd()
     }
@@ -80,7 +80,7 @@ class CloseImeToAppOnPressBackTest(flicker: LegacyFlickerTest) : BaseTest(flicke
     @Presubmit
     @Test
     fun navBarLayerPositionAtStartAndEndLandscapeOrSeascapeAtStart() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         Assume.assumeTrue(flicker.scenario.isLandscapeOrSeascapeAtStart)
         flicker.navBarLayerPositionAtStartAndEnd()
     }

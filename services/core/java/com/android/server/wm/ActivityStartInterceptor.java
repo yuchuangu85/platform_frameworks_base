@@ -18,6 +18,7 @@ package com.android.server.wm;
 
 import static android.app.ActivityManager.INTENT_SENDER_ACTIVITY;
 import static android.app.ActivityOptions.ANIM_OPEN_CROSS_PROFILE_APPS;
+import static android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED;
 import static android.app.PendingIntent.FLAG_CANCEL_CURRENT;
 import static android.app.PendingIntent.FLAG_IMMUTABLE;
 import static android.app.PendingIntent.FLAG_ONE_SHOT;
@@ -55,6 +56,7 @@ import android.os.RemoteException;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.util.Pair;
+import android.util.Slog;
 import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -74,6 +76,7 @@ import com.android.server.wm.ActivityInterceptorCallback.ActivityInterceptResult
  * is no guarantee that other system services are already present.
  */
 class ActivityStartInterceptor {
+    private static final String TAG = "ActivityStartInterceptor";
 
     private final ActivityTaskManagerService mService;
     private final ActivityTaskSupervisor mSupervisor;
@@ -144,22 +147,20 @@ class ActivityStartInterceptor {
     }
 
     private IntentSender createIntentSenderForOriginalIntent(int callingUid, int flags) {
-        Bundle bOptions = deferCrossProfileAppsAnimationIfNecessary();
+        ActivityOptions activityOptions = deferCrossProfileAppsAnimationIfNecessary();
+        activityOptions.setPendingIntentCreatorBackgroundActivityStartMode(
+                MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
         final TaskFragment taskFragment = getLaunchTaskFragment();
         // If the original intent is going to be embedded, try to forward the embedding TaskFragment
         // and its task id to embed back the original intent.
         if (taskFragment != null) {
-            ActivityOptions activityOptions = bOptions != null
-                    ? ActivityOptions.fromBundle(bOptions)
-                    : ActivityOptions.makeBasic();
             activityOptions.setLaunchTaskFragmentToken(taskFragment.getFragmentToken());
-            bOptions = activityOptions.toBundle();
         }
         final IIntentSender target = mService.getIntentSenderLocked(
                 INTENT_SENDER_ACTIVITY, mCallingPackage, mCallingFeatureId, callingUid, mUserId,
                 null /*token*/, null /*resultCode*/, 0 /*requestCode*/,
                 new Intent[] { mIntent }, new String[] { mResolvedType },
-                flags, bOptions);
+                flags, activityOptions.toBundle());
         return new IntentSender(target);
     }
 
@@ -224,7 +225,7 @@ class ActivityStartInterceptor {
             // before issuing the work challenge.
             return true;
         }
-        if (interceptLockedManagedProfileIfNeeded()) {
+        if (interceptLockedProfileIfNeeded()) {
             return true;
         }
         if (interceptHomeIfNeeded()) {
@@ -272,12 +273,12 @@ class ActivityStartInterceptor {
      *
      * @return the activity option used to start the original intent.
      */
-    private Bundle deferCrossProfileAppsAnimationIfNecessary() {
+    private ActivityOptions deferCrossProfileAppsAnimationIfNecessary() {
         if (hasCrossProfileAnimation()) {
             mActivityOptions = null;
-            return ActivityOptions.makeOpenCrossProfileAppsAnimation().toBundle();
+            return ActivityOptions.makeOpenCrossProfileAppsAnimation();
         }
-        return null;
+        return ActivityOptions.makeBasic();
     }
 
     private boolean interceptQuietProfileIfNeeded() {
@@ -285,6 +286,8 @@ class ActivityStartInterceptor {
         if (!mUserManager.isQuietModeEnabled(UserHandle.of(mUserId))) {
             return false;
         }
+        Slog.i(TAG, "Intent : " + mIntent + " intercepted for user: " + mUserId
+                + " because quiet mode is enabled.");
 
         IntentSender target = createIntentSenderForOriginalIntent(mCallingUid,
                 FLAG_CANCEL_CURRENT | FLAG_ONE_SHOT);
@@ -378,7 +381,7 @@ class ActivityStartInterceptor {
         return true;
     }
 
-    private boolean interceptLockedManagedProfileIfNeeded() {
+    private boolean interceptLockedProfileIfNeeded() {
         final Intent interceptingIntent = interceptWithConfirmCredentialsIfNeeded(mAInfo, mUserId);
         if (interceptingIntent == null) {
             return false;
@@ -524,8 +527,11 @@ class ActivityStartInterceptor {
     void onActivityLaunched(TaskInfo taskInfo, ActivityRecord r) {
         final SparseArray<ActivityInterceptorCallback> callbacks =
                 mService.getActivityInterceptorCallbacks();
-        ActivityInterceptorCallback.ActivityInterceptorInfo info = getInterceptorInfo(
-                r::clearOptionsAnimationForSiblings);
+        final ActivityInterceptorCallback.ActivityInterceptorInfo info = getInterceptorInfo(() -> {
+            synchronized (mService.mGlobalLock) {
+                r.clearOptionsAnimationForSiblings();
+            }
+        });
         for (int i = 0; i < callbacks.size(); i++) {
             final ActivityInterceptorCallback callback = callbacks.valueAt(i);
             callback.onActivityLaunched(taskInfo, r.info, info);

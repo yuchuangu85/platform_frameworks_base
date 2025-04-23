@@ -16,6 +16,8 @@
 
 package com.android.server.display.brightness.clamper;
 
+import static com.android.server.display.DisplayBrightnessState.CUSTOM_ANIMATION_RATE_NOT_SET;
+
 import android.hardware.display.DisplayManagerInternal;
 import android.os.PowerManager;
 
@@ -26,7 +28,7 @@ import java.io.PrintWriter;
 /**
  * Modifies current brightness based on request
  */
-abstract class BrightnessModifier {
+abstract class BrightnessModifier implements BrightnessStateModifier {
 
     private boolean mApplied = false;
 
@@ -37,7 +39,8 @@ abstract class BrightnessModifier {
 
     abstract int getModifier();
 
-    void apply(DisplayManagerInternal.DisplayPowerRequest request,
+    @Override
+    public void apply(DisplayManagerInternal.DisplayPowerRequest request,
             DisplayBrightnessState.Builder stateBuilder) {
         // If low power mode is enabled, scale brightness by screenLowPowerBrightnessFactor
         // as long as it is above the minimum threshold.
@@ -49,16 +52,24 @@ abstract class BrightnessModifier {
             }
             if (!mApplied) {
                 stateBuilder.setIsSlowChange(false);
+                stateBuilder.setCustomAnimationRate(CUSTOM_ANIMATION_RATE_NOT_SET);
             }
             mApplied = true;
         } else if (mApplied) {
             stateBuilder.setIsSlowChange(false);
+            stateBuilder.setCustomAnimationRate(CUSTOM_ANIMATION_RATE_NOT_SET);
             mApplied = false;
         }
     }
 
-    void dump(PrintWriter pw) {
+    @Override
+    public void dump(PrintWriter pw) {
         pw.println("BrightnessModifier:");
         pw.println("  mApplied=" + mApplied);
+    }
+
+    @Override
+    public void stop() {
+        // do nothing
     }
 }

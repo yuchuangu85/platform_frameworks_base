@@ -16,187 +16,291 @@
 
 package com.android.compose.animation.scene
 
-import android.graphics.Picture
-import android.util.Log
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.State
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.graphics.Canvas
-import androidx.compose.ui.graphics.drawscope.draw
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.unit.IntSize
+import com.android.compose.animation.scene.content.Content
+import com.android.compose.animation.scene.content.state.TransitionState
 
-private const val TAG = "MovableElement"
+@Composable
+internal fun Element(
+    layoutImpl: SceneTransitionLayoutImpl,
+    sceneOrOverlay: Content,
+    key: ElementKey,
+    modifier: Modifier,
+    content: @Composable ElementScope<ElementContentScope>.() -> Unit,
+) {
+    Box(modifier.element(layoutImpl, sceneOrOverlay, key), propagateMinConstraints = true) {
+        val contentScope = sceneOrOverlay.scope
+        val boxScope = this
+        val elementScope =
+            remember(layoutImpl, key, sceneOrOverlay, contentScope, boxScope) {
+                ElementScopeImpl(layoutImpl, key, sceneOrOverlay, contentScope, boxScope)
+            }
+
+        content(elementScope)
+    }
+}
 
 @Composable
 internal fun MovableElement(
     layoutImpl: SceneTransitionLayoutImpl,
-    scene: Scene,
-    key: ElementKey,
+    sceneOrOverlay: Content,
+    key: MovableElementKey,
     modifier: Modifier,
-    content: @Composable MovableElementScope.() -> Unit,
+    content: @Composable ElementScope<MovableElementContentScope>.() -> Unit,
 ) {
-    Box(modifier.element(layoutImpl, scene, key)) {
-        // Get the Element from the map. It will always be the same and we don't want to recompose
-        // every time an element is added/removed from SceneTransitionLayoutImpl.elements, so we
-        // disable read observation during the look-up in that map.
-        val element = Snapshot.withoutReadObservation { layoutImpl.elements.getValue(key) }
-        val movableElementScope =
-            remember(layoutImpl, element, scene) {
-                MovableElementScopeImpl(layoutImpl, element, scene)
+    check(key.contentPicker.contents.contains(sceneOrOverlay.key)) {
+        val elementName = key.debugName
+        val contentName = sceneOrOverlay.key.debugName
+        "MovableElement $elementName was composed in content $contentName but the " +
+            "MovableElementKey($elementName).contentPicker.contents does not contain $contentName"
+    }
+
+    Box(modifier.element(layoutImpl, sceneOrOverlay, key), propagateMinConstraints = true) {
+        val contentScope = sceneOrOverlay.scope
+        val boxScope = this
+        val elementScope =
+            remember(layoutImpl, key, sceneOrOverlay, contentScope, boxScope) {
+                MovableElementScopeImpl(layoutImpl, key, sceneOrOverlay, contentScope, boxScope)
             }
 
-        // The [Picture] to which we save the last drawing commands of this element. This is
-        // necessary because the content of this element might not be composed in this scene, in
-        // which case we still need to draw it.
-        val picture = remember { Picture() }
+        content(elementScope)
+    }
+}
 
+private abstract class BaseElementScope<ContentScope>(
+    private val layoutImpl: SceneTransitionLayoutImpl,
+    private val element: ElementKey,
+    private val sceneOrOverlay: Content,
+) : ElementScope<ContentScope> {
+    @Composable
+    override fun <T> animateElementValueAsState(
+        value: T,
+        key: ValueKey,
+        type: SharedValueType<T, *>,
+        canOverflow: Boolean,
+    ): AnimatedState<T> {
+        return animateSharedValueAsState(
+            layoutImpl,
+            sceneOrOverlay.key,
+            element,
+            key,
+            value,
+            type,
+            canOverflow,
+        )
+    }
+}
+
+private class ElementScopeImpl(
+    layoutImpl: SceneTransitionLayoutImpl,
+    element: ElementKey,
+    content: Content,
+    private val delegateContentScope: ContentScope,
+    private val boxScope: BoxScope,
+) : BaseElementScope<ElementContentScope>(layoutImpl, element, content) {
+    private val contentScope =
+        object : ElementContentScope, ContentScope by delegateContentScope, BoxScope by boxScope {}
+
+    @Composable
+    override fun content(content: @Composable ElementContentScope.() -> Unit) {
+        contentScope.content()
+    }
+}
+
+private class MovableElementScopeImpl(
+    private val layoutImpl: SceneTransitionLayoutImpl,
+    private val element: MovableElementKey,
+    private val content: Content,
+    private val baseContentScope: BaseContentScope,
+    private val boxScope: BoxScope,
+) : BaseElementScope<MovableElementContentScope>(layoutImpl, element, content) {
+    private val contentScope =
+        object :
+            MovableElementContentScope,
+            BaseContentScope by baseContentScope,
+            BoxScope by boxScope {}
+
+    @Composable
+    override fun content(content: @Composable MovableElementContentScope.() -> Unit) {
         // Whether we should compose the movable element here. The scene picker logic to know in
         // which scene we should compose/draw a movable element might depend on the current
         // transition progress, so we put this in a derivedStateOf to prevent many recompositions
         // during the transition.
+        // TODO(b/317026105): Use derivedStateOf only if the scene picker reads the progress in its
+        // logic.
+        val contentKey = this@MovableElementScopeImpl.content.key
         val shouldComposeMovableElement by
-            remember(layoutImpl, scene.key, element) {
-                derivedStateOf { shouldComposeMovableElement(layoutImpl, scene.key, element) }
+            remember(layoutImpl, contentKey, element) {
+                derivedStateOf { shouldComposeMovableElement(layoutImpl, contentKey, element) }
             }
 
         if (shouldComposeMovableElement) {
-            Box(
-                Modifier.drawWithCache {
-                    val width = size.width.toInt()
-                    val height = size.height.toInt()
+            val movableContent: MovableElementContent =
+                layoutImpl.movableContents[element]
+                    ?: movableContentOf { content: @Composable () -> Unit -> content() }
+                        .also { layoutImpl.movableContents[element] = it }
 
-                    onDrawWithContent {
-                        // Save the draw commands into [picture] for later to draw the last content
-                        // even when this movable content is not composed.
-                        val pictureCanvas = Canvas(picture.beginRecording(width, height))
-                        draw(this, this.layoutDirection, pictureCanvas, this.size) {
-                            this@onDrawWithContent.drawContent()
-                        }
-                        picture.endRecording()
-
-                        // Draw the content.
-                        drawIntoCanvas { canvas -> canvas.nativeCanvas.drawPicture(picture) }
-                    }
-                }
-            ) {
-                element.movableContent { movableElementScope.content() }
-            }
+            // Important: Don't introduce any parent Box or other layout here, because contentScope
+            // delegates its BoxScope implementation to the Box where this content() function is
+            // called, so it's important that this movableContent is composed directly under that
+            // Box.
+            movableContent { contentScope.content() }
         } else {
-            // If we are not composed, we draw the previous drawing commands at the same size as the
-            // movable content when it was composed in this scene.
-            val sceneValues = element.sceneValues.getValue(scene.key)
-
-            Spacer(
-                Modifier.layout { measurable, _ ->
-                        val size =
-                            sceneValues.targetSize.takeIf { it != Element.SizeUnspecified }
-                                ?: IntSize.Zero
-                        val placeable =
-                            measurable.measure(Constraints.fixed(size.width, size.height))
-                        layout(size.width, size.height) { placeable.place(0, 0) }
-                    }
-                    .drawBehind {
-                        drawIntoCanvas { canvas -> canvas.nativeCanvas.drawPicture(picture) }
-                    }
-            )
+            // If we are not composed, we still need to lay out an empty space with the same *target
+            // size* as its movable content, i.e. the same *size when idle*. During transitions,
+            // this size will be used to interpolate the transition size, during the intermediate
+            // layout pass.
+            //
+            // Important: Like in Modifier.element(), we read the transition states during
+            // composition then pass them to Layout to make sure that composition sees new states
+            // before layout and drawing.
+            val transitionStates = layoutImpl.state.transitionStates
+            Layout { _, _ ->
+                // No need to measure or place anything.
+                val size =
+                    placeholderContentSize(
+                        layoutImpl = layoutImpl,
+                        content = contentKey,
+                        element = layoutImpl.elements.getValue(element),
+                        elementKey = element,
+                        transitionStates = transitionStates,
+                    )
+                layout(size.width, size.height) {}
+            }
         }
     }
 }
 
 private fun shouldComposeMovableElement(
     layoutImpl: SceneTransitionLayoutImpl,
-    scene: SceneKey,
-    element: Element,
+    content: ContentKey,
+    element: MovableElementKey,
 ): Boolean {
-    val transition =
-        layoutImpl.state.currentTransition
-        // If we are idle, there is only one [scene] that is composed so we can compose our
-        // movable content here.
-        ?: return true
-    val fromScene = transition.fromScene
-    val toScene = transition.toScene
-
-    val fromReady = layoutImpl.isSceneReady(fromScene)
-    val toReady = layoutImpl.isSceneReady(toScene)
-
-    val otherScene =
-        when (scene) {
-            fromScene -> toScene
-            toScene -> fromScene
-            else ->
-                error(
-                    "shouldComposeMovableElement(scene=$scene) called with fromScene=$fromScene " +
-                        "and toScene=$toScene"
-                )
+    return when (
+        val elementState = movableElementState(element, layoutImpl.state.transitionStates)
+    ) {
+        null ->
+            movableElementContentWhenIdle(layoutImpl, element, layoutImpl.state.transitionState) ==
+                content
+        is TransitionState.Idle ->
+            movableElementContentWhenIdle(layoutImpl, element, elementState) == content
+        is TransitionState.Transition -> {
+            // During transitions, always compose movable elements in the scene picked by their
+            // content picker.
+            shouldComposeMoveableElement(
+                layoutImpl,
+                content,
+                element,
+                elementState,
+                element.contentPicker.contents,
+            )
         }
-
-    val isShared = otherScene in element.sceneValues
-
-    if (isShared && !toReady && !fromReady) {
-        // This should usually not happen given that fromScene should be ready, but let's log a
-        // warning here in case it does so it helps debugging flicker issues caused by this part of
-        // the code.
-        Log.w(
-            TAG,
-            "MovableElement $element might have to be composed for the first time in both " +
-                "fromScene=$fromScene and toScene=$toScene. This will probably lead to a flicker " +
-                "where the size of the element will jump from IntSize.Zero to its actual size " +
-                "during the transition."
-        )
     }
-
-    // Element is not shared in this transition.
-    if (!isShared) {
-        return true
-    }
-
-    // toScene is not ready (because we are composing it for the first time), so we compose it there
-    // first. This is the most common scenario when starting a transition that has a shared movable
-    // element.
-    if (!toReady) {
-        return scene == toScene
-    }
-
-    // This should usually not happen, but if we are also composing for the first time in fromScene
-    // then we should compose it there only.
-    if (!fromReady) {
-        return scene == fromScene
-    }
-
-    return shouldDrawOrComposeSharedElement(
-        layoutImpl,
-        transition,
-        scene,
-        element.key,
-        sharedElementTransformation(layoutImpl.state, transition, element.key),
-    )
 }
 
-private class MovableElementScopeImpl(
-    private val layoutImpl: SceneTransitionLayoutImpl,
-    private val element: Element,
-    private val scene: Scene,
-) : MovableElementScope {
-    @Composable
-    override fun <T> animateSharedValueAsState(
-        value: T,
-        debugName: String,
-        lerp: (start: T, stop: T, fraction: Float) -> T,
-        canOverflow: Boolean,
-    ): State<T> {
-        val key = remember { ValueKey(debugName) }
-        return animateSharedValueAsState(layoutImpl, scene, element, key, value, lerp, canOverflow)
+private fun shouldComposeMoveableElement(
+    layoutImpl: SceneTransitionLayoutImpl,
+    content: ContentKey,
+    elementKey: ElementKey,
+    transition: TransitionState.Transition,
+    containingContents: Set<ContentKey>,
+): Boolean {
+    val overscrollContent = transition.currentOverscrollSpec?.content
+    if (overscrollContent != null) {
+        return when (transition) {
+            // If we are overscrolling between scenes, only place/compose the element in the
+            // overscrolling scene.
+            is TransitionState.Transition.ChangeScene -> content == overscrollContent
+
+            // If we are overscrolling an overlay, place/compose the element if [content] is the
+            // overscrolling content or if [content] is the current scene and the overscrolling
+            // overlay does not contain the element.
+            is TransitionState.Transition.ReplaceOverlay,
+            is TransitionState.Transition.ShowOrHideOverlay ->
+                content == overscrollContent ||
+                    (content == transition.currentScene &&
+                        !containingContents.contains(overscrollContent))
+        }
     }
+
+    val scenePicker = elementKey.contentPicker
+    val pickedScene =
+        scenePicker.contentDuringTransition(
+            element = elementKey,
+            transition = transition,
+            fromContentZIndex = layoutImpl.content(transition.fromContent).zIndex,
+            toContentZIndex = layoutImpl.content(transition.toContent).zIndex,
+        )
+
+    return pickedScene == content
+}
+
+private fun movableElementState(
+    element: MovableElementKey,
+    transitionStates: List<TransitionState>,
+): TransitionState? {
+    val contents = element.contentPicker.contents
+    return elementState(transitionStates, isInContent = { contents.contains(it) })
+}
+
+private fun movableElementContentWhenIdle(
+    layoutImpl: SceneTransitionLayoutImpl,
+    element: MovableElementKey,
+    elementState: TransitionState,
+): ContentKey {
+    val contents = element.contentPicker.contents
+    return elementContentWhenIdle(layoutImpl, elementState, isInContent = { contents.contains(it) })
+}
+
+/**
+ * Return the size of the placeholder/space that is composed when the movable content is not
+ * composed in a scene.
+ */
+private fun placeholderContentSize(
+    layoutImpl: SceneTransitionLayoutImpl,
+    content: ContentKey,
+    element: Element,
+    elementKey: MovableElementKey,
+    transitionStates: List<TransitionState>,
+): IntSize {
+    // If the content of the movable element was already composed in this scene before, use that
+    // target size.
+    val targetValueInScene = element.stateByContent.getValue(content).targetSize
+    if (targetValueInScene != Element.SizeUnspecified) {
+        return targetValueInScene
+    }
+
+    fun TransitionState.Transition.otherContent(): ContentKey {
+        return if (fromContent == content) toContent else fromContent
+    }
+
+    // If the element content was already composed in the other overlay/scene, we use that
+    // target size assuming it doesn't change between scenes.
+    // TODO(b/317026105): Provide a way to give a hint size/content for cases where this is
+    // not true.
+    val otherContent =
+        when (val state = movableElementState(elementKey, transitionStates)) {
+            null -> return IntSize.Zero
+            is TransitionState.Idle -> movableElementContentWhenIdle(layoutImpl, elementKey, state)
+            is TransitionState.Transition.ReplaceOverlay -> {
+                state.otherContent().takeIf { it in element.stateByContent } ?: state.currentScene
+            }
+            is TransitionState.Transition -> state.otherContent()
+        }
+
+    val targetValueInOtherContent = element.stateByContent[otherContent]?.targetSize
+    if (targetValueInOtherContent != null && targetValueInOtherContent != Element.SizeUnspecified) {
+        return targetValueInOtherContent
+    }
+
+    return IntSize.Zero
 }

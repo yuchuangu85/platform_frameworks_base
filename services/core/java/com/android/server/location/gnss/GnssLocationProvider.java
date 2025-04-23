@@ -67,6 +67,7 @@ import android.location.LocationListener;
 import android.location.LocationManager;
 import android.location.LocationRequest;
 import android.location.LocationResult;
+import android.location.LocationResult.BadLocationException;
 import android.location.flags.Flags;
 import android.location.provider.ProviderProperties;
 import android.location.provider.ProviderRequest;
@@ -310,6 +311,7 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
     private String mC2KServerHost;
     private int mC2KServerPort;
     private boolean mSuplEsEnabled = false;
+    private boolean mNiSuplMessageListenerRegistered = false;
 
     private final LocationExtras mLocationExtras = new LocationExtras();
     private final NetworkTimeHelper mNetworkTimeHelper;
@@ -386,6 +388,10 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
             if (DEBUG) Log.d(TAG, "SIM MCC/MNC is still not available");
             // Reload gnss config for no SIM case
             mGnssConfiguration.reloadGpsProperties();
+        }
+        if (Flags.enableNiSuplMessageInjectionByCarrierConfigBugfix()) {
+            updateNiSuplMessageListenerRegistration(
+                    mGnssConfiguration.isNiSuplMessageInjectionEnabled());
         }
     }
 
@@ -532,28 +538,9 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
         intentFilter.addAction(TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED);
         mContext.registerReceiver(mIntentReceiver, intentFilter, null, mHandler);
 
-        if (mNetworkConnectivityHandler.isNativeAgpsRilSupported()
-                && mGnssConfiguration.isNiSuplMessageInjectionEnabled()) {
-            // Listen to WAP PUSH NI SUPL message.
-            // See User Plane Location Protocol Candidate Version 3.0,
-            // OMA-TS-ULP-V3_0-20110920-C, Section 8.3 OMA Push.
-            intentFilter = new IntentFilter();
-            intentFilter.addAction(Intents.WAP_PUSH_RECEIVED_ACTION);
-            try {
-                intentFilter.addDataType("application/vnd.omaloc-supl-init");
-            } catch (IntentFilter.MalformedMimeTypeException e) {
-                Log.w(TAG, "Malformed SUPL init mime type");
-            }
-            mContext.registerReceiver(mIntentReceiver, intentFilter, null, mHandler);
-
-            // Listen to MT SMS NI SUPL message.
-            // See User Plane Location Protocol Candidate Version 3.0,
-            // OMA-TS-ULP-V3_0-20110920-C, Section 8.4 MT SMS.
-            intentFilter = new IntentFilter();
-            intentFilter.addAction(Intents.DATA_SMS_RECEIVED_ACTION);
-            intentFilter.addDataScheme("sms");
-            intentFilter.addDataAuthority("localhost", "7275");
-            mContext.registerReceiver(mIntentReceiver, intentFilter, null, mHandler);
+        if (!Flags.enableNiSuplMessageInjectionByCarrierConfigBugfix()) {
+            updateNiSuplMessageListenerRegistration(
+                    mGnssConfiguration.isNiSuplMessageInjectionEnabled());
         }
 
         mNetworkConnectivityHandler.registerNetworkCallbacks();
@@ -592,6 +579,20 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
                 case TelephonyManager.ACTION_DEFAULT_DATA_SUBSCRIPTION_CHANGED:
                     subscriptionOrCarrierConfigChanged();
                     break;
+            }
+        }
+    };
+
+    private BroadcastReceiver mNiSuplIntentReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            if (DEBUG) Log.d(TAG, "receive broadcast intent, action: " + action);
+            if (action == null) {
+                return;
+            }
+
+            switch (action) {
                 case Intents.WAP_PUSH_RECEIVED_ACTION:
                 case Intents.DATA_SMS_RECEIVED_ACTION:
                     injectSuplInit(intent);
@@ -1049,22 +1050,10 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
                 stopBatching();
 
                 if (mStarted && mGnssNative.getCapabilities().hasScheduling()) {
-                    if (Flags.gnssCallStopBeforeSetPositionMode()) {
-                        GnssPositionMode positionMode = new GnssPositionMode(mPositionMode,
-                                GNSS_POSITION_RECURRENCE_PERIODIC, mFixInterval,
-                                /* preferredAccuracy= */ 0,
-                                /* preferredTime= */ 0,
-                                mProviderRequest.isLowPower());
-                        if (!positionMode.equals(mLastPositionMode)) {
-                            stopNavigating();
-                            startNavigating();
-                        }
-                    } else {
-                        // change period and/or lowPowerMode
-                        if (!setPositionMode(mPositionMode, GNSS_POSITION_RECURRENCE_PERIODIC,
-                                mFixInterval, mProviderRequest.isLowPower())) {
-                            Log.e(TAG, "set_position_mode failed in updateRequirements");
-                        }
+                    // change period and/or lowPowerMode
+                    if (!setPositionMode(mPositionMode, GNSS_POSITION_RECURRENCE_PERIODIC,
+                            mFixInterval, mProviderRequest.isLowPower())) {
+                        Log.e(TAG, "set_position_mode failed in updateRequirements");
                     }
                 } else if (!mStarted) {
                     // start GPS
@@ -1180,7 +1169,7 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
                         GnssPsdsDownloader.LONG_TERM_PSDS_SERVER_INDEX));
             }
         } else if ("request_power_stats".equals(command)) {
-            mGnssNative.requestPowerStats();
+            mGnssNative.requestPowerStats(Runnable::run, powerStats -> {});
         } else {
             Log.w(TAG, "sendExtraCommand: unknown command " + command);
         }
@@ -1247,32 +1236,11 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
             }
 
             int interval = mGnssNative.getCapabilities().hasScheduling() ? mFixInterval : 1000;
-
-            if (Flags.gnssCallStopBeforeSetPositionMode()) {
-                boolean success = mGnssNative.setPositionMode(mPositionMode,
-                        GNSS_POSITION_RECURRENCE_PERIODIC, interval,
-                        /* preferredAccuracy= */ 0,
-                        /* preferredTime= */ 0,
-                        mProviderRequest.isLowPower());
-                if (success) {
-                    mLastPositionMode = new GnssPositionMode(mPositionMode,
-                            GNSS_POSITION_RECURRENCE_PERIODIC, interval,
-                            /* preferredAccuracy= */ 0,
-                            /* preferredTime= */ 0,
-                            mProviderRequest.isLowPower());
-                } else {
-                    mLastPositionMode = null;
-                    setStarted(false);
-                    Log.e(TAG, "set_position_mode failed in startNavigating()");
-                    return;
-                }
-            } else {
-                if (!setPositionMode(mPositionMode, GNSS_POSITION_RECURRENCE_PERIODIC,
-                        interval, mProviderRequest.isLowPower())) {
-                    setStarted(false);
-                    Log.e(TAG, "set_position_mode failed in startNavigating()");
-                    return;
-                }
+            if (!setPositionMode(mPositionMode, GNSS_POSITION_RECURRENCE_PERIODIC,
+                    interval, mProviderRequest.isLowPower())) {
+                setStarted(false);
+                Log.e(TAG, "set_position_mode failed in startNavigating()");
+                return;
             }
             if (!mGnssNative.start()) {
                 setStarted(false);
@@ -1380,7 +1348,12 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
 
         location.setExtras(mLocationExtras.getBundle());
 
-        reportLocation(LocationResult.wrap(location).validate());
+        try {
+            reportLocation(LocationResult.wrap(location).validate());
+        } catch (BadLocationException e) {
+            Log.e(TAG, "Dropping invalid location: " + e);
+            return;
+        }
 
         if (mStarted) {
             mGnssMetrics.logReceivedLocationStatus(hasLatLong);
@@ -1468,6 +1441,46 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
         mLocationExtras.set(satellites.size(), meanCn0, maxCn0);
 
         mGnssMetrics.logSvStatus(gnssStatus);
+    }
+
+    private void updateNiSuplMessageListenerRegistration(boolean shouldRegister) {
+        if (!mNetworkConnectivityHandler.isNativeAgpsRilSupported()) {
+            return;
+        }
+        if (mNiSuplMessageListenerRegistered == shouldRegister) {
+            return;
+        }
+
+        // WAP PUSH NI SUPL message intent filter.
+        // See User Plane Location Protocol Candidate Version 3.0,
+        // OMA-TS-ULP-V3_0-20110920-C, Section 8.3 OMA Push.
+        IntentFilter wapPushNiIntentFilter = new IntentFilter();
+        wapPushNiIntentFilter.addAction(Intents.WAP_PUSH_RECEIVED_ACTION);
+        try {
+            wapPushNiIntentFilter
+                .addDataType("application/vnd.omaloc-supl-init");
+        } catch (IntentFilter.MalformedMimeTypeException e) {
+            Log.w(TAG, "Malformed SUPL init mime type");
+        }
+
+        // MT SMS NI SUPL message intent filter.
+        // See User Plane Location Protocol Candidate Version 3.0,
+        // OMA-TS-ULP-V3_0-20110920-C, Section 8.4 MT SMS.
+        IntentFilter mtSmsNiIntentFilter = new IntentFilter();
+        mtSmsNiIntentFilter.addAction(Intents.DATA_SMS_RECEIVED_ACTION);
+        mtSmsNiIntentFilter.addDataScheme("sms");
+        mtSmsNiIntentFilter.addDataAuthority("localhost", "7275");
+
+        if (shouldRegister) {
+            mContext.registerReceiver(mNiSuplIntentReceiver,
+                    wapPushNiIntentFilter, null, mHandler);
+            mContext.registerReceiver(mNiSuplIntentReceiver,
+                    mtSmsNiIntentFilter, null, mHandler);
+            mNiSuplMessageListenerRegistered = true;
+        } else {
+            mContext.unregisterReceiver(mNiSuplIntentReceiver);
+            mNiSuplMessageListenerRegistered = false;
+        }
     }
 
     private void restartLocationRequest() {
@@ -1659,6 +1672,10 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
         if (dumpAll) {
             mNetworkTimeHelper.dump(pw);
             pw.println("mSupportsPsds=" + mSupportsPsds);
+            if (Flags.enableNiSuplMessageInjectionByCarrierConfigBugfix()) {
+                pw.println("mNiSuplMessageListenerRegistered="
+                        + mNiSuplMessageListenerRegistered);
+            }
             pw.println(
                     "PsdsServerConfigured=" + mGnssConfiguration.isLongTermPsdsServerConfigured());
             pw.println("native internal state: ");
@@ -1751,7 +1768,12 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
                 }
             }
 
-            reportLocation(LocationResult.wrap(locations).validate());
+            try {
+                reportLocation(LocationResult.wrap(locations).validate());
+            } catch (BadLocationException e) {
+                Log.e(TAG, "Dropping invalid locations: " + e);
+                return;
+            }
         }
 
         Runnable[] listeners;

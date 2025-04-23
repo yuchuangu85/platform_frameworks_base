@@ -31,14 +31,16 @@ import static android.view.WindowManager.TRANSIT_OPEN;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.mock;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.spyOn;
-import static com.android.dx.mockito.inline.extended.ExtendedMockito.when;
+import static com.android.window.flags.Flags.multiCrop;
 
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeFalse;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -86,8 +88,6 @@ public class WallpaperControllerTests extends WindowTestsBase {
 
     @Test
     public void testWallpaperScreenshot() {
-        WindowSurfaceController windowSurfaceController = mock(WindowSurfaceController.class);
-
         // No wallpaper
         final DisplayContent dc = createNewDisplay();
         assertFalse(dc.mWallpaperController.canScreenshotWallpaper());
@@ -97,11 +97,9 @@ public class WallpaperControllerTests extends WindowTestsBase {
         assertFalse(dc.mWallpaperController.canScreenshotWallpaper());
 
         // Wallpaper with not visible WSA surface.
-        wallpaperWindow.mWinAnimator.mSurfaceController = windowSurfaceController;
-        wallpaperWindow.mWinAnimator.mLastAlpha = 1;
         assertFalse(dc.mWallpaperController.canScreenshotWallpaper());
 
-        when(windowSurfaceController.getShown()).thenReturn(true);
+        makeWallpaperWindowShown(wallpaperWindow);
 
         // Wallpaper with WSA alpha set to 0.
         wallpaperWindow.mWinAnimator.mLastAlpha = 0;
@@ -277,9 +275,8 @@ public class WallpaperControllerTests extends WindowTestsBase {
         final DisplayContent dc = mDisplayContent;
         final WindowState homeWin = createWallpaperTargetWindow(dc);
         final WindowState appWin = createWindow(null, TYPE_BASE_APPLICATION, "app");
-        final RecentsAnimationController recentsController = mock(RecentsAnimationController.class);
-        doReturn(true).when(recentsController).isWallpaperVisible(eq(appWin));
-        mWm.setRecentsAnimationController(recentsController);
+        appWin.mAttrs.flags |= FLAG_SHOW_WALLPAPER;
+        makeWindowVisible(appWin);
 
         dc.mWallpaperController.adjustWallpaperWindows();
         assertEquals(appWin, dc.mWallpaperController.getWallpaperTarget());
@@ -304,14 +301,37 @@ public class WallpaperControllerTests extends WindowTestsBase {
         spyOn(mWm.mPolicy);
         doReturn(true).when(mWm.mPolicy).isKeyguardLocked();
         doReturn(true).when(mWm.mPolicy).isKeyguardOccluded();
-        mDisplayContent.mWallpaperController.adjustWallpaperWindows();
+        final WallpaperController wallpaperController = mDisplayContent.mWallpaperController;
+        wallpaperController.adjustWallpaperWindows();
         // Wallpaper is visible because the show-when-locked activity is translucent.
-        assertTrue(mDisplayContent.mWallpaperController.isWallpaperTarget(wallpaperWindow));
+        assertSame(wallpaperWindow, wallpaperController.getWallpaperTarget());
 
         behind.mActivityRecord.setShowWhenLocked(true);
-        mDisplayContent.mWallpaperController.adjustWallpaperWindows();
+        wallpaperController.adjustWallpaperWindows();
         // Wallpaper is invisible because the lowest show-when-locked activity is opaque.
-        assertTrue(mDisplayContent.mWallpaperController.isWallpaperTarget(null));
+        assertNull(wallpaperController.getWallpaperTarget());
+
+        // Only transient-launch transition will make notification shade as last resort target.
+        // This verifies that regular transition won't choose invisible keyguard as the target.
+        final WindowState keyguard = createWindow(null /* parent */,
+                WindowManager.LayoutParams.TYPE_NOTIFICATION_SHADE, "keyguard");
+        keyguard.mAttrs.flags |= FLAG_SHOW_WALLPAPER;
+        registerTestTransitionPlayer();
+        final Transition transition = wallpaperWindow.mTransitionController.createTransition(
+                WindowManager.TRANSIT_CHANGE);
+        transition.collect(keyguard);
+        wallpaperController.adjustWallpaperWindows();
+        assertNull(wallpaperController.getWallpaperTarget());
+
+        // A show-when-locked wallpaper is used for lockscreen. So the top wallpaper should
+        // be the one that is not show-when-locked.
+        final WindowState wallpaperWindow2 = createWallpaperWindow(mDisplayContent);
+        makeWallpaperWindowShown(wallpaperWindow2);
+        makeWallpaperWindowShown(wallpaperWindow);
+        assertEquals(wallpaperWindow2, wallpaperController.getTopVisibleWallpaper());
+        wallpaperWindow2.mToken.asWallpaperToken().setShowWhenLocked(true);
+        wallpaperWindow.mToken.asWallpaperToken().setShowWhenLocked(false);
+        assertEquals(wallpaperWindow, wallpaperController.getTopVisibleWallpaper());
     }
 
     /**
@@ -329,46 +349,6 @@ public class WallpaperControllerTests extends WindowTestsBase {
         assertEquals(WINDOWING_MODE_FULLSCREEN, token.getWindowingMode());
         dc.setWindowingMode(WINDOWING_MODE_UNDEFINED);
         assertEquals(WINDOWING_MODE_FULLSCREEN, token.getWindowingMode());
-    }
-
-    @Test
-    public void testFixedRotationRecentsAnimatingTask() {
-        final WindowState wallpaperWindow = createWallpaperWindow(mDisplayContent);
-        final WallpaperWindowToken wallpaperToken = wallpaperWindow.mToken.asWallpaperToken();
-        final WindowState appWin = createWindow(null, TYPE_BASE_APPLICATION, "app");
-        makeWindowVisible(appWin);
-        final ActivityRecord r = appWin.mActivityRecord;
-        final RecentsAnimationController recentsController = mock(RecentsAnimationController.class);
-        doReturn(true).when(recentsController).isWallpaperVisible(eq(appWin));
-        mWm.setRecentsAnimationController(recentsController);
-
-        r.applyFixedRotationTransform(mDisplayContent.getDisplayInfo(),
-                mDisplayContent.mDisplayFrames, mDisplayContent.getConfiguration());
-        // Invisible requested activity should not share its rotation transform.
-        r.setVisibleRequested(false);
-        mDisplayContent.mWallpaperController.adjustWallpaperWindows();
-        assertFalse(wallpaperToken.hasFixedRotationTransform());
-
-        // Wallpaper should link the transform of its target.
-        r.setVisibleRequested(true);
-        mDisplayContent.mWallpaperController.adjustWallpaperWindows();
-        assertEquals(appWin, mDisplayContent.mWallpaperController.getWallpaperTarget());
-        assertTrue(r.hasFixedRotationTransform());
-        assertTrue(wallpaperToken.hasFixedRotationTransform());
-
-        // The case with shell transition.
-        registerTestTransitionPlayer();
-        final Transition t = r.mTransitionController.createTransition(TRANSIT_OPEN);
-        final ActivityRecord recents = mock(ActivityRecord.class);
-        t.collect(r.getTask());
-        r.mTransitionController.setTransientLaunch(recents, r.getTask());
-        // The activity in restore-below task should not be the target if keyguard is not locked.
-        mDisplayContent.mWallpaperController.adjustWallpaperWindows();
-        assertNotEquals(appWin, mDisplayContent.mWallpaperController.getWallpaperTarget());
-        // The activity in restore-below task should be the target if keyguard is occluded.
-        doReturn(true).when(mDisplayContent).isKeyguardLocked();
-        mDisplayContent.mWallpaperController.adjustWallpaperWindows();
-        assertEquals(appWin, mDisplayContent.mWallpaperController.getWallpaperTarget());
     }
 
     @Test
@@ -399,6 +379,8 @@ public class WallpaperControllerTests extends WindowTestsBase {
         final WindowState wallpaperWindow = createWallpaperWindow(dc);
         final WallpaperWindowToken token = wallpaperWindow.mToken.asWallpaperToken();
         wallpaperWindow.setHasSurface(true);
+        spyOn(dc.mWallpaperController);
+        doReturn(wallpaperWindow).when(dc.mWallpaperController).getWallpaperTarget();
 
         // Set-up mock shell transitions
         registerTestTransitionPlayer();
@@ -425,7 +407,7 @@ public class WallpaperControllerTests extends WindowTestsBase {
         final SurfaceControl.Transaction t = mock(SurfaceControl.Transaction.class);
         token.finishSync(t, token.getSyncGroup(), false /* cancel */);
         transit.onTransactionReady(transit.getSyncId(), t);
-        dc.mTransitionController.finishTransition(transit);
+        dc.mTransitionController.finishTransition(ActionChain.testFinish(transit));
         assertFalse(wallpaperWindow.isVisible());
         assertFalse(token.isVisible());
     }
@@ -484,6 +466,7 @@ public class WallpaperControllerTests extends WindowTestsBase {
 
     @Test
     public void testUpdateWallpaperOffset_resize_shouldCenterEnabled() {
+        assumeFalse(multiCrop());
         final DisplayContent dc = new TestDisplayContent.Builder(mAtm, INITIAL_WIDTH,
                 INITIAL_HEIGHT).build();
         dc.mWallpaperController.setShouldOffsetWallpaperCenter(true);
@@ -522,6 +505,12 @@ public class WallpaperControllerTests extends WindowTestsBase {
         // Wallpaper is 300 wider than second display, but offset disabled.
         assertThat(wallpaperWindow.mXOffset).isEqualTo(0);
         assertThat(wallpaperWindow.mYOffset).isEqualTo(0);
+    }
+
+    private static void makeWallpaperWindowShown(WindowState w) {
+        w.mWinAnimator.mLastAlpha = 1;
+        spyOn(w.mWinAnimator);
+        doReturn(true).when(w.mWinAnimator).getShown();
     }
 
     private WindowState createWallpaperWindow(DisplayContent dc, int width, int height) {

@@ -15,30 +15,40 @@
  */
 package com.android.systemui.statusbar.notification.interruption
 
+import android.app.NotificationManager
+import android.content.Context
+import android.content.pm.PackageManager
 import android.hardware.display.AmbientDisplayConfiguration
 import android.os.Handler
 import android.os.PowerManager
 import android.util.Log
+import com.android.app.tracing.traceSection
 import com.android.internal.annotations.VisibleForTesting
 import com.android.internal.logging.UiEventLogger
 import com.android.internal.logging.UiEventLogger.UiEventEnum
 import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.plugins.statusbar.StatusBarStateController
 import com.android.systemui.settings.UserTracker
+import com.android.systemui.shade.ShadeDisplayAware
+import com.android.systemui.shared.notifications.domain.interactor.NotificationSettingsInteractor
 import com.android.systemui.statusbar.notification.collection.NotificationEntry
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager
 import com.android.systemui.statusbar.notification.interruption.VisualInterruptionDecisionProvider.Decision
 import com.android.systemui.statusbar.notification.interruption.VisualInterruptionDecisionProvider.FullScreenIntentDecision
 import com.android.systemui.statusbar.notification.interruption.VisualInterruptionSuppressor.EventLogData
 import com.android.systemui.statusbar.notification.interruption.VisualInterruptionType.BUBBLE
 import com.android.systemui.statusbar.notification.interruption.VisualInterruptionType.PEEK
 import com.android.systemui.statusbar.notification.interruption.VisualInterruptionType.PULSE
+import com.android.systemui.statusbar.notification.shared.NotificationAvalancheSuppression
 import com.android.systemui.statusbar.policy.BatteryController
 import com.android.systemui.statusbar.policy.DeviceProvisionedController
-import com.android.systemui.statusbar.policy.HeadsUpManager
 import com.android.systemui.statusbar.policy.KeyguardStateController
 import com.android.systemui.util.EventLog
 import com.android.systemui.util.settings.GlobalSettings
+import com.android.systemui.util.settings.SystemSettings
 import com.android.systemui.util.time.SystemClock
+import com.android.wm.shell.bubbles.Bubbles
+import java.util.Optional
 import javax.inject.Inject
 
 class VisualInterruptionDecisionProviderImpl
@@ -59,7 +69,15 @@ constructor(
     private val systemClock: SystemClock,
     private val uiEventLogger: UiEventLogger,
     private val userTracker: UserTracker,
+    private val avalancheProvider: AvalancheProvider,
+    private val systemSettings: SystemSettings,
+    private val packageManager: PackageManager,
+    private val bubbles: Optional<Bubbles>,
+    @ShadeDisplayAware private val context: Context,
+    private val notificationManager: NotificationManager,
+    private val settingsInteractor: NotificationSettingsInteractor,
 ) : VisualInterruptionDecisionProvider {
+
     init {
         check(!VisualInterruptionRefactor.isUnexpectedlyInLegacyMode())
     }
@@ -71,14 +89,15 @@ constructor(
 
     private class DecisionImpl(
         override val shouldInterrupt: Boolean,
-        override val logReason: String
+        override val logReason: String,
     ) : Decision
 
     private data class LoggableDecision
     private constructor(
         val decision: DecisionImpl,
         override val uiEventId: UiEventEnum? = null,
-        override val eventLogData: EventLogData? = null
+        override val eventLogData: EventLogData? = null,
+        val isSpammy: Boolean = false,
     ) : Loggable {
         companion object {
             val unsuppressed =
@@ -88,7 +107,7 @@ constructor(
                 LoggableDecision(
                     DecisionImpl(
                         shouldInterrupt = false,
-                        logReason = "${legacySuppressor.name}.$methodName"
+                        logReason = "${legacySuppressor.name}.$methodName",
                     )
                 )
 
@@ -96,14 +115,15 @@ constructor(
                 LoggableDecision(
                     DecisionImpl(shouldInterrupt = false, logReason = suppressor.reason),
                     uiEventId = suppressor.uiEventId,
-                    eventLogData = suppressor.eventLogData
+                    eventLogData = suppressor.eventLogData,
+                    isSpammy = suppressor.isSpammy,
                 )
         }
     }
 
     private class FullScreenIntentDecisionImpl(
         val entry: NotificationEntry,
-        private val fsiDecision: FullScreenIntentDecisionProvider.Decision
+        private val fsiDecision: FullScreenIntentDecisionProvider.Decision,
     ) : FullScreenIntentDecision, Loggable {
         var hasBeenLogged = false
 
@@ -134,7 +154,7 @@ constructor(
             deviceProvisionedController,
             keyguardStateController,
             powerManager,
-            statusBarStateController
+            statusBarStateController,
         )
 
     private val legacySuppressors = mutableSetOf<NotificationInterruptSuppressor>()
@@ -150,7 +170,7 @@ constructor(
         addCondition(PulseDisabledSuppressor(ambientDisplayConfiguration, userTracker))
         addCondition(PulseBatterySaverSuppressor(batteryController))
         addFilter(PeekPackageSnoozedSuppressor(headsUpManager))
-        addFilter(PeekAlreadyBubbledSuppressor(statusBarStateController))
+        addFilter(PeekAlreadyBubbledSuppressor(statusBarStateController, bubbles))
         addFilter(PeekDndSuppressor())
         addFilter(PeekNotImportantSuppressor())
         addCondition(PeekDeviceNotInUseSuppressor(powerManager, statusBarStateController))
@@ -159,12 +179,29 @@ constructor(
         addFilter(PulseLockscreenVisibilityPrivateSuppressor())
         addFilter(PulseLowImportanceSuppressor())
         addFilter(BubbleNotAllowedSuppressor())
-        addFilter(BubbleAppSuspendedSuppressor())
         addFilter(BubbleNoMetadataSuppressor())
         addFilter(HunGroupAlertBehaviorSuppressor())
+        addFilter(HunSilentNotificationSuppressor())
         addFilter(HunJustLaunchedFsiSuppressor())
+        addFilter(AlertAppSuspendedSuppressor())
         addFilter(AlertKeyguardVisibilitySuppressor(keyguardNotificationVisibilityProvider))
 
+        if (NotificationAvalancheSuppression.isEnabled) {
+            addFilter(
+                AvalancheSuppressor(
+                    avalancheProvider,
+                    systemClock,
+                    settingsInteractor,
+                    packageManager,
+                    uiEventLogger,
+                    context,
+                    notificationManager,
+                    logger,
+                    systemSettings,
+                )
+            )
+            avalancheProvider.register()
+        }
         started = true
     }
 
@@ -196,92 +233,108 @@ constructor(
         filters.remove(filter)
     }
 
-    override fun makeUnloggedHeadsUpDecision(entry: NotificationEntry): Decision {
-        check(started)
+    override fun makeUnloggedHeadsUpDecision(entry: NotificationEntry): Decision =
+        traceSection("VisualInterruptionDecisionProviderImpl#makeUnloggedHeadsUpDecision") {
+            check(started)
 
-        return if (statusBarStateController.isDozing) {
-                makeLoggablePulseDecision(entry)
-            } else {
-                makeLoggablePeekDecision(entry)
-            }
-            .decision
-    }
+            return if (statusBarStateController.isDozing) {
+                    makeLoggablePulseDecision(entry)
+                } else {
+                    makeLoggablePeekDecision(entry)
+                }
+                .decision
+        }
 
-    override fun makeAndLogHeadsUpDecision(entry: NotificationEntry): Decision {
-        check(started)
+    override fun makeAndLogHeadsUpDecision(entry: NotificationEntry): Decision =
+        traceSection("VisualInterruptionDecisionProviderImpl#makeAndLogHeadsUpDecision") {
+            check(started)
 
-        return if (statusBarStateController.isDozing) {
-                makeLoggablePulseDecision(entry).also { logDecision(PULSE, entry, it) }
-            } else {
-                makeLoggablePeekDecision(entry).also { logDecision(PEEK, entry, it) }
-            }
-            .decision
-    }
+            return if (statusBarStateController.isDozing) {
+                    makeLoggablePulseDecision(entry).also { logDecision(PULSE, entry, it) }
+                } else {
+                    makeLoggablePeekDecision(entry).also { logDecision(PEEK, entry, it) }
+                }
+                .decision
+        }
 
     private fun makeLoggablePeekDecision(entry: NotificationEntry): LoggableDecision =
         checkConditions(PEEK)
-            ?: checkFilters(PEEK, entry) ?: checkSuppressInterruptions(entry)
-                ?: checkSuppressAwakeInterruptions(entry) ?: checkSuppressAwakeHeadsUp(entry)
-                ?: LoggableDecision.unsuppressed
+            ?: checkFilters(PEEK, entry)
+            ?: checkSuppressInterruptions(entry)
+            ?: checkSuppressAwakeInterruptions(entry)
+            ?: checkSuppressAwakeHeadsUp(entry)
+            ?: LoggableDecision.unsuppressed
 
     private fun makeLoggablePulseDecision(entry: NotificationEntry): LoggableDecision =
         checkConditions(PULSE)
-            ?: checkFilters(PULSE, entry) ?: checkSuppressInterruptions(entry)
-                ?: LoggableDecision.unsuppressed
+            ?: checkFilters(PULSE, entry)
+            ?: checkSuppressInterruptions(entry)
+            ?: LoggableDecision.unsuppressed
 
-    override fun makeAndLogBubbleDecision(entry: NotificationEntry): Decision {
-        check(started)
+    override fun makeAndLogBubbleDecision(entry: NotificationEntry): Decision =
+        traceSection("VisualInterruptionDecisionProviderImpl#makeAndLogBubbleDecision") {
+            check(started)
 
-        return makeLoggableBubbleDecision(entry).also { logDecision(BUBBLE, entry, it) }.decision
-    }
+            return makeLoggableBubbleDecision(entry)
+                .also { logDecision(BUBBLE, entry, it) }
+                .decision
+        }
 
     private fun makeLoggableBubbleDecision(entry: NotificationEntry): LoggableDecision =
         checkConditions(BUBBLE)
-            ?: checkFilters(BUBBLE, entry) ?: checkSuppressInterruptions(entry)
-                ?: checkSuppressAwakeInterruptions(entry) ?: LoggableDecision.unsuppressed
+            ?: checkFilters(BUBBLE, entry)
+            ?: checkSuppressInterruptions(entry)
+            ?: checkSuppressAwakeInterruptions(entry)
+            ?: LoggableDecision.unsuppressed
 
     private fun logDecision(
         type: VisualInterruptionType,
         entry: NotificationEntry,
-        loggableDecision: LoggableDecision
+        loggableDecision: LoggableDecision,
     ) {
-        logger.logDecision(type.name, entry, loggableDecision.decision)
+        if (!loggableDecision.isSpammy || logger.spew) {
+            logger.logDecision(type.name, entry, loggableDecision.decision)
+        }
         logEvents(entry, loggableDecision)
     }
 
     override fun makeUnloggedFullScreenIntentDecision(
         entry: NotificationEntry
-    ): FullScreenIntentDecision {
-        check(started)
+    ): FullScreenIntentDecision =
+        traceSection(
+            "VisualInterruptionDecisionProviderImpl#makeUnloggedFullScreenIntentDecision"
+        ) {
+            check(started)
 
-        val couldHeadsUp = makeUnloggedHeadsUpDecision(entry).shouldInterrupt
-        val fsiDecision =
-            fullScreenIntentDecisionProvider.makeFullScreenIntentDecision(entry, couldHeadsUp)
-        return FullScreenIntentDecisionImpl(entry, fsiDecision)
-    }
-
-    override fun logFullScreenIntentDecision(decision: FullScreenIntentDecision) {
-        check(started)
-
-        if (decision !is FullScreenIntentDecisionImpl) {
-            Log.wtf(TAG, "FSI decision $decision was not created by this class")
-            return
+            val couldHeadsUp = makeUnloggedHeadsUpDecision(entry).shouldInterrupt
+            val fsiDecision =
+                fullScreenIntentDecisionProvider.makeFullScreenIntentDecision(entry, couldHeadsUp)
+            return FullScreenIntentDecisionImpl(entry, fsiDecision)
         }
 
-        if (decision.hasBeenLogged) {
-            Log.wtf(TAG, "FSI decision $decision has already been logged")
-            return
+    override fun logFullScreenIntentDecision(decision: FullScreenIntentDecision) =
+        traceSection("VisualInterruptionDecisionProviderImpl#logFullScreenIntentDecision") {
+            check(started)
+
+            if (decision !is FullScreenIntentDecisionImpl) {
+                Log.wtf(TAG, "FSI decision $decision was not created by this class")
+                return
+            }
+
+            if (decision.hasBeenLogged) {
+                Log.wtf(TAG, "FSI decision $decision has already been logged")
+                return
+            }
+
+            decision.hasBeenLogged = true
+
+            if (!decision.shouldLog) {
+                return
+            }
+
+            logger.logFullScreenIntentDecision(decision.entry, decision, decision.isWarning)
+            logEvents(decision.entry, decision)
         }
-
-        decision.hasBeenLogged = true
-
-        if (!decision.shouldLog) {
-            return
-        }
-
-        logger.logFullScreenIntentDecision(decision.entry, decision, decision.isWarning)
-        logEvents(decision.entry, decision)
-    }
 
     private fun logEvents(entry: NotificationEntry, loggable: Loggable) {
         loggable.uiEventId?.let { uiEventLogger.log(it, entry.sbn.uid, entry.sbn.packageName) }

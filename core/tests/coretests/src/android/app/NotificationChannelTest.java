@@ -19,12 +19,15 @@ package android.app;
 import static com.google.common.truth.Truth.assertThat;
 
 import static junit.framework.TestCase.assertEquals;
+import static junit.framework.TestCase.assertFalse;
+import static junit.framework.TestCase.assertNull;
+import static junit.framework.TestCase.assertTrue;
 
-import static org.junit.Assert.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -42,12 +45,18 @@ import android.os.Bundle;
 import android.os.Parcel;
 import android.os.RemoteCallback;
 import android.os.RemoteException;
+import android.os.VibrationEffect;
+import android.platform.test.annotations.EnableFlags;
+import android.platform.test.annotations.Presubmit;
+import android.platform.test.annotations.UsesFlags;
+import android.platform.test.flag.junit.FlagsParameterization;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.provider.MediaStore.Audio.AudioColumns;
+import android.provider.Settings;
 import android.test.mock.MockContentResolver;
 import android.util.Xml;
 
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.modules.utils.TypedXmlPullParser;
 import com.android.modules.utils.TypedXmlSerializer;
@@ -55,6 +64,8 @@ import com.android.modules.utils.TypedXmlSerializer;
 import com.google.common.base.Strings;
 
 import org.junit.Before;
+import org.junit.ClassRule;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -63,15 +74,39 @@ import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.lang.reflect.Field;
+import java.util.Arrays;
+import java.util.List;
+import java.util.function.Consumer;
 
-@RunWith(AndroidJUnit4.class)
+import platform.test.runner.parameterized.ParameterizedAndroidJunit4;
+import platform.test.runner.parameterized.Parameters;
+
+@RunWith(ParameterizedAndroidJunit4.class)
+@UsesFlags(android.app.Flags.class)
 @SmallTest
+@Presubmit
 public class NotificationChannelTest {
+    @ClassRule
+    public static final SetFlagsRule.ClassRule mSetFlagsClassRule = new SetFlagsRule.ClassRule();
+
+    @Parameters(name = "{0}")
+    public static List<FlagsParameterization> getParams() {
+        return FlagsParameterization.allCombinationsOf(
+                Flags.FLAG_NOTIF_CHANNEL_CROP_VIBRATION_EFFECTS);
+    }
+
+    @Rule
+    public final SetFlagsRule mSetFlagsRule;
+
     private final String CLASS = "android.app.NotificationChannel";
 
     Context mContext;
     ContentProvider mContentProvider;
     IContentProvider mIContentProvider;
+
+    public NotificationChannelTest(FlagsParameterization flags) {
+        mSetFlagsRule = mSetFlagsClassRule.createSetFlagsRule(flags);
+    }
 
     @Before
     public void setUp() throws Exception {
@@ -220,6 +255,33 @@ public class NotificationChannelTest {
     }
 
     @Test
+    @EnableFlags({Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API,
+            Flags.FLAG_NOTIF_CHANNEL_CROP_VIBRATION_EFFECTS})
+    public void testLongVibrationFields_canWriteToXml() throws Exception {
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+        // populate pattern with contents
+        long[] pattern = new long[65550 / 2];
+        for (int i = 0; i < pattern.length; i++) {
+            pattern[i] = 100;
+        }
+        channel.setVibrationPattern(pattern);  // with flag on, also sets effect
+
+        // Send it through parceling & unparceling to simulate being passed through a binder call
+        NotificationChannel fromParcel = writeToAndReadFromParcel(channel);
+        assertThat(fromParcel.getVibrationPattern().length).isEqualTo(
+                NotificationChannel.MAX_VIBRATION_LENGTH);
+
+        // Confirm that this also survives writing to & restoring from XML
+        NotificationChannel result = backUpAndRestore(fromParcel);
+        assertThat(result.getVibrationPattern().length).isEqualTo(
+                NotificationChannel.MAX_VIBRATION_LENGTH);
+        assertThat(result.getVibrationEffect()).isNotNull();
+        assertThat(result.getVibrationEffect()
+                .computeCreateWaveformOffOnTimingsOrNull())
+                .isEqualTo(result.getVibrationPattern());
+    }
+
+    @Test
     public void testRestoreSoundUri_customLookup() throws Exception {
         Uri uriToBeRestoredUncanonicalized = Uri.parse("content://media/1");
         Uri uriToBeRestoredCanonicalized = Uri.parse("content://media/1?title=Song&canonical=1");
@@ -294,27 +356,11 @@ public class NotificationChannelTest {
         NotificationChannel channel = new NotificationChannel("id", "name", 3);
         channel.setSound(uriToBeRestoredCanonicalized, mAudioAttributes);
 
-        TypedXmlSerializer serializer = Xml.newFastSerializer();
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        serializer.setOutput(new BufferedOutputStream(baos), "utf-8");
-        serializer.startDocument(null, true);
-
         // mock the canonicalize in writeXmlForBackup -> getSoundForBackup
         when(mIContentProvider.canonicalize(any(), eq(uriToBeRestoredUncanonicalized)))
                 .thenReturn(uriToBeRestoredCanonicalized);
         when(mIContentProvider.canonicalize(any(), eq(uriToBeRestoredCanonicalized)))
                 .thenReturn(uriToBeRestoredCanonicalized);
-
-        channel.writeXmlForBackup(serializer, mContext);
-        serializer.endDocument();
-        serializer.flush();
-
-        TypedXmlPullParser parser = Xml.newFastPullParser();
-        byte[] byteArray = baos.toByteArray();
-        parser.setInput(new BufferedInputStream(new ByteArrayInputStream(byteArray)), null);
-        parser.nextTag();
-
-        NotificationChannel targetChannel = new NotificationChannel("id", "name", 3);
 
         MatrixCursor cursor = new MatrixCursor(new String[] {"_id"});
         cursor.addRow(new Object[] {100L});
@@ -350,7 +396,320 @@ public class NotificationChannelTest {
         when(mIContentProvider.canonicalize(any(), eq(uriAfterRestoredUncanonicalized)))
                 .thenReturn(uriAfterRestoredCanonicalized);
 
-        targetChannel.populateFromXmlForRestore(parser, true, mContext);
-        assertThat(targetChannel.getSound()).isEqualTo(uriAfterRestoredCanonicalized);
+        NotificationChannel restoredChannel = backUpAndRestore(channel);
+        assertThat(restoredChannel.getSound()).isEqualTo(uriAfterRestoredCanonicalized);
+    }
+
+    @Test
+    public void testWriteXmlForBackup_noAccessToFile() throws Exception {
+        Uri uri = Uri.parse("content://media/1");
+
+        AudioAttributes mAudioAttributes =
+                new AudioAttributes.Builder()
+                        .setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN)
+                        .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                        .setFlags(AudioAttributes.FLAG_AUDIBILITY_ENFORCED)
+                        .build();
+
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+        channel.setSound(uri, mAudioAttributes);
+
+        when(mIContentProvider.canonicalize(any(), any())).thenThrow(new SecurityException(""));
+        doThrow(new SecurityException("")).when(mIContentProvider)
+                .canonicalizeAsync(any(), any(), any());
+
+        NotificationChannel restoredChannel = backUpAndRestore(channel);
+        assertThat(restoredChannel.getSound())
+                .isEqualTo(Settings.System.DEFAULT_NOTIFICATION_URI);
+    }
+
+    @Test
+    public void testVibrationGetters_nonPatternBasedVibrationEffect_waveform() throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+        // Note that the amplitude used (1) is not the default amplitude, meaning that this effect
+        // does not have an equivalent pattern based effect.
+        VibrationEffect effect = VibrationEffect.createOneShot(123, 1);
+
+        channel.setVibrationEffect(effect);
+
+        Consumer<NotificationChannel> assertions = (testedChannel) -> {
+            assertThat(testedChannel.getVibrationEffect()).isEqualTo(effect);
+            assertNull(testedChannel.getVibrationPattern());
+            assertTrue(testedChannel.shouldVibrate());
+        };
+        assertions.accept(channel);
+        assertions.accept(writeToAndReadFromParcel(channel));
+        assertions.accept(backUpAndRestore(channel));
+    }
+
+    @Test
+    public void testVibrationGetters_nonPatternBasedVibrationEffect_nonWaveform() throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+        VibrationEffect effect =
+                VibrationEffect
+                        .startComposition()
+                        .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK)
+                        .compose();
+
+        channel.setVibrationEffect(effect);
+
+        Consumer<NotificationChannel> assertions = (testedChannel) -> {
+            assertThat(testedChannel.getVibrationEffect()).isEqualTo(effect);
+            assertNull(testedChannel.getVibrationPattern()); // amplitude not default.
+            assertTrue(testedChannel.shouldVibrate());
+        };
+        assertions.accept(channel);
+        assertions.accept(writeToAndReadFromParcel(channel));
+        assertions.accept(backUpAndRestore(channel));
+    }
+
+    @Test
+    public void testVibrationGetters_patternBasedVibrationEffect_nonRepeating() throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+        long[] pattern = new long[] {1, 2};
+        VibrationEffect effect = VibrationEffect.createWaveform(pattern, /* repeatIndex= */ -1);
+
+        channel.setVibrationEffect(effect);
+
+        Consumer<NotificationChannel> assertions = (testedChannel) -> {
+            assertThat(testedChannel.getVibrationEffect()).isEqualTo(effect);
+            assertTrue(Arrays.equals(pattern, testedChannel.getVibrationPattern()));
+            assertTrue(testedChannel.shouldVibrate());
+        };
+        assertions.accept(channel);
+        assertions.accept(writeToAndReadFromParcel(channel));
+        assertions.accept(backUpAndRestore(channel));
+    }
+
+    @Test
+    public void testVibrationGetters_patternBasedVibrationEffect_wholeRepeating() throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+        long[] pattern = new long[] {1, 2};
+        VibrationEffect effect = VibrationEffect.createWaveform(pattern, /* repeatIndex= */ 0);
+
+        channel.setVibrationEffect(effect);
+
+        Consumer<NotificationChannel> assertions = (testedChannel) -> {
+            assertThat(testedChannel.getVibrationEffect()).isEqualTo(effect);
+            assertNull(testedChannel.getVibrationPattern());
+            assertTrue(testedChannel.shouldVibrate());
+        };
+        assertions.accept(channel);
+        assertions.accept(writeToAndReadFromParcel(channel));
+        assertions.accept(backUpAndRestore(channel));
+    }
+
+    @Test
+    public void testVibrationGetters_patternBasedVibrationEffect_partialRepeating()
+            throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+        long[] pattern = new long[] {1, 2, 3, 4};
+        VibrationEffect effect = VibrationEffect.createWaveform(pattern, /* repeatIndex= */ 2);
+
+        channel.setVibrationEffect(effect);
+
+        Consumer<NotificationChannel> assertions = (testedChannel) -> {
+            assertThat(testedChannel.getVibrationEffect()).isEqualTo(effect);
+            assertNull(testedChannel.getVibrationPattern());
+            assertTrue(testedChannel.shouldVibrate());
+        };
+        assertions.accept(channel);
+        assertions.accept(writeToAndReadFromParcel(channel));
+        assertions.accept(backUpAndRestore(channel));
+    }
+
+    @Test
+    public void testVibrationGetters_nullVibrationEffect() throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+
+        channel.setVibrationEffect(null);
+
+        Consumer<NotificationChannel> assertions = (testedChannel) -> {
+            assertNull(channel.getVibrationEffect());
+            assertNull(channel.getVibrationPattern());
+            assertFalse(channel.shouldVibrate());
+        };
+        assertions.accept(channel);
+        assertions.accept(writeToAndReadFromParcel(channel));
+        assertions.accept(backUpAndRestore(channel));
+    }
+
+    @Test
+    public void testVibrationGetters_nullPattern() throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+
+        channel.setVibrationPattern(null);
+
+        Consumer<NotificationChannel> assertions = (testedChannel) -> {
+            assertThat(testedChannel.getVibrationEffect()).isNull();
+            assertNull(testedChannel.getVibrationPattern());
+            assertFalse(testedChannel.shouldVibrate());
+        };
+        assertions.accept(channel);
+        assertions.accept(writeToAndReadFromParcel(channel));
+        assertions.accept(backUpAndRestore(channel));
+    }
+
+    @Test
+    public void testVibrationGetters_setEffectOverridesSetPattern() throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+        VibrationEffect effect =
+                VibrationEffect.createOneShot(123, VibrationEffect.DEFAULT_AMPLITUDE);
+
+        channel.setVibrationPattern(new long[] {60, 80});
+        channel.setVibrationEffect(effect);
+
+        assertThat(channel.getVibrationEffect()).isEqualTo(effect);
+        assertTrue(Arrays.equals(new long[] {0, 123}, channel.getVibrationPattern()));
+        assertTrue(channel.shouldVibrate());
+
+        channel.setVibrationEffect(null);
+
+        assertNull(channel.getVibrationEffect());
+        assertNull(channel.getVibrationPattern());
+        assertFalse(channel.shouldVibrate());
+    }
+
+    @Test
+    public void testVibrationGetters_setPatternOverridesSetEffect() throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+        long[] pattern = new long[] {0, 123};
+
+        channel.setVibrationEffect(
+                VibrationEffect.createOneShot(123, VibrationEffect.DEFAULT_AMPLITUDE));
+        channel.setVibrationPattern(pattern);
+
+        assertThat(channel.getVibrationEffect())
+                .isEqualTo(VibrationEffect.createWaveform(pattern, -1));
+        assertTrue(Arrays.equals(pattern, channel.getVibrationPattern()));
+        assertTrue(channel.shouldVibrate());
+
+        channel.setVibrationPattern(null);
+
+        assertNull(channel.getVibrationEffect());
+        assertNull(channel.getVibrationPattern());
+        assertFalse(channel.shouldVibrate());
+    }
+
+    @Test
+    public void testEqualityDependsOnVibration() throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel1 = new NotificationChannel("id", "name", 3);
+        NotificationChannel channel2 = new NotificationChannel("id", "name", 3);
+        assertThat(channel1).isEqualTo(channel2);
+
+        VibrationEffect effect = VibrationEffect.createPredefined(VibrationEffect.EFFECT_POP);
+        long[] pattern = new long[] {1, 2, 3};
+        channel1.setVibrationEffect(effect);
+        channel2.setVibrationEffect(effect);
+        assertThat(channel1).isEqualTo(channel2);
+
+        channel1.setVibrationPattern(pattern);
+        channel2.setVibrationPattern(pattern);
+        assertThat(channel1).isEqualTo(channel2);
+
+        channel1.setVibrationPattern(pattern);
+        channel2.setVibrationEffect(VibrationEffect.createWaveform(pattern, /* repeat= */ -1));
+        // Channels should still be equal, because the pattern and the effect set are equivalent.
+        assertThat(channel1).isEqualTo(channel2);
+
+        channel1.setVibrationEffect(effect);
+        channel2.setVibrationPattern(pattern);
+        assertThat(channel1).isNotEqualTo(channel2);
+    }
+
+    @Test
+    public void testSetVibrationPattern_flagOn_setsEffect() throws Exception {
+        mSetFlagsRule.enableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+        long[] pattern = new long[] {1, 2, 3};
+
+        channel.setVibrationPattern(pattern);
+
+        assertThat(channel.getVibrationEffect())
+                .isEqualTo(VibrationEffect.createWaveform(pattern, -1));
+    }
+
+    @Test
+    public void testSetVibrationPattern_flagNotOn_doesNotSetEffect() throws Exception {
+        mSetFlagsRule.disableFlags(Flags.FLAG_NOTIFICATION_CHANNEL_VIBRATION_EFFECT_API);
+        NotificationChannel channel = new NotificationChannel("id", "name", 3);
+
+        channel.setVibrationPattern(new long[] {1, 2, 3});
+
+        assertNull(channel.getVibrationEffect());
+    }
+
+    @Test
+    @EnableFlags({Flags.FLAG_RESTRICT_AUDIO_ATTRIBUTES_MEDIA,
+            Flags.FLAG_RESTRICT_AUDIO_ATTRIBUTES_CALL, Flags.FLAG_RESTRICT_AUDIO_ATTRIBUTES_ALARM})
+    public void testCopy() {
+        NotificationChannel original = new NotificationChannel("id", "name", 2);
+        original.setDescription("desc");
+        original.setBypassDnd(true);
+        original.setLockscreenVisibility(7);
+        original.setSound(Uri.EMPTY, new AudioAttributes.Builder().build());
+        original.setLightColor(5);
+        original.enableLights(false);
+        original.setVibrationPattern(new long[] {1, 9, 3});
+        if (Flags.notificationChannelVibrationEffectApi()) {
+            original.setVibrationEffect(VibrationEffect.createOneShot(100, 5));
+        }
+        original.lockFields(9999);
+        original.setUserVisibleTaskShown(true);
+        original.enableVibration(false);
+        original.setShowBadge(true);
+        original.setDeleted(false);
+        original.setGroup("group");
+        original.setBlockable(false);
+        original.setAllowBubbles(true);
+        original.setOriginalImportance(6);
+        original.setConversationId("parent", "convo");
+        original.setDemoted(false);
+        original.setImportantConversation(true);
+        original.setDeletedTimeMs(100);
+        original.setImportanceLockedByCriticalDeviceFunction(false);
+
+        NotificationChannel parcelCopy = writeToAndReadFromParcel(original);
+        assertThat(original.copy()).isEqualTo(parcelCopy);
+    }
+
+    /** Backs up a given channel to an XML, and returns the channel read from the XML. */
+    private NotificationChannel backUpAndRestore(NotificationChannel channel) throws Exception {
+        TypedXmlSerializer serializer = Xml.newFastSerializer();
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        serializer.setOutput(new BufferedOutputStream(baos), "utf-8");
+        serializer.startDocument(null, true);
+
+        channel.writeXmlForBackup(serializer, mContext);
+        serializer.endDocument();
+        serializer.flush();
+
+        TypedXmlPullParser parser = Xml.newFastPullParser();
+        byte[] byteArray = baos.toByteArray();
+        parser.setInput(new BufferedInputStream(new ByteArrayInputStream(byteArray)), null);
+        parser.nextTag();
+
+        NotificationChannel restoredChannel =
+                new NotificationChannel("default_id", "default_name", 3);
+        restoredChannel.populateFromXmlForRestore(parser, true, mContext);
+
+        return restoredChannel;
+    }
+
+    private NotificationChannel writeToAndReadFromParcel(NotificationChannel channel) {
+        Parcel parcel = Parcel.obtain();
+        channel.writeToParcel(parcel, 0);
+        parcel.setDataPosition(0);
+        return NotificationChannel.CREATOR.createFromParcel(parcel);
     }
 }

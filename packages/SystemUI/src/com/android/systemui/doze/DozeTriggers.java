@@ -250,7 +250,7 @@ public class DozeTriggers implements DozeMachine.Part {
             return;
         }
         mNotificationPulseTime = SystemClock.elapsedRealtime();
-        if (!mConfig.pulseOnNotificationEnabled(mSelectedUserInteractor.getSelectedUserId(true))) {
+        if (!mConfig.pulseOnNotificationEnabled(mSelectedUserInteractor.getSelectedUserId())) {
             runIfNotNull(onPulseSuppressedListener);
             mDozeLog.tracePulseDropped("pulseOnNotificationsDisabled");
             return;
@@ -263,6 +263,10 @@ public class DozeTriggers implements DozeMachine.Part {
         requestPulse(DozeLog.PULSE_REASON_NOTIFICATION, false /* performedProxCheck */,
                 onPulseSuppressedListener);
         mDozeLog.traceNotificationPulse();
+    }
+
+    private void onSideFingerprintAcquisitionStarted() {
+        requestPulse(DozeLog.PULSE_REASON_FINGERPRINT_ACTIVATED, false, null);
     }
 
     private static void runIfNotNull(Runnable runnable) {
@@ -560,6 +564,11 @@ public class DozeTriggers implements DozeMachine.Part {
             return;
         }
 
+        // When already in pulsing, we can show the new Notification without requesting a new pulse.
+        if (dozeState == State.DOZE_PULSING && reason == DozeLog.PULSE_REASON_NOTIFICATION) {
+            return;
+        }
+
         if (!mAllowPulseTriggers || mDozeHost.isPulsePending()
                 || !canPulse(dozeState, performedProxCheck)) {
             if (!mAllowPulseTriggers) {
@@ -689,6 +698,11 @@ public class DozeTriggers implements DozeMachine.Part {
         @Override
         public void onNotificationAlerted(Runnable onPulseSuppressedListener) {
             onNotification(onPulseSuppressedListener);
+        }
+
+        @Override
+        public void onSideFingerprintAcquisitionStarted() {
+            DozeTriggers.this.onSideFingerprintAcquisitionStarted();
         }
     };
 }

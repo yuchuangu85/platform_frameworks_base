@@ -19,18 +19,19 @@ package com.android.server.wm;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
 import static android.view.WindowManager.LayoutParams.TYPE_WALLPAPER;
 
-import static com.android.internal.protolog.ProtoLogGroup.WM_DEBUG_APP_TRANSITIONS;
-import static com.android.internal.protolog.ProtoLogGroup.WM_DEBUG_WALLPAPER;
+import static com.android.internal.protolog.WmProtoLogGroups.WM_DEBUG_APP_TRANSITIONS;
+import static com.android.internal.protolog.WmProtoLogGroups.WM_DEBUG_WALLPAPER;
 import static com.android.server.wm.WindowManagerDebugConfig.TAG_WITH_CLASS_NAME;
 import static com.android.server.wm.WindowManagerDebugConfig.TAG_WM;
 
 import android.annotation.Nullable;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.RemoteException;
-import android.view.animation.Animation;
+import android.util.SparseArray;
 
-import com.android.internal.protolog.common.ProtoLog;
+import com.android.internal.protolog.ProtoLog;
 
 import java.util.function.Consumer;
 
@@ -48,6 +49,12 @@ class WallpaperWindowToken extends WindowToken {
     float mWallpaperYStep = -1;
     int mWallpaperDisplayOffsetX = Integer.MIN_VALUE;
     int mWallpaperDisplayOffsetY = Integer.MIN_VALUE;
+
+    /**
+     * Map from {@link android.app.WallpaperManager.ScreenOrientation} to crop rectangles.
+     * Crop rectangles represent the part of the wallpaper displayed for each screen orientation.
+     */
+    private SparseArray<Rect> mCropHints = new SparseArray<>();
 
     WallpaperWindowToken(WindowManagerService service, IBinder token, boolean explicit,
             DisplayContent dc, boolean ownerCanManageAppTokens) {
@@ -73,6 +80,20 @@ class WallpaperWindowToken extends WindowToken {
         mDisplayContent.mWallpaperController.removeWallpaperToken(this);
     }
 
+    @Override
+    public void prepareSurfaces() {
+        super.prepareSurfaces();
+
+        if (mWmService.mFlags.mEnsureWallpaperInTransitions) {
+            // Similar to Task.prepareSurfaces, outside of transitions we need to apply visibility
+            // changes directly. In transitions the transition player will take care of applying the
+            // visibility change.
+            if (!mTransitionController.inTransition(this)) {
+                getSyncTransaction().setVisibility(mSurfaceControl, isVisible());
+            }
+        }
+    }
+
     /**
      * Controls whether this wallpaper shows underneath the keyguard or is hidden and only
      * revealed once keyguard is dismissed.
@@ -82,20 +103,26 @@ class WallpaperWindowToken extends WindowToken {
             return;
         }
         mShowWhenLocked = showWhenLocked;
-        // Move the window token to the front (private) or back (showWhenLocked). This is
-        // possible
-        // because the DisplayArea underneath TaskDisplayArea only contains TYPE_WALLPAPER
-        // windows.
+        // Move the window token to the front (private) or back (showWhenLocked). This is possible
+        // because the DisplayArea underneath TaskDisplayArea only contains TYPE_WALLPAPER windows.
         final int position = showWhenLocked ? POSITION_BOTTOM : POSITION_TOP;
 
-        // Note: Moving all the way to the front or back breaks ordering based on addition
-        // times.
-        // We should never have more than one non-animating token of each type.
+        // Note: Moving all the way to the front or back breaks ordering based on addition times.
+        // There should never have more than one non-animating token of each type.
         getParent().positionChildAt(position, this /* child */, false /*includingParents */);
+        mDisplayContent.mWallpaperController.onWallpaperTokenReordered();
     }
 
     boolean canShowWhenLocked() {
         return mShowWhenLocked;
+    }
+
+    void setCropHints(SparseArray<Rect> cropHints) {
+        mCropHints = cropHints.clone();
+    }
+
+    SparseArray<Rect> getCropHints() {
+        return mCropHints;
     }
 
     void sendWindowWallpaperCommand(
@@ -123,16 +150,6 @@ class WallpaperWindowToken extends WindowToken {
         }
     }
 
-    /**
-     * Starts {@param anim} on all children.
-     */
-    void startAnimation(Animation anim) {
-        for (int ndx = mChildren.size() - 1; ndx >= 0; ndx--) {
-            final WindowState windowState = mChildren.get(ndx);
-            windowState.startAnimation(anim);
-        }
-    }
-
     void updateWallpaperWindows(boolean visible) {
         if (mVisibleRequested != visible) {
             ProtoLog.d(WM_DEBUG_WALLPAPER, "Wallpaper token %s visible=%b",
@@ -144,15 +161,7 @@ class WallpaperWindowToken extends WindowToken {
                 mDisplayContent.mWallpaperController.getWallpaperTarget();
 
         if (visible && wallpaperTarget != null) {
-            final RecentsAnimationController recentsAnimationController =
-                    mWmService.getRecentsAnimationController();
-            if (recentsAnimationController != null
-                    && recentsAnimationController.isAnimatingTask(wallpaperTarget.getTask())) {
-                // If the Recents animation is running, and the wallpaper target is the animating
-                // task we want the wallpaper to be rotated in the same orientation as the
-                // RecentsAnimation's target (e.g the launcher)
-                recentsAnimationController.linkFixedRotationTransformIfNeeded(this);
-            } else if ((wallpaperTarget.mActivityRecord == null
+            if ((wallpaperTarget.mActivityRecord == null
                     // Ignore invisible activity because it may be moving to background.
                     || wallpaperTarget.mActivityRecord.isVisibleRequested())
                     && wallpaperTarget.mToken.hasFixedRotationTransform()) {
@@ -189,7 +198,18 @@ class WallpaperWindowToken extends WindowToken {
     void setVisibility(boolean visible) {
         if (mVisibleRequested != visible) {
             // Before setting mVisibleRequested so we can track changes.
-            mTransitionController.collect(this);
+            final WindowState wpTarget = mDisplayContent.mWallpaperController.getWallpaperTarget();
+            final boolean isTargetNotCollectedActivity = wpTarget == null
+                    || (wpTarget.mActivityRecord != null
+                            && !mTransitionController.isCollecting(wpTarget.mActivityRecord));
+            // Skip collecting requesting-invisible wallpaper if the wallpaper target is empty or
+            // a non-collected activity. Because the visibility change may be called after the
+            // transition of activity is finished, e.g. WallpaperController#hideWallpapers from
+            // hiding surface of the target. Then if there is a next transition, the wallpaper
+            // change may be collected into the unrelated transition and cause a weird animation.
+            if (!isTargetNotCollectedActivity || visible) {
+                mTransitionController.collect(this);
+            }
 
             setVisibleRequested(visible);
         }
@@ -257,6 +277,12 @@ class WallpaperWindowToken extends WindowToken {
     @Override
     boolean isVisible() {
         return isClientVisible();
+    }
+
+    @Override
+    boolean isSyncFinished(BLASTSyncEngine.SyncGroup group) {
+        // TODO(b/233286785): Support sync state for wallpaper. See WindowState#prepareSync.
+        return !mVisibleRequested || !hasVisibleNotDrawnWallpaper();
     }
 
     @Override

@@ -16,13 +16,39 @@
 
 package com.android.protolog.tool
 
+import com.android.internal.protolog.common.IProtoLog
+import com.android.internal.protolog.common.LogLevel
+import com.android.internal.protolog.common.ProtoLogToolInjected
 import com.android.protolog.tool.CommandOptions.Companion.USAGE
 import com.github.javaparser.ParseProblemException
 import com.github.javaparser.ParserConfiguration
 import com.github.javaparser.StaticJavaParser
 import com.github.javaparser.ast.CompilationUnit
+import com.github.javaparser.ast.Modifier
+import com.github.javaparser.ast.NodeList
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration
+import com.github.javaparser.ast.expr.ArrayAccessExpr
+import com.github.javaparser.ast.expr.ArrayCreationExpr
+import com.github.javaparser.ast.expr.ArrayInitializerExpr
+import com.github.javaparser.ast.expr.AssignExpr
+import com.github.javaparser.ast.expr.BooleanLiteralExpr
+import com.github.javaparser.ast.expr.Expression
+import com.github.javaparser.ast.expr.FieldAccessExpr
+import com.github.javaparser.ast.expr.IntegerLiteralExpr
+import com.github.javaparser.ast.expr.MethodCallExpr
+import com.github.javaparser.ast.expr.MethodReferenceExpr
+import com.github.javaparser.ast.expr.NameExpr
+import com.github.javaparser.ast.expr.NullLiteralExpr
+import com.github.javaparser.ast.expr.ObjectCreationExpr
+import com.github.javaparser.ast.expr.SimpleName
+import com.github.javaparser.ast.expr.StringLiteralExpr
+import com.github.javaparser.ast.expr.VariableDeclarationExpr
+import com.github.javaparser.ast.stmt.BlockStmt
+import com.github.javaparser.ast.stmt.ReturnStmt
+import com.github.javaparser.ast.type.ClassOrInterfaceType
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.OutputStream
 import java.time.LocalDateTime
@@ -30,9 +56,22 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.jar.JarOutputStream
 import java.util.zip.ZipEntry
+import kotlin.math.absoluteValue
 import kotlin.system.exitProcess
 
 object ProtoLogTool {
+    const val PROTOLOG_IMPL_SRC_PATH =
+        "frameworks/base/core/java/com/android/internal/protolog/ProtoLogImpl.java"
+
+    private const val PROTOLOG_CLASS_NAME = "ProtoLog"; // ProtoLog::class.java.simpleName
+
+    data class LogCall(
+        val messageString: String,
+        val logLevel: LogLevel,
+        val logGroup: LogGroup,
+        val position: String
+    )
+
     private fun showHelpAndExit() {
         println(USAGE)
         exitProcess(-1)
@@ -51,26 +90,45 @@ object ProtoLogTool {
     }
 
     private fun processClasses(command: CommandOptions) {
+        // A deterministic hash based on the group jar path and the source files we are processing.
+        // The hash is required to make sure different ProtoLogImpls don't conflict.
+        val generationHash = (command.javaSourceArgs.toTypedArray() + command.protoLogGroupsJarArg)
+                .contentHashCode().absoluteValue
+
+        // Need to generate a new impl class to inject static constants into the class.
+        val generatedProtoLogImplClass =
+            "com.android.internal.protolog.ProtoLogImpl_$generationHash"
+
         val groups = injector.readLogGroups(
                 command.protoLogGroupsJarArg,
                 command.protoLogGroupsClassNameArg)
         val out = injector.fileOutputStream(command.outputSourceJarArg)
         val outJar = JarOutputStream(out)
-        val processor = ProtoLogCallProcessor(command.protoLogClassNameArg,
-                command.protoLogGroupsClassNameArg, groups)
+        val processor = ProtoLogCallProcessorImpl(
+            command.protoLogClassNameArg,
+            command.protoLogGroupsClassNameArg,
+            groups)
+
+        val protologImplName = generatedProtoLogImplClass.split(".").last()
+        val protologImplPath = "gen/${generatedProtoLogImplClass.split(".")
+                .joinToString("/")}.java"
+        outJar.putNextEntry(zipEntry(protologImplPath))
+
+        outJar.write(generateProtoLogImpl(protologImplName, command.viewerConfigFilePathArg,
+            command.legacyViewerConfigFilePathArg, command.legacyOutputFilePath,
+            groups, command.protoLogGroupsClassNameArg).toByteArray())
 
         val executor = newThreadPool()
 
         try {
             command.javaSourceArgs.map { path ->
                 executor.submitCallable {
-                    val transformer = SourceTransformer(command.protoLogImplClassNameArg,
-                            command.protoLogCacheClassNameArg, processor)
+                    val transformer = SourceTransformer(generatedProtoLogImplClass, processor)
                     val file = File(path)
                     val text = injector.readText(file)
                     val outSrc = try {
                         val code = tryParse(text, path)
-                        if (containsProtoLogText(text, command.protoLogClassNameArg)) {
+                        if (containsProtoLogText(text, PROTOLOG_CLASS_NAME)) {
                             transformer.processClass(text, path, packagePath(file, code), code)
                         } else {
                             text
@@ -93,51 +151,193 @@ object ProtoLogTool {
             executor.shutdown()
         }
 
-        val cacheSplit = command.protoLogCacheClassNameArg.split(".")
-        val cacheName = cacheSplit.last()
-        val cachePackage = cacheSplit.dropLast(1).joinToString(".")
-        val cachePath = "gen/${cacheSplit.joinToString("/")}.java"
-
-        outJar.putNextEntry(zipEntry(cachePath))
-        outJar.write(generateLogGroupCache(cachePackage, cacheName, groups,
-                command.protoLogImplClassNameArg, command.protoLogGroupsClassNameArg).toByteArray())
-
         outJar.close()
         out.close()
     }
 
-    fun generateLogGroupCache(
-        cachePackage: String,
-        cacheName: String,
+    private fun generateProtoLogImpl(
+        protoLogImplGenName: String,
+        viewerConfigFilePath: String,
+        legacyViewerConfigFilePath: String?,
+        legacyOutputFilePath: String?,
         groups: Map<String, LogGroup>,
-        protoLogImplClassName: String,
-        protoLogGroupsClassName: String
+        protoLogGroupsClassName: String,
     ): String {
-        val fields = groups.values.map {
-            "public static boolean ${it.name}_enabled = false;"
-        }.joinToString("\n")
+        val file = File(PROTOLOG_IMPL_SRC_PATH)
 
-        val updates = groups.values.map {
-            "${it.name}_enabled = " +
-                    "$protoLogImplClassName.isEnabled($protoLogGroupsClassName.${it.name});"
-        }.joinToString("\n")
+        val text = try {
+            injector.readText(file)
+        } catch (e: FileNotFoundException) {
+            throw RuntimeException("Expected to find '$PROTOLOG_IMPL_SRC_PATH' but file was not " +
+                    "included in source for the ProtoLog Tool to process.")
+        }
 
-        return """
-            package $cachePackage;
+        val code = tryParse(text, PROTOLOG_IMPL_SRC_PATH)
 
-            public class $cacheName {
-${fields.replaceIndent("                ")}
+        val classDeclarations = code.findAll(ClassOrInterfaceDeclaration::class.java)
+        require(classDeclarations.size == 1) { "Expected exactly one class declaration" }
+        val classDeclaration = classDeclarations[0]
 
-                static {
-                    $protoLogImplClassName.sCacheUpdater = $cacheName::update;
-                    update();
-                }
+        val classNameNode = classDeclaration.findFirst(SimpleName::class.java).get()
+        classNameNode.setId(protoLogImplGenName)
 
-                static void update() {
-${updates.replaceIndent("                    ")}
-                }
+        injectCacheClass(classDeclaration, groups, protoLogGroupsClassName)
+
+        injectConstants(classDeclaration,
+            viewerConfigFilePath, legacyViewerConfigFilePath, legacyOutputFilePath, groups,
+            protoLogGroupsClassName)
+
+        return code.toString()
+    }
+
+    private fun injectConstants(
+        classDeclaration: ClassOrInterfaceDeclaration,
+        viewerConfigFilePath: String,
+        legacyViewerConfigFilePath: String?,
+        legacyOutputFilePath: String?,
+        groups: Map<String, LogGroup>,
+        protoLogGroupsClassName: String
+    ) {
+        var needsCreateLogGroupsMap = false
+        classDeclaration.fields.forEach { field ->
+            field.getAnnotationByClass(ProtoLogToolInjected::class.java)
+                    .ifPresent { annotationExpr ->
+                        if (annotationExpr.isSingleMemberAnnotationExpr) {
+                            val valueName = annotationExpr.asSingleMemberAnnotationExpr()
+                                    .memberValue.asNameExpr().name.asString()
+                            when (valueName) {
+                                ProtoLogToolInjected.Value.VIEWER_CONFIG_PATH.name -> {
+                                    field.setFinal(true)
+                                    field.variables.first()
+                                            .setInitializer(StringLiteralExpr(viewerConfigFilePath))
+                                }
+                                ProtoLogToolInjected.Value.LEGACY_OUTPUT_FILE_PATH.name -> {
+                                    field.setFinal(true)
+                                    field.variables.first()
+                                            .setInitializer(legacyOutputFilePath?.let {
+                                                StringLiteralExpr(it)
+                                            } ?: NullLiteralExpr())
+                                }
+                                ProtoLogToolInjected.Value.LEGACY_VIEWER_CONFIG_PATH.name -> {
+                                    field.setFinal(true)
+                                    field.variables.first()
+                                            .setInitializer(legacyViewerConfigFilePath?.let {
+                                                StringLiteralExpr(it)
+                                            } ?: NullLiteralExpr())
+                                }
+                                ProtoLogToolInjected.Value.LOG_GROUPS.name -> {
+                                    needsCreateLogGroupsMap = true
+                                    field.setFinal(true)
+                                    field.variables.first().setInitializer(
+                                        MethodCallExpr().setName("createLogGroupsMap"))
+                                }
+                                ProtoLogToolInjected.Value.CACHE_UPDATER.name -> {
+                                    field.setFinal(true)
+                                    field.variables.first().setInitializer(MethodReferenceExpr()
+                                            .setScope(NameExpr("Cache"))
+                                            .setIdentifier("update"))
+                                }
+                                else -> error("Unhandled ProtoLogToolInjected value: $valueName.")
+                            }
+                        }
+                    }
+        }
+
+        if (needsCreateLogGroupsMap) {
+            val body = BlockStmt()
+            body.addStatement(AssignExpr(
+                VariableDeclarationExpr(
+                    ClassOrInterfaceType("TreeMap<String, IProtoLogGroup>"),
+                    "result"
+                ),
+                ObjectCreationExpr().setType("TreeMap<String, IProtoLogGroup>"),
+                AssignExpr.Operator.ASSIGN
+            ))
+            for (group in groups) {
+                body.addStatement(
+                    MethodCallExpr(
+                        NameExpr("result"),
+                        "put",
+                        NodeList(
+                                StringLiteralExpr(group.key),
+                                FieldAccessExpr()
+                                        .setScope(
+                                            NameExpr(
+                                                protoLogGroupsClassName
+                                            ))
+                                        .setName(group.value.name)
+                        )
+                    )
+                )
             }
-        """.trimIndent()
+            body.addStatement(ReturnStmt(NameExpr("result")))
+
+            val method = classDeclaration.addMethod(
+                "createLogGroupsMap",
+                Modifier.Keyword.PRIVATE,
+                Modifier.Keyword.STATIC,
+                Modifier.Keyword.FINAL
+            )
+            method.setType("TreeMap<String, IProtoLogGroup>")
+            method.setBody(body)
+        }
+    }
+
+    private fun injectCacheClass(
+        classDeclaration: ClassOrInterfaceDeclaration,
+        groups: Map<String, LogGroup>,
+        protoLogGroupsClassName: String,
+    ) {
+        val cacheClass = ClassOrInterfaceDeclaration()
+            .setName("Cache")
+            .setPublic(true)
+            .setStatic(true)
+        for (group in groups) {
+            val nodeList = NodeList<Expression>()
+            val defaultVal = BooleanLiteralExpr(group.value.textEnabled || group.value.enabled)
+            repeat(LogLevel.entries.size) { nodeList.add(defaultVal) }
+            cacheClass.addFieldWithInitializer(
+                "boolean[]",
+                "${group.key}_enabled",
+                ArrayCreationExpr().setElementType("boolean[]").setInitializer(
+                    ArrayInitializerExpr().setValues(nodeList)
+                ),
+                Modifier.Keyword.PUBLIC,
+                Modifier.Keyword.STATIC
+            )
+        }
+
+        val updateBlockStmt = BlockStmt()
+        for (group in groups) {
+            for (level in LogLevel.entries) {
+                updateBlockStmt.addStatement(
+                    AssignExpr()
+                        .setTarget(
+                            ArrayAccessExpr()
+                                .setName(NameExpr("${group.key}_enabled"))
+                                .setIndex(IntegerLiteralExpr(level.ordinal))
+                        ).setValue(
+                            MethodCallExpr()
+                                .setName("isEnabled")
+                                .setArguments(NodeList(
+                                    NameExpr("protoLogInstance"),
+                                    FieldAccessExpr()
+                                        .setScope(NameExpr(protoLogGroupsClassName))
+                                        .setName(group.value.name),
+                                    FieldAccessExpr()
+                                        .setScope(NameExpr("LogLevel"))
+                                        .setName(level.toString()),
+                                ))
+                        )
+                )
+            }
+        }
+
+        cacheClass.addMethod("update").setPrivate(true).setStatic(true)
+            .addParameter(IProtoLog::class.java, "protoLogInstance")
+            .setBody(updateBlockStmt)
+
+        classDeclaration.addMember(cacheClass)
     }
 
     private fun tryParse(code: String, fileName: String): CompilationUnit {
@@ -145,23 +345,52 @@ ${updates.replaceIndent("                    ")}
             return StaticJavaParser.parse(code)
         } catch (ex: ParseProblemException) {
             val problem = ex.problems.first()
-            throw ParsingException("Java parsing erro" +
-                    "r: ${problem.verboseMessage}",
+            throw ParsingException("Java parsing error: ${problem.verboseMessage}",
                     ParsingContext(fileName, problem.location.orElse(null)
                             ?.begin?.range?.orElse(null)?.begin?.line
                             ?: 0))
         }
     }
 
+    class LogCallRegistry {
+        private val statements = mutableMapOf<LogCall, Long>()
+
+        fun addLogCalls(calls: List<LogCall>) {
+            calls.forEach { logCall ->
+                if (logCall.logGroup.enabled) {
+                    statements.putIfAbsent(logCall,
+                        CodeUtils.hash(logCall.position, logCall.messageString,
+                            logCall.logLevel, logCall.logGroup))
+                }
+            }
+        }
+
+        fun getStatements(): Map<LogCall, Long> {
+            return statements
+        }
+    }
+
+    interface ProtologViewerConfigBuilder {
+        fun build(groups: Collection<LogGroup>, statements: Map<LogCall, Long>): ByteArray
+    }
+
     private fun viewerConf(command: CommandOptions) {
         val groups = injector.readLogGroups(
                 command.protoLogGroupsJarArg,
                 command.protoLogGroupsClassNameArg)
-        val processor = ProtoLogCallProcessor(command.protoLogClassNameArg,
+        val processor = ProtoLogCallProcessorImpl(command.protoLogClassNameArg,
                 command.protoLogGroupsClassNameArg, groups)
-        val builder = ViewerConfigBuilder(processor)
+        val outputType = command.viewerConfigTypeArg
+
+        val configBuilder: ProtologViewerConfigBuilder = when (outputType.lowercase()) {
+            "json" -> ViewerConfigJsonBuilder()
+            "proto" -> ViewerConfigProtoBuilder()
+            else -> error("Invalid output type provide. Provided '$outputType'.")
+        }
 
         val executor = newThreadPool()
+
+        val logCallRegistry = LogCallRegistry()
 
         try {
             command.javaSourceArgs.map { path ->
@@ -171,7 +400,7 @@ ${updates.replaceIndent("                    ")}
                     if (containsProtoLogText(text, command.protoLogClassNameArg)) {
                         try {
                             val code = tryParse(text, path)
-                            builder.findLogCalls(code, path, packagePath(file, code))
+                            findLogCalls(code, path, packagePath(file, code), processor)
                         } catch (ex: ParsingException) {
                             // If we cannot parse this file, skip it (and log why). Compilation will
                             // fail in a subsequent build step.
@@ -183,15 +412,38 @@ ${updates.replaceIndent("                    ")}
                     }
                 }
             }.forEach { future ->
-                builder.addLogCalls(future.get() ?: return@forEach)
+                logCallRegistry.addLogCalls(future.get() ?: return@forEach)
             }
         } finally {
             executor.shutdown()
         }
 
-        val out = injector.fileOutputStream(command.viewerConfigJsonArg)
-        out.write(builder.build().toByteArray())
-        out.close()
+        val outFile = injector.fileOutputStream(command.viewerConfigFileNameArg)
+        outFile.write(configBuilder.build(groups.values, logCallRegistry.getStatements()))
+        outFile.close()
+    }
+
+    private fun findLogCalls(
+        unit: CompilationUnit,
+        path: String,
+        packagePath: String,
+        processor: ProtoLogCallProcessorImpl
+    ): List<LogCall> {
+        val calls = mutableListOf<LogCall>()
+        val logCallVisitor = object : ProtoLogCallVisitor {
+            override fun processCall(
+                call: MethodCallExpr,
+                messageString: String,
+                level: LogLevel,
+                group: LogGroup
+            ) {
+                val logCall = LogCall(messageString, level, group, packagePath)
+                calls.add(logCall)
+            }
+        }
+        processor.process(unit, logCallVisitor, path)
+
+        return calls
     }
 
     private fun packagePath(file: File, code: CompilationUnit): String {
@@ -204,7 +456,7 @@ ${updates.replaceIndent("                    ")}
     private fun read(command: CommandOptions) {
         LogParser(ViewerConfigParser())
                 .parse(FileInputStream(command.logProtofileArg),
-                        FileInputStream(command.viewerConfigJsonArg), System.out)
+                        FileInputStream(command.viewerConfigFileNameArg), System.out)
     }
 
     @JvmStatic
@@ -213,10 +465,10 @@ ${updates.replaceIndent("                    ")}
             val command = CommandOptions(args)
             invoke(command)
         } catch (ex: InvalidCommandException) {
-            println("\n${ex.message}\n")
+            println("InvalidCommandException: \n${ex.message}\n")
             showHelpAndExit()
         } catch (ex: CodeProcessingException) {
-            println("\n${ex.message}\n")
+            println("CodeProcessingException: \n${ex.message}\n")
             exitProcess(1)
         }
     }

@@ -20,12 +20,14 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Intent;
 import android.hardware.biometrics.AuthenticateOptions;
+import android.hardware.biometrics.BiometricAuthenticator;
 import android.hardware.biometrics.IBiometricContextListener;
 import android.hardware.biometrics.common.AuthenticateReason;
 import android.hardware.biometrics.common.DisplayState;
 import android.hardware.biometrics.common.FoldState;
 import android.hardware.biometrics.common.OperationContext;
 import android.hardware.biometrics.common.OperationReason;
+import android.hardware.biometrics.common.OperationState;
 import android.hardware.biometrics.common.WakeReason;
 import android.hardware.face.FaceAuthenticateOptions;
 import android.hardware.fingerprint.FingerprintAuthenticateOptions;
@@ -48,16 +50,41 @@ public class OperationContextExt {
     @Surface.Rotation private int mOrientation = Surface.ROTATION_0;
     private int mFoldState = IBiometricContextListener.FoldState.UNKNOWN;
     private final boolean mIsBP;
+    private final boolean mIsMandatoryBiometrics;
 
     /** Create a context. */
     public OperationContextExt(boolean isBP) {
-        this(new OperationContext(), isBP);
+        this(new OperationContext(), isBP, BiometricAuthenticator.TYPE_NONE);
+    }
+
+    public OperationContextExt(boolean isBP, boolean isMandatoryBiometrics) {
+        this(new OperationContext(), isBP, BiometricAuthenticator.TYPE_NONE, isMandatoryBiometrics);
+    }
+
+    public OperationContextExt(boolean isBP, @BiometricAuthenticator.Modality int modality,
+            boolean isMandatoryBiometrics) {
+        this(new OperationContext(), isBP, modality, isMandatoryBiometrics);
     }
 
     /** Create a wrapped context. */
-    public OperationContextExt(@NonNull OperationContext context, boolean isBP) {
+    public OperationContextExt(@NonNull OperationContext context, boolean isBP,
+            @BiometricAuthenticator.Modality int modality) {
+        this(context, isBP, modality, false /* isMandatoryBiometrics */);
+    }
+
+    public OperationContextExt(@NonNull OperationContext context, boolean isBP,
+            @BiometricAuthenticator.Modality int modality, boolean isMandatoryBiometrics) {
         mAidlContext = context;
         mIsBP = isBP;
+        mIsMandatoryBiometrics = isMandatoryBiometrics;
+
+        if (modality == BiometricAuthenticator.TYPE_FINGERPRINT) {
+            mAidlContext.operationState = OperationState.fingerprintOperationState(
+                    new OperationState.FingerprintOperationState());
+        } else if (modality == BiometricAuthenticator.TYPE_FACE) {
+            mAidlContext.operationState = OperationState.faceOperationState(
+                    new OperationState.FaceOperationState());
+        }
     }
 
     /**
@@ -77,6 +104,24 @@ public class OperationContextExt {
     @NonNull
     public OperationContext toAidlContext() {
         return mAidlContext;
+    }
+
+    /**
+     * Gets the subset of the context that can be shared with the HAL and updates
+     * it with the given options.
+     *
+     * @param options authenticate options
+     * @return the underlying AIDL context
+     */
+    @NonNull
+    public OperationContext toAidlContext(@NonNull AuthenticateOptions options) {
+        if (options instanceof FaceAuthenticateOptions) {
+            return toAidlContext((FaceAuthenticateOptions) options);
+        }
+        if (options instanceof FingerprintAuthenticateOptions) {
+            return toAidlContext((FingerprintAuthenticateOptions) options);
+        }
+        throw new IllegalStateException("Authenticate options are invalid.");
     }
 
     /**
@@ -247,12 +292,28 @@ public class OperationContextExt {
         return mOrientation;
     }
 
+    /** The current operation state  */
+    public OperationState getOperationState() {
+        return mAidlContext.operationState;
+    }
+
+    /** If mandatory biometrics is active. */
+    public boolean getIsMandatoryBiometrics() {
+        return mIsMandatoryBiometrics;
+    }
+
     /** Update this object with the latest values from the given context. */
     OperationContextExt update(@NonNull BiometricContext biometricContext, boolean isCrypto) {
         mAidlContext.isAod = biometricContext.isAod();
         mAidlContext.displayState = toAidlDisplayState(biometricContext.getDisplayState());
         mAidlContext.foldState = toAidlFoldState(biometricContext.getFoldState());
         mAidlContext.isCrypto = isCrypto;
+
+        if (mAidlContext.operationState != null && mAidlContext.operationState.getTag()
+                == OperationState.fingerprintOperationState) {
+            mAidlContext.operationState.getFingerprintOperationState().isHardwareIgnoringTouches =
+                    biometricContext.isHardwareIgnoringTouches();
+        }
         setFirstSessionId(biometricContext);
 
         mIsDisplayOn = biometricContext.isDisplayOn();

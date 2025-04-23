@@ -33,8 +33,8 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • กำลังชาร์จ"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • กำลังชาร์จอย่างเร็ว"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • กำลังชาร์จอย่างช้าๆ"</string>
-    <string name="keyguard_plugged_in_charging_limited" msgid="1053130519456324630">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ปรับการชาร์จให้เหมาะสมเพื่อถนอมแบตเตอรี่"</string>
-    <string name="keyguard_plugged_in_incompatible_charger" msgid="3687961801947819076">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ปัญหาเกี่ยวกับอุปกรณ์เสริมสำหรับการชาร์จ"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="5369697538556777542">"<xliff:g id="PERCENTAGE">%s</xliff:g> • หยุดการชาร์จชั่วคราวเพื่อถนอมแบตเตอรี่"</string>
+    <string name="keyguard_plugged_in_incompatible_charger" msgid="6384203333154532125">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ตรวจสอบอุปกรณ์เสริมสำหรับการชาร์จ"</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"เครือข่ายถูกล็อก"</string>
     <string name="keyguard_missing_sim_message_short" msgid="685029586173458728">"ไม่มี SIM"</string>
     <string name="keyguard_permanent_disabled_sim_message_short" msgid="3955052454216046100">"SIM ใช้งานไม่ได้"</string>
@@ -111,6 +111,9 @@
     <string name="kg_prompt_reason_timeout_pattern" msgid="5514969660010197363">"ใช้รูปแบบแทนเพื่อเพิ่มความปลอดภัย"</string>
     <string name="kg_prompt_reason_timeout_pin" msgid="4227962059353859376">"ใช้ PIN แทนเพื่อเพิ่มความปลอดภัย"</string>
     <string name="kg_prompt_reason_timeout_password" msgid="8810879144143933690">"ใช้รหัสผ่านแทนเพื่อเพิ่มความปลอดภัย"</string>
+    <string name="kg_prompt_added_security_pin" msgid="5487992065995475528">"ต้องระบุ PIN เพื่อเป็นการรักษาความปลอดภัยเพิ่มเติม"</string>
+    <string name="kg_prompt_added_security_pattern" msgid="1017068086102168544">"ต้องใช้รูปแบบเพื่อเป็นการรักษาความปลอดภัยเพิ่มเติม"</string>
+    <string name="kg_prompt_added_security_password" msgid="6053156069765029006">"ต้องป้อนรหัสผ่านเพื่อเป็นการรักษาความปลอดภัยเพิ่มเติม"</string>
     <string name="kg_prompt_reason_device_admin" msgid="6961159596224055685">"ผู้ดูแลระบบล็อกอุปกรณ์"</string>
     <string name="kg_prompt_reason_user_request" msgid="6015774877733717904">"มีการล็อกอุปกรณ์ด้วยตัวเอง"</string>
     <string name="kg_face_not_recognized" msgid="7903950626744419160">"ไม่รู้จักลายนิ้วมือ"</string>

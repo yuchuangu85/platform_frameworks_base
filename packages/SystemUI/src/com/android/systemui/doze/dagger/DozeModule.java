@@ -18,11 +18,7 @@ package com.android.systemui.doze.dagger;
 
 import android.content.Context;
 import android.hardware.Sensor;
-import android.os.Handler;
 
-import com.android.systemui.res.R;
-import com.android.systemui.dagger.qualifiers.Main;
-import com.android.systemui.dagger.qualifiers.UiBackground;
 import com.android.systemui.doze.DozeAuthRemover;
 import com.android.systemui.doze.DozeBrightnessHostForwarder;
 import com.android.systemui.doze.DozeDockHandler;
@@ -40,6 +36,7 @@ import com.android.systemui.doze.DozeTransitionListener;
 import com.android.systemui.doze.DozeTriggers;
 import com.android.systemui.doze.DozeUi;
 import com.android.systemui.doze.DozeWallpaperState;
+import com.android.systemui.res.R;
 import com.android.systemui.statusbar.phone.DozeParameters;
 import com.android.systemui.statusbar.policy.DevicePostureController;
 import com.android.systemui.util.sensors.AsyncSensorManager;
@@ -53,7 +50,6 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.Executor;
 
 /** Dagger module for use with {@link com.android.systemui.doze.dagger.DozeComponent}. */
 @Module
@@ -62,22 +58,21 @@ public abstract class DozeModule {
     @DozeScope
     @WrappedService
     static DozeMachine.Service providesWrappedService(DozeMachine.Service dozeMachineService,
-            DozeHost dozeHost, DozeParameters dozeParameters, @UiBackground Executor bgExecutor) {
+            DozeHost dozeHost, DozeParameters dozeParameters) {
         DozeMachine.Service wrappedService = dozeMachineService;
-        wrappedService = new DozeBrightnessHostForwarder(wrappedService, dozeHost, bgExecutor);
+        wrappedService = new DozeBrightnessHostForwarder(wrappedService, dozeHost);
         wrappedService = DozeScreenStatePreventingAdapter.wrapIfNeeded(
-                wrappedService, dozeParameters, bgExecutor);
+                wrappedService, dozeParameters);
         wrappedService = DozeSuspendScreenStatePreventingAdapter.wrapIfNeeded(
-                wrappedService, dozeParameters, bgExecutor);
+                wrappedService, dozeParameters);
 
         return wrappedService;
     }
 
     @Provides
     @DozeScope
-    static WakeLock providesDozeWakeLock(DelayedWakeLock.Builder delayedWakeLockBuilder,
-            @Main Handler handler) {
-        return delayedWakeLockBuilder.setHandler(handler).setTag("Doze").build();
+    static WakeLock providesDozeWakeLock(DelayedWakeLock.Factory delayedWakeLockFactory) {
+        return delayedWakeLockFactory.create("Doze");
     }
 
     @Provides
@@ -92,8 +87,8 @@ public abstract class DozeModule {
                 dozeFalsingManagerAdapter,
                 dozeTriggers,
                 dozeUi,
-                dozeScreenState,
                 dozeScreenBrightness,
+                dozeScreenState,
                 dozeWallpaperState,
                 dozeDockHandler,
                 dozeAuthRemover,

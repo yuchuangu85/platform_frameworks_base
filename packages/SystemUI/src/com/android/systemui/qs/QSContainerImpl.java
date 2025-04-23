@@ -25,11 +25,16 @@ import android.graphics.PointF;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.FrameLayout;
+
+import androidx.annotation.Nullable;
 
 import com.android.systemui.Dumpable;
 import com.android.systemui.qs.customize.QSCustomizer;
 import com.android.systemui.res.R;
+import com.android.systemui.scene.shared.flag.SceneContainerFlag;
+import com.android.systemui.shade.LargeScreenHeaderHelper;
 import com.android.systemui.shade.TouchLogger;
 import com.android.systemui.util.LargeScreenUtils;
 
@@ -50,6 +55,7 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
     private QuickStatusBarHeader mHeader;
     private float mQsExpansion;
     private QSCustomizer mQSCustomizer;
+    private QSPanel mQSPanel;
     private NonInterceptingScrollView mQSPanelContainer;
 
     private int mHorizontalMargins;
@@ -69,6 +75,7 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
     protected void onFinishInflate() {
         super.onFinishInflate();
         mQSPanelContainer = findViewById(R.id.expanded_qs_scroll_view);
+        mQSPanel = findViewById(R.id.quick_settings_panel);
         mHeader = findViewById(R.id.header);
         mQSCustomizer = findViewById(R.id.qs_customize);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
@@ -76,6 +83,13 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
 
     void setSceneContainerEnabled(boolean enabled) {
         mSceneContainerEnabled = enabled;
+        if (enabled) {
+            mQSPanelContainer.removeAllViews();
+            removeView(mQSPanelContainer);
+            LayoutParams lp = new LayoutParams(LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            addView(mQSPanel, 0, lp);
+        }
     }
 
     @Override
@@ -94,20 +108,26 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         // QSPanel will show as many rows as it can (up to TileLayout.MAX_ROWS) such that the
         // bottom and footer are inside the screen.
-        MarginLayoutParams layoutParams = (MarginLayoutParams) mQSPanelContainer.getLayoutParams();
-
         int availableHeight = View.MeasureSpec.getSize(heightMeasureSpec);
-        int maxQs = availableHeight - layoutParams.topMargin - layoutParams.bottomMargin
-                - getPaddingBottom();
-        int padding = mPaddingLeft + mPaddingRight + layoutParams.leftMargin
-                + layoutParams.rightMargin;
-        final int qsPanelWidthSpec = getChildMeasureSpec(widthMeasureSpec, padding,
-                layoutParams.width);
-        mQSPanelContainer.measure(qsPanelWidthSpec,
-                MeasureSpec.makeMeasureSpec(maxQs, MeasureSpec.AT_MOST));
-        int width = mQSPanelContainer.getMeasuredWidth() + padding;
-        super.onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
-                MeasureSpec.makeMeasureSpec(availableHeight, MeasureSpec.EXACTLY));
+
+        if (!mSceneContainerEnabled) {
+            MarginLayoutParams layoutParams =
+                    (MarginLayoutParams) mQSPanelContainer.getLayoutParams();
+            int maxQs = availableHeight - layoutParams.topMargin - layoutParams.bottomMargin
+                    - getPaddingBottom();
+            int padding = mPaddingLeft + mPaddingRight + layoutParams.leftMargin
+                    + layoutParams.rightMargin;
+            final int qsPanelWidthSpec = getChildMeasureSpec(widthMeasureSpec, padding,
+                    layoutParams.width);
+            mQSPanelContainer.measure(qsPanelWidthSpec,
+                    MeasureSpec.makeMeasureSpec(maxQs, MeasureSpec.AT_MOST));
+            int width = mQSPanelContainer.getMeasuredWidth() + padding;
+            super.onMeasure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                    MeasureSpec.makeMeasureSpec(availableHeight, MeasureSpec.EXACTLY));
+        } else {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+        }
+
         // QSCustomizer will always be the height of the screen, but do this after
         // other measuring to avoid changing the height of the QS.
         mQSCustomizer.measure(widthMeasureSpec,
@@ -127,12 +147,21 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
     @Override
     protected void measureChildWithMargins(View child, int parentWidthMeasureSpec, int widthUsed,
             int parentHeightMeasureSpec, int heightUsed) {
-        // Do not measure QSPanel again when doing super.onMeasure.
-        // This prevents the pages in PagedTileLayout to be remeasured with a different (incorrect)
-        // size to the one used for determining the number of rows and then the number of pages.
-        if (child != mQSPanelContainer) {
-            super.measureChildWithMargins(child, parentWidthMeasureSpec, widthUsed,
-                    parentHeightMeasureSpec, heightUsed);
+        if (!mSceneContainerEnabled) {
+            // Do not measure QSPanel again when doing super.onMeasure.
+            // This prevents the pages in PagedTileLayout to be remeasured with a different
+            // (incorrect) size to the one used for determining the number of rows and then the
+            // number of pages.
+            if (child != mQSPanelContainer) {
+                super.measureChildWithMargins(child, parentWidthMeasureSpec, widthUsed,
+                        parentHeightMeasureSpec, heightUsed);
+            }
+        } else {
+            // Don't measure the customizer with all the children, it will be measured separately
+            if (child != mQSCustomizer) {
+                super.measureChildWithMargins(child, parentWidthMeasureSpec, widthUsed,
+                        parentHeightMeasureSpec, heightUsed);
+            }
         }
     }
 
@@ -148,6 +177,7 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
         updateClippingPath();
     }
 
+    @Nullable
     public NonInterceptingScrollView getQSPanelContainer() {
         return mQSPanelContainer;
     }
@@ -162,14 +192,21 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
             QuickStatusBarHeaderController quickStatusBarHeaderController) {
         int topPadding = QSUtils.getQsHeaderSystemIconsAreaHeight(mContext);
         if (!LargeScreenUtils.shouldUseLargeScreenShadeHeader(mContext.getResources())) {
-            topPadding = mContext.getResources()
-                    .getDimensionPixelSize(R.dimen.large_screen_shade_header_height);
+            topPadding = LargeScreenHeaderHelper.getLargeScreenHeaderHeight(mContext);
         }
-        mQSPanelContainer.setPaddingRelative(
-                mQSPanelContainer.getPaddingStart(),
-                mSceneContainerEnabled ? 0 : topPadding,
-                mQSPanelContainer.getPaddingEnd(),
-                mQSPanelContainer.getPaddingBottom());
+        if (mQSPanelContainer != null) {
+            mQSPanelContainer.setPaddingRelative(
+                    mQSPanelContainer.getPaddingStart(),
+                    mSceneContainerEnabled ? 0 : topPadding,
+                    mQSPanelContainer.getPaddingEnd(),
+                    mQSPanelContainer.getPaddingBottom());
+        } else {
+            mQSPanel.setPaddingRelative(
+                    mQSPanel.getPaddingStart(),
+                    mSceneContainerEnabled ? 0 : topPadding,
+                    mQSPanel.getPaddingEnd(),
+                    mQSPanel.getPaddingBottom());
+        }
 
         int horizontalMargins = getResources().getDimensionPixelSize(R.dimen.qs_horizontal_margin);
         int horizontalPadding = getResources().getDimensionPixelSize(
@@ -211,9 +248,45 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
                 + mHeader.getHeight();
     }
 
+    // These next two methods are used with Scene container to determine the size of QQS and QS .
+
+    /**
+     * Returns the size of the QQS container, regardless of the measured size of this view.
+     * @return size in pixels of QQS
+     */
+    public int getQqsHeight() {
+        SceneContainerFlag.assertInNewMode();
+        return mHeader.getMeasuredHeight();
+    }
+
+    /**
+     * @return height with the squishiness fraction applied.
+     */
+    int getSquishedQqsHeight() {
+        return mHeader.getSquishedHeight();
+    }
+
+    /**
+     * Returns the size of QS (or the QSCustomizer), regardless of the measured size of this view
+     * @return size in pixels of QS (or QSCustomizer)
+     */
+    public int getQsHeight() {
+        return mQSCustomizer.isCustomizing() ? mQSCustomizer.getMeasuredHeight()
+                : mQSPanel.getMeasuredHeight();
+    }
+
+    /**
+     * @return height with the squishiness fraction applied.
+     */
+    int getSquishedQsHeight() {
+        return mQSPanel.getSquishedHeight();
+    }
+
     public void setExpansion(float expansion) {
         mQsExpansion = expansion;
-        mQSPanelContainer.setScrollingEnabled(expansion > 0f);
+        if (mQSPanelContainer != null) {
+            mQSPanelContainer.setScrollingEnabled(expansion > 0f);
+        }
         updateExpansion();
     }
 
@@ -232,18 +305,18 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
                 lp.rightMargin = mHorizontalMargins;
                 lp.leftMargin = mHorizontalMargins;
             }
-            if (view == mQSPanelContainer) {
+            if (view == mQSPanelContainer || view == mQSPanel) {
                 // QS panel lays out some of its content full width
                 qsPanelController.setContentMargins(mContentHorizontalPadding,
                         mContentHorizontalPadding);
-                qsPanelController.setPageMargin(mTilesPageMargin);
+                setPageMargins(qsPanelController);
             } else if (view == mHeader) {
                 quickStatusBarHeaderController.setContentMargins(mContentHorizontalPadding,
                         mContentHorizontalPadding);
             } else {
                 // Set the horizontal paddings unless the view is the Compose implementation of the
                 // footer actions.
-                if (view.getTag(R.id.tag_compose_qs_footer_actions) == null) {
+                if (view.getId() != R.id.qs_footer_actions) {
                     view.setPaddingRelative(
                             mContentHorizontalPadding,
                             view.getPaddingTop(),
@@ -251,6 +324,18 @@ public class QSContainerImpl extends FrameLayout implements Dumpable {
                             view.getPaddingBottom());
                 }
             }
+        }
+    }
+
+    private void setPageMargins(QSPanelController qsPanelController) {
+        if (SceneContainerFlag.isEnabled()) {
+            if (mHorizontalMargins == mTilesPageMargin * 2 + 1) {
+                qsPanelController.setPageMargin(mTilesPageMargin, mTilesPageMargin + 1);
+            } else {
+                qsPanelController.setPageMargin(mTilesPageMargin, mTilesPageMargin);
+            }
+        } else {
+            qsPanelController.setPageMargin(mTilesPageMargin, mTilesPageMargin);
         }
     }
 

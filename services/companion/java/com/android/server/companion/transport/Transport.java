@@ -16,6 +16,9 @@
 
 package com.android.server.companion.transport;
 
+import static android.companion.CompanionDeviceManager.MESSAGE_ONEWAY_FROM_WEARABLE;
+import static android.companion.CompanionDeviceManager.MESSAGE_ONEWAY_PING;
+import static android.companion.CompanionDeviceManager.MESSAGE_ONEWAY_TO_WEARABLE;
 import static android.companion.CompanionDeviceManager.MESSAGE_REQUEST_CONTEXT_SYNC;
 import static android.companion.CompanionDeviceManager.MESSAGE_REQUEST_PERMISSION_RESTORE;
 import static android.companion.CompanionDeviceManager.MESSAGE_REQUEST_PING;
@@ -37,8 +40,8 @@ import libcore.util.EmptyArray;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -68,7 +71,8 @@ public abstract class Transport {
      * the future to allow multiple listeners to receive callbacks for the same message type, the
      * value of the map can be a list.
      */
-    private final Map<Integer, IOnMessageReceivedListener> mListeners;
+    @GuardedBy("mListeners")
+    private final SparseArray<Set<IOnMessageReceivedListener>> mListeners = new SparseArray<>();
 
     private OnTransportClosedListener mOnTransportClosed;
 
@@ -78,6 +82,10 @@ public abstract class Transport {
 
     private static boolean isResponse(int message) {
         return (message & 0xFF000000) == 0x33000000;
+    }
+
+    private static boolean isOneway(int message) {
+        return (message & 0xFF000000) == 0x43000000;
     }
 
     @GuardedBy("mPendingRequests")
@@ -91,7 +99,6 @@ public abstract class Transport {
         mRemoteIn = new ParcelFileDescriptor.AutoCloseInputStream(fd);
         mRemoteOut = new ParcelFileDescriptor.AutoCloseOutputStream(fd);
         mContext = context;
-        mListeners = new HashMap<>();
     }
 
     /**
@@ -100,7 +107,12 @@ public abstract class Transport {
      * @param listener Execute when a message with the type is received
      */
     public void addListener(int message, IOnMessageReceivedListener listener) {
-        mListeners.put(message, listener);
+        synchronized (mListeners) {
+            if (!mListeners.contains(message)) {
+                mListeners.put(message, new HashSet<IOnMessageReceivedListener>());
+            }
+            mListeners.get(message).add(listener);
+        }
     }
 
     public int getAssociationId() {
@@ -134,6 +146,42 @@ public abstract class Transport {
     protected abstract void sendMessage(int message, int sequence, @NonNull byte[] data)
             throws IOException;
 
+    /**
+     * Send a message using this transport. If the message was a request, then the returned Future
+     * object will complete successfully only if the remote device both received and processed it
+     * as expected. If the message was a send-and-forget type message, then the Future object will
+     * resolve successfully immediately (with null) upon sending the message.
+     *
+     * @param message the message type
+     * @param data the message payload
+     * @return Future object containing the result of the sent message.
+     */
+    public Future<byte[]> sendMessage(int message, byte[] data) {
+        final CompletableFuture<byte[]> pending = new CompletableFuture<>();
+        if (isOneway(message)) {
+            return sendAndForget(message, data);
+        } else if (isRequest(message)) {
+            return requestForResponse(message, data);
+        } else {
+            Slog.w(TAG, "Failed to send message 0x" + Integer.toHexString(message));
+            pending.completeExceptionally(new IllegalArgumentException(
+                    "The message being sent must be either a one-way or a request."
+            ));
+        }
+        return pending;
+    }
+
+    /**
+     * @deprecated Method was renamed to sendMessage(int, byte[]) to support both
+     * send-and-forget type messages as well as wait-for-response type messages.
+     *
+     * @param message request message type
+     * @param data the message payload
+     * @return future object containing the result of the request.
+     *
+     * @see #sendMessage(int, byte[])
+     */
+    @Deprecated
     public Future<byte[]> requestForResponse(int message, byte[] data) {
         if (DEBUG) Slog.d(TAG, "Requesting for response");
         final int sequence = mNextSequence.incrementAndGet();
@@ -154,6 +202,20 @@ public abstract class Transport {
         return pending;
     }
 
+    private Future<byte[]> sendAndForget(int message, byte[]data) {
+        if (DEBUG) Slog.d(TAG, "Sending a one-way message");
+        final CompletableFuture<byte[]> pending = new CompletableFuture<>();
+
+        try {
+            sendMessage(message, -1, data);
+            pending.complete(null);
+        } catch (IOException e) {
+            pending.completeExceptionally(e);
+        }
+
+        return pending;
+    }
+
     protected final void handleMessage(int message, int sequence, @NonNull byte[] data)
             throws IOException {
         if (DEBUG) {
@@ -162,7 +224,9 @@ public abstract class Transport {
                     + " from association " + mAssociationId);
         }
 
-        if (isRequest(message)) {
+        if (isOneway(message)) {
+            processOneway(message, data);
+        } else if (isRequest(message)) {
             try {
                 processRequest(message, sequence, data);
             } catch (IOException e) {
@@ -172,6 +236,21 @@ public abstract class Transport {
             processResponse(message, sequence, data);
         } else {
             Slog.w(TAG, "Unknown message 0x" + Integer.toHexString(message));
+        }
+    }
+
+    private void processOneway(int message, byte[] data) {
+        switch (message) {
+            case MESSAGE_ONEWAY_PING:
+            case MESSAGE_ONEWAY_FROM_WEARABLE:
+            case MESSAGE_ONEWAY_TO_WEARABLE: {
+                callback(message, data);
+                break;
+            }
+            default: {
+                Slog.w(TAG, "Ignoring unknown message 0x" + Integer.toHexString(message));
+                break;
+            }
         }
     }
 
@@ -207,12 +286,19 @@ public abstract class Transport {
     }
 
     private void callback(int message, byte[] data) {
-        if (mListeners.containsKey(message)) {
+        Set<IOnMessageReceivedListener> listenersToCall;
+        synchronized (mListeners) {
+            if (!mListeners.contains(message)) {
+                return;
+            }
+            listenersToCall = mListeners.get(message);
+        }
+        Slog.d(TAG, "Message 0x" + Integer.toHexString(message)
+                + " is received from associationId " + mAssociationId
+                + ", sending data length " + data.length + " to the listener(s).");
+        for (IOnMessageReceivedListener listener: listenersToCall) {
             try {
-                mListeners.get(message).onMessageReceived(getAssociationId(), data);
-                Slog.i(TAG, "Message 0x" + Integer.toHexString(message)
-                        + " is received from associationId " + mAssociationId
-                        + ", sending data length " + data.length + " to the listener.");
+                listener.onMessageReceived(getAssociationId(), data);
             } catch (RemoteException ignored) {
             }
         }

@@ -19,8 +19,8 @@ package android.util;
 import android.os.SystemProperties;
 import android.test.PerformanceTestCase;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.Suppress;
-import androidx.test.runner.AndroidJUnit4;
 
 import junit.framework.TestCase;
 
@@ -35,6 +35,13 @@ import org.junit.runner.RunWith;
 public class LogTest {
     private static final String PROPERTY_TAG = "log.tag.LogTest";
     private static final String LOG_TAG = "LogTest";
+
+    @Test
+    public void testWtf() {
+        Log.wtf(LOG_TAG, "Message");
+        Log.wtf(LOG_TAG, "Message", new Throwable("Throwable"));
+        Log.wtf(LOG_TAG, new Throwable("Throwable"));
+    }
 
     @Test
     @Ignore

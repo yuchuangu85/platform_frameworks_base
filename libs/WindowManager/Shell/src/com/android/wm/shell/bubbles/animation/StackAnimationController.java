@@ -38,12 +38,12 @@ import androidx.dynamicanimation.animation.SpringAnimation;
 import androidx.dynamicanimation.animation.SpringForce;
 
 import com.android.wm.shell.R;
-import com.android.wm.shell.animation.PhysicsAnimator;
 import com.android.wm.shell.bubbles.BadgedImageView;
 import com.android.wm.shell.bubbles.BubblePositioner;
 import com.android.wm.shell.bubbles.BubbleStackView;
 import com.android.wm.shell.common.FloatingContentCoordinator;
-import com.android.wm.shell.common.magnetictarget.MagnetizedObject;
+import com.android.wm.shell.shared.animation.PhysicsAnimator;
+import com.android.wm.shell.shared.magnetictarget.MagnetizedObject;
 
 import com.google.android.collect.Sets;
 
@@ -769,8 +769,10 @@ public class StackAnimationController extends
         boolean swapped = false;
         for (int newIndex = 0; newIndex < bubbleViews.size(); newIndex++) {
             View view = bubbleViews.get(newIndex);
-            final int oldIndex = mLayout.indexOfChild(view);
-            swapped |= animateSwap(view, oldIndex, newIndex, updateAllIcons, after);
+            if (view != null) {
+                final int oldIndex = mLayout.indexOfChild(view);
+                swapped |= animateSwap(view, oldIndex, newIndex, updateAllIcons, after);
+            }
         }
         if (!swapped) {
             // All bubbles were at the right position. Make sure badges and z order is correct.

@@ -16,7 +16,11 @@
 
 package com.android.server.biometrics.sensors.fingerprint.aidl;
 
-import static com.android.systemui.shared.Flags.sidefpsControllerRefactor;
+import static android.adaptiveauth.Flags.reportBiometricAuthAttempts;
+import static android.hardware.biometrics.BiometricFingerprintConstants.FINGERPRINT_ACQUIRED_VENDOR;
+import static android.hardware.biometrics.BiometricFingerprintConstants.FINGERPRINT_ACQUIRED_VENDOR_BASE;
+import static android.hardware.fingerprint.FingerprintManager.getAcquiredString;
+import static android.hardware.fingerprint.FingerprintManager.getErrorString;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -27,22 +31,24 @@ import android.hardware.biometrics.BiometricConstants;
 import android.hardware.biometrics.BiometricFingerprintConstants;
 import android.hardware.biometrics.BiometricFingerprintConstants.FingerprintAcquired;
 import android.hardware.biometrics.BiometricManager.Authenticators;
+import android.hardware.biometrics.BiometricSourceType;
 import android.hardware.biometrics.common.ICancellationSignal;
+import android.hardware.biometrics.events.AuthenticationAcquiredInfo;
+import android.hardware.biometrics.events.AuthenticationErrorInfo;
+import android.hardware.biometrics.events.AuthenticationFailedInfo;
+import android.hardware.biometrics.events.AuthenticationHelpInfo;
+import android.hardware.biometrics.events.AuthenticationStartedInfo;
+import android.hardware.biometrics.events.AuthenticationStoppedInfo;
+import android.hardware.biometrics.events.AuthenticationSucceededInfo;
 import android.hardware.biometrics.fingerprint.PointerContext;
 import android.hardware.fingerprint.FingerprintAuthenticateOptions;
 import android.hardware.fingerprint.FingerprintManager;
 import android.hardware.fingerprint.FingerprintSensorPropertiesInternal;
-import android.hardware.fingerprint.ISidefpsController;
 import android.hardware.fingerprint.IUdfpsOverlayController;
-import android.os.Build;
-import android.os.Handler;
 import android.os.IBinder;
 import android.os.RemoteException;
-import android.os.UserHandle;
-import android.provider.Settings;
 import android.util.Slog;
 
-import com.android.internal.R;
 import com.android.server.biometrics.log.BiometricContext;
 import com.android.server.biometrics.log.BiometricLogger;
 import com.android.server.biometrics.log.CallbackWithProbe;
@@ -62,7 +68,6 @@ import com.android.server.biometrics.sensors.SensorOverlays;
 import com.android.server.biometrics.sensors.fingerprint.PowerPressHandler;
 import com.android.server.biometrics.sensors.fingerprint.Udfps;
 
-import java.time.Clock;
 import java.util.ArrayList;
 import java.util.function.Supplier;
 
@@ -74,29 +79,18 @@ public class FingerprintAuthenticationClient
         extends AuthenticationClient<AidlSession, FingerprintAuthenticateOptions>
         implements Udfps, LockoutConsumer, PowerPressHandler {
     private static final String TAG = "FingerprintAuthenticationClient";
-    private static final int MESSAGE_AUTH_SUCCESS = 2;
-    private static final int MESSAGE_FINGER_UP = 3;
     @NonNull
     private final SensorOverlays mSensorOverlays;
     @NonNull
     private final FingerprintSensorPropertiesInternal mSensorProps;
     @NonNull
     private final CallbackWithProbe<Probe> mALSProbeCallback;
-    private final Handler mHandler;
-    private final int mSkipWaitForPowerAcquireMessage;
-    private final int mSkipWaitForPowerVendorAcquireMessage;
-    private final long mFingerUpIgnoresPower = 500;
+    private final boolean mIsStrongBiometric;
     private final AuthSessionCoordinator mAuthSessionCoordinator;
     @NonNull private final AuthenticationStateListeners mAuthenticationStateListeners;
     @Nullable
     private ICancellationSignal mCancellationSignal;
     private boolean mIsPointerDown;
-    private long mWaitForAuthKeyguard;
-    private long mWaitForAuthBp;
-    private long mIgnoreAuthFor;
-    private long mSideFpsLastAcquireStartTime;
-    private Runnable mAuthSuccessRunnable;
-    private final Clock mClock;
 
     public FingerprintAuthenticationClient(
             @NonNull Context context,
@@ -114,14 +108,10 @@ public class FingerprintAuthenticationClient
             boolean isStrongBiometric,
             @Nullable TaskStackListener taskStackListener,
             @Nullable IUdfpsOverlayController udfpsOverlayController,
-            // TODO(b/288175061): remove with Flags.FLAG_SIDEFPS_CONTROLLER_REFACTOR
-            @Nullable ISidefpsController sidefpsController,
             @NonNull AuthenticationStateListeners authenticationStateListeners,
             boolean allowBackgroundAuthentication,
             @NonNull FingerprintSensorPropertiesInternal sensorProps,
-            @NonNull Handler handler,
             @Authenticators.Types int biometricStrength,
-            @NonNull Clock clock,
             @Nullable LockoutTracker lockoutTracker) {
         super(
                 context,
@@ -142,47 +132,12 @@ public class FingerprintAuthenticationClient
                 false /* shouldVibrate */,
                 biometricStrength);
         setRequestId(requestId);
-        if (sidefpsControllerRefactor()) {
-            mSensorOverlays = new SensorOverlays(udfpsOverlayController);
-        } else {
-            mSensorOverlays = new SensorOverlays(udfpsOverlayController, sidefpsController);
-        }
+        mSensorOverlays = new SensorOverlays(udfpsOverlayController);
         mAuthenticationStateListeners = authenticationStateListeners;
+        mIsStrongBiometric = isStrongBiometric;
         mSensorProps = sensorProps;
         mALSProbeCallback = getLogger().getAmbientLightProbe(false /* startWithClient */);
-        mHandler = handler;
-
-        mWaitForAuthKeyguard =
-                context.getResources()
-                        .getInteger(R.integer.config_sidefpsKeyguardPowerPressWindow);
-        mWaitForAuthBp =
-                context.getResources().getInteger(R.integer.config_sidefpsBpPowerPressWindow);
-        mIgnoreAuthFor =
-                context.getResources().getInteger(R.integer.config_sidefpsPostAuthDowntime);
-
-        mSkipWaitForPowerAcquireMessage =
-                context.getResources().getInteger(
-                        R.integer.config_sidefpsSkipWaitForPowerAcquireMessage);
-        mSkipWaitForPowerVendorAcquireMessage =
-                context.getResources().getInteger(
-                        R.integer.config_sidefpsSkipWaitForPowerVendorAcquireMessage);
         mAuthSessionCoordinator = biometricContext.getAuthSessionCoordinator();
-        mSideFpsLastAcquireStartTime = -1;
-        mClock = clock;
-
-        if (mSensorProps.isAnySidefpsType()) {
-            if (Build.isDebuggable()) {
-                mWaitForAuthKeyguard = Settings.Secure.getIntForUser(context.getContentResolver(),
-                        Settings.Secure.FINGERPRINT_SIDE_FPS_KG_POWER_WINDOW,
-                        (int) mWaitForAuthKeyguard, UserHandle.USER_CURRENT);
-                mWaitForAuthBp = Settings.Secure.getIntForUser(context.getContentResolver(),
-                        Settings.Secure.FINGERPRINT_SIDE_FPS_BP_POWER_WINDOW, (int) mWaitForAuthBp,
-                        UserHandle.USER_CURRENT);
-                mIgnoreAuthFor = Settings.Secure.getIntForUser(context.getContentResolver(),
-                        Settings.Secure.FINGERPRINT_SIDE_FPS_AUTH_DOWNTIME, (int) mIgnoreAuthFor,
-                        UserHandle.USER_CURRENT);
-            }
-        }
     }
 
     @Override
@@ -227,11 +182,23 @@ public class FingerprintAuthenticationClient
         if (authenticated) {
             mState = STATE_STOPPED;
             mSensorOverlays.hide(getSensorId());
-            if (sidefpsControllerRefactor()) {
-                mAuthenticationStateListeners.onAuthenticationStopped();
+            if (reportBiometricAuthAttempts()) {
+                mAuthenticationStateListeners.onAuthenticationSucceeded(
+                        new AuthenticationSucceededInfo.Builder(BiometricSourceType.FINGERPRINT,
+                                getRequestReason(), mIsStrongBiometric, getTargetUserId()).build()
+                );
             }
+            mAuthenticationStateListeners.onAuthenticationStopped(new AuthenticationStoppedInfo
+                    .Builder(BiometricSourceType.FINGERPRINT, getRequestReason()).build()
+            );
         } else {
             mState = STATE_STARTED_PAUSED_ATTEMPTED;
+            if (reportBiometricAuthAttempts()) {
+                mAuthenticationStateListeners.onAuthenticationFailed(new AuthenticationFailedInfo
+                        .Builder(BiometricSourceType.FINGERPRINT, getRequestReason(),
+                        getTargetUserId()).build()
+                );
+            }
         }
     }
 
@@ -240,7 +207,7 @@ public class FingerprintAuthenticationClient
             Slog.d(TAG, "Lockout is implemented by the HAL");
             return;
         }
-        if (authenticated) {
+        if (authenticated && !isBiometricPrompt()) {
             getLockoutTracker().resetFailedAttemptsForUser(true /* clearAttemptCounter */,
                     getTargetUserId());
         } else {
@@ -255,9 +222,12 @@ public class FingerprintAuthenticationClient
                 // controlled by the HAL, the framework must stop the sensor before finishing the
                 // client.
                 mSensorOverlays.hide(getSensorId());
-                if (sidefpsControllerRefactor()) {
-                    mAuthenticationStateListeners.onAuthenticationStopped();
-                }
+                mAuthenticationStateListeners.onAuthenticationError(
+                        new AuthenticationErrorInfo.Builder(BiometricSourceType.FINGERPRINT,
+                                getRequestReason(),
+                                getErrorString(getContext(), errorCode, 0 /* vendorCode */),
+                                errorCode).build()
+                );
                 onErrorInternal(errorCode, 0 /* vendorCode */, false /* finish */);
                 cancel();
             }
@@ -266,6 +236,21 @@ public class FingerprintAuthenticationClient
 
     @Override
     public void onAcquired(@FingerprintAcquired int acquiredInfo, int vendorCode) {
+        mAuthenticationStateListeners.onAuthenticationAcquired(
+                new AuthenticationAcquiredInfo.Builder(BiometricSourceType.FINGERPRINT,
+                        getRequestReason(), acquiredInfo).build()
+        );
+        if (acquiredInfo != BiometricFingerprintConstants.FINGERPRINT_ACQUIRED_START) {
+            String helpMsg = getAcquiredString(getContext(), acquiredInfo, vendorCode);
+            if (helpMsg != null) {
+                int helpCode = acquiredInfo == FINGERPRINT_ACQUIRED_VENDOR
+                        ? (vendorCode + FINGERPRINT_ACQUIRED_VENDOR_BASE) : acquiredInfo;
+                mAuthenticationStateListeners.onAuthenticationHelp(
+                        new AuthenticationHelpInfo.Builder(BiometricSourceType.FINGERPRINT,
+                                getRequestReason(), helpMsg, helpCode).build()
+                );
+            }
+        }
         // For UDFPS, notify SysUI with acquiredInfo, so that the illumination can be turned off
         // for most ACQUIRED messages. See BiometricFingerprintConstants#FingerprintAcquired
         mSensorOverlays.ifUdfps(controller -> controller.onAcquired(getSensorId(), acquiredInfo));
@@ -276,6 +261,11 @@ public class FingerprintAuthenticationClient
 
     @Override
     public void onError(int errorCode, int vendorCode) {
+        mAuthenticationStateListeners.onAuthenticationError(
+                new AuthenticationErrorInfo.Builder(BiometricSourceType.FINGERPRINT,
+                        getRequestReason(), getErrorString(getContext(), errorCode, vendorCode),
+                        errorCode).build()
+        );
         super.onError(errorCode, vendorCode);
 
         if (errorCode == BiometricFingerprintConstants.FINGERPRINT_ERROR_BAD_CALIBRATION) {
@@ -283,46 +273,56 @@ public class FingerprintAuthenticationClient
         }
 
         mSensorOverlays.hide(getSensorId());
-        if (sidefpsControllerRefactor()) {
-            mAuthenticationStateListeners.onAuthenticationStopped();
-        }
+        mAuthenticationStateListeners.onAuthenticationStopped(new AuthenticationStoppedInfo
+                .Builder(BiometricSourceType.FINGERPRINT, getRequestReason()).build()
+        );
     }
 
     @Override
     protected void startHalOperation() {
         mSensorOverlays.show(getSensorId(), getRequestReason(), this);
-        if (sidefpsControllerRefactor()) {
-            mAuthenticationStateListeners.onAuthenticationStarted(getRequestReason());
-        }
-
+        mAuthenticationStateListeners.onAuthenticationStarted(new AuthenticationStartedInfo
+                .Builder(BiometricSourceType.FINGERPRINT, getRequestReason()).build()
+        );
         try {
-            mCancellationSignal = doAuthenticate();
+            doAuthenticate();
         } catch (RemoteException e) {
             Slog.e(TAG, "Remote exception", e);
             onError(
                     BiometricFingerprintConstants.FINGERPRINT_ERROR_HW_UNAVAILABLE,
                     0 /* vendorCode */);
             mSensorOverlays.hide(getSensorId());
-            if (sidefpsControllerRefactor()) {
-                mAuthenticationStateListeners.onAuthenticationStopped();
-            }
             mCallback.onClientFinished(this, false /* success */);
         }
     }
 
-    private ICancellationSignal doAuthenticate() throws RemoteException {
+    private void doAuthenticate() throws RemoteException {
         final AidlSession session = getFreshDaemon();
-
         final OperationContextExt opContext = getOperationContext();
-        final ICancellationSignal cancel;
-        if (session.hasContextMethods()) {
-            cancel = session.getSession().authenticateWithContext(
-                    mOperationId, opContext.toAidlContext(getOptions()));
-        } else {
-            cancel = session.getSession().authenticate(mOperationId);
-        }
 
         getBiometricContext().subscribe(opContext, ctx -> {
+            try {
+                if (session.hasContextMethods()) {
+                    mCancellationSignal = session.getSession().authenticateWithContext(mOperationId,
+                            ctx);
+                } else {
+                    mCancellationSignal = session.getSession().authenticate(mOperationId);
+                }
+
+                if (getBiometricContext().isAwake()) {
+                    mALSProbeCallback.getProbe().enable();
+                } else {
+                    mALSProbeCallback.getProbe().disable();
+                }
+            } catch (RemoteException e) {
+                Slog.e(TAG, "Remote exception", e);
+                onError(
+                        BiometricFingerprintConstants.FINGERPRINT_ERROR_HW_UNAVAILABLE,
+                        0 /* vendorCode */);
+                mSensorOverlays.hide(getSensorId());
+                mCallback.onClientFinished(this, false /* success */);
+            }
+        }, ctx -> {
             if (session.hasContextMethods()) {
                 try {
                     session.getSession().onContextChanged(ctx);
@@ -331,27 +331,21 @@ public class FingerprintAuthenticationClient
                 }
             }
 
-            // TODO(b/243836005): this should come via ctx
             final boolean isAwake = getBiometricContext().isAwake();
             if (isAwake) {
                 mALSProbeCallback.getProbe().enable();
             } else {
                 mALSProbeCallback.getProbe().disable();
             }
-        });
-        if (getBiometricContext().isAwake()) {
-            mALSProbeCallback.getProbe().enable();
-        }
-
-        return cancel;
+        }, getOptions());
     }
 
     @Override
     protected void stopHalOperation() {
         mSensorOverlays.hide(getSensorId());
-        if (sidefpsControllerRefactor()) {
-            mAuthenticationStateListeners.onAuthenticationStopped();
-        }
+        mAuthenticationStateListeners.onAuthenticationStopped(new AuthenticationStoppedInfo
+                .Builder(BiometricSourceType.FINGERPRINT, getRequestReason()).build()
+        );
         unsubscribeBiometricContext();
 
         if (mCancellationSignal != null) {
@@ -365,7 +359,8 @@ public class FingerprintAuthenticationClient
                 mCallback.onClientFinished(this, false /* success */);
             }
         } else {
-            Slog.e(TAG, "cancellation signal was null");
+            Slog.e(TAG, "Cancellation signal was null");
+            mCallback.onClientFinished(this, false /* success */);
         }
     }
 
@@ -383,9 +378,7 @@ public class FingerprintAuthenticationClient
                         pc.major);
             }
 
-            if (getListener() != null) {
-                getListener().onUdfpsPointerDown(getSensorId());
-            }
+            getListener().onUdfpsPointerDown(getSensorId());
         } catch (RemoteException e) {
             Slog.e(TAG, "Remote exception", e);
         }
@@ -404,9 +397,16 @@ public class FingerprintAuthenticationClient
                 session.getSession().onPointerUp(pc.pointerId);
             }
 
-            if (getListener() != null) {
-                getListener().onUdfpsPointerUp(getSensorId());
-            }
+            getListener().onUdfpsPointerUp(getSensorId());
+        } catch (RemoteException e) {
+            Slog.e(TAG, "Remote exception", e);
+        }
+    }
+
+    @Override
+    public void setIgnoreDisplayTouches(boolean ignoreTouches) {
+        try {
+            getFreshDaemon().getSession().setIgnoreDisplayTouches(ignoreTouches);
         } catch (RemoteException e) {
             Slog.e(TAG, "Remote exception", e);
         }
@@ -446,15 +446,19 @@ public class FingerprintAuthenticationClient
                 .incrementTimedLockoutForUser(getTargetUserId());
 
         try {
+            mAuthenticationStateListeners.onAuthenticationError(new AuthenticationErrorInfo
+                    .Builder(BiometricSourceType.FINGERPRINT, getRequestReason(),
+                    getErrorString(getContext(), error, 0), error).build()
+            );
             getListener().onError(getSensorId(), getCookie(), error, 0 /* vendorCode */);
         } catch (RemoteException e) {
             Slog.e(TAG, "Remote exception", e);
         }
 
         mSensorOverlays.hide(getSensorId());
-        if (sidefpsControllerRefactor()) {
-            mAuthenticationStateListeners.onAuthenticationStopped();
-        }
+        mAuthenticationStateListeners.onAuthenticationStopped(new AuthenticationStoppedInfo
+                .Builder(BiometricSourceType.FINGERPRINT, getRequestReason()).build()
+        );
         mCallback.onClientFinished(this, false /* success */);
     }
 
@@ -476,15 +480,19 @@ public class FingerprintAuthenticationClient
                 .incrementPermanentLockoutForUser(getTargetUserId());
 
         try {
+            mAuthenticationStateListeners.onAuthenticationError(new AuthenticationErrorInfo
+                    .Builder(BiometricSourceType.FINGERPRINT, getRequestReason(),
+                    getErrorString(getContext(), error, 0), error).build()
+            );
             getListener().onError(getSensorId(), getCookie(), error, 0 /* vendorCode */);
         } catch (RemoteException e) {
             Slog.e(TAG, "Remote exception", e);
         }
 
         mSensorOverlays.hide(getSensorId());
-        if (sidefpsControllerRefactor()) {
-            mAuthenticationStateListeners.onAuthenticationStopped();
-        }
+        mAuthenticationStateListeners.onAuthenticationStopped(new AuthenticationStoppedInfo
+                .Builder(BiometricSourceType.FINGERPRINT, getRequestReason()).build()
+        );
         mCallback.onClientFinished(this, false /* success */);
     }
 

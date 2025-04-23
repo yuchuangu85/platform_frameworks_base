@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertPositionInRootIsEqualTo
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
@@ -33,7 +34,6 @@ import com.android.compose.animation.scene.TestScenes
 import com.android.compose.animation.scene.inScene
 import com.android.compose.animation.scene.testTransition
 import com.android.compose.test.assertSizeIsEqualTo
-import com.android.compose.test.onEach
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -56,35 +56,20 @@ class SharedElementTest {
             transition = {
                 spec = tween(16 * 4, easing = LinearEasing)
                 // Elements should be shared by default.
-            }
+            },
         ) {
             before {
                 onElement(TestElements.Foo).assertPositionInRootIsEqualTo(10.dp, 50.dp)
                 onElement(TestElements.Foo).assertSizeIsEqualTo(20.dp, 80.dp)
             }
-            at(0) {
-                onSharedElement(TestElements.Foo).onEach {
-                    assertPositionInRootIsEqualTo(10.dp, 50.dp)
-                    assertSizeIsEqualTo(20.dp, 80.dp)
-                }
-            }
-            at(16) {
-                onSharedElement(TestElements.Foo).onEach {
-                    assertPositionInRootIsEqualTo(20.dp, 55.dp)
-                    assertSizeIsEqualTo(17.5.dp, 70.dp)
-                }
-            }
-            at(32) {
-                onSharedElement(TestElements.Foo).onEach {
-                    assertPositionInRootIsEqualTo(30.dp, 60.dp)
-                    assertSizeIsEqualTo(15.dp, 60.dp)
-                }
-            }
-            at(48) {
-                onSharedElement(TestElements.Foo).onEach {
-                    assertPositionInRootIsEqualTo(40.dp, 65.dp)
-                    assertSizeIsEqualTo(12.5.dp, 50.dp)
-                }
+            atAllFrames(4) {
+                onElement(TestElements.Foo, TestScenes.SceneA).assertIsNotDisplayed()
+                onElement(TestElements.Foo, TestScenes.SceneB)
+                    .assertPositionInRootIsEqualTo(
+                        interpolate(10.dp, 50.dp),
+                        interpolate(50.dp, 70.dp),
+                    )
+                    .assertSizeIsEqualTo(interpolate(20.dp, 10.dp), interpolate(80.dp, 40.dp))
             }
             after {
                 onElement(TestElements.Foo).assertPositionInRootIsEqualTo(50.dp, 70.dp)
@@ -126,29 +111,11 @@ class SharedElementTest {
             },
         ) {
             before { onElement(TestElements.Foo).assertPositionInRootIsEqualTo(10.dp, 50.dp) }
-            at(0) {
+            atAllFrames(4) {
                 onElement(TestElements.Foo, scene = TestScenes.SceneA)
-                    .assertPositionInRootIsEqualTo(10.dp, 50.dp)
+                    .assertPositionInRootIsEqualTo(interpolate(10.dp, 0.dp), 50.dp)
                 onElement(TestElements.Foo, scene = TestScenes.SceneB)
-                    .assertPositionInRootIsEqualTo(50.dp, 100.dp)
-            }
-            at(16) {
-                onElement(TestElements.Foo, scene = TestScenes.SceneA)
-                    .assertPositionInRootIsEqualTo(7.5.dp, 50.dp)
-                onElement(TestElements.Foo, scene = TestScenes.SceneB)
-                    .assertPositionInRootIsEqualTo(50.dp, 90.dp)
-            }
-            at(32) {
-                onElement(TestElements.Foo, scene = TestScenes.SceneA)
-                    .assertPositionInRootIsEqualTo(5.dp, 50.dp)
-                onElement(TestElements.Foo, scene = TestScenes.SceneB)
-                    .assertPositionInRootIsEqualTo(50.dp, 80.dp)
-            }
-            at(48) {
-                onElement(TestElements.Foo, scene = TestScenes.SceneA)
-                    .assertPositionInRootIsEqualTo(2.5.dp, 50.dp)
-                onElement(TestElements.Foo, scene = TestScenes.SceneB)
-                    .assertPositionInRootIsEqualTo(50.dp, 70.dp)
+                    .assertPositionInRootIsEqualTo(50.dp, interpolate(100.dp, 60.dp))
             }
             after { onElement(TestElements.Foo).assertPositionInRootIsEqualTo(50.dp, 60.dp) }
         }

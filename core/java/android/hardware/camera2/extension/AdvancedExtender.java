@@ -27,6 +27,7 @@ import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.impl.CameraMetadataNative;
 import android.hardware.camera2.impl.CaptureCallback;
 import android.util.Log;
+import android.util.Pair;
 import android.util.Size;
 
 import com.android.internal.camera.flags.Flags;
@@ -42,8 +43,9 @@ import java.util.Map;
  *
  * <p>This advanced contract empowers implementations to gain access to
  * more Camera2 capability. This includes: (1) Add custom surfaces with
- * specific formats like YUV, RAW, RAW_DEPTH. (2) Access to
- * the capture request callbacks as well as all the images retrieved of
+ * specific formats like {@link android.graphics.ImageFormat#YUV_420_888},
+ * {@link android.graphics.ImageFormat#RAW10}, {@link android.graphics.ImageFormat#RAW_DEPTH10}.
+ * (2) Access to the capture request callbacks as well as all the images retrieved of
  * various image formats. (3)
  * Able to triggers single or repeating request with the capabilities to
  * specify target surfaces, template id and parameters.
@@ -51,15 +53,19 @@ import java.util.Map;
  * @hide
  */
 @SystemApi
-@FlaggedApi(Flags.FLAG_CONCERT_MODE)
 public abstract class AdvancedExtender {
     private HashMap<String, Long> mMetadataVendorIdMap = new HashMap<>();
     private final CameraManager mCameraManager;
 
+    private CameraUsageTracker mCameraUsageTracker;
     private static final String TAG = "AdvancedExtender";
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
-    protected AdvancedExtender(@NonNull CameraManager cameraManager) {
+    /**
+     * Initialize a camera extension advanced extender instance.
+     *
+     * @param cameraManager the system camera manager
+     */
+    public AdvancedExtender(@NonNull CameraManager cameraManager) {
         mCameraManager = cameraManager;
         try {
             String [] cameraIds = mCameraManager.getCameraIdListNoLazy();
@@ -81,7 +87,18 @@ public abstract class AdvancedExtender {
         }
     }
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
+    void setCameraUsageTracker(CameraUsageTracker tracker) {
+        mCameraUsageTracker = tracker;
+    }
+
+    /**
+     * Returns the camera metadata vendor id, that can be used to
+     * configure and enable vendor tag support for a particular
+     * camera metadata buffer.
+     *
+     * @param cameraId           The camera2 id string of the camera.
+     * @return the camera metadata vendor Id associated with the given camera
+     */
     public long getMetadataVendorId(@NonNull String cameraId) {
         long vendorId = mMetadataVendorIdMap.containsKey(cameraId) ?
                 mMetadataVendorIdMap.get(cameraId) : Long.MAX_VALUE;
@@ -103,7 +120,6 @@ public abstract class AdvancedExtender {
      *                           CameraCharacteristics.
      * @return true if the extension is supported, otherwise false
      */
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
     public abstract boolean isExtensionAvailable(@NonNull String cameraId,
             @NonNull CharacteristicsMap charsMap);
 
@@ -124,34 +140,39 @@ public abstract class AdvancedExtender {
      *                           physical camera ids and their
      *                           CameraCharacteristics.
      */
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
-    public abstract void init(@NonNull String cameraId, @NonNull CharacteristicsMap map);
+    public abstract void initialize(@NonNull String cameraId, @NonNull CharacteristicsMap map);
 
     /**
      * Returns supported output format/size map for preview. The format
-     * could be PRIVATE or YUV_420_888. Implementations must support
-     * PRIVATE format at least.
+     * could be {@link android.graphics.ImageFormat#PRIVATE} or
+     * {@link android.graphics.ImageFormat#YUV_420_888}. Implementations must support
+     * {@link android.graphics.ImageFormat#PRIVATE} format at least.
+     * An example of how the map is parsed can be found in
+     * {@link #initializeParcelable(Map)}
      *
      * <p>The preview surface format in the CameraCaptureSession may not
      * be identical to the supported preview output format returned here.
      * @param cameraId           The camera2 id string of the camera.
      */
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
     @NonNull
     public abstract Map<Integer, List<Size>> getSupportedPreviewOutputResolutions(
             @NonNull String cameraId);
 
     /**
      * Returns supported output format/size map for image capture. OEM is
-     * required to support both JPEG and YUV_420_888 format output.
+     * required to support both {@link android.graphics.ImageFormat#JPEG} and
+     * {@link android.graphics.ImageFormat#YUV_420_888} format output.
+     * An example of how the map is parsed can be found in
+     * {@link #initializeParcelable(Map)}
      *
      * <p>The surface created with this supported
      * format/size could be either added in CameraCaptureSession with HAL
-     * processing OR it  configures intermediate surfaces(YUV/RAW..) and
+     * processing OR it  configures intermediate surfaces(
+     * {@link android.graphics.ImageFormat#YUV_420_888}/
+     * {@link android.graphics.ImageFormat#RAW10}..) and
      * writes the output to the output surface.
      * @param cameraId           The camera2 id string of the camera.
      */
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
     @NonNull
     public abstract Map<Integer, List<Size>> getSupportedCaptureOutputResolutions(
             @NonNull String cameraId);
@@ -161,7 +182,6 @@ public abstract class AdvancedExtender {
      * implements all the interactions required for starting an extension
      * and cleanup.
      */
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
     @NonNull
     public abstract SessionProcessor getSessionProcessor();
 
@@ -199,7 +219,6 @@ public abstract class AdvancedExtender {
      * @return The list of supported orthogonal capture keys, or empty
      * list if no capture settings are not supported.
      */
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
     @NonNull
     public abstract List<CaptureRequest.Key> getAvailableCaptureRequestKeys(
             @NonNull String cameraId);
@@ -217,11 +236,33 @@ public abstract class AdvancedExtender {
      * @return The list of supported capture result keys, or
      * empty list if capture results are not supported.
      */
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
     @NonNull
     public abstract List<CaptureResult.Key> getAvailableCaptureResultKeys(
             @NonNull String cameraId);
 
+    /**
+     * Returns a list of {@link CameraCharacteristics} key/value pairs for apps to use when
+     * querying the Extensions specific {@link CameraCharacteristics}.
+     *
+     * <p>To ensure the correct {@link CameraCharacteristics} are used when an extension is
+     * enabled, an application should prioritize the value returned from the list if the
+     * {@link CameraCharacteristics} key is present. If the key doesn't exist in the returned list,
+     * then the application should query the value using
+     * {@link CameraCharacteristics#get(CameraCharacteristics.Key)}.
+     *
+     * <p>For example, an extension may limit the zoom ratio range. In this case, an OEM can return
+     * a new zoom ratio range for the key {@link CameraCharacteristics#CONTROL_ZOOM_RATIO_RANGE}.
+     *
+     * <p> Currently, the only synthetic keys supported for override are
+     * {@link CameraCharacteristics#REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES} and
+     * {@link CameraCharacteristics#REQUEST_AVAILABLE_COLOR_SPACE_PROFILES}. To enable them, an OEM
+     * should override the respective native keys
+     * {@link CameraCharacteristics#REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES_MAP} and
+     *  {@link CameraCharacteristics#REQUEST_AVAILABLE_COLOR_SPACE_PROFILES_MAP}.
+     */
+    @NonNull
+    public abstract List<Pair<CameraCharacteristics.Key, Object>>
+            getAvailableCharacteristicsKeyValues();
 
     private final class AdvancedExtenderImpl extends IAdvancedExtenderImpl.Stub {
         @Override
@@ -233,7 +274,7 @@ public abstract class AdvancedExtender {
 
         @Override
         public void init(String cameraId, Map<String, CameraMetadataNative> charsMapNative) {
-            AdvancedExtender.this.init(cameraId, new CharacteristicsMap(charsMapNative));
+            AdvancedExtender.this.initialize(cameraId, new CharacteristicsMap(charsMapNative));
         }
 
         @Override
@@ -264,7 +305,9 @@ public abstract class AdvancedExtender {
 
         @Override
         public ISessionProcessorImpl getSessionProcessor() {
-            return AdvancedExtender.this.getSessionProcessor().getSessionProcessorBinder();
+            SessionProcessor processor =AdvancedExtender.this.getSessionProcessor();
+            processor.setCameraUsageTracker(mCameraUsageTracker);
+            return processor.getSessionProcessorBinder();
         }
 
         @Override
@@ -321,6 +364,32 @@ public abstract class AdvancedExtender {
         public boolean isPostviewAvailable() {
             // Feature is currently unsupported
             return false;
+        }
+
+        @Override
+        public CameraMetadataNative getAvailableCharacteristicsKeyValues(String cameraId) {
+            List<Pair<CameraCharacteristics.Key, Object>> entries =
+                    AdvancedExtender.this.getAvailableCharacteristicsKeyValues();
+
+            if ((entries != null) && !entries.isEmpty()) {
+                CameraMetadataNative ret = new CameraMetadataNative();
+                long vendorId = mMetadataVendorIdMap.containsKey(cameraId)
+                        ? mMetadataVendorIdMap.get(cameraId) : Long.MAX_VALUE;
+                ret.setVendorId(vendorId);
+                int[] characteristicsKeyTags = new int[entries.size()];
+                int i = 0;
+                for (Pair<CameraCharacteristics.Key, Object> entry : entries) {
+                    int tag = CameraMetadataNative.getTag(entry.first.getName(), vendorId);
+                    characteristicsKeyTags[i++] = tag;
+                    ret.set(entry.first, entry.second);
+                }
+                ret.set(CameraCharacteristics.REQUEST_AVAILABLE_CHARACTERISTICS_KEYS,
+                        characteristicsKeyTags);
+
+                return ret;
+            }
+
+            return null;
         }
     }
 

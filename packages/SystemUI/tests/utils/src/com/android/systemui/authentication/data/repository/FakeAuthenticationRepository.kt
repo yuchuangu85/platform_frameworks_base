@@ -16,11 +16,11 @@
 
 package com.android.systemui.authentication.data.repository
 
+import android.os.UserHandle
 import com.android.internal.widget.LockPatternUtils
 import com.android.internal.widget.LockPatternView
 import com.android.internal.widget.LockscreenCredential
 import com.android.keyguard.KeyguardSecurityModel.SecurityMode
-import com.android.systemui.authentication.shared.model.AuthenticationLockoutModel
 import com.android.systemui.authentication.shared.model.AuthenticationMethodModel
 import com.android.systemui.authentication.shared.model.AuthenticationPatternCoordinate
 import com.android.systemui.authentication.shared.model.AuthenticationResultModel
@@ -29,25 +29,20 @@ import dagger.Binds
 import dagger.Module
 import dagger.Provides
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.currentTime
 
-class FakeAuthenticationRepository(
-    private val currentTime: () -> Long,
-) : AuthenticationRepository {
-
-    override val authenticationChallengeResult = MutableSharedFlow<Boolean>()
+class FakeAuthenticationRepository(private val currentTime: () -> Long) : AuthenticationRepository {
 
     override val hintedPinLength: Int = HINTING_PIN_LENGTH
 
     private val _isPatternVisible = MutableStateFlow(true)
     override val isPatternVisible: StateFlow<Boolean> = _isPatternVisible.asStateFlow()
-
-    override val lockout: MutableStateFlow<AuthenticationLockoutModel?> = MutableStateFlow(null)
 
     override val hasLockoutOccurred = MutableStateFlow(false)
 
@@ -68,12 +63,15 @@ class FakeAuthenticationRepository(
     override val isPinEnhancedPrivacyEnabled: StateFlow<Boolean> =
         _isPinEnhancedPrivacyEnabled.asStateFlow()
 
-    private var failedAttemptCount = 0
-    private var lockoutEndTimestamp = 0L
     private var credentialOverride: List<Any>? = null
     private var securityMode: SecurityMode = DEFAULT_AUTHENTICATION_METHOD.toSecurityMode()
 
     var lockoutStartedReportCount = 0
+
+    private val credentialCheckingMutex = Mutex(locked = false)
+
+    var maximumTimeToLock: Long = 0
+    var powerButtonInstantlyLocks: Boolean = true
 
     override suspend fun getAuthenticationMethod(): AuthenticationMethodModel {
         return authenticationMethod.value
@@ -89,69 +87,102 @@ class FakeAuthenticationRepository(
     }
 
     override suspend fun reportAuthenticationAttempt(isSuccessful: Boolean) {
-        failedAttemptCount = if (isSuccessful) 0 else failedAttemptCount + 1
-        authenticationChallengeResult.emit(isSuccessful)
+        if (isSuccessful) {
+            _failedAuthenticationAttempts.value = 0
+            _lockoutEndTimestamp = null
+            hasLockoutOccurred.value = false
+            lockoutStartedReportCount = 0
+        } else {
+            _failedAuthenticationAttempts.value++
+        }
     }
 
+    private var _failedAuthenticationAttempts = MutableStateFlow(0)
+    override val failedAuthenticationAttempts: StateFlow<Int> =
+        _failedAuthenticationAttempts.asStateFlow()
+
+    private var _lockoutEndTimestamp: Long? = null
+    override val lockoutEndTimestamp: Long?
+        get() = if (currentTime() < (_lockoutEndTimestamp ?: 0)) _lockoutEndTimestamp else null
+
     override suspend fun reportLockoutStarted(durationMs: Int) {
+        _lockoutEndTimestamp = (currentTime() + durationMs).takeIf { durationMs > 0 }
+        hasLockoutOccurred.value = true
         lockoutStartedReportCount++
     }
 
+    override suspend fun getMaxFailedUnlockAttemptsForWipe(): Int =
+        MAX_FAILED_AUTH_TRIES_BEFORE_WIPE
+
+    var profileWithMinFailedUnlockAttemptsForWipe: Int = UserHandle.USER_SYSTEM
+
+    override suspend fun getProfileWithMinFailedUnlockAttemptsForWipe(): Int =
+        profileWithMinFailedUnlockAttemptsForWipe
+
     override suspend fun getPinLength(): Int {
         return (credentialOverride ?: DEFAULT_PIN).size
-    }
-
-    override suspend fun getFailedAuthenticationAttemptCount(): Int {
-        return failedAttemptCount
-    }
-
-    override suspend fun getLockoutEndTimestamp(): Long {
-        return lockoutEndTimestamp
     }
 
     fun setAutoConfirmFeatureEnabled(isEnabled: Boolean) {
         _isAutoConfirmFeatureEnabled.value = isEnabled
     }
 
-    override suspend fun setLockoutDuration(durationMs: Int) {
-        lockoutEndTimestamp = if (durationMs > 0) currentTime() + durationMs else 0
-        if (durationMs > 0) {
-            hasLockoutOccurred.value = true
-        }
-    }
-
     override suspend fun checkCredential(
         credential: LockscreenCredential
     ): AuthenticationResultModel {
-        val expectedCredential = credentialOverride ?: getExpectedCredential(securityMode)
-        val isSuccessful =
-            when {
-                credential.type != getCurrentCredentialType(securityMode) -> false
-                credential.type == LockPatternUtils.CREDENTIAL_TYPE_PIN ->
-                    credential.isPin && credential.matches(expectedCredential)
-                credential.type == LockPatternUtils.CREDENTIAL_TYPE_PASSWORD ->
-                    credential.isPassword && credential.matches(expectedCredential)
-                credential.type == LockPatternUtils.CREDENTIAL_TYPE_PATTERN ->
-                    credential.isPattern && credential.matches(expectedCredential)
-                else -> error("Unexpected credential type ${credential.type}!")
-            }
+        return credentialCheckingMutex.withLock {
+            val expectedCredential = credentialOverride ?: getExpectedCredential(securityMode)
+            val isSuccessful =
+                when {
+                    credential.type != getCurrentCredentialType(securityMode) -> false
+                    credential.type == LockPatternUtils.CREDENTIAL_TYPE_PIN ->
+                        credential.isPin && credential.matches(expectedCredential)
+                    credential.type == LockPatternUtils.CREDENTIAL_TYPE_PASSWORD ->
+                        credential.isPassword && credential.matches(expectedCredential)
+                    credential.type == LockPatternUtils.CREDENTIAL_TYPE_PATTERN ->
+                        credential.isPattern && credential.matches(expectedCredential)
+                    else -> error("Unexpected credential type ${credential.type}!")
+                }
 
-        return if (isSuccessful || failedAttemptCount < MAX_FAILED_AUTH_TRIES_BEFORE_LOCKOUT - 1) {
-            hasLockoutOccurred.value = false
-            AuthenticationResultModel(
-                isSuccessful = isSuccessful,
-                lockoutDurationMs = 0,
-            )
-        } else {
-            AuthenticationResultModel(
-                isSuccessful = false,
-                lockoutDurationMs = LOCKOUT_DURATION_MS,
-            )
+            val failedAttempts = _failedAuthenticationAttempts.value
+            if (isSuccessful || failedAttempts < MAX_FAILED_AUTH_TRIES_BEFORE_LOCKOUT - 1) {
+                AuthenticationResultModel(isSuccessful = isSuccessful, lockoutDurationMs = 0)
+            } else {
+                AuthenticationResultModel(
+                    isSuccessful = false,
+                    lockoutDurationMs = LOCKOUT_DURATION_MS,
+                )
+            }
         }
     }
 
     fun setPinEnhancedPrivacyEnabled(isEnabled: Boolean) {
         _isPinEnhancedPrivacyEnabled.value = isEnabled
+    }
+
+    /**
+     * Pauses any future credential checking. The test must call [unpauseCredentialChecking] to
+     * flush the accumulated credential checks.
+     */
+    suspend fun pauseCredentialChecking() {
+        credentialCheckingMutex.lock()
+    }
+
+    /**
+     * Unpauses future credential checking, if it was paused using [pauseCredentialChecking]. This
+     * doesn't flush any pending coroutine jobs; the test code may still choose to do that using
+     * `runCurrent`.
+     */
+    fun unpauseCredentialChecking() {
+        credentialCheckingMutex.unlock()
+    }
+
+    override suspend fun getMaximumTimeToLock(): Long {
+        return maximumTimeToLock
+    }
+
+    override suspend fun getPowerButtonInstantlyLocks(): Boolean {
+        return powerButtonInstantlyLocks
     }
 
     private fun getExpectedCredential(securityMode: SecurityMode): List<Any> {
@@ -176,6 +207,9 @@ class FakeAuthenticationRepository(
                 AuthenticationPatternCoordinate(0, 2),
             )
         const val MAX_FAILED_AUTH_TRIES_BEFORE_LOCKOUT = 5
+        const val MAX_FAILED_AUTH_TRIES_BEFORE_WIPE =
+            MAX_FAILED_AUTH_TRIES_BEFORE_LOCKOUT +
+                LockPatternUtils.FAILED_ATTEMPTS_BEFORE_WIPE_GRACE
         const val LOCKOUT_DURATION_SECONDS = 30
         const val LOCKOUT_DURATION_MS = LOCKOUT_DURATION_SECONDS * 1000
         const val HINTING_PIN_LENGTH = 6
@@ -192,9 +226,7 @@ class FakeAuthenticationRepository(
         }
 
         @LockPatternUtils.CredentialType
-        private fun getCurrentCredentialType(
-            securityMode: SecurityMode,
-        ): Int {
+        private fun getCurrentCredentialType(securityMode: SecurityMode): Int {
             return when (securityMode) {
                 SecurityMode.PIN,
                 SecurityMode.SimPin,
@@ -233,9 +265,8 @@ class FakeAuthenticationRepository(
 object FakeAuthenticationRepositoryModule {
     @Provides
     @SysUISingleton
-    fun provideFake(
-        scope: TestScope,
-    ) = FakeAuthenticationRepository(currentTime = { scope.currentTime })
+    fun provideFake(scope: TestScope) =
+        FakeAuthenticationRepository(currentTime = { scope.currentTime })
 
     @Module
     interface Bindings {

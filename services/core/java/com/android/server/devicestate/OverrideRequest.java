@@ -18,6 +18,7 @@ package com.android.server.devicestate;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.hardware.devicestate.DeviceState;
 import android.hardware.devicestate.DeviceStateRequest;
 import android.os.IBinder;
 
@@ -71,8 +72,9 @@ final class OverrideRequest {
     @Retention(RetentionPolicy.SOURCE)
     public @interface OverrideRequestType {}
 
-    OverrideRequest(IBinder token, int pid, int uid, @NonNull DeviceState requestedState,
-            @DeviceStateRequest.RequestFlags int flags, @OverrideRequestType int requestType) {
+    OverrideRequest(IBinder token, int pid, int uid,
+            @NonNull DeviceState requestedState, @DeviceStateRequest.RequestFlags int flags,
+            @OverrideRequestType int requestType) {
         mToken = token;
         mPid = pid;
         mUid = uid;

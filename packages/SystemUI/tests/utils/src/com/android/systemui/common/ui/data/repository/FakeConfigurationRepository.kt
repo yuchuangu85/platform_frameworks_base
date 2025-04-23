@@ -30,14 +30,19 @@ import kotlinx.coroutines.flow.asStateFlow
 
 @SysUISingleton
 class FakeConfigurationRepository @Inject constructor() : ConfigurationRepository {
-    private val _onAnyConfigurationChange = MutableSharedFlow<Unit>()
+    private val _onAnyConfigurationChange =
+        MutableSharedFlow<Unit>(
+            replay = 1,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        )
     override val onAnyConfigurationChange: Flow<Unit> = _onAnyConfigurationChange.asSharedFlow()
 
     private val _onConfigurationChange =
         MutableSharedFlow<Unit>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     override val onConfigurationChange: Flow<Unit> = _onConfigurationChange.asSharedFlow()
 
-    private val _configurationChangeValues = MutableSharedFlow<Configuration>()
+    private val _configurationChangeValues =
+        MutableSharedFlow<Configuration>(replay = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     override val configurationValues: Flow<Configuration> =
         _configurationChangeValues.asSharedFlow()
 

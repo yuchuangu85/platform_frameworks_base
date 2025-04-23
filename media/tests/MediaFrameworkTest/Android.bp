@@ -11,9 +11,9 @@ android_test {
     name: "mediaframeworktest",
     srcs: ["**/*.java"],
     libs: [
-        "android.test.runner",
-        "android.test.base",
-        "android.test.mock",
+        "android.test.runner.stubs.system",
+        "android.test.base.stubs.system",
+        "android.test.mock.stubs.system",
     ],
     static_libs: [
         "mockito-target-inline-minus-junit4",
@@ -22,9 +22,9 @@ android_test {
         "android-ex-camera2",
         "android.media.playback.flags-aconfig-java",
         "flag-junit",
-        "testables",
         "testng",
         "truth",
+        "collector-device-lib-platform",
     ],
     jni_libs: [
         "libdexmakerjvmtiagent",

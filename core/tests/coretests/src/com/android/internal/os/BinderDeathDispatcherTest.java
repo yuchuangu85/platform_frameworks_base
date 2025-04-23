@@ -31,18 +31,25 @@ import android.os.Parcel;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.os.ShellCallback;
+import android.platform.test.annotations.DisabledOnRavenwood;
+import android.platform.test.ravenwood.RavenwoodRule;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.FileDescriptor;
+import java.util.concurrent.Executor;
 
 @SmallTest
 @RunWith(AndroidJUnit4.class)
 public class BinderDeathDispatcherTest {
+    @Rule
+    public RavenwoodRule mRavenwood = new RavenwoodRule.Builder().build();
+
     private static class MyTarget implements IInterface, IBinder {
         public boolean isAlive = true;
         public DeathRecipient mRecipient;
@@ -116,6 +123,16 @@ public class BinderDeathDispatcherTest {
         @Override
         public IBinder asBinder() {
             return this;
+        }
+
+        @Override
+        public void addFrozenStateChangeCallback(Executor e, FrozenStateChangeCallback callback)
+                throws RemoteException {
+        }
+
+        @Override
+        public boolean removeFrozenStateChangeCallback(FrozenStateChangeCallback callback) {
+            return false;
         }
 
         public void die() {
@@ -195,6 +212,7 @@ public class BinderDeathDispatcherTest {
     }
 
     @Test
+    @DisabledOnRavenwood(reason = "b/324433654 -- depends on unsupported classes")
     public void testRegisterAndKill() {
         BinderDeathDispatcher<MyTarget> d = new BinderDeathDispatcher<>();
 
@@ -265,6 +283,7 @@ public class BinderDeathDispatcherTest {
     }
 
     @Test
+    @DisabledOnRavenwood(reason = "b/324433654 -- depends on unsupported classes")
     public void duplicateRegistrations() {
         BinderDeathDispatcher<MyTarget> d = new BinderDeathDispatcher<>();
 

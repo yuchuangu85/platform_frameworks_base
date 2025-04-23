@@ -42,17 +42,19 @@ public abstract class RemovalClient<S extends BiometricAuthenticator.Identifier,
     private final BiometricUtils<S> mBiometricUtils;
     private final Map<Integer, Long> mAuthenticatorIds;
     private final boolean mHasEnrollmentsBeforeStarting;
+    private final int mReason;
 
     public RemovalClient(@NonNull Context context, @NonNull Supplier<T> lazyDaemon,
             @NonNull IBinder token, @NonNull ClientMonitorCallbackConverter listener,
             int userId, @NonNull String owner, @NonNull BiometricUtils<S> utils, int sensorId,
             @NonNull BiometricLogger logger, @NonNull BiometricContext biometricContext,
-            @NonNull Map<Integer, Long> authenticatorIds) {
+            @NonNull Map<Integer, Long> authenticatorIds, int reason) {
         super(context, lazyDaemon, token, listener, userId, owner, 0 /* cookie */, sensorId,
-                logger, biometricContext);
+                logger, biometricContext, false /* isMandatoryBiometrics */);
         mBiometricUtils = utils;
         mAuthenticatorIds = authenticatorIds;
         mHasEnrollmentsBeforeStarting = !utils.getBiometricsForUser(context, userId).isEmpty();
+        mReason = reason;
     }
 
     @Override
@@ -74,13 +76,9 @@ public abstract class RemovalClient<S extends BiometricAuthenticator.Identifier,
         if (identifier == null) {
             Slog.e(TAG, "identifier was null, skipping onRemove()");
             try {
-                if (getListener() != null) {
-                    getListener().onError(getSensorId(), getCookie(),
-                            BiometricConstants.BIOMETRIC_ERROR_UNABLE_TO_REMOVE,
-                            0 /* vendorCode */);
-                } else {
-                    Slog.e(TAG, "Error, listener was null, not sending onError callback");
-                }
+                getListener().onError(getSensorId(), getCookie(),
+                        BiometricConstants.BIOMETRIC_ERROR_UNABLE_TO_REMOVE,
+                        0 /* vendorCode */);
             } catch (RemoteException e) {
                 Slog.w(TAG, "Failed to send error to client for onRemoved", e);
             }
@@ -91,11 +89,10 @@ public abstract class RemovalClient<S extends BiometricAuthenticator.Identifier,
         Slog.d(TAG, "onRemoved: " + identifier.getBiometricId() + " remaining: " + remaining);
         mBiometricUtils.removeBiometricForUser(getContext(), getTargetUserId(),
                 identifier.getBiometricId());
+        getLogger().logOnUnEnrolled(getTargetUserId(), mReason, identifier.getBiometricId());
 
         try {
-            if (getListener() != null) {
-                getListener().onRemoved(identifier, remaining);
-            }
+            getListener().onRemoved(identifier, remaining);
         } catch (RemoteException e) {
             Slog.w(TAG, "Failed to notify Removed:", e);
         }

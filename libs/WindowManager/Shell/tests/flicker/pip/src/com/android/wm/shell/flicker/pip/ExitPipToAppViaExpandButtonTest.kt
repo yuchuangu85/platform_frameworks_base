@@ -16,9 +16,12 @@
 
 package com.android.wm.shell.flicker.pip
 
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
+import android.platform.test.annotations.RequiresFlagsDisabled
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import com.android.server.wm.flicker.helpers.PipAppHelper
+import com.android.wm.shell.Flags
 import com.android.wm.shell.flicker.pip.common.ExitPipToAppTransition
 import org.junit.FixMethodOrder
 import org.junit.runner.RunWith
@@ -28,7 +31,7 @@ import org.junit.runners.Parameterized
 /**
  * Test expanding a pip window back to full screen via the expand button
  *
- * To run this test: `atest WMShellFlickerTests:ExitPipViaExpandButtonClickTest`
+ * To run this test: `atest WMShellFlickerTestsPip:ExitPipToAppViaExpandButtonTest`
  *
  * Actions:
  * ```
@@ -43,7 +46,7 @@ import org.junit.runners.Parameterized
  *     1. Some default assertions (e.g., nav bar, status bar and screen covered)
  *        are inherited [PipTransition]
  *     2. Part of the test setup occurs automatically via
- *        [android.tools.device.flicker.legacy.runner.TransitionRunner],
+ *        [android.tools.flicker.legacy.runner.TransitionRunner],
  *        including configuring navigation mode, initial orientation and ensuring no
  *        apps are running before setup
  * ```
@@ -51,8 +54,11 @@ import org.junit.runners.Parameterized
 @RunWith(Parameterized::class)
 @Parameterized.UseParametersRunnerFactory(FlickerParametersRunnerFactory::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
+@RequiresFlagsDisabled(Flags.FLAG_ENABLE_PIP2)
 class ExitPipToAppViaExpandButtonTest(flicker: LegacyFlickerTest) :
     ExitPipToAppTransition(flicker) {
+    override val pipApp: PipAppHelper = PipAppHelper(instrumentation)
+
     override val thisTransition: FlickerBuilder.() -> Unit = {
         setup {
             // launch an app behind the pip one

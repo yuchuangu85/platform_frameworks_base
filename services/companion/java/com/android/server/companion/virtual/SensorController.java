@@ -23,6 +23,7 @@ import android.companion.virtual.sensor.IVirtualSensorCallback;
 import android.companion.virtual.sensor.VirtualSensor;
 import android.companion.virtual.sensor.VirtualSensorConfig;
 import android.companion.virtual.sensor.VirtualSensorEvent;
+import android.content.AttributionSource;
 import android.hardware.SensorDirectChannel;
 import android.os.Binder;
 import android.os.IBinder;
@@ -35,6 +36,7 @@ import android.util.SparseArray;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.modules.expresslog.Counter;
 import com.android.server.LocalServices;
 import com.android.server.sensors.SensorManagerInternal;
 
@@ -71,14 +73,18 @@ public class SensorController {
     private List<VirtualSensor> mVirtualSensorList = null;
 
     @NonNull
+    private final AttributionSource mAttributionSource;
+    @NonNull
     private final SensorManagerInternal.RuntimeSensorCallback mRuntimeSensorCallback;
     private final SensorManagerInternal mSensorManagerInternal;
     private final VirtualDeviceManagerInternal mVdmInternal;
 
     public SensorController(@NonNull IVirtualDevice virtualDevice, int virtualDeviceId,
+            @NonNull AttributionSource attributionSource,
             @Nullable IVirtualSensorCallback virtualSensorCallback,
             @NonNull List<VirtualSensorConfig> sensors) {
         mVirtualDeviceId = virtualDeviceId;
+        mAttributionSource = attributionSource;
         mRuntimeSensorCallback = new RuntimeSensorCallbackWrapper(virtualSensorCallback);
         mSensorManagerInternal = LocalServices.getService(SensorManagerInternal.class);
         mVdmInternal = LocalServices.getService(VirtualDeviceManagerInternal.class);
@@ -139,6 +145,9 @@ public class SensorController {
             mSensorDescriptors.put(sensorToken, sensorDescriptor);
             mVirtualSensors.put(handle, sensor);
         }
+        Counter.logIncrementWithUid(
+                "virtual_devices.value_virtual_sensors_created_count",
+                mAttributionSource.getUid());
     }
 
     boolean sendSensorEvent(@NonNull IBinder token, @NonNull VirtualSensorEvent event) {
@@ -218,6 +227,10 @@ public class SensorController {
                 Slog.e(TAG, "No sensor callback configured for sensor handle " + handle);
                 return BAD_VALUE;
             }
+            if (mVdmInternal == null) {
+                Slog.e(TAG, "Virtual Device Manager is not enabled.");
+                return BAD_VALUE;
+            }
             VirtualSensor sensor = mVdmInternal.getVirtualSensor(mVirtualDeviceId, handle);
             if (sensor == null) {
                 Slog.e(TAG, "No sensor found for deviceId=" + mVirtualDeviceId
@@ -243,8 +256,15 @@ public class SensorController {
                 Slog.e(TAG, "Received invalid ParcelFileDescriptor");
                 return BAD_VALUE;
             }
+
+            SharedMemory sharedMemory;
+            try {
+                sharedMemory = SharedMemory.fromFileDescriptor(fd);
+            } catch (IllegalArgumentException e) {
+                Slog.e(TAG, "Failed to create shared memory: " + e);
+                return BAD_VALUE;
+            }
             final int channelHandle = sNextDirectChannelHandle.getAndIncrement();
-            SharedMemory sharedMemory = SharedMemory.fromFileDescriptor(fd);
             try {
                 mCallback.onDirectChannelCreated(channelHandle, sharedMemory);
             } catch (RemoteException e) {
@@ -272,6 +292,10 @@ public class SensorController {
                 @SensorDirectChannel.RateLevel int rateLevel) {
             if (mCallback == null) {
                 Slog.e(TAG, "No runtime sensor callback configured.");
+                return BAD_VALUE;
+            }
+            if (mVdmInternal == null) {
+                Slog.e(TAG, "Virtual Device Manager is not enabled.");
                 return BAD_VALUE;
             }
             VirtualSensor sensor = mVdmInternal.getVirtualSensor(mVirtualDeviceId, sensorHandle);

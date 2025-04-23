@@ -17,7 +17,11 @@
 package com.android.server.display;
 
 
-import static com.android.server.display.config.SensorData.SupportedMode;
+import static com.android.internal.display.BrightnessSynchronizer.brightnessIntToFloat;
+import static com.android.server.display.AutomaticBrightnessController.AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR;
+import static com.android.server.display.AutomaticBrightnessController.AUTO_BRIGHTNESS_MODE_DEFAULT;
+import static com.android.server.display.AutomaticBrightnessController.AUTO_BRIGHTNESS_MODE_DOZE;
+import static com.android.server.display.config.SensorData.TEMPERATURE_TYPE_SKIN;
 import static com.android.server.display.utils.DeviceConfigParsingUtils.ambientBrightnessThresholdsIntToFloat;
 import static com.android.server.display.utils.DeviceConfigParsingUtils.displayBrightnessThresholdsIntToFloat;
 
@@ -38,7 +42,10 @@ import android.content.Context;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.hardware.display.DisplayManagerInternal;
+import android.os.PowerManager;
 import android.os.Temperature;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.provider.Settings;
 import android.util.SparseArray;
 import android.util.Spline;
 import android.view.SurfaceControl;
@@ -47,10 +54,15 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.R;
-import com.android.internal.display.BrightnessSynchronizer;
 import com.android.server.display.config.HdrBrightnessData;
+import com.android.server.display.config.HighBrightnessModeData;
+import com.android.server.display.config.HysteresisLevels;
+import com.android.server.display.config.IdleScreenRefreshRateTimeoutLuxThresholdPoint;
+import com.android.server.display.config.RefreshRateData;
+import com.android.server.display.config.SupportedModeData;
 import com.android.server.display.config.ThermalStatus;
 import com.android.server.display.feature.DisplayManagerFlags;
+import com.android.server.display.feature.flags.Flags;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -102,7 +114,51 @@ public final class DisplayDeviceConfigTest {
         MockitoAnnotations.initMocks(this);
         when(mContext.getResources()).thenReturn(mResources);
         when(mFlags.areAutoBrightnessModesEnabled()).thenReturn(true);
+        when(mFlags.isSensorBasedBrightnessThrottlingEnabled()).thenReturn(true);
+        when(mFlags.isIdleScreenRefreshRateTimeoutEnabled()).thenReturn(true);
         mockDeviceConfigs();
+    }
+
+    @Test
+    public void testDefaultValues() {
+        when(mResources.getString(com.android.internal.R.string.config_displayLightSensorType))
+                .thenReturn("test_light_sensor");
+        when(mResources.getBoolean(R.bool.config_automatic_brightness_available)).thenReturn(true);
+
+        mDisplayDeviceConfig = DisplayDeviceConfig.create(mContext, /* useConfigXml= */ false,
+                mFlags);
+
+        assertEquals(DisplayDeviceConfig.BRIGHTNESS_DEFAULT,
+                mDisplayDeviceConfig.getBrightnessDefault(), ZERO_DELTA);
+        assertEquals(PowerManager.BRIGHTNESS_MAX,
+                mDisplayDeviceConfig.getBrightnessRampFastDecrease(), ZERO_DELTA);
+        assertEquals(PowerManager.BRIGHTNESS_MAX,
+                mDisplayDeviceConfig.getBrightnessRampFastIncrease(), ZERO_DELTA);
+        assertEquals(PowerManager.BRIGHTNESS_MAX,
+                mDisplayDeviceConfig.getBrightnessRampSlowDecrease(), ZERO_DELTA);
+        assertEquals(PowerManager.BRIGHTNESS_MAX,
+                mDisplayDeviceConfig.getBrightnessRampSlowIncrease(), ZERO_DELTA);
+        assertEquals(PowerManager.BRIGHTNESS_MAX,
+                mDisplayDeviceConfig.getBrightnessRampSlowDecreaseIdle(), ZERO_DELTA);
+        assertEquals(PowerManager.BRIGHTNESS_MAX,
+                mDisplayDeviceConfig.getBrightnessRampSlowIncreaseIdle(), ZERO_DELTA);
+        assertEquals(0, mDisplayDeviceConfig.getBrightnessRampDecreaseMaxMillis());
+        assertEquals(0, mDisplayDeviceConfig.getBrightnessRampIncreaseMaxMillis());
+        assertEquals(0, mDisplayDeviceConfig.getBrightnessRampDecreaseMaxIdleMillis());
+        assertEquals(0, mDisplayDeviceConfig.getBrightnessRampIncreaseMaxIdleMillis());
+        assertNull(mDisplayDeviceConfig.getNits());
+        assertNull(mDisplayDeviceConfig.getBacklight());
+        assertEquals(0.3f, mDisplayDeviceConfig.getBacklightFromBrightness(0.3f), ZERO_DELTA);
+        assertEquals("test_light_sensor", mDisplayDeviceConfig.getAmbientLightSensor().type);
+        assertEquals("", mDisplayDeviceConfig.getAmbientLightSensor().name);
+        assertNull(mDisplayDeviceConfig.getProximitySensor().type);
+        assertNull(mDisplayDeviceConfig.getProximitySensor().name);
+        assertEquals(TEMPERATURE_TYPE_SKIN, mDisplayDeviceConfig.getTempSensor().type);
+        assertEquals(List.of(), mDisplayDeviceConfig
+                .getIdleScreenRefreshRateTimeoutLuxThresholdPoint());
+        assertNull(mDisplayDeviceConfig.getTempSensor().name);
+        assertTrue(mDisplayDeviceConfig.isAutoBrightnessAvailable());
+        assertEquals(0, mDisplayDeviceConfig.getIdleStylusTimeoutMillis());
     }
 
     @Test
@@ -118,69 +174,88 @@ public final class DisplayDeviceConfigTest {
         assertArrayEquals(mDisplayDeviceConfig.getBacklight(), BRIGHTNESS, ZERO_DELTA);
 
         // Test thresholds
-        assertEquals(10, mDisplayDeviceConfig.getAmbientLuxBrighteningMinThreshold(),
-                ZERO_DELTA);
-        assertEquals(20, mDisplayDeviceConfig.getAmbientLuxBrighteningMinThresholdIdle(),
-                ZERO_DELTA);
-        assertEquals(30, mDisplayDeviceConfig.getAmbientLuxDarkeningMinThreshold(), ZERO_DELTA);
-        assertEquals(40, mDisplayDeviceConfig.getAmbientLuxDarkeningMinThresholdIdle(), ZERO_DELTA);
+        HysteresisLevels ambientHysteresis = mDisplayDeviceConfig.getAmbientBrightnessHysteresis();
+        HysteresisLevels ambientIdleHysteresis =
+                mDisplayDeviceConfig.getAmbientBrightnessIdleHysteresis();
+        HysteresisLevels screenHysteresis = mDisplayDeviceConfig.getScreenBrightnessHysteresis();
+        HysteresisLevels screenIdleHysteresis =
+                mDisplayDeviceConfig.getScreenBrightnessIdleHysteresis();
+        assertEquals(10, ambientHysteresis.getMinBrightening(), ZERO_DELTA);
+        assertEquals(20, ambientIdleHysteresis.getMinBrightening(), ZERO_DELTA);
+        assertEquals(30, ambientHysteresis.getMinDarkening(), ZERO_DELTA);
+        assertEquals(40, ambientIdleHysteresis.getMinDarkening(), ZERO_DELTA);
 
-        assertEquals(0.1f, mDisplayDeviceConfig.getScreenBrighteningMinThreshold(), ZERO_DELTA);
-        assertEquals(0.2f, mDisplayDeviceConfig.getScreenBrighteningMinThresholdIdle(), ZERO_DELTA);
-        assertEquals(0.3f, mDisplayDeviceConfig.getScreenDarkeningMinThreshold(), ZERO_DELTA);
-        assertEquals(0.4f, mDisplayDeviceConfig.getScreenDarkeningMinThresholdIdle(), ZERO_DELTA);
+        assertEquals(0.1f, screenHysteresis.getMinBrightening(), ZERO_DELTA);
+        assertEquals(0.2f, screenIdleHysteresis.getMinBrightening(), ZERO_DELTA);
+        assertEquals(0.3f, screenHysteresis.getMinDarkening(), ZERO_DELTA);
+        assertEquals(0.4f, screenIdleHysteresis.getMinDarkening(), ZERO_DELTA);
 
         assertArrayEquals(new float[]{0, 0.10f, 0.20f},
-                mDisplayDeviceConfig.getScreenBrighteningLevels(), ZERO_DELTA);
-        assertArrayEquals(new float[]{9, 10, 11},
-                mDisplayDeviceConfig.getScreenBrighteningPercentages(), ZERO_DELTA);
+                screenHysteresis.getBrighteningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.09f, 0.10f, 0.11f},
+                screenHysteresis.getBrighteningThresholdsPercentages(), ZERO_DELTA);
         assertArrayEquals(new float[]{0, 0.11f, 0.21f},
-                mDisplayDeviceConfig.getScreenDarkeningLevels(), ZERO_DELTA);
-        assertArrayEquals(new float[]{11, 12, 13},
-                mDisplayDeviceConfig.getScreenDarkeningPercentages(), ZERO_DELTA);
+                screenHysteresis.getDarkeningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.11f, 0.12f, 0.13f},
+                screenHysteresis.getDarkeningThresholdsPercentages(), ZERO_DELTA);
 
         assertArrayEquals(new float[]{0, 100, 200},
-                mDisplayDeviceConfig.getAmbientBrighteningLevels(), ZERO_DELTA);
-        assertArrayEquals(new float[]{13, 14, 15},
-                mDisplayDeviceConfig.getAmbientBrighteningPercentages(), ZERO_DELTA);
+                ambientHysteresis.getBrighteningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.13f, 0.14f, 0.15f},
+                ambientHysteresis.getBrighteningThresholdsPercentages(), ZERO_DELTA);
         assertArrayEquals(new float[]{0, 300, 400},
-                mDisplayDeviceConfig.getAmbientDarkeningLevels(), ZERO_DELTA);
-        assertArrayEquals(new float[]{15, 16, 17},
-                mDisplayDeviceConfig.getAmbientDarkeningPercentages(), ZERO_DELTA);
+                ambientHysteresis.getDarkeningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.15f, 0.16f, 0.17f},
+                ambientHysteresis.getDarkeningThresholdsPercentages(), ZERO_DELTA);
 
         assertArrayEquals(new float[]{0, 0.12f, 0.22f},
-                mDisplayDeviceConfig.getScreenBrighteningLevelsIdle(), ZERO_DELTA);
-        assertArrayEquals(new float[]{17, 18, 19},
-                mDisplayDeviceConfig.getScreenBrighteningPercentagesIdle(), ZERO_DELTA);
+                screenIdleHysteresis.getBrighteningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.17f, 0.18f, 0.19f},
+                screenIdleHysteresis.getBrighteningThresholdsPercentages(), ZERO_DELTA);
         assertArrayEquals(new float[]{0, 0.13f, 0.23f},
-                mDisplayDeviceConfig.getScreenDarkeningLevelsIdle(), ZERO_DELTA);
-        assertArrayEquals(new float[]{19, 20, 21},
-                mDisplayDeviceConfig.getScreenDarkeningPercentagesIdle(), ZERO_DELTA);
+                screenIdleHysteresis.getDarkeningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.19f, 0.20f, 0.21f},
+                screenIdleHysteresis.getDarkeningThresholdsPercentages(), ZERO_DELTA);
 
         assertArrayEquals(new float[]{0, 500, 600},
-                mDisplayDeviceConfig.getAmbientBrighteningLevelsIdle(), ZERO_DELTA);
-        assertArrayEquals(new float[]{21, 22, 23},
-                mDisplayDeviceConfig.getAmbientBrighteningPercentagesIdle(), ZERO_DELTA);
+                ambientIdleHysteresis.getBrighteningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.21f, 0.22f, 0.23f},
+                ambientIdleHysteresis.getBrighteningThresholdsPercentages(), ZERO_DELTA);
         assertArrayEquals(new float[]{0, 700, 800},
-                mDisplayDeviceConfig.getAmbientDarkeningLevelsIdle(), ZERO_DELTA);
-        assertArrayEquals(new float[]{23, 24, 25},
-                mDisplayDeviceConfig.getAmbientDarkeningPercentagesIdle(), ZERO_DELTA);
+                ambientIdleHysteresis.getDarkeningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.23f, 0.24f, 0.25f},
+                ambientIdleHysteresis.getDarkeningThresholdsPercentages(), ZERO_DELTA);
 
+        RefreshRateData refreshRateData = mDisplayDeviceConfig.getRefreshRateData();
         assertEquals(75, mDisplayDeviceConfig.getDefaultLowBlockingZoneRefreshRate());
         assertEquals(90, mDisplayDeviceConfig.getDefaultHighBlockingZoneRefreshRate());
-        assertEquals(85, mDisplayDeviceConfig.getDefaultPeakRefreshRate());
-        assertEquals(45, mDisplayDeviceConfig.getDefaultRefreshRate());
+        assertEquals(85, refreshRateData.defaultPeakRefreshRate);
+        assertEquals(45, refreshRateData.defaultRefreshRate);
         assertEquals(2, mDisplayDeviceConfig.getRefreshRangeProfiles().size());
         assertEquals(60, mDisplayDeviceConfig.getRefreshRange("test1").min, SMALL_DELTA);
         assertEquals(60, mDisplayDeviceConfig.getRefreshRange("test1").max, SMALL_DELTA);
         assertEquals(80, mDisplayDeviceConfig.getRefreshRange("test2").min, SMALL_DELTA);
         assertEquals(90, mDisplayDeviceConfig.getRefreshRange("test2").max, SMALL_DELTA);
-        assertEquals(82, mDisplayDeviceConfig.getDefaultRefreshRateInHbmHdr());
-        assertEquals(83, mDisplayDeviceConfig.getDefaultRefreshRateInHbmSunlight());
+        assertEquals(82, refreshRateData.defaultRefreshRateInHbmHdr);
+        assertEquals(83, refreshRateData.defaultRefreshRateInHbmSunlight);
 
         assertNotNull(mDisplayDeviceConfig.getHostUsiVersion());
         assertEquals(mDisplayDeviceConfig.getHostUsiVersion().getMajorVersion(), 2);
         assertEquals(mDisplayDeviceConfig.getHostUsiVersion().getMinorVersion(), 0);
+
+        List<IdleScreenRefreshRateTimeoutLuxThresholdPoint>
+                idleScreenRefreshRateTimeoutLuxThresholdPoints =
+                mDisplayDeviceConfig.getIdleScreenRefreshRateTimeoutLuxThresholdPoint();
+        assertEquals(2, idleScreenRefreshRateTimeoutLuxThresholdPoints.size());
+        assertEquals(6, idleScreenRefreshRateTimeoutLuxThresholdPoints.get(0).getLux()
+                .intValue());
+        assertEquals(1000, idleScreenRefreshRateTimeoutLuxThresholdPoints.get(0)
+                .getTimeout().intValue());
+        assertEquals(10, idleScreenRefreshRateTimeoutLuxThresholdPoints.get(1)
+                .getLux().intValue());
+        assertEquals(800, idleScreenRefreshRateTimeoutLuxThresholdPoints.get(1)
+                .getTimeout().intValue());
+        assertEquals(1000, mDisplayDeviceConfig.getIdleStylusTimeoutMillis());
     }
 
     @Test
@@ -191,7 +266,9 @@ public final class DisplayDeviceConfigTest {
                 mDisplayDeviceConfig.getPowerThrottlingConfigData();
         assertNotNull(powerThrottlingConfigData);
         assertEquals(0.1f, powerThrottlingConfigData.brightnessLowestCapAllowed, SMALL_DELTA);
-        assertEquals(10, powerThrottlingConfigData.pollingWindowMillis);
+        assertEquals(15f, powerThrottlingConfigData.customAnimationRate, SMALL_DELTA);
+        assertEquals(20000, powerThrottlingConfigData.pollingWindowMaxMillis);
+        assertEquals(10000, powerThrottlingConfigData.pollingWindowMinMillis);
     }
 
     @Test
@@ -318,7 +395,7 @@ public final class DisplayDeviceConfigTest {
     public void testInvalidLuxThrottling() throws Exception {
         setupDisplayDeviceConfigFromDisplayConfigFile(
                 getContent(getInvalidLuxThrottling(), getValidProxSensor(),
-                        /* includeIdleMode= */ true));
+                        /* includeIdleMode= */ true, /* enableEvenDimmer= */ false));
 
         Map<DisplayDeviceConfig.BrightnessLimitMapType, Map<Float, Float>> luxThrottlingData =
                 mDisplayDeviceConfig.getLuxThrottlingData();
@@ -365,7 +442,7 @@ public final class DisplayDeviceConfigTest {
     public void testHighBrightnessModeDataFromDisplayConfig() throws IOException {
         setupDisplayDeviceConfigFromDisplayConfigFile();
 
-        DisplayDeviceConfig.HighBrightnessModeData hbmData =
+        HighBrightnessModeData hbmData =
                 mDisplayDeviceConfig.getHighBrightnessModeData();
         assertNotNull(hbmData);
         assertEquals(BRIGHTNESS[1], hbmData.transitionPoint, ZERO_DELTA);
@@ -526,7 +603,7 @@ public final class DisplayDeviceConfigTest {
     public void testProximitySensorWithEmptyValuesFromDisplayConfig() throws IOException {
         setupDisplayDeviceConfigFromDisplayConfigFile(
                 getContent(getValidLuxThrottling(), getProxSensorWithEmptyValues(),
-                        /* includeIdleMode= */ true));
+                        /* includeIdleMode= */ true, /* enableEvenDimmer= */ false));
         assertNull(mDisplayDeviceConfig.getProximitySensor());
     }
 
@@ -534,7 +611,7 @@ public final class DisplayDeviceConfigTest {
     public void testProximitySensorWithRefreshRatesFromDisplayConfig() throws IOException {
         setupDisplayDeviceConfigFromDisplayConfigFile(
                 getContent(getValidLuxThrottling(), getValidProxSensorWithRefreshRateAndVsyncRate(),
-                        /* includeIdleMode= */ true));
+                        /* includeIdleMode= */ true, /* enableEvenDimmer= */ false));
         assertEquals("test_proximity_sensor",
                 mDisplayDeviceConfig.getProximitySensor().type);
         assertEquals("Test Proximity Sensor",
@@ -542,12 +619,19 @@ public final class DisplayDeviceConfigTest {
         assertEquals(mDisplayDeviceConfig.getProximitySensor().minRefreshRate, 60, SMALL_DELTA);
         assertEquals(mDisplayDeviceConfig.getProximitySensor().maxRefreshRate, 90, SMALL_DELTA);
         assertThat(mDisplayDeviceConfig.getProximitySensor().supportedModes).hasSize(2);
-        SupportedMode mode = mDisplayDeviceConfig.getProximitySensor().supportedModes.get(0);
+        SupportedModeData mode = mDisplayDeviceConfig.getProximitySensor().supportedModes.get(0);
         assertEquals(mode.refreshRate, 60, SMALL_DELTA);
         assertEquals(mode.vsyncRate, 65, SMALL_DELTA);
         mode = mDisplayDeviceConfig.getProximitySensor().supportedModes.get(1);
         assertEquals(mode.refreshRate, 120, SMALL_DELTA);
         assertEquals(mode.vsyncRate, 125, SMALL_DELTA);
+    }
+
+    @Test
+    public void testTempSensorFromDisplayConfig() throws IOException {
+        setupDisplayDeviceConfigFromDisplayConfigFile();
+        assertEquals("DISPLAY", mDisplayDeviceConfig.getTempSensor().type);
+        assertEquals("VIRTUAL-SKIN-DISPLAY", mDisplayDeviceConfig.getTempSensor().name);
     }
 
     @Test
@@ -593,89 +677,104 @@ public final class DisplayDeviceConfigTest {
         HdrBrightnessData data = mDisplayDeviceConfig.getHdrBrightnessData();
 
         assertNotNull(data);
-        assertEquals(2, data.mMaxBrightnessLimits.size());
-        assertEquals(13000, data.mBrightnessDecreaseDebounceMillis);
-        assertEquals(0.1f, data.mScreenBrightnessRampDecrease, SMALL_DELTA);
-        assertEquals(1000, data.mBrightnessIncreaseDebounceMillis);
-        assertEquals(0.11f, data.mScreenBrightnessRampIncrease, SMALL_DELTA);
+        assertEquals(2, data.maxBrightnessLimits.size());
+        assertEquals(13000, data.brightnessDecreaseDebounceMillis);
+        assertEquals(0.1f, data.screenBrightnessRampDecrease, SMALL_DELTA);
+        assertEquals(1000, data.brightnessIncreaseDebounceMillis);
+        assertEquals(0.11f, data.screenBrightnessRampIncrease, SMALL_DELTA);
 
-        assertEquals(0.3f, data.mMaxBrightnessLimits.get(500f), SMALL_DELTA);
-        assertEquals(0.6f, data.mMaxBrightnessLimits.get(1200f), SMALL_DELTA);
+        assertEquals(0.3f, data.maxBrightnessLimits.get(500f), SMALL_DELTA);
+        assertEquals(0.6f, data.maxBrightnessLimits.get(1200f), SMALL_DELTA);
     }
 
     private void verifyConfigValuesFromConfigResource() {
         assertNull(mDisplayDeviceConfig.getName());
-        assertArrayEquals(mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsNits(), new
-                float[]{2.0f, 200.0f, 600.0f}, ZERO_DELTA);
-        assertArrayEquals(mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(), new
-                float[]{0.0f, 110.0f, 500.0f}, ZERO_DELTA);
+        assertArrayEquals(mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsNits(),
+                new float[]{2.0f, 200.0f, 600.0f}, ZERO_DELTA);
+        assertArrayEquals(mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                AUTO_BRIGHTNESS_MODE_DEFAULT, Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_NORMAL),
+                new float[]{0.0f, 110.0f, 500.0f}, ZERO_DELTA);
+        assertArrayEquals(mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                AUTO_BRIGHTNESS_MODE_DEFAULT, Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_NORMAL),
+                new float[]{brightnessIntToFloat(50), brightnessIntToFloat(100),
+                        brightnessIntToFloat(150)}, SMALL_DELTA);
+
+        HysteresisLevels ambientHysteresis = mDisplayDeviceConfig.getAmbientBrightnessHysteresis();
+        HysteresisLevels ambientIdleHysteresis =
+                mDisplayDeviceConfig.getAmbientBrightnessIdleHysteresis();
+        HysteresisLevels screenHysteresis = mDisplayDeviceConfig.getScreenBrightnessHysteresis();
+        HysteresisLevels screenIdleHysteresis =
+                mDisplayDeviceConfig.getScreenBrightnessIdleHysteresis();
 
         // Test thresholds
-        assertEquals(0, mDisplayDeviceConfig.getAmbientLuxBrighteningMinThreshold(), ZERO_DELTA);
-        assertEquals(0, mDisplayDeviceConfig.getAmbientLuxBrighteningMinThresholdIdle(),
-                ZERO_DELTA);
-        assertEquals(0, mDisplayDeviceConfig.getAmbientLuxDarkeningMinThreshold(), ZERO_DELTA);
-        assertEquals(0, mDisplayDeviceConfig.getAmbientLuxDarkeningMinThresholdIdle(), ZERO_DELTA);
+        assertEquals(0, ambientHysteresis.getMinBrightening(), ZERO_DELTA);
+        assertEquals(0, ambientIdleHysteresis.getMinBrightening(), ZERO_DELTA);
+        assertEquals(0, ambientHysteresis.getMinDarkening(), ZERO_DELTA);
+        assertEquals(0, ambientIdleHysteresis.getMinDarkening(), ZERO_DELTA);
 
-        assertEquals(0, mDisplayDeviceConfig.getScreenBrighteningMinThreshold(), ZERO_DELTA);
-        assertEquals(0, mDisplayDeviceConfig.getScreenBrighteningMinThresholdIdle(), ZERO_DELTA);
-        assertEquals(0, mDisplayDeviceConfig.getScreenDarkeningMinThreshold(), ZERO_DELTA);
-        assertEquals(0, mDisplayDeviceConfig.getScreenDarkeningMinThresholdIdle(), ZERO_DELTA);
+        assertEquals(0, screenHysteresis.getMinBrightening(), ZERO_DELTA);
+        assertEquals(0, screenIdleHysteresis.getMinBrightening(), ZERO_DELTA);
+        assertEquals(0, screenHysteresis.getMinDarkening(), ZERO_DELTA);
+        assertEquals(0, screenIdleHysteresis.getMinDarkening(), ZERO_DELTA);
 
         // screen levels will be considered "old screen brightness scale"
         // and therefore will divide by 255
         assertArrayEquals(new float[]{0, 42 / 255f, 43 / 255f},
-                mDisplayDeviceConfig.getScreenBrighteningLevels(), SMALL_DELTA);
-        assertArrayEquals(new float[]{35, 36, 37},
-                mDisplayDeviceConfig.getScreenBrighteningPercentages(), ZERO_DELTA);
+                screenHysteresis.getBrighteningThresholdLevels(), SMALL_DELTA);
+        assertArrayEquals(new float[]{0.35f, 0.36f, 0.37f},
+                screenHysteresis.getBrighteningThresholdsPercentages(), ZERO_DELTA);
         assertArrayEquals(new float[]{0, 42 / 255f, 43 / 255f},
-                mDisplayDeviceConfig.getScreenDarkeningLevels(), SMALL_DELTA);
-        assertArrayEquals(new float[]{37, 38, 39},
-                mDisplayDeviceConfig.getScreenDarkeningPercentages(), ZERO_DELTA);
+                screenHysteresis.getDarkeningThresholdLevels(), SMALL_DELTA);
+        assertArrayEquals(new float[]{0.37f, 0.38f, 0.39f},
+                screenHysteresis.getDarkeningThresholdsPercentages(), ZERO_DELTA);
 
         assertArrayEquals(new float[]{0, 30, 31},
-                mDisplayDeviceConfig.getAmbientBrighteningLevels(), ZERO_DELTA);
-        assertArrayEquals(new float[]{27, 28, 29},
-                mDisplayDeviceConfig.getAmbientBrighteningPercentages(), ZERO_DELTA);
+                ambientHysteresis.getBrighteningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.27f, 0.28f, 0.29f},
+                ambientHysteresis.getBrighteningThresholdsPercentages(), ZERO_DELTA);
         assertArrayEquals(new float[]{0, 30, 31},
-                mDisplayDeviceConfig.getAmbientDarkeningLevels(), ZERO_DELTA);
-        assertArrayEquals(new float[]{29, 30, 31},
-                mDisplayDeviceConfig.getAmbientDarkeningPercentages(), ZERO_DELTA);
+                ambientHysteresis.getDarkeningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.29f, 0.30f, 0.31f},
+                ambientHysteresis.getDarkeningThresholdsPercentages(), ZERO_DELTA);
 
         assertArrayEquals(new float[]{0, 42 / 255f, 43 / 255f},
-                mDisplayDeviceConfig.getScreenBrighteningLevelsIdle(), SMALL_DELTA);
-        assertArrayEquals(new float[]{35, 36, 37},
-                mDisplayDeviceConfig.getScreenBrighteningPercentagesIdle(), ZERO_DELTA);
+                screenIdleHysteresis.getBrighteningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.35f, 0.36f, 0.37f},
+                screenIdleHysteresis.getBrighteningThresholdsPercentages(), ZERO_DELTA);
         assertArrayEquals(new float[]{0, 42 / 255f, 43 / 255f},
-                mDisplayDeviceConfig.getScreenDarkeningLevelsIdle(), SMALL_DELTA);
-        assertArrayEquals(new float[]{37, 38, 39},
-                mDisplayDeviceConfig.getScreenDarkeningPercentagesIdle(), ZERO_DELTA);
+                screenIdleHysteresis.getDarkeningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.37f, 0.38f, 0.39f},
+                screenIdleHysteresis.getDarkeningThresholdsPercentages(), ZERO_DELTA);
+
+        RefreshRateData refreshRateData = mDisplayDeviceConfig.getRefreshRateData();
 
         assertArrayEquals(new float[]{0, 30, 31},
-                mDisplayDeviceConfig.getAmbientBrighteningLevelsIdle(), ZERO_DELTA);
-        assertArrayEquals(new float[]{27, 28, 29},
-                mDisplayDeviceConfig.getAmbientBrighteningPercentagesIdle(), ZERO_DELTA);
+                ambientIdleHysteresis.getBrighteningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.27f, 0.28f, 0.29f},
+                ambientIdleHysteresis.getBrighteningThresholdsPercentages(), ZERO_DELTA);
         assertArrayEquals(new float[]{0, 30, 31},
-                mDisplayDeviceConfig.getAmbientDarkeningLevelsIdle(), ZERO_DELTA);
-        assertArrayEquals(new float[]{29, 30, 31},
-                mDisplayDeviceConfig.getAmbientDarkeningPercentagesIdle(), ZERO_DELTA);
+                ambientIdleHysteresis.getDarkeningThresholdLevels(), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.29f, 0.30f, 0.31f},
+                ambientIdleHysteresis.getDarkeningThresholdsPercentages(), ZERO_DELTA);
         assertEquals(mDisplayDeviceConfig.getDefaultLowBlockingZoneRefreshRate(),
                 DEFAULT_LOW_BLOCKING_ZONE_REFRESH_RATE);
         assertEquals(mDisplayDeviceConfig.getDefaultHighBlockingZoneRefreshRate(),
                 DEFAULT_HIGH_BLOCKING_ZONE_REFRESH_RATE);
-        assertEquals(mDisplayDeviceConfig.getDefaultPeakRefreshRate(), DEFAULT_PEAK_REFRESH_RATE);
-        assertEquals(mDisplayDeviceConfig.getDefaultRefreshRate(), DEFAULT_REFRESH_RATE);
+        assertEquals(refreshRateData.defaultPeakRefreshRate, DEFAULT_PEAK_REFRESH_RATE);
+        assertEquals(refreshRateData.defaultRefreshRate, DEFAULT_REFRESH_RATE);
         assertEquals(0, mDisplayDeviceConfig.getRefreshRangeProfiles().size());
-        assertEquals(mDisplayDeviceConfig.getDefaultRefreshRateInHbmSunlight(),
+        assertEquals(refreshRateData.defaultRefreshRateInHbmSunlight,
                 DEFAULT_REFRESH_RATE_IN_HBM_SUNLIGHT);
-        assertEquals(mDisplayDeviceConfig.getDefaultRefreshRateInHbmHdr(),
-                DEFAULT_REFRESH_RATE_IN_HBM_HDR);
+        assertEquals(refreshRateData.defaultRefreshRateInHbmHdr, DEFAULT_REFRESH_RATE_IN_HBM_HDR);
 
         assertEquals("test_light_sensor", mDisplayDeviceConfig.getAmbientLightSensor().type);
         assertEquals("", mDisplayDeviceConfig.getAmbientLightSensor().name);
+        assertTrue(mDisplayDeviceConfig.isAutoBrightnessAvailable());
 
-        assertEquals(BrightnessSynchronizer.brightnessIntToFloat(35),
+        assertEquals(brightnessIntToFloat(35),
                 mDisplayDeviceConfig.getBrightnessCapForWearBedtimeMode(), ZERO_DELTA);
+        assertEquals(List.of(), mDisplayDeviceConfig
+                .getIdleScreenRefreshRateTimeoutLuxThresholdPoint());
     }
 
     @Test
@@ -707,7 +806,7 @@ public final class DisplayDeviceConfigTest {
     @Test
     public void testBrightnessRamps_IdleFallsBackToConfigInteractive() throws IOException {
         setupDisplayDeviceConfigFromDisplayConfigFile(getContent(getValidLuxThrottling(),
-                getValidProxSensor(), /* includeIdleMode= */ false));
+                getValidProxSensor(), /* includeIdleMode= */ false, /* enableEvenDimmer= */ false));
 
         assertEquals(mDisplayDeviceConfig.getBrightnessRampDecreaseMaxMillis(), 3000);
         assertEquals(mDisplayDeviceConfig.getBrightnessRampIncreaseMaxMillis(), 2000);
@@ -724,19 +823,97 @@ public final class DisplayDeviceConfigTest {
     @Test
     public void testBrightnessCapForWearBedtimeMode() throws IOException {
         setupDisplayDeviceConfigFromDisplayConfigFile(getContent(getValidLuxThrottling(),
-                getValidProxSensor(), /* includeIdleMode= */ false));
+                getValidProxSensor(), /* includeIdleMode= */ false, /* enableEvenDimmer= */ false));
         assertEquals(0.1f, mDisplayDeviceConfig.getBrightnessCapForWearBedtimeMode(), ZERO_DELTA);
     }
 
     @Test
     public void testAutoBrightnessBrighteningLevels() throws IOException {
         setupDisplayDeviceConfigFromDisplayConfigFile(getContent(getValidLuxThrottling(),
-                getValidProxSensor(), /* includeIdleMode= */ false));
+                getValidProxSensor(), /* includeIdleMode= */ false, /* enableEvenDimmer= */ false));
 
         assertArrayEquals(new float[]{0.0f, 80},
-                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(), ZERO_DELTA);
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                        AUTO_BRIGHTNESS_MODE_DEFAULT,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_NORMAL), ZERO_DELTA);
         assertArrayEquals(new float[]{0.2f, 0.3f},
-                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(), SMALL_DELTA);
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                        AUTO_BRIGHTNESS_MODE_DEFAULT,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_NORMAL), SMALL_DELTA);
+
+        assertArrayEquals(new float[]{0.0f, 90},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                        AUTO_BRIGHTNESS_MODE_DEFAULT,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_DIM), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.3f, 0.4f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                        AUTO_BRIGHTNESS_MODE_DEFAULT,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_DIM), SMALL_DELTA);
+
+        assertArrayEquals(new float[]{0.0f, 80},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                        AUTO_BRIGHTNESS_MODE_DEFAULT,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_BRIGHT), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.6f, 0.7f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                        AUTO_BRIGHTNESS_MODE_DEFAULT,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_BRIGHT), SMALL_DELTA);
+
+        assertArrayEquals(new float[]{0.0f, 95},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                        AUTO_BRIGHTNESS_MODE_DOZE,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_NORMAL), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.35f, 0.45f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                        AUTO_BRIGHTNESS_MODE_DOZE,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_NORMAL), SMALL_DELTA);
+
+        assertArrayEquals(new float[]{0.0f, 100},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                        AUTO_BRIGHTNESS_MODE_DOZE,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_BRIGHT), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.4f, 0.5f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                        AUTO_BRIGHTNESS_MODE_DOZE,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_BRIGHT), SMALL_DELTA);
+
+        // Should fall back to the normal preset
+        assertArrayEquals(new float[]{0.0f, 95},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                        AUTO_BRIGHTNESS_MODE_DOZE,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_DIM), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.35f, 0.45f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                        AUTO_BRIGHTNESS_MODE_DOZE,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_DIM), SMALL_DELTA);
+
+        // Wear Bedtime mode curve
+        assertArrayEquals(new float[]{0.0f, 10.0f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                        AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_DIM), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.20f, 0.30f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                        AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_DIM), SMALL_DELTA);
+
+        assertArrayEquals(new float[]{0.0f, 20.0f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                        AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_NORMAL), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.30f, 0.65f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                        AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_NORMAL), SMALL_DELTA);
+
+        assertArrayEquals(new float[]{0.0f, 30.0f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                        AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_BRIGHT), ZERO_DELTA);
+        assertArrayEquals(new float[]{0.65f, 0.95f},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                        AUTO_BRIGHTNESS_MODE_BEDTIME_WEAR,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_BRIGHT), SMALL_DELTA);
     }
 
     @Test
@@ -744,13 +921,126 @@ public final class DisplayDeviceConfigTest {
         when(mFlags.areAutoBrightnessModesEnabled()).thenReturn(false);
         setupDisplayDeviceConfigFromConfigResourceFile();
         setupDisplayDeviceConfigFromDisplayConfigFile(getContent(getValidLuxThrottling(),
-                getValidProxSensor(), /* includeIdleMode= */ false));
+                getValidProxSensor(), /* includeIdleMode= */ false, /* enableEvenDimmer= */ false));
 
-        assertNull(mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels());
+        assertArrayEquals(new float[]{brightnessIntToFloat(50), brightnessIntToFloat(100),
+                        brightnessIntToFloat(150)},
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevels(
+                        AUTO_BRIGHTNESS_MODE_DEFAULT,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_NORMAL), SMALL_DELTA);
         assertArrayEquals(new float[]{0, 110, 500},
-                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(), ZERO_DELTA);
+                mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsLux(
+                        AUTO_BRIGHTNESS_MODE_DEFAULT,
+                        Settings.System.SCREEN_BRIGHTNESS_AUTOMATIC_NORMAL), ZERO_DELTA);
         assertArrayEquals(new float[]{2, 200, 600},
                 mDisplayDeviceConfig.getAutoBrightnessBrighteningLevelsNits(), SMALL_DELTA);
+    }
+
+    @Test
+    public void testIsAutoBrightnessAvailable_EnabledInConfigResource() throws IOException {
+        when(mResources.getBoolean(R.bool.config_automatic_brightness_available)).thenReturn(true);
+
+        setupDisplayDeviceConfigFromDisplayConfigFile();
+
+        assertTrue(mDisplayDeviceConfig.isAutoBrightnessAvailable());
+    }
+
+    @Test
+    public void testIsAutoBrightnessAvailable_DisabledInConfigResource() throws IOException {
+        when(mResources.getBoolean(R.bool.config_automatic_brightness_available)).thenReturn(false);
+
+        setupDisplayDeviceConfigFromDisplayConfigFile();
+
+        assertFalse(mDisplayDeviceConfig.isAutoBrightnessAvailable());
+    }
+
+    @RequiresFlagsEnabled(Flags.FLAG_EVEN_DIMMER)
+    @Test
+    public void testEvenDimmer() throws IOException {
+        when(mFlags.isEvenDimmerEnabled()).thenReturn(true);
+        when(mResources.getBoolean(R.bool.config_evenDimmerEnabled)).thenReturn(true);
+        setupDisplayDeviceConfigFromDisplayConfigFile(getContent(getValidLuxThrottling(),
+                getValidProxSensor(), /* includeIdleMode= */ false, /* enableEvenDimmer= */ true));
+
+        assertTrue(mDisplayDeviceConfig.isEvenDimmerAvailable());
+        assertEquals(0.01f, mDisplayDeviceConfig.getBacklightFromBrightness(0.002f), ZERO_DELTA);
+        assertEquals(0.2f, mDisplayDeviceConfig.getNitsFromBacklight(0.0f), ZERO_DELTA);
+    }
+
+    @Test
+    public void testLowPowerSupportedModesFromConfigFile() throws IOException {
+        setupDisplayDeviceConfigFromDisplayConfigFile();
+
+        RefreshRateData refreshRateData = mDisplayDeviceConfig.getRefreshRateData();
+        assertNotNull(refreshRateData);
+        assertThat(refreshRateData.lowPowerSupportedModes).hasSize(2);
+        SupportedModeData supportedModeData = refreshRateData.lowPowerSupportedModes.get(0);
+        assertThat(supportedModeData.refreshRate).isEqualTo(60);
+        assertThat(supportedModeData.vsyncRate).isEqualTo(60);
+        supportedModeData = refreshRateData.lowPowerSupportedModes.get(1);
+        assertThat(supportedModeData.refreshRate).isEqualTo(60);
+        assertThat(supportedModeData.vsyncRate).isEqualTo(120);
+    }
+
+    @Test
+    public void testLowLightBlockingZoneSupportedModesFromConfigFile() throws IOException {
+        setupDisplayDeviceConfigFromDisplayConfigFile();
+
+        RefreshRateData refreshRateData = mDisplayDeviceConfig.getRefreshRateData();
+        assertNotNull(refreshRateData);
+        assertThat(refreshRateData.lowLightBlockingZoneSupportedModes).hasSize(2);
+        SupportedModeData supportedModeData =
+                refreshRateData.lowLightBlockingZoneSupportedModes.get(0);
+        assertThat(supportedModeData.refreshRate).isEqualTo(60);
+        assertThat(supportedModeData.vsyncRate).isEqualTo(60);
+        supportedModeData = refreshRateData.lowLightBlockingZoneSupportedModes.get(1);
+        assertThat(supportedModeData.refreshRate).isEqualTo(240);
+        assertThat(supportedModeData.vsyncRate).isEqualTo(240);
+    }
+
+    @Test
+    public void testDozeBrightness_Ddc() throws IOException {
+        when(mFlags.isDozeBrightnessFloatEnabled()).thenReturn(true);
+        setupDisplayDeviceConfigFromDisplayConfigFile();
+
+        assertArrayEquals(new float[]{ -1, 0.1f, 0.2f, 0.3f, 0.4f },
+                mDisplayDeviceConfig.getDozeBrightnessSensorValueToBrightness(), SMALL_DELTA);
+        assertEquals(0.25f, mDisplayDeviceConfig.getDefaultDozeBrightness(), SMALL_DELTA);
+    }
+
+    @Test
+    public void testDefaultDozeBrightness_FallBackToConfigXmlFloat() throws IOException {
+        setupDisplayDeviceConfigFromConfigResourceFile();
+        when(mFlags.isDozeBrightnessFloatEnabled()).thenReturn(true);
+        when(mResources.getFloat(com.android.internal.R.dimen.config_screenBrightnessDozeFloat))
+                .thenReturn(0.31f);
+        when(mResources.getInteger(com.android.internal.R.integer.config_screenBrightnessDoze))
+                .thenReturn(90);
+
+        // Empty display config file
+        setupDisplayDeviceConfigFromDisplayConfigFile(
+                "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n"
+                        + "<displayConfiguration />\n");
+
+        assertEquals(0.31f, mDisplayDeviceConfig.getDefaultDozeBrightness(), ZERO_DELTA);
+    }
+
+    @Test
+    public void testDefaultDozeBrightness_FallBackToConfigXmlInt() throws IOException {
+        setupDisplayDeviceConfigFromConfigResourceFile();
+        when(mFlags.isDozeBrightnessFloatEnabled()).thenReturn(true);
+        when(mResources.getFloat(com.android.internal.R.dimen.config_screenBrightnessDozeFloat))
+                .thenReturn(DisplayDeviceConfig.INVALID_BRIGHTNESS_IN_CONFIG);
+        when(mResources.getInteger(com.android.internal.R.integer.config_screenBrightnessDoze))
+                .thenReturn(90);
+
+        // Empty display config file
+        setupDisplayDeviceConfigFromDisplayConfigFile(
+                "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n"
+                        + "<displayConfiguration />\n");
+
+        assertEquals(brightnessIntToFloat(90),
+                mDisplayDeviceConfig.getDefaultDozeBrightness(), ZERO_DELTA);
     }
 
     private String getValidLuxThrottling() {
@@ -909,6 +1199,32 @@ public final class DisplayDeviceConfigTest {
                 + "</proxSensor>\n";
     }
 
+    private String getLowPowerConfig() {
+        return "<lowPowerSupportedModes>\n"
+                + "    <point>\n"
+                + "        <first>60</first>\n"
+                + "        <second>60</second>\n"
+                + "    </point>\n"
+                + "    <point>\n"
+                + "        <first>60</first>\n"
+                + "        <second>120</second>\n"
+                + "    </point>\n"
+                + "</lowPowerSupportedModes>\n";
+    }
+
+    private String getLowLightVrrSupportedModesConfig() {
+        return "<supportedModes>\n"
+                + "    <point>\n"
+                + "        <first>60</first>\n"
+                + "        <second>60</second>\n"
+                + "    </point>\n"
+                + "    <point>\n"
+                + "        <first>240</first>\n"
+                + "        <second>240</second>\n"
+                + "    </point>\n"
+                + "</supportedModes>\n";
+    }
+
     private String getHdrBrightnessConfig() {
         return "<hdrBrightnessConfig>\n"
               + "    <brightnessMap>\n"
@@ -1009,10 +1325,57 @@ public final class DisplayDeviceConfigTest {
                 +   "</screenBrightnessRampSlowIncreaseIdle>\n";
     }
 
+    private String getBedTimeModeWearCurveConfig() {
+        return  "<luxToBrightnessMapping>\n"
+                +           "<mode>bedtime_wear</mode>\n"
+                +           "<setting>dim</setting>\n"
+                +           "<map>\n"
+                +               "<point>\n"
+                +                   "<first>0</first>\n"
+                +                   "<second>0.2</second>\n"
+                +               "</point>\n"
+                +               "<point>\n"
+                +                   "<first>10</first>\n"
+                +                   "<second>0.3</second>\n"
+                +               "</point>\n"
+                +           "</map>\n"
+                +       "</luxToBrightnessMapping>\n"
+                +       "<luxToBrightnessMapping>\n"
+                +           "<mode>bedtime_wear</mode>\n"
+                +           "<setting>normal</setting>\n"
+                +           "<map>\n"
+                +               "<point>\n"
+                +                   "<first>0</first>\n"
+                +                   "<second>0.3</second>\n"
+                +               "</point>\n"
+                +               "<point>\n"
+                +                   "<first>20</first>\n"
+                +                   "<second>0.65</second>\n"
+                +               "</point>\n"
+                +           "</map>\n"
+                +       "</luxToBrightnessMapping>\n"
+                +       "<luxToBrightnessMapping>\n"
+                +           "<mode>bedtime_wear</mode>\n"
+                +           "<setting>bright</setting>\n"
+                +           "<map>\n"
+                +               "<point>\n"
+                +                   "<first>0</first>\n"
+                +                   "<second>0.65</second>\n"
+                +               "</point>\n"
+                +               "<point>\n"
+                +                   "<first>30</first>\n"
+                +                   "<second>0.95</second>\n"
+                +               "</point>\n"
+                +           "</map>\n"
+                +       "</luxToBrightnessMapping>\n";
+    }
+
     private String getPowerThrottlingConfig() {
         return  "<powerThrottlingConfig >\n"
                 +       "<brightnessLowestCapAllowed>0.1</brightnessLowestCapAllowed>\n"
-                +       "<pollingWindowMillis>10</pollingWindowMillis>\n"
+                +       "<customAnimationRate>15</customAnimationRate>\n"
+                +       "<pollingWindowMaxMillis>20000</pollingWindowMaxMillis>\n"
+                +       "<pollingWindowMinMillis>10000</pollingWindowMinMillis>\n"
                 +       "<powerThrottlingMap>\n"
                 +           "<powerThrottlingPoint>\n"
                 +               "<thermalStatus>light</thermalStatus>\n"
@@ -1078,11 +1441,11 @@ public final class DisplayDeviceConfigTest {
 
     private String getContent() {
         return getContent(getValidLuxThrottling(), getValidProxSensor(),
-                /* includeIdleMode= */ true);
+                /* includeIdleMode= */ true, /* enableEvenDimmer= */ false);
     }
 
     private String getContent(String brightnessCapConfig, String proxSensor,
-            boolean includeIdleMode) {
+            boolean includeIdleMode, boolean enableEvenDimmer) {
         return "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n"
                 + "<displayConfiguration>\n"
                 +   "<name>Example Display</name>\n"
@@ -1122,7 +1485,7 @@ public final class DisplayDeviceConfigTest {
                 +           "<nits>" + NITS[2] + "</nits>\n"
                 +       "</point>\n"
                 +   "</screenBrightnessMap>\n"
-                +   "<autoBrightness>\n"
+                +   "<autoBrightness enabled=\"true\">\n"
                 +       "<brighteningLightDebounceMillis>2000</brighteningLightDebounceMillis>\n"
                 +       "<darkeningLightDebounceMillis>1000</darkeningLightDebounceMillis>\n"
                 + (includeIdleMode ? getRampSpeedsIdle() : "")
@@ -1138,6 +1501,62 @@ public final class DisplayDeviceConfigTest {
                 +               "</point>\n"
                 +           "</map>\n"
                 +       "</luxToBrightnessMapping>\n"
+                +       "<luxToBrightnessMapping>\n"
+                +           "<setting>dim</setting>\n"
+                +           "<map>\n"
+                +               "<point>\n"
+                +                   "<first>0</first>\n"
+                +                   "<second>0.3</second>\n"
+                +               "</point>\n"
+                +               "<point>\n"
+                +                   "<first>90</first>\n"
+                +                   "<second>0.4</second>\n"
+                +               "</point>\n"
+                +           "</map>\n"
+                +       "</luxToBrightnessMapping>\n"
+                +       "<luxToBrightnessMapping>\n"
+                +           "<mode>default</mode>\n"
+                +           "<setting>bright</setting>\n"
+                +           "<map>\n"
+                +               "<point>\n"
+                +                   "<first>0</first>\n"
+                +                   "<second>0.6</second>\n"
+                +               "</point>\n"
+                +               "<point>\n"
+                +                   "<first>80</first>\n"
+                +                   "<second>0.7</second>\n"
+                +               "</point>\n"
+                +           "</map>\n"
+                +       "</luxToBrightnessMapping>\n"
+                +       "<luxToBrightnessMapping>\n"
+                +           "<mode>doze</mode>\n"
+                +           "<map>\n"
+                +               "<point>\n"
+                +                   "<first>0</first>\n"
+                +                   "<second>0.35</second>\n"
+                +               "</point>\n"
+                +               "<point>\n"
+                +                   "<first>95</first>\n"
+                +                   "<second>0.45</second>\n"
+                +               "</point>\n"
+                +           "</map>\n"
+                +       "</luxToBrightnessMapping>\n"
+                +       "<luxToBrightnessMapping>\n"
+                +           "<mode>doze</mode>\n"
+                +           "<setting>bright</setting>\n"
+                +           "<map>\n"
+                +               "<point>\n"
+                +                   "<first>0</first>\n"
+                +                   "<second>0.4</second>\n"
+                +               "</point>\n"
+                +               "<point>\n"
+                +                   "<first>100</first>\n"
+                +                   "<second>0.5</second>\n"
+                +               "</point>\n"
+                +           "</map>\n"
+                +       "</luxToBrightnessMapping>\n"
+                +       getBedTimeModeWearCurveConfig()
+                +       "<idleStylusTimeoutMillis>1000</idleStylusTimeoutMillis>\n"
                 +   "</autoBrightness>\n"
                 +  getPowerThrottlingConfig()
                 +   "<highBrightnessMode enabled=\"true\">\n"
@@ -1181,6 +1600,10 @@ public final class DisplayDeviceConfigTest {
                 +       "<name>Test Binned Brightness Sensor</name>\n"
                 +   "</screenOffBrightnessSensor>\n"
                 + proxSensor
+                +   "<tempSensor>\n"
+                +       "<type>DISPLAY</type>\n"
+                +       "<name>VIRTUAL-SKIN-DISPLAY</name>\n"
+                +   "</tempSensor>\n"
                 +   "<ambientBrightnessChangeThresholds>\n"
                 +       "<brighteningThresholds>\n"
                 +           "<minimum>10</minimum>\n"
@@ -1358,6 +1781,7 @@ public final class DisplayDeviceConfigTest {
                 +                   "<nits>-1</nits>\n"
                 +               "</displayBrightnessPoint>\n"
                 +           "</blockingZoneThreshold>\n"
+                + getLowLightVrrSupportedModesConfig()
                 +       "</lowerBlockingZoneConfigs>\n"
                 +       "<higherBlockingZoneConfigs>\n"
                 +           "<defaultRefreshRate>90</defaultRefreshRate>\n"
@@ -1382,6 +1806,7 @@ public final class DisplayDeviceConfigTest {
                 +               "</displayBrightnessPoint>\n"
                 +           "</blockingZoneThreshold>\n"
                 +       "</higherBlockingZoneConfigs>\n"
+                + getLowPowerConfig()
                 +   "</refreshRate>\n"
                 +   "<screenOffBrightnessSensorValueToLux>\n"
                 +       "<item>-1</item>\n"
@@ -1394,10 +1819,72 @@ public final class DisplayDeviceConfigTest {
                 +       "<majorVersion>2</majorVersion>\n"
                 +       "<minorVersion>0</minorVersion>\n"
                 +   "</usiVersion>\n"
+                + evenDimmerConfig(enableEvenDimmer)
                 +   "<screenBrightnessCapForWearBedtimeMode>"
                 +       "0.1"
                 +   "</screenBrightnessCapForWearBedtimeMode>"
+                +   "<idleScreenRefreshRateTimeout>"
+                +       "<luxThresholds>"
+                +           "<point>"
+                +               "<lux>6</lux>"
+                +               "<timeout>1000</timeout>"
+                +           "</point>"
+                +           "<point>"
+                +               "<lux>10</lux>"
+                +               "<timeout>800</timeout>"
+                +           "</point>"
+                +       "</luxThresholds>"
+                +   "</idleScreenRefreshRateTimeout>"
+                +   "<dozeBrightnessSensorValueToBrightness>\n"
+                +       "<item>-1</item>\n"
+                +       "<item>0.1</item>\n"
+                +       "<item>0.2</item>\n"
+                +       "<item>0.3</item>\n"
+                +       "<item>0.4</item>\n"
+                +   "</dozeBrightnessSensorValueToBrightness>\n"
+                +   "<defaultDozeBrightness>"
+                +       "0.25"
+                +   "</defaultDozeBrightness>\n"
                 + "</displayConfiguration>\n";
+    }
+
+    private String evenDimmerConfig(boolean enabled) {
+        return (enabled ? "<evenDimmer enabled=\"true\">" : "<evenDimmer enabled=\"false\">")
+                + "  <transitionPoint>0.1</transitionPoint>\n"
+                + "  <brightnessMapping>\n"
+                + "      <brightnessPoint>\n"
+                + "        <nits>0.2</nits>\n"
+                + "        <backlight>0</backlight>\n"
+                + "        <brightness>0</brightness>\n"
+                + "      </brightnessPoint>\n"
+                + "      <brightnessPoint>\n"
+                + "        <nits>2.0</nits>\n"
+                + "        <backlight>0.01</backlight>\n"
+                + "        <brightness>0.002</brightness>\n"
+                + "      </brightnessPoint>\n"
+                + "      <brightnessPoint>\n"
+                + "        <nits>500.0</nits>\n"
+                + "        <backlight>0.5</backlight>\n"
+                + "        <brightness>0.5</brightness>\n"
+                + "      </brightnessPoint>\n"
+                + "      <brightnessPoint>\n"
+                + "        <nits>1000</nits>\n"
+                + "        <backlight>1.0</backlight>\n"
+                + "        <brightness>1.0</brightness>\n"
+                + "      </brightnessPoint>\n"
+                + "  </brightnessMapping>\n"
+                + " <luxToMinimumNitsMap>\n"
+                + "     <point>\n"
+                + "         <value>10</value> <nits>0.3</nits>\n"
+                + "     </point>\n"
+                + "     <point>\n"
+                + "         <value>50</value> <nits>0.7</nits>\n"
+                + "     </point>\n"
+                + "     <point>\n"
+                + "         <value>100</value> <nits>1.0</nits>\n"
+                + "     </point>\n"
+                + " </luxToMinimumNitsMap>\n"
+                + "</evenDimmer>";
     }
 
     private void mockDeviceConfigs() {
@@ -1435,6 +1922,10 @@ public final class DisplayDeviceConfigTest {
         when(mResources.getIntArray(
                 com.android.internal.R.array.config_autoBrightnessLevels))
                 .thenReturn(screenBrightnessLevelLux);
+        int[] screenBrightnessLevels = new int[]{50, 100, 150};
+        when(mResources.getIntArray(
+                com.android.internal.R.array.config_autoBrightnessLcdBacklightValues))
+                .thenReturn(screenBrightnessLevels);
 
         // Thresholds
         // Config.xml requires the levels arrays to be of length N and the thresholds arrays to be
@@ -1481,6 +1972,7 @@ public final class DisplayDeviceConfigTest {
 
         when(mResources.getString(com.android.internal.R.string.config_displayLightSensorType))
                 .thenReturn("test_light_sensor");
+        when(mResources.getBoolean(R.bool.config_automatic_brightness_available)).thenReturn(true);
 
         when(mResources.getInteger(
                 R.integer.config_autoBrightnessBrighteningLightDebounce))

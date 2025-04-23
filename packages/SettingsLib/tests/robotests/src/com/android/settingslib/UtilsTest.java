@@ -28,10 +28,10 @@ import android.app.ActivityManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
-import android.hardware.usb.flags.Flags;
 import android.hardware.usb.UsbManager;
 import android.hardware.usb.UsbPort;
 import android.hardware.usb.UsbPortStatus;
+import android.hardware.usb.flags.Flags;
 import android.location.LocationManager;
 import android.media.AudioManager;
 import android.os.BatteryManager;
@@ -75,18 +75,12 @@ public class UtilsTest {
 
     private AudioManager mAudioManager;
     private Context mContext;
-    @Mock
-    private LocationManager mLocationManager;
-    @Mock
-    private ServiceState mServiceState;
-    @Mock
-    private NetworkRegistrationInfo mNetworkRegistrationInfo;
-    @Mock
-    private UsbPort mUsbPort;
-    @Mock
-    private UsbManager mUsbManager;
-    @Mock
-    private UsbPortStatus mUsbPortStatus;
+    @Mock private LocationManager mLocationManager;
+    @Mock private ServiceState mServiceState;
+    @Mock private NetworkRegistrationInfo mNetworkRegistrationInfo;
+    @Mock private UsbPort mUsbPort;
+    @Mock private UsbManager mUsbManager;
+    @Mock private UsbPortStatus mUsbPortStatus;
 
     @Rule public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
 
@@ -102,27 +96,37 @@ public class UtilsTest {
 
     @After
     public void reset() {
-        Settings.Secure.putInt(mContext.getContentResolver(),
-                Utils.INCOMPATIBLE_CHARGER_WARNING_DISABLED, 0);
+        Settings.Secure.putInt(
+                mContext.getContentResolver(), Utils.INCOMPATIBLE_CHARGER_WARNING_DISABLED, 0);
     }
 
     @Test
     public void testUpdateLocationEnabled() {
         int currentUserId = ActivityManager.getCurrentUser();
-        Utils.updateLocationEnabled(mContext, true, currentUserId,
-                Settings.Secure.LOCATION_CHANGER_QUICK_SETTINGS);
+        Utils.updateLocationEnabled(
+                mContext, true, currentUserId, Settings.Secure.LOCATION_CHANGER_QUICK_SETTINGS);
 
-        assertThat(Settings.Secure.getInt(mContext.getContentResolver(),
-                Settings.Secure.LOCATION_CHANGER,
-                Settings.Secure.LOCATION_CHANGER_UNKNOWN)).isEqualTo(
-                Settings.Secure.LOCATION_CHANGER_QUICK_SETTINGS);
+        assertThat(
+                        Settings.Secure.getInt(
+                                mContext.getContentResolver(),
+                                Settings.Secure.LOCATION_CHANGER,
+                                Settings.Secure.LOCATION_CHANGER_UNKNOWN))
+                .isEqualTo(Settings.Secure.LOCATION_CHANGER_QUICK_SETTINGS);
     }
 
     @Test
     public void testFormatPercentage_RoundTrue_RoundUpIfPossible() {
-        final String[] expectedPercentages =
-                {PERCENTAGE_0, PERCENTAGE_0, PERCENTAGE_1, PERCENTAGE_1, PERCENTAGE_49,
-                        PERCENTAGE_49, PERCENTAGE_50, PERCENTAGE_50, PERCENTAGE_100};
+        final String[] expectedPercentages = {
+            PERCENTAGE_0,
+            PERCENTAGE_0,
+            PERCENTAGE_1,
+            PERCENTAGE_1,
+            PERCENTAGE_49,
+            PERCENTAGE_49,
+            PERCENTAGE_50,
+            PERCENTAGE_50,
+            PERCENTAGE_100
+        };
 
         for (int i = 0, size = TEST_PERCENTAGES.length; i < size; i++) {
             final String percentage = Utils.formatPercentage(TEST_PERCENTAGES[i], true);
@@ -132,9 +136,17 @@ public class UtilsTest {
 
     @Test
     public void testFormatPercentage_RoundFalse_NoRound() {
-        final String[] expectedPercentages =
-                {PERCENTAGE_0, PERCENTAGE_0, PERCENTAGE_0, PERCENTAGE_0, PERCENTAGE_49,
-                        PERCENTAGE_49, PERCENTAGE_49, PERCENTAGE_50, PERCENTAGE_100};
+        final String[] expectedPercentages = {
+            PERCENTAGE_0,
+            PERCENTAGE_0,
+            PERCENTAGE_0,
+            PERCENTAGE_0,
+            PERCENTAGE_49,
+            PERCENTAGE_49,
+            PERCENTAGE_49,
+            PERCENTAGE_50,
+            PERCENTAGE_100
+        };
 
         for (int i = 0, size = TEST_PERCENTAGES.length; i < size; i++) {
             final String percentage = Utils.formatPercentage(TEST_PERCENTAGES[i], false);
@@ -146,7 +158,9 @@ public class UtilsTest {
     public void testGetDefaultStorageManagerDaysToRetain_storageManagerDaysToRetainUsesResources() {
         Resources resources = mock(Resources.class);
         when(resources.getInteger(
-                eq(com.android.internal.R.integer.config_storageManagerDaystoRetainDefault)))
+                        eq(
+                                com.android.internal.R.integer
+                                        .config_storageManagerDaystoRetainDefault)))
                 .thenReturn(60);
         assertThat(Utils.getDefaultStorageManagerDaysToRetain(resources)).isEqualTo(60);
     }
@@ -214,8 +228,10 @@ public class UtilsTest {
     public void isInService_voiceOutOfServiceDataInService_returnTrue() {
         when(mServiceState.getVoiceRegState()).thenReturn(ServiceState.STATE_OUT_OF_SERVICE);
         when(mServiceState.getDataRegistrationState()).thenReturn(ServiceState.STATE_IN_SERVICE);
-        when(mServiceState.getNetworkRegistrationInfo(NetworkRegistrationInfo.DOMAIN_PS,
-                AccessNetworkConstants.TRANSPORT_TYPE_WWAN)).thenReturn(mNetworkRegistrationInfo);
+        when(mServiceState.getNetworkRegistrationInfo(
+                        NetworkRegistrationInfo.DOMAIN_PS,
+                        AccessNetworkConstants.TRANSPORT_TYPE_WWAN))
+                .thenReturn(mNetworkRegistrationInfo);
         when(mNetworkRegistrationInfo.isInService()).thenReturn(true);
 
         assertThat(Utils.isInService(mServiceState)).isTrue();
@@ -224,8 +240,10 @@ public class UtilsTest {
     @Test
     public void isInService_voiceOutOfServiceDataInServiceOnIwLan_returnFalse() {
         when(mServiceState.getVoiceRegState()).thenReturn(ServiceState.STATE_OUT_OF_SERVICE);
-        when(mServiceState.getNetworkRegistrationInfo(NetworkRegistrationInfo.DOMAIN_PS,
-                AccessNetworkConstants.TRANSPORT_TYPE_WLAN)).thenReturn(mNetworkRegistrationInfo);
+        when(mServiceState.getNetworkRegistrationInfo(
+                        NetworkRegistrationInfo.DOMAIN_PS,
+                        AccessNetworkConstants.TRANSPORT_TYPE_WLAN))
+                .thenReturn(mNetworkRegistrationInfo);
         when(mServiceState.getDataRegistrationState()).thenReturn(ServiceState.STATE_IN_SERVICE);
         when(mNetworkRegistrationInfo.isInService()).thenReturn(true);
 
@@ -235,8 +253,10 @@ public class UtilsTest {
     @Test
     public void isInService_voiceOutOfServiceDataNull_returnFalse() {
         when(mServiceState.getVoiceRegState()).thenReturn(ServiceState.STATE_OUT_OF_SERVICE);
-        when(mServiceState.getNetworkRegistrationInfo(NetworkRegistrationInfo.DOMAIN_PS,
-                AccessNetworkConstants.TRANSPORT_TYPE_WWAN)).thenReturn(null);
+        when(mServiceState.getNetworkRegistrationInfo(
+                        NetworkRegistrationInfo.DOMAIN_PS,
+                        AccessNetworkConstants.TRANSPORT_TYPE_WWAN))
+                .thenReturn(null);
 
         assertThat(Utils.isInService(mServiceState)).isFalse();
     }
@@ -244,8 +264,10 @@ public class UtilsTest {
     @Test
     public void isInService_voiceOutOfServiceDataOutOfService_returnFalse() {
         when(mServiceState.getVoiceRegState()).thenReturn(ServiceState.STATE_OUT_OF_SERVICE);
-        when(mServiceState.getNetworkRegistrationInfo(NetworkRegistrationInfo.DOMAIN_PS,
-                AccessNetworkConstants.TRANSPORT_TYPE_WWAN)).thenReturn(mNetworkRegistrationInfo);
+        when(mServiceState.getNetworkRegistrationInfo(
+                        NetworkRegistrationInfo.DOMAIN_PS,
+                        AccessNetworkConstants.TRANSPORT_TYPE_WWAN))
+                .thenReturn(mNetworkRegistrationInfo);
         when(mNetworkRegistrationInfo.isInService()).thenReturn(false);
 
         assertThat(Utils.isInService(mServiceState)).isFalse();
@@ -260,96 +282,106 @@ public class UtilsTest {
 
     @Test
     public void getCombinedServiceState_servicestateNull_returnOutOfService() {
-        assertThat(Utils.getCombinedServiceState(null)).isEqualTo(
-                ServiceState.STATE_OUT_OF_SERVICE);
+        assertThat(Utils.getCombinedServiceState(null))
+                .isEqualTo(ServiceState.STATE_OUT_OF_SERVICE);
     }
 
     @Test
     public void getCombinedServiceState_ServiceStatePowerOff_returnPowerOff() {
         when(mServiceState.getVoiceRegState()).thenReturn(ServiceState.STATE_POWER_OFF);
 
-        assertThat(Utils.getCombinedServiceState(mServiceState)).isEqualTo(
-                ServiceState.STATE_POWER_OFF);
+        assertThat(Utils.getCombinedServiceState(mServiceState))
+                .isEqualTo(ServiceState.STATE_POWER_OFF);
     }
 
     @Test
     public void getCombinedServiceState_voiceInService_returnInService() {
         when(mServiceState.getVoiceRegState()).thenReturn(ServiceState.STATE_IN_SERVICE);
 
-        assertThat(Utils.getCombinedServiceState(mServiceState)).isEqualTo(
-                ServiceState.STATE_IN_SERVICE);
+        assertThat(Utils.getCombinedServiceState(mServiceState))
+                .isEqualTo(ServiceState.STATE_IN_SERVICE);
     }
 
     @Test
     public void getCombinedServiceState_voiceOutOfServiceDataInService_returnInService() {
         when(mServiceState.getVoiceRegState()).thenReturn(ServiceState.STATE_OUT_OF_SERVICE);
-        when(mServiceState.getNetworkRegistrationInfo(NetworkRegistrationInfo.DOMAIN_PS,
-                AccessNetworkConstants.TRANSPORT_TYPE_WWAN)).thenReturn(mNetworkRegistrationInfo);
+        when(mServiceState.getNetworkRegistrationInfo(
+                        NetworkRegistrationInfo.DOMAIN_PS,
+                        AccessNetworkConstants.TRANSPORT_TYPE_WWAN))
+                .thenReturn(mNetworkRegistrationInfo);
         when(mNetworkRegistrationInfo.isInService()).thenReturn(true);
 
-        assertThat(Utils.getCombinedServiceState(mServiceState)).isEqualTo(
-                ServiceState.STATE_IN_SERVICE);
+        assertThat(Utils.getCombinedServiceState(mServiceState))
+                .isEqualTo(ServiceState.STATE_IN_SERVICE);
     }
 
     @Test
     public void getCombinedServiceState_voiceOutOfServiceDataInServiceOnIwLan_returnOutOfService() {
         when(mServiceState.getVoiceRegState()).thenReturn(ServiceState.STATE_OUT_OF_SERVICE);
-        when(mServiceState.getNetworkRegistrationInfo(NetworkRegistrationInfo.DOMAIN_PS,
-                AccessNetworkConstants.TRANSPORT_TYPE_WLAN)).thenReturn(mNetworkRegistrationInfo);
+        when(mServiceState.getNetworkRegistrationInfo(
+                        NetworkRegistrationInfo.DOMAIN_PS,
+                        AccessNetworkConstants.TRANSPORT_TYPE_WLAN))
+                .thenReturn(mNetworkRegistrationInfo);
         when(mNetworkRegistrationInfo.isInService()).thenReturn(true);
 
-        assertThat(Utils.getCombinedServiceState(mServiceState)).isEqualTo(
-                ServiceState.STATE_OUT_OF_SERVICE);
+        assertThat(Utils.getCombinedServiceState(mServiceState))
+                .isEqualTo(ServiceState.STATE_OUT_OF_SERVICE);
     }
 
     @Test
     public void getCombinedServiceState_voiceOutOfServiceDataOutOfService_returnOutOfService() {
         when(mServiceState.getVoiceRegState()).thenReturn(ServiceState.STATE_OUT_OF_SERVICE);
-        when(mServiceState.getDataRegistrationState()).thenReturn(
-                ServiceState.STATE_OUT_OF_SERVICE);
+        when(mServiceState.getDataRegistrationState())
+                .thenReturn(ServiceState.STATE_OUT_OF_SERVICE);
 
-        assertThat(Utils.getCombinedServiceState(mServiceState)).isEqualTo(
-                ServiceState.STATE_OUT_OF_SERVICE);
+        assertThat(Utils.getCombinedServiceState(mServiceState))
+                .isEqualTo(ServiceState.STATE_OUT_OF_SERVICE);
     }
 
     @Test
     public void getBatteryStatus_statusIsFull_returnFullString() {
-        final Intent intent = new Intent().putExtra(BatteryManager.EXTRA_LEVEL, 100).putExtra(
-                BatteryManager.EXTRA_SCALE, 100);
+        final Intent intent =
+                new Intent()
+                        .putExtra(BatteryManager.EXTRA_LEVEL, 100)
+                        .putExtra(BatteryManager.EXTRA_SCALE, 100);
         final Resources resources = mContext.getResources();
 
-        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ false)).isEqualTo(
-                resources.getString(R.string.battery_info_status_full));
+        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ false))
+                .isEqualTo(resources.getString(R.string.battery_info_status_full));
     }
 
     @Test
     public void getBatteryStatus_statusIsFullAndUseCompactStatus_returnFullyChargedString() {
-        final Intent intent = new Intent().putExtra(BatteryManager.EXTRA_LEVEL, 100).putExtra(
-                BatteryManager.EXTRA_SCALE, 100);
+        final Intent intent =
+                new Intent()
+                        .putExtra(BatteryManager.EXTRA_LEVEL, 100)
+                        .putExtra(BatteryManager.EXTRA_SCALE, 100);
         final Resources resources = mContext.getResources();
 
-        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ true)).isEqualTo(
-                resources.getString(R.string.battery_info_status_full_charged));
+        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ true))
+                .isEqualTo(resources.getString(R.string.battery_info_status_full_charged));
     }
 
     @Test
     public void getBatteryStatus_batteryLevelIs100_returnFullString() {
-        final Intent intent = new Intent().putExtra(BatteryManager.EXTRA_STATUS,
-                BatteryManager.BATTERY_STATUS_FULL);
+        final Intent intent =
+                new Intent()
+                        .putExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_FULL);
         final Resources resources = mContext.getResources();
 
-        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ false)).isEqualTo(
-                resources.getString(R.string.battery_info_status_full));
+        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ false))
+                .isEqualTo(resources.getString(R.string.battery_info_status_full));
     }
 
     @Test
     public void getBatteryStatus_batteryLevelIs100AndUseCompactStatus_returnFullyString() {
-        final Intent intent = new Intent().putExtra(BatteryManager.EXTRA_STATUS,
-                BatteryManager.BATTERY_STATUS_FULL);
+        final Intent intent =
+                new Intent()
+                        .putExtra(BatteryManager.EXTRA_STATUS, BatteryManager.BATTERY_STATUS_FULL);
         final Resources resources = mContext.getResources();
 
-        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ true)).isEqualTo(
-                resources.getString(R.string.battery_info_status_full_charged));
+        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ true))
+                .isEqualTo(resources.getString(R.string.battery_info_status_full_charged));
     }
 
     @Test
@@ -359,8 +391,8 @@ public class UtilsTest {
         intent.putExtra(BatteryManager.EXTRA_PLUGGED, BatteryManager.BATTERY_PLUGGED_USB);
         final Resources resources = mContext.getResources();
 
-        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ false)).isEqualTo(
-                resources.getString(R.string.battery_info_status_charging));
+        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ false))
+                .isEqualTo(resources.getString(R.string.battery_info_status_charging));
     }
 
     @Test
@@ -370,8 +402,8 @@ public class UtilsTest {
         intent.putExtra(BatteryManager.EXTRA_PLUGGED, BatteryManager.BATTERY_PLUGGED_DOCK);
         final Resources resources = mContext.getResources();
 
-        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ false)).isEqualTo(
-                resources.getString(R.string.battery_info_status_charging_dock));
+        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ false))
+                .isEqualTo(resources.getString(R.string.battery_info_status_charging_dock));
     }
 
     @Test
@@ -381,8 +413,8 @@ public class UtilsTest {
         intent.putExtra(BatteryManager.EXTRA_PLUGGED, BatteryManager.BATTERY_PLUGGED_WIRELESS);
         final Resources resources = mContext.getResources();
 
-        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ false)).isEqualTo(
-                resources.getString(R.string.battery_info_status_charging_wireless));
+        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ false))
+                .isEqualTo(resources.getString(R.string.battery_info_status_charging_wireless));
     }
 
     @Test
@@ -392,8 +424,8 @@ public class UtilsTest {
         intent.putExtra(BatteryManager.EXTRA_PLUGGED, BatteryManager.BATTERY_PLUGGED_USB);
         final Resources resources = mContext.getResources();
 
-        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ true)).isEqualTo(
-                resources.getString(R.string.battery_info_status_charging));
+        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ true))
+                .isEqualTo(resources.getString(R.string.battery_info_status_charging));
     }
 
     @Test
@@ -403,8 +435,8 @@ public class UtilsTest {
         intent.putExtra(BatteryManager.EXTRA_PLUGGED, BatteryManager.BATTERY_PLUGGED_WIRELESS);
         final Resources resources = mContext.getResources();
 
-        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ true)).isEqualTo(
-                resources.getString(R.string.battery_info_status_charging));
+        assertThat(Utils.getBatteryStatus(mContext, intent, /* compactStatus= */ true))
+                .isEqualTo(resources.getString(R.string.battery_info_status_charging));
     }
 
     @Test
@@ -503,8 +535,8 @@ public class UtilsTest {
     @Test
     public void containsIncompatibleChargers_disableWarning_returnFalse() {
         setupIncompatibleCharging();
-        Settings.Secure.putInt(mContext.getContentResolver(),
-                Utils.INCOMPATIBLE_CHARGER_WARNING_DISABLED, 1);
+        Settings.Secure.putInt(
+                mContext.getContentResolver(), Utils.INCOMPATIBLE_CHARGER_WARNING_DISABLED, 1);
 
         assertThat(Utils.containsIncompatibleChargers(mContext, TAG)).isFalse();
     }
@@ -520,6 +552,6 @@ public class UtilsTest {
         when(mUsbPort.getStatus()).thenReturn(mUsbPortStatus);
         when(mUsbPort.supportsComplianceWarnings()).thenReturn(true);
         when(mUsbPortStatus.isConnected()).thenReturn(true);
-        when(mUsbPortStatus.getComplianceWarnings()).thenReturn(new int[]{complianceWarningType});
+        when(mUsbPortStatus.getComplianceWarnings()).thenReturn(new int[] {complianceWarningType});
     }
 }

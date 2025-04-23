@@ -28,7 +28,7 @@ import android.platform.test.annotations.IgnoreUnderRavenwood;
 import android.platform.test.ravenwood.RavenwoodRule;
 
 import androidx.test.InstrumentationRegistry;
-import androidx.test.runner.AndroidJUnit4;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -195,9 +195,46 @@ public class PerformanceHintManagerTest {
         Session s = createSession();
         assumeNotNull(s);
         s.updateTargetWorkDuration(16);
-        s.reportActualWorkDuration(new WorkDuration(1, 12, 8, 6));
-        s.reportActualWorkDuration(new WorkDuration(1, 33, 14, 20));
-        s.reportActualWorkDuration(new WorkDuration(1, 14, 10, 6));
+        {
+            WorkDuration workDuration = new WorkDuration();
+            workDuration.setWorkPeriodStartTimestampNanos(1);
+            workDuration.setActualTotalDurationNanos(12);
+            workDuration.setActualCpuDurationNanos(8);
+            workDuration.setActualGpuDurationNanos(6);
+            s.reportActualWorkDuration(workDuration);
+        }
+        {
+            WorkDuration workDuration = new WorkDuration();
+            workDuration.setWorkPeriodStartTimestampNanos(1);
+            workDuration.setActualTotalDurationNanos(33);
+            workDuration.setActualCpuDurationNanos(14);
+            workDuration.setActualGpuDurationNanos(20);
+            s.reportActualWorkDuration(workDuration);
+        }
+        {
+            WorkDuration workDuration = new WorkDuration();
+            workDuration.setWorkPeriodStartTimestampNanos(1);
+            workDuration.setActualTotalDurationNanos(14);
+            workDuration.setActualCpuDurationNanos(10);
+            workDuration.setActualGpuDurationNanos(6);
+            s.reportActualWorkDuration(workDuration);
+        }
+        {
+            WorkDuration workDuration = new WorkDuration();
+            workDuration.setWorkPeriodStartTimestampNanos(1);
+            workDuration.setActualTotalDurationNanos(14);
+            workDuration.setActualCpuDurationNanos(0);
+            workDuration.setActualGpuDurationNanos(6);
+            s.reportActualWorkDuration(workDuration);
+        }
+        {
+            WorkDuration workDuration = new WorkDuration();
+            workDuration.setWorkPeriodStartTimestampNanos(1);
+            workDuration.setActualTotalDurationNanos(14);
+            workDuration.setActualCpuDurationNanos(7);
+            workDuration.setActualGpuDurationNanos(0);
+            s.reportActualWorkDuration(workDuration);
+        }
     }
 
     @Test
@@ -221,7 +258,7 @@ public class PerformanceHintManagerTest {
             s.reportActualWorkDuration(new WorkDuration(1, 12, -1, 6));
         });
         assertThrows(IllegalArgumentException.class, () -> {
-            s.reportActualWorkDuration(new WorkDuration(1, 12, 0, 6));
+            s.reportActualWorkDuration(new WorkDuration(1, 12, 0, 0));
         });
         assertThrows(IllegalArgumentException.class, () -> {
             s.reportActualWorkDuration(new WorkDuration(1, 12, 8, -1));

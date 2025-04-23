@@ -1,0 +1,170 @@
+package: "android.location.flags"
+container: "system"
+
+flag {
+    name: "deprecate_provider_request_apis"
+    namespace: "location"
+    description: "Deprecates LocationManager ProviderChanged APIs"
+    bug: "361811782"
+    is_exported: true
+}
+
+flag {
+    name: "keep_gnss_stationary_throttling"
+    namespace: "location"
+    description: "Keeps stationary throttling for the GNSS provider even if the disable_stationary_throttling flag is true."
+    bug: "354000147"
+}
+
+flag {
+    name: "disable_stationary_throttling"
+    namespace: "location"
+    description: "Disables stationary throttling for all providers"
+    bug: "354000147"
+}
+
+flag {
+    name: "new_geocoder"
+    namespace: "location"
+    description: "Flag for new Geocoder APIs"
+    bug: "229872126"
+    is_exported: true
+}
+
+flag {
+    name: "enable_location_bypass"
+    namespace: "location"
+    description: "Enable location bypass feature"
+    bug: "301150056"
+}
+
+flag {
+    name: "location_bypass"
+    is_exported: true
+    namespace: "location"
+    description: "Enable location bypass appops behavior"
+    bug: "329151785"
+}
+
+flag {
+    name: "fix_service_watcher"
+    namespace: "location"
+    description: "Enable null explicit services in ServiceWatcher"
+    bug: "311210517"
+}
+
+flag {
+    name: "geoid_heights_via_altitude_hal"
+    namespace: "location"
+    description: "Flag for making geoid heights available via the Altitude HAL"
+    bug: "304375846"
+    is_exported: true
+}
+
+flag {
+    name: "gnss_api_navic_l1"
+    namespace: "location"
+    description: "Flag for GNSS API for NavIC L1"
+    bug: "302199306"
+    is_exported: true
+}
+
+flag {
+    name: "gnss_api_measurement_request_work_source"
+    namespace: "location"
+    description: "Flag for GnssMeasurementRequest WorkSource API"
+    bug: "295235160"
+    is_exported: true
+}
+
+flag {
+    name: "release_supl_connection_on_timeout"
+    namespace: "location"
+    description: "Flag for releasing SUPL connection on timeout"
+    bug: "315024652"
+}
+
+flag {
+    name: "location_validation"
+    namespace: "location"
+    description: "Flag for location validation"
+    bug: "314328533"
+}
+
+flag {
+    name: "replace_future_elapsed_realtime_jni"
+    namespace: "location"
+    description: "Flag for replacing future elapsedRealtime in JNI"
+    bug: "314328533"
+}
+
+flag {
+    name: "use_legacy_ntp_time"
+    namespace: "location"
+    description: "Flag for switching to legacy NtpNetworkTimeHelper"
+    bug: "368034558"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "subscriptions_changed_listener_thread"
+    namespace: "location"
+    description: "Flag for running onSubscriptionsChangedListener on FgThread"
+    bug: "332451908"
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "gnss_configuration_from_resource"
+    namespace: "location"
+    description: "Flag for GNSS configuration from resource"
+    bug: "317734846"
+}
+
+flag {
+    name: "enable_ni_supl_message_injection_by_carrier_config_bugfix"
+    namespace: "location"
+    description: "Flag for enabling NI SUPL message injection by carrier config"
+    bug: "242105192"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+    is_exported: true
+}
+
+flag {
+    name: "enable_ni_supl_message_injection_by_carrier_config"
+    namespace: "location"
+    description: "Flag for enabling NI SUPL message injection by carrier config"
+    bug: "242105192"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "population_density_provider"
+    namespace: "location"
+    description: "Flag for enabling the population density provider"
+    bug: "376198890"
+}
+
+flag {
+    name: "density_based_coarse_locations"
+    namespace: "location"
+    description: "Flag for gating the density-based coarse locations"
+    bug: "376198890"
+}
+
+flag {
+    name: "gnss_assistance_interface"
+    namespace: "location"
+    description: "Flag for GNSS assistance interface"
+    bug: "209078566"
+}

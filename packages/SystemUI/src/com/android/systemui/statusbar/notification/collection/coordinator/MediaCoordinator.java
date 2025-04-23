@@ -16,11 +16,13 @@
 
 package com.android.systemui.statusbar.notification.collection.coordinator;
 
-import static com.android.systemui.media.controls.pipeline.MediaDataManagerKt.isMediaNotification;
+import static com.android.systemui.media.controls.domain.pipeline.MediaDataManager.isMediaNotification;
 
 import android.os.RemoteException;
 import android.service.notification.StatusBarNotification;
 import android.util.ArrayMap;
+
+import androidx.annotation.NonNull;
 
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.systemui.media.controls.util.MediaFeatureFlag;
@@ -53,7 +55,7 @@ public class MediaCoordinator implements Coordinator {
 
     private final NotifFilter mMediaFilter = new NotifFilter(TAG) {
         @Override
-        public boolean shouldFilterOut(NotificationEntry entry, long now) {
+        public boolean shouldFilterOut(@NonNull NotificationEntry entry, long now) {
             if (!mIsMediaFeatureEnabled || !isMediaNotification(entry.getSbn())) {
                 return false;
             }
@@ -70,7 +72,7 @@ public class MediaCoordinator implements Coordinator {
                     break;
                 case STATE_ICONS_INFLATED:
                     try {
-                        mIconManager.updateIcons(entry);
+                        mIconManager.updateIcons(entry, /* usingCache = */ false);
                     } catch (InflationException e) {
                         reportInflationError(entry, e);
                         mIconsState.put(entry, STATE_ICONS_ERROR);
@@ -87,12 +89,12 @@ public class MediaCoordinator implements Coordinator {
 
     private final NotifCollectionListener mCollectionListener = new NotifCollectionListener() {
         @Override
-        public void onEntryInit(NotificationEntry entry) {
+        public void onEntryInit(@NonNull NotificationEntry entry) {
             mIconsState.put(entry, STATE_ICONS_UNINFLATED);
         }
 
         @Override
-        public void onEntryUpdated(NotificationEntry entry) {
+        public void onEntryUpdated(@NonNull NotificationEntry entry) {
             if (mIconsState.getOrDefault(entry, STATE_ICONS_UNINFLATED) == STATE_ICONS_ERROR) {
                 // The update may have fixed the inflation error, so give it another chance.
                 mIconsState.put(entry, STATE_ICONS_UNINFLATED);
@@ -100,7 +102,7 @@ public class MediaCoordinator implements Coordinator {
         }
 
         @Override
-        public void onEntryCleanUp(NotificationEntry entry) {
+        public void onEntryCleanUp(@NonNull NotificationEntry entry) {
             mIconsState.remove(entry);
         }
     };

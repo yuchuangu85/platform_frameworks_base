@@ -18,12 +18,12 @@ package com.android.server.wm.flicker.notification
 
 import android.platform.test.annotations.Postsubmit
 import android.platform.test.annotations.Presubmit
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
-import android.tools.device.helpers.wakeUpAndGoToHomeScreen
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.helpers.wakeUpAndGoToHomeScreen
+import android.tools.traces.component.ComponentNameMatcher
 import com.android.server.wm.flicker.helpers.setRotation
 import com.android.server.wm.flicker.statusBarLayerPositionAtEnd
 import org.junit.FixMethodOrder
@@ -36,7 +36,7 @@ import org.junit.runners.Parameterized
 /**
  * Test cold launching an app from a notification.
  *
- * To run this test: `atest FlickerTests:OpenAppFromNotificationCold`
+ * To run this test: `atest FlickerTestsNotification:OpenAppFromNotificationColdTest`
  */
 @RunWith(Parameterized::class)
 @Parameterized.UseParametersRunnerFactory(FlickerParametersRunnerFactory::class)

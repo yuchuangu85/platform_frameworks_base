@@ -20,6 +20,7 @@ import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
+import android.hardware.camera2.params.DynamicRangeProfiles;
 
 import com.android.internal.camera.flags.Flags;
 
@@ -27,17 +28,34 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
+ * Helper class used to describe a single camera
+ * output configuration that is intended to be configured
+ * internally by the extension implementation.
+ *
  * @hide
  */
 @SystemApi
-@FlaggedApi(Flags.FLAG_CONCERT_MODE)
 public class ExtensionOutputConfiguration {
     private final List<CameraOutputSurface> mSurfaces;
     private final String mPhysicalCameraId;
     private final int mOutputConfigId;
     private final int mSurfaceGroupId;
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
+    /**
+     * Initialize an extension output configuration instance
+     *
+     * @param outputs           List of camera {@link CameraOutputSurface outputs}.
+     *                          The list may include more than one entry
+     *                          only in case of shared camera outputs.
+     *                          In all other cases the list will only include
+     *                          a single entry.
+     * @param outputConfigId    Unique output configuration id used to identify
+     *                          this particular configuration.
+     * @param physicalCameraId  In case of physical camera capture, this field
+     *                          must contain a valid physical camera id.
+     * @param surfaceGroupId    In case of surface group, this field must
+     *                          contain the surface group id
+     */
     public ExtensionOutputConfiguration(@NonNull List<CameraOutputSurface> outputs,
             int outputConfigId, @Nullable String physicalCameraId, int surfaceGroupId) {
         mSurfaces = outputs;
@@ -60,6 +78,7 @@ public class ExtensionOutputConfiguration {
         config.outputId = new OutputConfigId();
         config.outputId.id = mOutputConfigId;
         config.surfaceGroupId = mSurfaceGroupId;
+        config.dynamicRangeProfile = surface.getDynamicRangeProfile();
     }
 
     @Nullable CameraOutputConfig getOutputConfig() {

@@ -16,6 +16,7 @@
 
 package com.android.server.job;
 
+import static android.app.job.Flags.FLAG_HANDLE_ABANDONED_JOBS;
 import static android.text.format.DateUtils.DAY_IN_MILLIS;
 import static android.text.format.DateUtils.HOUR_IN_MILLIS;
 import static android.text.format.DateUtils.MINUTE_IN_MILLIS;
@@ -29,7 +30,12 @@ import static com.android.server.job.JobSchedulerService.ACTIVE_INDEX;
 import static com.android.server.job.JobSchedulerService.RARE_INDEX;
 import static com.android.server.job.JobSchedulerService.sElapsedRealtimeClock;
 import static com.android.server.job.JobSchedulerService.sUptimeMillisClock;
+import static com.android.server.job.Flags.FLAG_BATCH_ACTIVE_BUCKET_JOBS;
+import static com.android.server.job.Flags.FLAG_BATCH_CONNECTIVITY_JOBS_PER_NETWORK;
+import static com.android.server.job.Flags.FLAG_CREATE_WORK_CHAIN_BY_DEFAULT;
+import static com.android.server.job.Flags.FLAG_THERMAL_RESTRICTIONS_TO_FGS_JOBS;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
@@ -42,6 +48,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.app.ActivityManager;
@@ -54,18 +61,34 @@ import android.app.job.JobScheduler;
 import android.app.job.JobWorkItem;
 import android.app.usage.UsageStatsManagerInternal;
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.Context;
+import android.content.IContentProvider;
+import android.content.Intent;
 import android.content.PermissionChecker;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManagerInternal;
 import android.content.res.Resources;
 import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.NetworkPolicyManager;
+import android.os.BatteryManager;
 import android.os.BatteryManagerInternal;
+import android.os.BatteryManagerInternal.ChargingPolicyChangeListener;
 import android.os.Looper;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.SystemClock;
+import android.os.WorkSource;
+import android.os.WorkSource.WorkChain;
+import android.platform.test.annotations.EnableFlags;
+import android.platform.test.annotations.RequiresFlagsDisabled;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
+import android.platform.test.flag.junit.SetFlagsRule;
 
 import com.android.server.AppStateTracker;
 import com.android.server.AppStateTrackerImpl;
@@ -76,13 +99,17 @@ import com.android.server.SystemServiceManager;
 import com.android.server.job.controllers.ConnectivityController;
 import com.android.server.job.controllers.JobStatus;
 import com.android.server.job.controllers.QuotaController;
-import com.android.server.job.controllers.TareController;
+import com.android.server.job.restrictions.JobRestriction;
+import com.android.server.job.restrictions.ThermalStatusRestriction;
 import com.android.server.pm.UserManagerInternal;
 import com.android.server.usage.AppStandbyInternal;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
+import org.mockito.ArgumentCaptor;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.MockitoSession;
 import org.mockito.quality.Strictness;
@@ -101,9 +128,19 @@ public class JobSchedulerServiceTest {
     @Mock
     private ActivityManagerInternal mActivityMangerInternal;
     @Mock
+    private BatteryManagerInternal mBatteryManagerInternal;
+    @Mock
     private Context mContext;
     @Mock
     private PackageManagerInternal mPackageManagerInternal;
+
+    @Rule
+    public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
+
+    @Rule
+    public final CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
+
+    private ChargingPolicyChangeListener mChargingPolicyChangeListener;
 
     private class TestJobSchedulerService extends JobSchedulerService {
         TestJobSchedulerService(Context context) {
@@ -128,7 +165,7 @@ public class JobSchedulerServiceTest {
                 .when(() -> LocalServices.getService(ActivityManagerInternal.class));
         doReturn(mock(AppStandbyInternal.class))
                 .when(() -> LocalServices.getService(AppStandbyInternal.class));
-        doReturn(mock(BatteryManagerInternal.class))
+        doReturn(mBatteryManagerInternal)
                 .when(() -> LocalServices.getService(BatteryManagerInternal.class));
         doReturn(mPackageManagerInternal)
                 .when(() -> LocalServices.getService(PackageManagerInternal.class));
@@ -177,8 +214,17 @@ public class JobSchedulerServiceTest {
         // Called by DeviceIdlenessTracker
         when(mContext.getSystemService(UiModeManager.class)).thenReturn(mock(UiModeManager.class));
 
+        setChargingPolicy(Integer.MIN_VALUE);
+
+        ArgumentCaptor<ChargingPolicyChangeListener> chargingPolicyChangeListenerCaptor =
+                ArgumentCaptor.forClass(ChargingPolicyChangeListener.class);
+
         mService = new TestJobSchedulerService(mContext);
         mService.waitOnAsyncLoadingForTesting();
+
+        verify(mBatteryManagerInternal).registerChargingPolicyChangeListener(
+                chargingPolicyChangeListenerCaptor.capture());
+        mChargingPolicyChangeListener = chargingPolicyChangeListenerCaptor.getValue();
     }
 
     @After
@@ -589,12 +635,8 @@ public class JobSchedulerServiceTest {
 
         QuotaController quotaController = mService.getQuotaController();
         spyOn(quotaController);
-        TareController tareController = mService.getTareController();
-        spyOn(tareController);
         doReturn(mService.mConstants.RUNTIME_FREE_QUOTA_MAX_LIMIT_MS)
                 .when(quotaController).getMaxJobExecutionTimeMsLocked(any());
-        doReturn(mService.mConstants.RUNTIME_FREE_QUOTA_MAX_LIMIT_MS)
-                .when(tareController).getMaxJobExecutionTimeMsLocked(any());
 
         grantRunUserInitiatedJobsPermission(true);
         assertEquals(mService.mConstants.RUNTIME_UI_LIMIT_MS,
@@ -627,12 +669,8 @@ public class JobSchedulerServiceTest {
 
         QuotaController quotaController = mService.getQuotaController();
         spyOn(quotaController);
-        TareController tareController = mService.getTareController();
-        spyOn(tareController);
         doReturn(mService.mConstants.RUNTIME_FREE_QUOTA_MAX_LIMIT_MS)
                 .when(quotaController).getMaxJobExecutionTimeMsLocked(any());
-        doReturn(mService.mConstants.RUNTIME_FREE_QUOTA_MAX_LIMIT_MS)
-                .when(tareController).getMaxJobExecutionTimeMsLocked(any());
 
         mService.mConstants.ENABLE_EXECUTION_SAFEGUARDS_UDC = false;
         mService.mConstants.EXECUTION_SAFEGUARDS_UDC_TIMEOUT_UIJ_COUNT = 2;
@@ -756,12 +794,8 @@ public class JobSchedulerServiceTest {
 
         QuotaController quotaController = mService.getQuotaController();
         spyOn(quotaController);
-        TareController tareController = mService.getTareController();
-        spyOn(tareController);
         doReturn(mService.mConstants.RUNTIME_FREE_QUOTA_MAX_LIMIT_MS)
                 .when(quotaController).getMaxJobExecutionTimeMsLocked(any());
-        doReturn(mService.mConstants.RUNTIME_FREE_QUOTA_MAX_LIMIT_MS)
-                .when(tareController).getMaxJobExecutionTimeMsLocked(any());
 
         mService.mConstants.ENABLE_EXECUTION_SAFEGUARDS_UDC = true;
         mService.mConstants.EXECUTION_SAFEGUARDS_UDC_TIMEOUT_UIJ_COUNT = 2;
@@ -1018,6 +1052,75 @@ public class JobSchedulerServiceTest {
                 JobParameters.STOP_REASON_UNDEFINED,
                 JobParameters.INTERNAL_STOP_REASON_ANR);
         assertEquals(nowElapsed + 5 * initialBackoffMs, rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+    }
+
+    /**
+     * Confirm that
+     * {@link JobSchedulerService#getRescheduleJobForFailureLocked(JobStatus, int, int)}
+     * returns a job with the correct delay for abandoned jobs.
+     */
+    @Test
+    @EnableFlags(FLAG_HANDLE_ABANDONED_JOBS)
+    public void testGetRescheduleJobForFailure_abandonedJob() {
+        final long nowElapsed = sElapsedRealtimeClock.millis();
+        final long initialBackoffMs = MINUTE_IN_MILLIS;
+        mService.mConstants.SYSTEM_STOP_TO_FAILURE_RATIO = 3;
+
+        JobStatus originalJob = createJobStatus("testGetRescheduleJobForFailure",
+                createJobInfo()
+                        .setBackoffCriteria(initialBackoffMs, JobInfo.BACKOFF_POLICY_LINEAR));
+        assertEquals(JobStatus.NO_EARLIEST_RUNTIME, originalJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, originalJob.getLatestRunTimeElapsed());
+
+        // failure = 1, systemStop = 0, abandoned = 1
+        JobStatus rescheduledJob = mService.getRescheduleJobForFailureLocked(originalJob,
+                JobParameters.STOP_REASON_DEVICE_STATE,
+                JobParameters.INTERNAL_STOP_REASON_TIMEOUT_ABANDONED);
+        assertEquals(nowElapsed + initialBackoffMs, rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+
+        // failure = 2, systemstop = 0, abandoned = 2
+        rescheduledJob = mService.getRescheduleJobForFailureLocked(rescheduledJob,
+                JobParameters.STOP_REASON_DEVICE_STATE,
+                JobParameters.INTERNAL_STOP_REASON_TIMEOUT_ABANDONED);
+        assertEquals(nowElapsed + (2 * initialBackoffMs), rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+
+        // failure = 3, systemstop = 0, abandoned = 3
+        rescheduledJob = mService.getRescheduleJobForFailureLocked(rescheduledJob,
+                JobParameters.STOP_REASON_DEVICE_STATE,
+                JobParameters.INTERNAL_STOP_REASON_TIMEOUT_ABANDONED);
+        assertEquals(nowElapsed + (3 * initialBackoffMs), rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+
+        // failure = 4, systemstop = 0, abandoned = 4
+        rescheduledJob = mService.getRescheduleJobForFailureLocked(rescheduledJob,
+                JobParameters.STOP_REASON_DEVICE_STATE,
+                JobParameters.INTERNAL_STOP_REASON_TIMEOUT_ABANDONED);
+        assertEquals(
+                nowElapsed + ((long) Math.scalb((float) initialBackoffMs, 3)),
+                rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+
+        // failure = 4, systemstop = 1, abandoned = 4
+        rescheduledJob = mService.getRescheduleJobForFailureLocked(rescheduledJob,
+                JobParameters.STOP_REASON_DEVICE_STATE,
+                JobParameters.INTERNAL_STOP_REASON_DEVICE_THERMAL);
+        assertEquals(
+                nowElapsed + ((long) Math.scalb((float) initialBackoffMs, 3)),
+                rescheduledJob.getEarliestRunTime());
+        assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
+
+        // failure = 4, systemStop =  4  / SYSTEM_STOP_TO_FAILURE_RATIO, abandoned = 4
+        for (int i = 0; i < mService.mConstants.SYSTEM_STOP_TO_FAILURE_RATIO; ++i) {
+            rescheduledJob = mService.getRescheduleJobForFailureLocked(rescheduledJob,
+                    JobParameters.STOP_REASON_SYSTEM_PROCESSING,
+                    JobParameters.INTERNAL_STOP_REASON_RTC_UPDATED);
+        }
+        assertEquals(
+                nowElapsed + ((long) Math.scalb((float) initialBackoffMs, 4)),
+                rescheduledJob.getEarliestRunTime());
         assertEquals(JobStatus.NO_LATEST_RUNTIME, rescheduledJob.getLatestRunTimeElapsed());
     }
 
@@ -1709,6 +1812,383 @@ public class JobSchedulerServiceTest {
         assertEquals(nextWindowEndTime, rescheduledJob.getLatestRunTimeElapsed());
     }
 
+    @Test
+    public void testBatteryStateTrackerRegistersForImportantIntents() {
+        verify(mContext).registerReceiver(any(), ArgumentMatchers.argThat(filter -> true
+                && filter.hasAction(BatteryManager.ACTION_CHARGING)
+                && filter.hasAction(BatteryManager.ACTION_DISCHARGING)
+                && filter.hasAction(Intent.ACTION_BATTERY_LEVEL_CHANGED)
+                && filter.hasAction(Intent.ACTION_BATTERY_LOW)
+                && filter.hasAction(Intent.ACTION_BATTERY_OKAY)
+                && filter.hasAction(Intent.ACTION_POWER_CONNECTED)
+                && filter.hasAction(Intent.ACTION_POWER_DISCONNECTED)));
+    }
+
+    @Test
+    public void testIsCharging_standardChargingIntent() {
+        JobSchedulerService.BatteryStateTracker tracker = mService.mBatteryStateTracker;
+
+        Intent chargingIntent = new Intent(BatteryManager.ACTION_CHARGING);
+        Intent dischargingIntent = new Intent(BatteryManager.ACTION_DISCHARGING);
+        tracker.onReceive(mContext, dischargingIntent);
+        assertFalse(tracker.isCharging());
+        assertFalse(mService.isBatteryCharging());
+
+        tracker.onReceive(mContext, chargingIntent);
+        assertTrue(tracker.isCharging());
+        assertTrue(mService.isBatteryCharging());
+
+        tracker.onReceive(mContext, dischargingIntent);
+        assertFalse(tracker.isCharging());
+        assertFalse(mService.isBatteryCharging());
+    }
+
+    @Test
+    public void testIsCharging_adaptiveCharging_batteryTooLow() {
+        JobSchedulerService.BatteryStateTracker tracker = mService.mBatteryStateTracker;
+
+        tracker.onReceive(mContext, new Intent(BatteryManager.ACTION_DISCHARGING));
+        assertFalse(tracker.isCharging());
+        assertFalse(mService.isBatteryCharging());
+
+        setBatteryLevel(15);
+        setChargingPolicy(BatteryManager.CHARGING_POLICY_ADAPTIVE_AC);
+        assertFalse(tracker.isCharging());
+        assertFalse(mService.isBatteryCharging());
+
+        tracker.onReceive(mContext, new Intent(Intent.ACTION_POWER_CONNECTED));
+
+        setBatteryLevel(70);
+        assertTrue(tracker.isCharging());
+        assertTrue(mService.isBatteryCharging());
+    }
+
+    @Test
+    public void testIsCharging_adaptiveCharging_chargeBelowThreshold() {
+        JobSchedulerService.BatteryStateTracker tracker = mService.mBatteryStateTracker;
+
+        setChargingPolicy(BatteryManager.CHARGING_POLICY_ADAPTIVE_AC);
+        tracker.onReceive(mContext, new Intent(Intent.ACTION_POWER_CONNECTED));
+        setBatteryLevel(5);
+
+        tracker.onReceive(mContext, new Intent(BatteryManager.ACTION_CHARGING));
+        assertTrue(tracker.isCharging());
+        assertTrue(mService.isBatteryCharging());
+
+        for (int level = 5; level < 80; ++level) {
+            setBatteryLevel(level);
+            assertTrue(tracker.isCharging());
+            assertTrue(mService.isBatteryCharging());
+        }
+    }
+
+    @Test
+    public void testIsCharging_adaptiveCharging_dischargeAboveThreshold() {
+        JobSchedulerService.BatteryStateTracker tracker = mService.mBatteryStateTracker;
+
+        setChargingPolicy(BatteryManager.CHARGING_POLICY_ADAPTIVE_AC);
+        tracker.onReceive(mContext, new Intent(Intent.ACTION_POWER_CONNECTED));
+        setBatteryLevel(80);
+
+        tracker.onReceive(mContext, new Intent(BatteryManager.ACTION_DISCHARGING));
+        assertTrue(tracker.isCharging());
+        assertTrue(mService.isBatteryCharging());
+
+        for (int level = 80; level > 60; --level) {
+            setBatteryLevel(level);
+            assertEquals(level >= 70, tracker.isCharging());
+            assertEquals(level >= 70, mService.isBatteryCharging());
+        }
+    }
+
+    @Test
+    public void testIsCharging_adaptiveCharging_notPluggedIn() {
+        JobSchedulerService.BatteryStateTracker tracker = mService.mBatteryStateTracker;
+
+        tracker.onReceive(mContext, new Intent(Intent.ACTION_POWER_DISCONNECTED));
+        tracker.onReceive(mContext, new Intent(BatteryManager.ACTION_DISCHARGING));
+        assertFalse(tracker.isCharging());
+        assertFalse(mService.isBatteryCharging());
+
+        setBatteryLevel(15);
+        setChargingPolicy(BatteryManager.CHARGING_POLICY_ADAPTIVE_AC);
+        assertFalse(tracker.isCharging());
+        assertFalse(mService.isBatteryCharging());
+
+        setBatteryLevel(50);
+        setChargingPolicy(BatteryManager.CHARGING_POLICY_ADAPTIVE_AC);
+        assertFalse(tracker.isCharging());
+        assertFalse(mService.isBatteryCharging());
+
+        setBatteryLevel(70);
+        assertFalse(tracker.isCharging());
+        assertFalse(mService.isBatteryCharging());
+
+        setBatteryLevel(95);
+        assertFalse(tracker.isCharging());
+        assertFalse(mService.isBatteryCharging());
+
+        setBatteryLevel(100);
+        assertFalse(tracker.isCharging());
+        assertFalse(mService.isBatteryCharging());
+    }
+
+    /** Tests that rare job batching works as expected. */
+    @Test
+    public void testConnectivityJobBatching() {
+        mSetFlagsRule.enableFlags(FLAG_BATCH_CONNECTIVITY_JOBS_PER_NETWORK);
+
+        spyOn(mService);
+        doReturn(false).when(mService).evaluateControllerStatesLocked(any());
+        doNothing().when(mService).noteJobsPending(any());
+        doReturn(true).when(mService).isReadyToBeExecutedLocked(any(), anyBoolean());
+        ConnectivityController connectivityController = mService.getConnectivityController();
+        spyOn(connectivityController);
+        advanceElapsedClock(24 * HOUR_IN_MILLIS);
+
+        JobSchedulerService.MaybeReadyJobQueueFunctor maybeQueueFunctor =
+                mService.new MaybeReadyJobQueueFunctor();
+        mService.mConstants.CONN_TRANSPORT_BATCH_THRESHOLD.clear();
+        mService.mConstants.CONN_TRANSPORT_BATCH_THRESHOLD
+                .put(NetworkCapabilities.TRANSPORT_CELLULAR, 5);
+        mService.mConstants.CONN_TRANSPORT_BATCH_THRESHOLD
+                .put(NetworkCapabilities.TRANSPORT_WIFI, 2);
+        mService.mConstants.CONN_MAX_CONNECTIVITY_JOB_BATCH_DELAY_MS = HOUR_IN_MILLIS;
+
+        final Network network = mock(Network.class);
+
+        // Not enough connectivity jobs to run.
+        mService.getPendingJobQueue().clear();
+        maybeQueueFunctor.reset();
+        NetworkCapabilities capabilities = new NetworkCapabilities.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                .build();
+        doReturn(capabilities).when(connectivityController).getNetworkCapabilities(network);
+        doReturn(false).when(connectivityController).isNetworkInStateForJobRunLocked(any());
+        for (int i = 0; i < 4; ++i) {
+            JobStatus job = createJobStatus(
+                    "testConnectivityJobBatching",
+                    createJobInfo().setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY));
+            job.setStandbyBucket(ACTIVE_INDEX);
+            job.network = network;
+
+            maybeQueueFunctor.accept(job);
+            assertNull(maybeQueueFunctor.mBatches.get(null));
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(network).size());
+            assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
+            assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
+        }
+        maybeQueueFunctor.postProcessLocked();
+        assertEquals(0, mService.getPendingJobQueue().size());
+
+        // Not enough connectivity jobs to run, but the network is already active
+        mService.getPendingJobQueue().clear();
+        maybeQueueFunctor.reset();
+        doReturn(capabilities).when(connectivityController).getNetworkCapabilities(network);
+        doReturn(true).when(connectivityController).isNetworkInStateForJobRunLocked(any());
+        for (int i = 0; i < 4; ++i) {
+            JobStatus job = createJobStatus(
+                    "testConnectivityJobBatching",
+                    createJobInfo().setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY));
+            job.setStandbyBucket(ACTIVE_INDEX);
+            job.network = network;
+
+            maybeQueueFunctor.accept(job);
+            assertNull(maybeQueueFunctor.mBatches.get(null));
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(network).size());
+            assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
+            assertEquals(0, job.getFirstForceBatchedTimeElapsed());
+        }
+        maybeQueueFunctor.postProcessLocked();
+        assertEquals(4, mService.getPendingJobQueue().size());
+
+        // Enough connectivity jobs to run.
+        mService.getPendingJobQueue().clear();
+        maybeQueueFunctor.reset();
+        capabilities = new NetworkCapabilities.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .build();
+        doReturn(capabilities).when(connectivityController).getNetworkCapabilities(network);
+        doReturn(false).when(connectivityController).isNetworkInStateForJobRunLocked(any());
+        for (int i = 0; i < 3; ++i) {
+            JobStatus job = createJobStatus(
+                    "testConnectivityJobBatching",
+                    createJobInfo().setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY));
+            job.setStandbyBucket(ACTIVE_INDEX);
+            job.network = network;
+
+            maybeQueueFunctor.accept(job);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(network).size());
+            assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
+            assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
+        }
+        maybeQueueFunctor.postProcessLocked();
+        assertEquals(3, mService.getPendingJobQueue().size());
+
+        // Not enough connectivity jobs to run, but a non-batched job saves the day.
+        mService.getPendingJobQueue().clear();
+        maybeQueueFunctor.reset();
+        JobStatus runningJob = createJobStatus(
+                "testConnectivityJobBatching",
+                createJobInfo().setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY));
+        runningJob.network = network;
+        doReturn(true).when(mService).isCurrentlyRunningLocked(runningJob);
+        capabilities = new NetworkCapabilities.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                .build();
+        doReturn(capabilities).when(connectivityController).getNetworkCapabilities(network);
+        for (int i = 0; i < 3; ++i) {
+            JobStatus job = createJobStatus(
+                    "testConnectivityJobBatching",
+                    createJobInfo().setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY));
+            job.setStandbyBucket(ACTIVE_INDEX);
+            job.network = network;
+
+            maybeQueueFunctor.accept(job);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(network).size());
+            assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
+            assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
+        }
+        maybeQueueFunctor.accept(runningJob);
+        maybeQueueFunctor.postProcessLocked();
+        assertEquals(3, mService.getPendingJobQueue().size());
+
+        // Not enough connectivity jobs to run, but an old connectivity job saves the day.
+        mService.getPendingJobQueue().clear();
+        maybeQueueFunctor.reset();
+        JobStatus oldConnJob = createJobStatus("testConnectivityJobBatching",
+                createJobInfo().setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY));
+        oldConnJob.network = network;
+        final long oldBatchTime = sElapsedRealtimeClock.millis()
+                - 2 * mService.mConstants.CONN_MAX_CONNECTIVITY_JOB_BATCH_DELAY_MS;
+        oldConnJob.setFirstForceBatchedTimeElapsed(oldBatchTime);
+        for (int i = 0; i < 2; ++i) {
+            JobStatus job = createJobStatus(
+                    "testConnectivityJobBatching",
+                    createJobInfo().setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY));
+            job.setStandbyBucket(ACTIVE_INDEX);
+            job.network = network;
+
+            maybeQueueFunctor.accept(job);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(network).size());
+            assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
+            assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
+        }
+        maybeQueueFunctor.accept(oldConnJob);
+        assertEquals(oldBatchTime, oldConnJob.getFirstForceBatchedTimeElapsed());
+        maybeQueueFunctor.postProcessLocked();
+        assertEquals(3, mService.getPendingJobQueue().size());
+
+        // Transport type doesn't have a set threshold. One job should be the default threshold.
+        mService.getPendingJobQueue().clear();
+        maybeQueueFunctor.reset();
+        capabilities = new NetworkCapabilities.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                .build();
+        doReturn(capabilities).when(connectivityController).getNetworkCapabilities(network);
+        JobStatus job = createJobStatus(
+                "testConnectivityJobBatching",
+                createJobInfo().setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY));
+        job.setStandbyBucket(ACTIVE_INDEX);
+        job.network = network;
+        maybeQueueFunctor.accept(job);
+        assertEquals(1, maybeQueueFunctor.mBatches.get(network).size());
+        assertEquals(1, maybeQueueFunctor.runnableJobs.size());
+        assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
+        maybeQueueFunctor.postProcessLocked();
+        assertEquals(1, mService.getPendingJobQueue().size());
+    }
+
+    /** Tests that active job batching works as expected. */
+    @Test
+    public void testActiveJobBatching_activeBatchingEnabled() {
+        mSetFlagsRule.enableFlags(FLAG_BATCH_ACTIVE_BUCKET_JOBS);
+
+        spyOn(mService);
+        doReturn(false).when(mService).evaluateControllerStatesLocked(any());
+        doNothing().when(mService).noteJobsPending(any());
+        doReturn(true).when(mService).isReadyToBeExecutedLocked(any(), anyBoolean());
+        advanceElapsedClock(24 * HOUR_IN_MILLIS);
+
+        JobSchedulerService.MaybeReadyJobQueueFunctor maybeQueueFunctor =
+                mService.new MaybeReadyJobQueueFunctor();
+        mService.mConstants.MIN_READY_CPU_ONLY_JOBS_COUNT = 5;
+        mService.mConstants.MAX_CPU_ONLY_JOB_BATCH_DELAY_MS = HOUR_IN_MILLIS;
+
+        // Not enough ACTIVE jobs to run.
+        mService.getPendingJobQueue().clear();
+        maybeQueueFunctor.reset();
+        for (int i = 0; i < mService.mConstants.MIN_READY_CPU_ONLY_JOBS_COUNT / 2; ++i) {
+            JobStatus job = createJobStatus("testActiveJobBatching", createJobInfo());
+            job.setStandbyBucket(ACTIVE_INDEX);
+
+            maybeQueueFunctor.accept(job);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(null).size());
+            assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
+            assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
+        }
+        maybeQueueFunctor.postProcessLocked();
+        assertEquals(0, mService.getPendingJobQueue().size());
+
+        // Enough ACTIVE jobs to run.
+        mService.getPendingJobQueue().clear();
+        maybeQueueFunctor.reset();
+        for (int i = 0; i < mService.mConstants.MIN_READY_CPU_ONLY_JOBS_COUNT; ++i) {
+            JobStatus job = createJobStatus("testActiveJobBatching", createJobInfo());
+            job.setStandbyBucket(ACTIVE_INDEX);
+
+            maybeQueueFunctor.accept(job);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(null).size());
+            assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
+            assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
+        }
+        maybeQueueFunctor.postProcessLocked();
+        assertEquals(5, mService.getPendingJobQueue().size());
+
+        // Not enough ACTIVE jobs to run, but a non-batched job saves the day.
+        mService.getPendingJobQueue().clear();
+        maybeQueueFunctor.reset();
+        JobStatus expeditedJob = createJobStatus("testActiveJobBatching",
+                createJobInfo().setExpedited(true));
+        spyOn(expeditedJob);
+        when(expeditedJob.shouldTreatAsExpeditedJob()).thenReturn(true);
+        expeditedJob.setStandbyBucket(RARE_INDEX);
+        for (int i = 0; i < mService.mConstants.MIN_READY_CPU_ONLY_JOBS_COUNT / 2; ++i) {
+            JobStatus job = createJobStatus("testActiveJobBatching", createJobInfo());
+            job.setStandbyBucket(ACTIVE_INDEX);
+
+            maybeQueueFunctor.accept(job);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(null).size());
+            assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
+            assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
+        }
+        maybeQueueFunctor.accept(expeditedJob);
+        maybeQueueFunctor.postProcessLocked();
+        assertEquals(3, mService.getPendingJobQueue().size());
+
+        // Not enough ACTIVE jobs to run, but an old ACTIVE job saves the day.
+        mService.getPendingJobQueue().clear();
+        maybeQueueFunctor.reset();
+        JobStatus oldActiveJob = createJobStatus("testActiveJobBatching", createJobInfo());
+        oldActiveJob.setStandbyBucket(ACTIVE_INDEX);
+        final long oldBatchTime = sElapsedRealtimeClock.millis()
+                - 2 * mService.mConstants.MAX_CPU_ONLY_JOB_BATCH_DELAY_MS;
+        oldActiveJob.setFirstForceBatchedTimeElapsed(oldBatchTime);
+        for (int i = 0; i < mService.mConstants.MIN_READY_CPU_ONLY_JOBS_COUNT / 2; ++i) {
+            JobStatus job = createJobStatus("testActiveJobBatching", createJobInfo());
+            job.setStandbyBucket(ACTIVE_INDEX);
+
+            maybeQueueFunctor.accept(job);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(null).size());
+            assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
+            assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
+        }
+        maybeQueueFunctor.accept(oldActiveJob);
+        assertEquals(oldBatchTime, oldActiveJob.getFirstForceBatchedTimeElapsed());
+        maybeQueueFunctor.postProcessLocked();
+        assertEquals(3, mService.getPendingJobQueue().size());
+    }
+
     /** Tests that rare job batching works as expected. */
     @Test
     public void testRareJobBatching() {
@@ -1723,17 +2203,15 @@ public class JobSchedulerServiceTest {
         mService.mConstants.MIN_READY_NON_ACTIVE_JOBS_COUNT = 5;
         mService.mConstants.MAX_NON_ACTIVE_JOB_BATCH_DELAY_MS = HOUR_IN_MILLIS;
 
-        JobStatus job = createJobStatus(
-                "testRareJobBatching",
-                createJobInfo().setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY));
-        job.setStandbyBucket(RARE_INDEX);
-
         // Not enough RARE jobs to run.
         mService.getPendingJobQueue().clear();
         maybeQueueFunctor.reset();
         for (int i = 0; i < mService.mConstants.MIN_READY_NON_ACTIVE_JOBS_COUNT / 2; ++i) {
+            JobStatus job = createJobStatus("testRareJobBatching", createJobInfo());
+            job.setStandbyBucket(RARE_INDEX);
+
             maybeQueueFunctor.accept(job);
-            assertEquals(i + 1, maybeQueueFunctor.forceBatchedCount);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(null).size());
             assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
             assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
         }
@@ -1744,8 +2222,11 @@ public class JobSchedulerServiceTest {
         mService.getPendingJobQueue().clear();
         maybeQueueFunctor.reset();
         for (int i = 0; i < mService.mConstants.MIN_READY_NON_ACTIVE_JOBS_COUNT; ++i) {
+            JobStatus job = createJobStatus("testRareJobBatching", createJobInfo());
+            job.setStandbyBucket(RARE_INDEX);
+
             maybeQueueFunctor.accept(job);
-            assertEquals(i + 1, maybeQueueFunctor.forceBatchedCount);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(null).size());
             assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
             assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
         }
@@ -1753,15 +2234,17 @@ public class JobSchedulerServiceTest {
         assertEquals(5, mService.getPendingJobQueue().size());
 
         // Not enough RARE jobs to run, but a non-batched job saves the day.
+        mSetFlagsRule.disableFlags(FLAG_BATCH_ACTIVE_BUCKET_JOBS);
         mService.getPendingJobQueue().clear();
         maybeQueueFunctor.reset();
-        JobStatus activeJob = createJobStatus(
-                "testRareJobBatching",
-                createJobInfo().setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY));
+        JobStatus activeJob = createJobStatus("testRareJobBatching", createJobInfo());
         activeJob.setStandbyBucket(ACTIVE_INDEX);
         for (int i = 0; i < mService.mConstants.MIN_READY_NON_ACTIVE_JOBS_COUNT / 2; ++i) {
+            JobStatus job = createJobStatus("testRareJobBatching", createJobInfo());
+            job.setStandbyBucket(RARE_INDEX);
+
             maybeQueueFunctor.accept(job);
-            assertEquals(i + 1, maybeQueueFunctor.forceBatchedCount);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(null).size());
             assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
             assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
         }
@@ -1778,8 +2261,11 @@ public class JobSchedulerServiceTest {
                 - 2 * mService.mConstants.MAX_NON_ACTIVE_JOB_BATCH_DELAY_MS;
         oldRareJob.setFirstForceBatchedTimeElapsed(oldBatchTime);
         for (int i = 0; i < mService.mConstants.MIN_READY_NON_ACTIVE_JOBS_COUNT / 2; ++i) {
+            JobStatus job = createJobStatus("testRareJobBatching", createJobInfo());
+            job.setStandbyBucket(RARE_INDEX);
+
             maybeQueueFunctor.accept(job);
-            assertEquals(i + 1, maybeQueueFunctor.forceBatchedCount);
+            assertEquals(i + 1, maybeQueueFunctor.mBatches.get(null).size());
             assertEquals(i + 1, maybeQueueFunctor.runnableJobs.size());
             assertEquals(sElapsedRealtimeClock.millis(), job.getFirstForceBatchedTimeElapsed());
         }
@@ -1936,6 +2422,7 @@ public class JobSchedulerServiceTest {
 
     /** Tests that jobs are removed from the pending list if the user stops the app. */
     @Test
+    @RequiresFlagsDisabled(android.app.job.Flags.FLAG_GET_PENDING_JOB_REASONS_API)
     public void testUserStopRemovesPending() {
         spyOn(mService);
 
@@ -1985,5 +2472,200 @@ public class JobSchedulerServiceTest {
         assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReason(job2a));
         assertFalse(mService.getPendingJobQueue().contains(job2b));
         assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReason(job2b));
+    }
+
+    /** Tests that jobs are removed from the pending list if the user stops the app. */
+    @Test
+    @RequiresFlagsEnabled(android.app.job.Flags.FLAG_GET_PENDING_JOB_REASONS_API)
+    public void testUserStopRemovesPending_withPendingJobReasonsApi() {
+        spyOn(mService);
+
+        JobStatus job1a = createJobStatus("testUserStopRemovesPending",
+                createJobInfo(1), 1, "pkg1");
+        JobStatus job1b = createJobStatus("testUserStopRemovesPending",
+                createJobInfo(2), 1, "pkg1");
+        JobStatus job2a = createJobStatus("testUserStopRemovesPending",
+                createJobInfo(1), 2, "pkg2");
+        JobStatus job2b = createJobStatus("testUserStopRemovesPending",
+                createJobInfo(2), 2, "pkg2");
+        doReturn(1).when(mPackageManagerInternal).getPackageUid("pkg1", 0, 0);
+        doReturn(11).when(mPackageManagerInternal).getPackageUid("pkg1", 0, 1);
+        doReturn(2).when(mPackageManagerInternal).getPackageUid("pkg2", 0, 0);
+
+        mService.getPendingJobQueue().clear();
+        mService.getPendingJobQueue().add(job1a);
+        mService.getPendingJobQueue().add(job1b);
+        mService.getPendingJobQueue().add(job2a);
+        mService.getPendingJobQueue().add(job2b);
+        mService.getJobStore().add(job1a);
+        mService.getJobStore().add(job1b);
+        mService.getJobStore().add(job2a);
+        mService.getJobStore().add(job2b);
+
+        mService.notePendingUserRequestedAppStopInternal("pkg1", 1, "test");
+        assertEquals(4, mService.getPendingJobQueue().size());
+        assertTrue(mService.getPendingJobQueue().contains(job1a));
+        assertTrue(mService.getPendingJobQueue().contains(job1b));
+        assertTrue(mService.getPendingJobQueue().contains(job2a));
+        assertTrue(mService.getPendingJobQueue().contains(job2b));
+
+        mService.notePendingUserRequestedAppStopInternal("pkg1", 0, "test");
+        assertEquals(2, mService.getPendingJobQueue().size());
+        assertFalse(mService.getPendingJobQueue().contains(job1a));
+        assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReasons(job1a)[0]);
+        assertFalse(mService.getPendingJobQueue().contains(job1b));
+        assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReasons(job1b)[0]);
+        assertTrue(mService.getPendingJobQueue().contains(job2a));
+        assertTrue(mService.getPendingJobQueue().contains(job2b));
+
+        mService.notePendingUserRequestedAppStopInternal("pkg2", 0, "test");
+        assertEquals(0, mService.getPendingJobQueue().size());
+        assertFalse(mService.getPendingJobQueue().contains(job1a));
+        assertFalse(mService.getPendingJobQueue().contains(job1b));
+        assertFalse(mService.getPendingJobQueue().contains(job2a));
+        assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReasons(job2a)[0]);
+        assertFalse(mService.getPendingJobQueue().contains(job2b));
+        assertEquals(JobScheduler.PENDING_JOB_REASON_USER, mService.getPendingJobReasons(job2b)[0]);
+    }
+
+    /**
+     * Unit tests {@link JobSchedulerService#checkIfRestricted(JobStatus)} with single {@link
+     * JobRestriction} registered.
+     */
+    @Test
+    public void testCheckIfRestrictedSingleRestriction() {
+        int bias = JobInfo.BIAS_BOUND_FOREGROUND_SERVICE;
+        JobStatus fgsJob =
+                createJobStatus(
+                        "testCheckIfRestrictedSingleRestriction", createJobInfo(1).setBias(bias));
+        ThermalStatusRestriction mockThermalStatusRestriction =
+                mock(ThermalStatusRestriction.class);
+        mService.mJobRestrictions.clear();
+        mService.mJobRestrictions.add(mockThermalStatusRestriction);
+        when(mockThermalStatusRestriction.isJobRestricted(fgsJob, bias)).thenReturn(true);
+
+        synchronized (mService.mLock) {
+            assertEquals(mService.checkIfRestricted(fgsJob), mockThermalStatusRestriction);
+        }
+
+        when(mockThermalStatusRestriction.isJobRestricted(fgsJob, bias)).thenReturn(false);
+        synchronized (mService.mLock) {
+            assertNull(mService.checkIfRestricted(fgsJob));
+        }
+    }
+
+    /**
+     * Unit tests {@link JobSchedulerService#checkIfRestricted(JobStatus)} with multiple {@link
+     * JobRestriction} registered.
+     */
+    @Test
+    public void testCheckIfRestrictedMultipleRestrictions() {
+        int bias = JobInfo.BIAS_BOUND_FOREGROUND_SERVICE;
+        JobStatus fgsJob =
+                createJobStatus(
+                        "testGetMinJobExecutionGuaranteeMs", createJobInfo(1).setBias(bias));
+        JobRestriction mock1JobRestriction = mock(JobRestriction.class);
+        JobRestriction mock2JobRestriction = mock(JobRestriction.class);
+        mService.mJobRestrictions.clear();
+        mService.mJobRestrictions.add(mock1JobRestriction);
+        mService.mJobRestrictions.add(mock2JobRestriction);
+
+        // Jobs will be restricted if any one of the registered {@link JobRestriction}
+        // reports true.
+        when(mock1JobRestriction.isJobRestricted(fgsJob, bias)).thenReturn(true);
+        when(mock2JobRestriction.isJobRestricted(fgsJob, bias)).thenReturn(false);
+        synchronized (mService.mLock) {
+            assertEquals(mService.checkIfRestricted(fgsJob), mock1JobRestriction);
+        }
+
+        when(mock1JobRestriction.isJobRestricted(fgsJob, bias)).thenReturn(false);
+        when(mock2JobRestriction.isJobRestricted(fgsJob, bias)).thenReturn(true);
+        synchronized (mService.mLock) {
+            assertEquals(mService.checkIfRestricted(fgsJob), mock2JobRestriction);
+        }
+
+        when(mock1JobRestriction.isJobRestricted(fgsJob, bias)).thenReturn(false);
+        when(mock2JobRestriction.isJobRestricted(fgsJob, bias)).thenReturn(false);
+        synchronized (mService.mLock) {
+            assertNull(mService.checkIfRestricted(fgsJob));
+        }
+
+        when(mock1JobRestriction.isJobRestricted(fgsJob, bias)).thenReturn(true);
+        when(mock2JobRestriction.isJobRestricted(fgsJob, bias)).thenReturn(true);
+        synchronized (mService.mLock) {
+            assertNotEquals(mService.checkIfRestricted(fgsJob), mock1JobRestriction);
+        }
+    }
+
+    /**
+     * Jobs with foreground service and top app biases must not be restricted when the flag is
+     * disabled.
+     */
+    @Test
+    @RequiresFlagsDisabled(FLAG_THERMAL_RESTRICTIONS_TO_FGS_JOBS)
+    public void testCheckIfRestricted_highJobBias_flagThermalRestrictionsToFgsJobsDisabled() {
+        JobStatus fgsJob =
+                createJobStatus(
+                        "testCheckIfRestrictedJobBiasFgs",
+                        createJobInfo(1).setBias(JobInfo.BIAS_FOREGROUND_SERVICE));
+        JobStatus topAppJob =
+                createJobStatus(
+                        "testCheckIfRestrictedJobBiasTopApp",
+                        createJobInfo(2).setBias(JobInfo.BIAS_TOP_APP));
+
+        synchronized (mService.mLock) {
+            assertNull(mService.checkIfRestricted(fgsJob));
+            assertNull(mService.checkIfRestricted(topAppJob));
+        }
+    }
+
+    /** Jobs with top app biases must not be restricted. */
+    @Test
+    public void testCheckIfRestricted_highJobBias() {
+        JobStatus topAppJob = createJobStatus(
+                "testCheckIfRestrictedJobBiasTopApp",
+                createJobInfo(1).setBias(JobInfo.BIAS_TOP_APP));
+        synchronized (mService.mLock) {
+            assertNull(mService.checkIfRestricted(topAppJob));
+        }
+    }
+
+    @RequiresFlagsEnabled(FLAG_CREATE_WORK_CHAIN_BY_DEFAULT)
+    @Test
+    public void testDeriveWorkSource_flagCreateWorkChainByDefaultEnabled() {
+        final WorkSource workSource = mService.deriveWorkSource(TEST_UID, "com.test.pkg");
+        assertEquals(TEST_UID, workSource.getAttributionUid());
+
+        assertEquals(1, workSource.getWorkChains().size());
+        final WorkChain workChain = workSource.getWorkChains().get(0);
+        final int[] expectedUids = {TEST_UID, Process.SYSTEM_UID};
+        assertArrayEquals(expectedUids, workChain.getUids());
+    }
+
+    @RequiresFlagsDisabled(FLAG_CREATE_WORK_CHAIN_BY_DEFAULT)
+    @Test
+    public void testDeriveWorkSource_flagCreateWorkChainByDefaultDisabled() {
+        final ContentResolver contentResolver = mock(ContentResolver.class);
+        doReturn(contentResolver).when(mContext).getContentResolver();
+        final IContentProvider iContentProvider = mock(IContentProvider.class);
+        doReturn(iContentProvider).when(contentResolver).acquireProvider(anyString());
+
+        final WorkSource workSource = mService.deriveWorkSource(TEST_UID, "com.test.pkg");
+        assertEquals(TEST_UID, workSource.getAttributionUid());
+
+        assertNull(workSource.getWorkChains());
+    }
+
+    private void setBatteryLevel(int level) {
+        doReturn(level).when(mBatteryManagerInternal).getBatteryLevel();
+        mService.mBatteryStateTracker
+                .onReceive(mContext, new Intent(Intent.ACTION_BATTERY_LEVEL_CHANGED));
+    }
+
+    private void setChargingPolicy(int policy) {
+        doReturn(policy).when(mBatteryManagerInternal).getChargingPolicy();
+        if (mChargingPolicyChangeListener != null) {
+            mChargingPolicyChangeListener.onChargingPolicyChanged(policy);
+        }
     }
 }

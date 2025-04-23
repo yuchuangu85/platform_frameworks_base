@@ -21,96 +21,82 @@ import android.content.Context
 import android.graphics.Point
 import android.graphics.Rect
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.View
 import android.view.WindowManager
-import android.widget.FrameLayout
 import androidx.annotation.VisibleForTesting
 import androidx.constraintlayout.widget.ConstraintLayout
 import androidx.constraintlayout.widget.ConstraintSet
-import com.android.keyguard.KeyguardUpdateMonitor
-import com.android.keyguard.LockIconView
-import com.android.keyguard.LockIconViewController
-import com.android.systemui.Flags.keyguardBottomAreaRefactor
 import com.android.systemui.biometrics.AuthController
+import com.android.systemui.customization.R as customR
 import com.android.systemui.dagger.qualifiers.Application
-import com.android.systemui.deviceentry.shared.DeviceEntryUdfpsRefactor
 import com.android.systemui.flags.FeatureFlags
 import com.android.systemui.flags.Flags
+import com.android.systemui.keyguard.KeyguardBottomAreaRefactor
+import com.android.systemui.keyguard.MigrateClocksToBlueprint
 import com.android.systemui.keyguard.shared.model.KeyguardSection
-import com.android.systemui.keyguard.ui.SwipeUpAnywhereGestureHandler
-import com.android.systemui.keyguard.ui.binder.AlternateBouncerViewBinder
 import com.android.systemui.keyguard.ui.binder.DeviceEntryIconViewBinder
 import com.android.systemui.keyguard.ui.view.DeviceEntryIconView
-import com.android.systemui.keyguard.ui.viewmodel.AlternateBouncerViewModel
 import com.android.systemui.keyguard.ui.viewmodel.DeviceEntryBackgroundViewModel
 import com.android.systemui.keyguard.ui.viewmodel.DeviceEntryForegroundViewModel
 import com.android.systemui.keyguard.ui.viewmodel.DeviceEntryIconViewModel
+import com.android.systemui.log.LogBuffer
+import com.android.systemui.log.LongPressHandlingViewLogger
+import com.android.systemui.log.dagger.LongPressTouchLog
 import com.android.systemui.plugins.FalsingManager
 import com.android.systemui.res.R
 import com.android.systemui.shade.NotificationPanelView
-import com.android.systemui.statusbar.NotificationShadeWindowController
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.statusbar.VibratorHelper
-import com.android.systemui.statusbar.gesture.TapGestureDetector
 import dagger.Lazy
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.DisposableHandle
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 
-/** Includes both the device entry icon and the alternate bouncer scrim. */
+/** Includes the device entry icon. */
 @ExperimentalCoroutinesApi
 class DefaultDeviceEntrySection
 @Inject
 constructor(
-    private val keyguardUpdateMonitor: KeyguardUpdateMonitor,
+    @Application private val applicationScope: CoroutineScope,
     private val authController: AuthController,
     private val windowManager: WindowManager,
-    private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     private val notificationPanelView: NotificationPanelView,
     private val featureFlags: FeatureFlags,
-    private val lockIconViewController: Lazy<LockIconViewController>,
     private val deviceEntryIconViewModel: Lazy<DeviceEntryIconViewModel>,
     private val deviceEntryForegroundViewModel: Lazy<DeviceEntryForegroundViewModel>,
     private val deviceEntryBackgroundViewModel: Lazy<DeviceEntryBackgroundViewModel>,
     private val falsingManager: Lazy<FalsingManager>,
-    private val alternateBouncerViewModel: Lazy<AlternateBouncerViewModel>,
-    private val notificationShadeWindowController: Lazy<NotificationShadeWindowController>,
-    @Application private val scope: CoroutineScope,
-    private val swipeUpAnywhereGestureHandler: Lazy<SwipeUpAnywhereGestureHandler>,
-    private val tapGestureDetector: Lazy<TapGestureDetector>,
     private val vibratorHelper: Lazy<VibratorHelper>,
+    @LongPressTouchLog private val logBuffer: LogBuffer,
 ) : KeyguardSection() {
     private val deviceEntryIconViewId = R.id.device_entry_icon_view
-    private val alternateBouncerViewId = R.id.alternate_bouncer
+    private var disposableHandle: DisposableHandle? = null
 
     override fun addViews(constraintLayout: ConstraintLayout) {
-        if (!keyguardBottomAreaRefactor() && !DeviceEntryUdfpsRefactor.isEnabled) {
+        if (!KeyguardBottomAreaRefactor.isEnabled && !MigrateClocksToBlueprint.isEnabled) {
             return
         }
 
-        if (DeviceEntryUdfpsRefactor.isEnabled) {
-            // The alternate bouncer scrim needs to be below the device entry icon view, so
-            // we add the view here before adding the device entry icon view.
-            View.inflate(context, R.layout.alternate_bouncer, constraintLayout)
-        }
-
-        notificationPanelView.findViewById<View>(R.id.lock_icon_view).let {
-            notificationPanelView.removeView(it)
-        }
-
         val view =
-            if (DeviceEntryUdfpsRefactor.isEnabled) {
-                DeviceEntryIconView(context, null).apply { id = deviceEntryIconViewId }
-            } else {
-                // keyguardBottomAreaRefactor()
-                LockIconView(context, null).apply { id = R.id.lock_icon_view }
-            }
+            DeviceEntryIconView(
+                    context,
+                    null,
+                    logger = LongPressHandlingViewLogger(logBuffer = logBuffer, TAG),
+                )
+                .apply { id = deviceEntryIconViewId }
+
         constraintLayout.addView(view)
     }
 
     override fun bindData(constraintLayout: ConstraintLayout) {
-        if (DeviceEntryUdfpsRefactor.isEnabled) {
-            constraintLayout.findViewById<DeviceEntryIconView?>(deviceEntryIconViewId)?.let {
+        constraintLayout.findViewById<DeviceEntryIconView?>(deviceEntryIconViewId)?.let {
+            disposableHandle?.dispose()
+            disposableHandle =
                 DeviceEntryIconViewBinder.bind(
+                    applicationScope,
                     it,
                     deviceEntryIconViewModel.get(),
                     deviceEntryForegroundViewModel.get(),
@@ -118,30 +104,19 @@ constructor(
                     falsingManager.get(),
                     vibratorHelper.get(),
                 )
-            }
-            constraintLayout.findViewById<FrameLayout?>(alternateBouncerViewId)?.let {
-                AlternateBouncerViewBinder.bind(
-                    it,
-                    alternateBouncerViewModel.get(),
-                    scope,
-                    notificationShadeWindowController.get(),
-                    falsingManager.get(),
-                    swipeUpAnywhereGestureHandler.get(),
-                    tapGestureDetector.get(),
-                )
-            }
-        } else {
-            constraintLayout.findViewById<LockIconView?>(R.id.lock_icon_view)?.let {
-                lockIconViewController.get().setLockIconView(it)
-            }
         }
     }
 
     override fun applyConstraints(constraintSet: ConstraintSet) {
-        val isUdfpsSupported = keyguardUpdateMonitor.isUdfpsSupported
+        Log.d(
+            "DefaultDeviceEntrySection",
+            "isUdfpsSupported=${deviceEntryIconViewModel.get().isUdfpsSupported.value}",
+        )
+        val isUdfpsSupported = deviceEntryIconViewModel.get().isUdfpsSupported.value
+
         val scaleFactor: Float = authController.scaleFactor
         val mBottomPaddingPx =
-            context.resources.getDimensionPixelSize(R.dimen.lock_icon_margin_bottom)
+            context.resources.getDimensionPixelSize(customR.dimen.lock_icon_margin_bottom)
         val bounds = windowManager.currentWindowMetrics.bounds
         var widthPixels = bounds.right.toFloat()
         if (featureFlags.isEnabled(Flags.LOCKSCREEN_ENABLE_LANDSCAPE)) {
@@ -157,14 +132,24 @@ constructor(
         val iconRadiusPx = (defaultDensity * 36).toInt()
 
         if (isUdfpsSupported) {
-            authController.udfpsLocation?.let { udfpsLocation ->
-                centerIcon(udfpsLocation, authController.udfpsRadius, constraintSet)
+            deviceEntryIconViewModel.get().udfpsLocation.value?.let { udfpsLocation ->
+                Log.d(
+                    "DeviceEntrySection",
+                    "udfpsLocation=$udfpsLocation, " +
+                        "scaledLocation=(${udfpsLocation.centerX},${udfpsLocation.centerY}), " +
+                        "unusedAuthController=${authController.udfpsLocation}",
+                )
+                centerIcon(
+                    Point(udfpsLocation.centerX.toInt(), udfpsLocation.centerY.toInt()),
+                    udfpsLocation.radius,
+                    constraintSet,
+                )
             }
         } else {
             centerIcon(
                 Point(
                     (widthPixels / 2).toInt(),
-                    (heightPixels - ((mBottomPaddingPx + iconRadiusPx) * scaleFactor)).toInt()
+                    (heightPixels - ((mBottomPaddingPx + iconRadiusPx) * scaleFactor)).toInt(),
                 ),
                 iconRadiusPx * scaleFactor,
                 constraintSet,
@@ -173,11 +158,8 @@ constructor(
     }
 
     override fun removeViews(constraintLayout: ConstraintLayout) {
-        if (DeviceEntryUdfpsRefactor.isEnabled) {
-            constraintLayout.removeView(deviceEntryIconViewId)
-        } else {
-            constraintLayout.removeView(R.id.lock_icon_view)
-        }
+        constraintLayout.removeView(deviceEntryIconViewId)
+        disposableHandle?.dispose()
     }
 
     @VisibleForTesting
@@ -192,12 +174,7 @@ constructor(
                 )
             }
 
-        val iconId =
-            if (DeviceEntryUdfpsRefactor.isEnabled) {
-                deviceEntryIconViewId
-            } else {
-                R.id.lock_icon_view
-            }
+        val iconId = deviceEntryIconViewId
 
         constraintSet.apply {
             constrainWidth(iconId, sensorRect.right - sensorRect.left)
@@ -207,15 +184,51 @@ constructor(
                 ConstraintSet.TOP,
                 ConstraintSet.PARENT_ID,
                 ConstraintSet.TOP,
-                sensorRect.top
+                sensorRect.top,
             )
             connect(
                 iconId,
                 ConstraintSet.START,
                 ConstraintSet.PARENT_ID,
                 ConstraintSet.START,
-                sensorRect.left
+                sensorRect.left,
             )
         }
+
+        // This is only intended to be here until the KeyguardBottomAreaRefactor flag is enabled
+        // Without this logic, the lock icon location changes but the KeyguardBottomAreaView is not
+        // updated and visible ui layout jank occurs. This is due to AmbientIndicationContainer
+        // being in NPVC and laying out prior to the KeyguardRootView.
+        // Remove when KeyguardBottomAreaRefactor is enabled.
+        if (!KeyguardBottomAreaRefactor.isEnabled) {
+            with(notificationPanelView) {
+                val isUdfpsSupported = deviceEntryIconViewModel.get().isUdfpsSupported.value
+                val bottomAreaViewRight = findViewById<View>(R.id.keyguard_bottom_area)?.right ?: 0
+                findViewById<View>(R.id.ambient_indication_container)?.let {
+                    val (ambientLeft, ambientTop) = it.locationOnScreen
+                    if (isUdfpsSupported) {
+                        // make top of ambient indication view the bottom of the lock icon
+                        it.layout(
+                            ambientLeft,
+                            sensorRect.bottom,
+                            bottomAreaViewRight - ambientLeft,
+                            ambientTop + it.measuredHeight,
+                        )
+                    } else {
+                        // make bottom of ambient indication view the top of the lock icon
+                        it.layout(
+                            ambientLeft,
+                            sensorRect.top - it.measuredHeight,
+                            bottomAreaViewRight - ambientLeft,
+                            sensorRect.top,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    companion object {
+        private const val TAG = "DefaultDeviceEntrySection"
     }
 }

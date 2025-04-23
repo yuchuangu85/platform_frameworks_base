@@ -33,13 +33,13 @@ import androidx.dynamicanimation.animation.DynamicAnimation;
 import androidx.dynamicanimation.animation.SpringForce;
 
 import com.android.wm.shell.R;
-import com.android.wm.shell.animation.Interpolators;
-import com.android.wm.shell.animation.PhysicsAnimator;
 import com.android.wm.shell.bubbles.BadgedImageView;
 import com.android.wm.shell.bubbles.BubbleOverflow;
 import com.android.wm.shell.bubbles.BubblePositioner;
 import com.android.wm.shell.bubbles.BubbleStackView;
-import com.android.wm.shell.common.magnetictarget.MagnetizedObject;
+import com.android.wm.shell.shared.animation.Interpolators;
+import com.android.wm.shell.shared.animation.PhysicsAnimator;
+import com.android.wm.shell.shared.magnetictarget.MagnetizedObject;
 
 import com.google.android.collect.Sets;
 
@@ -356,7 +356,6 @@ public class ExpandedAnimationController
             MagnetizedObject.MagnetListener listener) {
         mLayout.cancelAnimationsOnView(bubble);
 
-        bubble.setTranslationZ(Short.MAX_VALUE);
         mMagnetizedBubbleDraggingOut = new MagnetizedObject<View>(
                 mLayout.getContext(), bubble,
                 DynamicAnimation.TRANSLATION_X, DynamicAnimation.TRANSLATION_Y) {
@@ -420,7 +419,7 @@ public class ExpandedAnimationController
             bubbleView.setTranslationY(y);
         }
 
-        final float expandedY = mPositioner.getExpandedViewYTopAligned();
+        final int expandedY = mPositioner.getExpandedViewYTopAligned();
         final boolean draggedOutEnough =
                 y > expandedY + mBubbleSizePx || y < expandedY - mBubbleSizePx;
         if (draggedOutEnough != mBubbleDraggedOutEnough) {
@@ -460,6 +459,7 @@ public class ExpandedAnimationController
     /**
      * Snaps a bubble back to its position within the bubble row, and animates the rest of the
      * bubbles to accommodate it if it was previously dragged out past the threshold.
+     * Only happens while the stack is expanded.
      */
     public void snapBubbleBack(View bubbleView, float velX, float velY) {
         if (mLayout == null) {
@@ -467,10 +467,14 @@ public class ExpandedAnimationController
         }
         final int index = mLayout.indexOfChild(bubbleView);
         final PointF p = mPositioner.getExpandedBubbleXY(index, mBubbleStackView.getState());
+        // overflow is not draggable so it's never the overflow
+        final float zTranslation = mPositioner.getZTranslation(index,
+                false /* isOverflow */,
+                true /* isExpanded */);
         animationForChildAtIndex(index)
-                .position(p.x, p.y)
+                .position(p.x, p.y, zTranslation)
                 .withPositionStartVelocities(velX, velY)
-                .start(() -> bubbleView.setTranslationZ(0f) /* after */);
+                .start();
 
         mMagnetizedBubbleDraggingOut = null;
 
@@ -509,6 +513,7 @@ public class ExpandedAnimationController
         return Sets.newHashSet(
                 DynamicAnimation.TRANSLATION_X,
                 DynamicAnimation.TRANSLATION_Y,
+                DynamicAnimation.TRANSLATION_Z,
                 DynamicAnimation.SCALE_X,
                 DynamicAnimation.SCALE_Y,
                 DynamicAnimation.ALPHA);
@@ -563,7 +568,7 @@ public class ExpandedAnimationController
                         ? p.x - mBubbleSizePx * ANIMATE_TRANSLATION_FACTOR
                         : p.x + mBubbleSizePx * ANIMATE_TRANSLATION_FACTOR;
                 animationForChild(child)
-                        .translationX(fromX, p.y)
+                        .translationX(fromX, p.x)
                         .start();
             } else {
                 float fromY = p.y - mBubbleSizePx * ANIMATE_TRANSLATION_FACTOR;
@@ -614,6 +619,14 @@ public class ExpandedAnimationController
         }
     }
 
+    /**
+     * Call to update the bubble positions after an orientation change.
+     */
+    public void onOrientationChanged() {
+        if (mLayout == null) return;
+        updateBubblePositions();
+    }
+
     private void updateBubblePositions() {
         if (mAnimatingExpand || mAnimatingCollapse) {
             return;
@@ -633,5 +646,10 @@ public class ExpandedAnimationController
                     .translationY(p.y)
                     .start();
         }
+    }
+
+    /** Returns true if we're in the middle of a collapse or expand animation. */
+    boolean isAnimating() {
+        return mAnimatingCollapse || mAnimatingExpand;
     }
 }

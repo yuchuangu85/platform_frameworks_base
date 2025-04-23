@@ -18,16 +18,20 @@ package com.android.systemui.clipboardoverlay;
 
 import static android.content.ClipDescription.CLASSIFICATION_COMPLETE;
 
+import static com.android.systemui.Flags.clipboardNoninteractiveOnLockscreen;
+import static com.android.systemui.Flags.overrideSuppressOverlayCondition;
 import static com.android.systemui.clipboardoverlay.ClipboardOverlayEvent.CLIPBOARD_OVERLAY_ENTERED;
 import static com.android.systemui.clipboardoverlay.ClipboardOverlayEvent.CLIPBOARD_OVERLAY_UPDATED;
 import static com.android.systemui.clipboardoverlay.ClipboardOverlayEvent.CLIPBOARD_TOAST_SHOWN;
 
 import static com.google.android.setupcompat.util.WizardManagerHelper.SETTINGS_SECURE_USER_SETUP_COMPLETE;
 
+import android.app.KeyguardManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.os.Build;
+import android.os.UserHandle;
 import android.provider.Settings;
 import android.util.Log;
 
@@ -35,6 +39,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.logging.UiEventLogger;
 import com.android.systemui.CoreStartable;
 import com.android.systemui.dagger.SysUISingleton;
+import com.android.systemui.user.utils.UserScopedService;
 
 import javax.inject.Inject;
 import javax.inject.Provider;
@@ -57,20 +62,26 @@ public class ClipboardListener implements
     private final Provider<ClipboardOverlayController> mOverlayProvider;
     private final ClipboardToast mClipboardToast;
     private final ClipboardManager mClipboardManager;
+    private final KeyguardManager mKeyguardManager;
     private final UiEventLogger mUiEventLogger;
+    private final ClipboardOverlaySuppressionController mClipboardOverlaySuppressionController;
     private ClipboardOverlay mClipboardOverlay;
 
     @Inject
     public ClipboardListener(Context context,
             Provider<ClipboardOverlayController> clipboardOverlayControllerProvider,
             ClipboardToast clipboardToast,
-            ClipboardManager clipboardManager,
-            UiEventLogger uiEventLogger) {
+            UserScopedService<ClipboardManager> clipboardManager,
+            KeyguardManager keyguardManager,
+            UiEventLogger uiEventLogger,
+            ClipboardOverlaySuppressionController clipboardOverlaySuppressionController) {
         mContext = context;
         mOverlayProvider = clipboardOverlayControllerProvider;
         mClipboardToast = clipboardToast;
-        mClipboardManager = clipboardManager;
+        mClipboardManager = clipboardManager.forUser(UserHandle.CURRENT);
+        mKeyguardManager = keyguardManager;
         mUiEventLogger = uiEventLogger;
+        mClipboardOverlaySuppressionController = clipboardOverlaySuppressionController;
     }
 
     @Override
@@ -87,12 +98,22 @@ public class ClipboardListener implements
         String clipSource = mClipboardManager.getPrimaryClipSource();
         ClipData clipData = mClipboardManager.getPrimaryClip();
 
-        if (shouldSuppressOverlay(clipData, clipSource, Build.IS_EMULATOR)) {
-            Log.i(TAG, "Clipboard overlay suppressed.");
-            return;
+        if (overrideSuppressOverlayCondition()) {
+            if (mClipboardOverlaySuppressionController.shouldSuppressOverlay(clipData, clipSource,
+                    Build.IS_EMULATOR)) {
+                Log.i(TAG, "Clipboard overlay suppressed.");
+                return;
+            }
+        } else {
+            if (shouldSuppressOverlay(clipData, clipSource, Build.IS_EMULATOR)) {
+                Log.i(TAG, "Clipboard overlay suppressed.");
+                return;
+            }
         }
 
-        if (!isUserSetupComplete() // user should not access intents from this state
+        // user should not access intents before setup or while device is locked
+        if ((clipboardNoninteractiveOnLockscreen() && mKeyguardManager.isDeviceLocked())
+                || !isUserSetupComplete()
                 || clipData == null // shouldn't happen, but just in case
                 || clipData.getItemCount() == 0) {
             if (shouldShowToast(clipData)) {

@@ -17,15 +17,16 @@
 package com.android.server.wm.flicker.service
 
 import android.app.Instrumentation
+import android.platform.test.rule.DisableNotificationCooldownSettingRule
 import android.platform.test.rule.NavigationModeRule
 import android.platform.test.rule.PressHomeRule
 import android.platform.test.rule.UnlockScreenRule
-import android.tools.common.NavBar
-import android.tools.common.Rotation
+import android.tools.NavBar
+import android.tools.Rotation
 import android.tools.device.apphelpers.MessagingAppHelper
-import android.tools.device.flicker.rules.ChangeDisplayOrientationRule
-import android.tools.device.flicker.rules.LaunchAppRule
-import android.tools.device.flicker.rules.RemoveAllTasksButHomeRule
+import android.tools.flicker.rules.ChangeDisplayOrientationRule
+import android.tools.flicker.rules.LaunchAppRule
+import android.tools.flicker.rules.RemoveAllTasksButHomeRule
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.rules.RuleChain
 
@@ -48,6 +49,7 @@ object Utils {
                     clearCacheAfterParsing = false
                 )
             )
+            .around(DisableNotificationCooldownSettingRule())
             .around(PressHomeRule())
     }
 }

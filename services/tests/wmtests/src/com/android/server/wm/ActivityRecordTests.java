@@ -18,10 +18,6 @@ package com.android.server.wm;
 
 import static android.app.AppOpsManager.MODE_ALLOWED;
 import static android.app.AppOpsManager.OP_PICTURE_IN_PICTURE;
-import static android.app.AppCompatTaskInfo.CAMERA_COMPAT_CONTROL_DISMISSED;
-import static android.app.AppCompatTaskInfo.CAMERA_COMPAT_CONTROL_HIDDEN;
-import static android.app.AppCompatTaskInfo.CAMERA_COMPAT_CONTROL_TREATMENT_APPLIED;
-import static android.app.AppCompatTaskInfo.CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED;
 import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
@@ -43,6 +39,8 @@ import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT;
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE;
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSET;
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED;
+import static android.content.pm.ApplicationInfo.CATEGORY_SOCIAL;
+import static android.content.pm.ApplicationInfo.CATEGORY_GAME;
 import static android.content.res.Configuration.ORIENTATION_LANDSCAPE;
 import static android.content.res.Configuration.ORIENTATION_PORTRAIT;
 import static android.content.res.Configuration.UI_MODE_TYPE_DESK;
@@ -119,7 +117,6 @@ import static org.mockito.Mockito.never;
 
 import android.app.ActivityOptions;
 import android.app.AppOpsManager;
-import android.app.ICompatCameraControlCallback;
 import android.app.PictureInPictureParams;
 import android.app.servertransaction.ActivityConfigurationChangeItem;
 import android.app.servertransaction.ClientTransaction;
@@ -143,7 +140,6 @@ import android.os.Process;
 import android.os.RemoteException;
 import android.platform.test.annotations.Presubmit;
 import android.provider.DeviceConfig;
-import android.util.MergedConfiguration;
 import android.util.MutableBoolean;
 import android.view.DisplayInfo;
 import android.view.IRemoteAnimationFinishedCallback;
@@ -161,6 +157,7 @@ import androidx.test.filters.MediumTest;
 
 import com.android.internal.R;
 import com.android.server.wm.ActivityRecord.State;
+import com.android.window.flags.Flags;
 
 import org.junit.Assert;
 import org.junit.Before;
@@ -202,8 +199,7 @@ public class ActivityRecordTests extends WindowTestsBase {
     }
 
     private TestStartingWindowOrganizer registerTestStartingWindowOrganizer() {
-        return new TestStartingWindowOrganizer(mAtm,
-                mSystemServicesTestRule.getPowerManagerWrapper());
+        return new TestStartingWindowOrganizer(mAtm);
     }
 
     @Test
@@ -263,16 +259,10 @@ public class ActivityRecordTests extends WindowTestsBase {
         doAnswer((InvocationOnMock invocationOnMock) -> {
             final ClientTransaction transaction = invocationOnMock.getArgument(0);
             final List<ClientTransactionItem> items = transaction.getTransactionItems();
-            if (items != null) {
-                for (ClientTransactionItem item : items) {
-                    if (item instanceof PauseActivityItem) {
-                        pauseFound.value = true;
-                        break;
-                    }
-                }
-            } else {
-                if (transaction.getLifecycleStateRequest() instanceof PauseActivityItem) {
+            for (ClientTransactionItem item : items) {
+                if (item instanceof PauseActivityItem) {
                     pauseFound.value = true;
+                    break;
                 }
             }
             return null;
@@ -321,7 +311,7 @@ public class ActivityRecordTests extends WindowTestsBase {
     }
 
     private void ensureActivityConfiguration(ActivityRecord activity) {
-        activity.ensureActivityConfiguration(0 /* globalChanges */, false /* preserveWindow */);
+        activity.ensureActivityConfiguration();
     }
 
     @Test
@@ -395,8 +385,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         activity.setState(RESUMED, "Testing");
 
         task.onRequestedOverrideConfigurationChanged(task.getConfiguration());
-        activity.setLastReportedConfiguration(new MergedConfiguration(new Configuration(),
-                activity.getConfiguration()));
+        activity.setLastReportedConfiguration(new Configuration(), activity.getConfiguration());
 
         activity.info.configChanges &= ~CONFIG_ORIENTATION;
         final Configuration newConfig = new Configuration(task.getConfiguration());
@@ -420,8 +409,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         activity.setState(RESUMED, "Testing");
 
         task.onRequestedOverrideConfigurationChanged(task.getConfiguration());
-        activity.setLastReportedConfiguration(new MergedConfiguration(new Configuration(),
-                activity.getConfiguration()));
+        activity.setLastReportedConfiguration(new Configuration(), activity.getConfiguration());
 
         activity.info.configChanges &= ~CONFIG_ORIENTATION;
         final Configuration newConfig = new Configuration(task.getConfiguration());
@@ -447,8 +435,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         activity.setState(RESUMED, "Testing");
 
         task.onRequestedOverrideConfigurationChanged(task.getConfiguration());
-        activity.setLastReportedConfiguration(new MergedConfiguration(new Configuration(),
-                activity.getConfiguration()));
+        activity.setLastReportedConfiguration(new Configuration(), activity.getConfiguration());
 
         activity.info.configChanges &= ~CONFIG_ORIENTATION;
         final Configuration newConfig = new Configuration(task.getConfiguration());
@@ -468,8 +455,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         activity.setState(RESUMED, "Testing");
 
         task.onRequestedOverrideConfigurationChanged(task.getConfiguration());
-        activity.setLastReportedConfiguration(new MergedConfiguration(new Configuration(),
-                activity.getConfiguration()));
+        activity.setLastReportedConfiguration(new Configuration(), activity.getConfiguration());
 
         activity.info.configChanges &= ~ActivityInfo.CONFIG_FONT_SCALE;
         final Configuration newConfig = new Configuration(task.getConfiguration());
@@ -529,10 +515,13 @@ public class ActivityRecordTests extends WindowTestsBase {
 
         // The activity shouldn't start relaunching since it doesn't have any desk resources.
         assertFalse(activity.isRelaunching());
+        // The activity configuration ui mode should match.
+        final var activityConfig = activity.getConfiguration();
+        assertEquals(newConfig.uiMode, activityConfig.uiMode);
 
         // The configuration change is still sent to the activity, even if it doesn't relaunch.
-        final ActivityConfigurationChangeItem expected =
-                ActivityConfigurationChangeItem.obtain(activity.token, newConfig);
+        final ActivityConfigurationChangeItem expected = new ActivityConfigurationChangeItem(
+                activity.token, activityConfig, activity.getActivityWindowInfo());
         verify(mClientLifecycleManager).scheduleTransactionItem(
                 eq(activity.app.getThread()), eq(expected));
     }
@@ -571,8 +560,7 @@ public class ActivityRecordTests extends WindowTestsBase {
                 .build();
         activity.setState(RESUMED, "Testing");
 
-        activity.setLastReportedConfiguration(new MergedConfiguration(new Configuration(),
-                activity.getConfiguration()));
+        activity.setLastReportedConfiguration(new Configuration(), activity.getConfiguration());
 
         clearInvocations(mClientLifecycleManager);
 
@@ -604,8 +592,8 @@ public class ActivityRecordTests extends WindowTestsBase {
 
         final Configuration currentConfig = activity.getConfiguration();
         assertEquals(expectedOrientation, currentConfig.orientation);
-        final ActivityConfigurationChangeItem expected =
-                ActivityConfigurationChangeItem.obtain(activity.token, currentConfig);
+        final ActivityConfigurationChangeItem expected = new ActivityConfigurationChangeItem(
+                activity.token, currentConfig, activity.getActivityWindowInfo());
         verify(mClientLifecycleManager).scheduleTransactionItem(activity.app.getThread(), expected);
         verify(displayRotation).onSetRequestedOrientation();
     }
@@ -691,7 +679,8 @@ public class ActivityRecordTests extends WindowTestsBase {
 
         // Asserts fixed orientation request is not ignored, and the orientation is changed.
         assertNotEquals(activityCurOrientation, activity.getConfiguration().orientation);
-        assertTrue(activity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(activity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
     }
 
     @Test
@@ -718,13 +707,14 @@ public class ActivityRecordTests extends WindowTestsBase {
         assertEquals(ORIENTATION_PORTRAIT, activity.getConfiguration().orientation);
 
         // Clear size compat.
-        activity.clearSizeCompatMode();
-        activity.ensureActivityConfiguration(0 /* globalChanges */, false /* preserveWindow */);
+        activity.mAppCompatController.getAppCompatSizeCompatModePolicy().clearSizeCompatMode();
+        activity.ensureActivityConfiguration();
         mDisplayContent.sendNewConfiguration();
 
         // Relaunching the app should still respect the orientation request.
         assertEquals(ORIENTATION_PORTRAIT, activity.getConfiguration().orientation);
-        assertTrue(activity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(activity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
     }
 
     @Test
@@ -775,7 +765,8 @@ public class ActivityRecordTests extends WindowTestsBase {
         activity.setState(STOPPED, "Testing");
 
         ActivityRecord topActivity = new ActivityBuilder(mAtm).setTask(task).build();
-        activity.addResultLocked(topActivity, "resultWho", 0, 0, new Intent());
+        activity.addResultLocked(topActivity, "resultWho", 0, 0, new Intent(),
+                /* callerToken */ null);
         topActivity.finishing = true;
 
         doReturn(TASK_FRAGMENT_VISIBILITY_VISIBLE).when(task).getVisibility(null);
@@ -799,8 +790,7 @@ public class ActivityRecordTests extends WindowTestsBase {
             doReturn(false).when(stack).isTranslucent(any());
             assertTrue(task.shouldBeVisible(null /* starting */));
 
-            activity.setLastReportedConfiguration(new MergedConfiguration(new Configuration(),
-                    activity.getConfiguration()));
+            activity.setLastReportedConfiguration(new Configuration(), activity.getConfiguration());
 
             final Configuration newConfig = new Configuration(activity.getConfiguration());
             final int shortSide = newConfig.screenWidthDp == newConfig.screenHeightDp
@@ -820,12 +810,10 @@ public class ActivityRecordTests extends WindowTestsBase {
 
             task.onConfigurationChanged(newConfig);
 
-            activity.ensureActivityConfiguration(0 /* globalChanges */,
-                    false /* preserveWindow */, true /* ignoreVisibility */);
+            activity.ensureActivityConfiguration(true /* ignoreVisibility */);
 
-            final ActivityConfigurationChangeItem expected =
-                    ActivityConfigurationChangeItem.obtain(activity.token,
-                            activity.getConfiguration());
+            final ActivityConfigurationChangeItem expected = new ActivityConfigurationChangeItem(
+                    activity.token, activity.getConfiguration(), activity.getActivityWindowInfo());
             verify(mClientLifecycleManager).scheduleTransactionItem(
                     activity.app.getThread(), expected);
         } finally {
@@ -847,7 +835,7 @@ public class ActivityRecordTests extends WindowTestsBase {
     }
 
     @Test
-    public void testTakeOptions() {
+    public void testTakeSceneTransitionInfo() {
         final ActivityRecord activity = createActivityWithTask();
         ActivityOptions opts = ActivityOptions.makeRemoteAnimation(
                 new RemoteAnimationAdapter(new Stub() {
@@ -865,7 +853,9 @@ public class ActivityRecordTests extends WindowTestsBase {
                     }
                 }, 0, 0));
         activity.updateOptionsLocked(opts);
-        assertNotNull(activity.takeOptions());
+        // Ensure the SceneTransitionInfo is null (since the ActivityOptions is for remote
+        // animation and AR#takeSceneTransitionInfo also clear the AR#mPendingOptions
+        assertNull(activity.takeSceneTransitionInfo());
         assertNull(activity.getOptions());
 
         final AppTransition appTransition = activity.mDisplayContent.mAppTransition;
@@ -1304,8 +1294,8 @@ public class ActivityRecordTests extends WindowTestsBase {
         targetActivity.finishIfPossible(0, new Intent(), null, "test", false /* oomAdj */);
         waitUntilHandlersIdle();
 
-        verify(resultToActivity).sendResult(anyInt(), eq(null), anyInt(), anyInt(), any(), eq(null),
-                anyBoolean());
+        verify(resultToActivity).sendResult(anyInt(), eq(null), anyInt(), anyInt(), any(), any(),
+                eq(null), anyBoolean());
     }
 
     /**
@@ -1564,8 +1554,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         topActivity.nowVisible = true;
         topActivity.setState(RESUMED, "true");
         doCallRealMethod().when(mRootWindowContainer).ensureActivitiesVisible(
-                any() /* starting */, anyInt() /* configChanges */,
-                anyBoolean() /* preserveWindows */, anyBoolean() /* notifyClients */);
+                any() /* starting */, anyBoolean() /* notifyClients */);
         topActivity.setShowWhenLocked(true);
 
         // Verify the stack-top activity is occluded keyguard.
@@ -1625,7 +1614,6 @@ public class ActivityRecordTests extends WindowTestsBase {
         secondActivity.finishing = true;
         secondActivity.completeFinishing("test");
         verify(secondActivity.mDisplayContent).ensureActivitiesVisible(null /* starting */,
-                0 /* configChanges */ , false /* preserveWindows */,
                 true /* notifyClients */);
 
         // Finish the first activity
@@ -1633,12 +1621,20 @@ public class ActivityRecordTests extends WindowTestsBase {
         firstActivity.setVisibleRequested(true);
         firstActivity.completeFinishing("test");
         verify(firstActivity.mDisplayContent, times(2)).ensureActivitiesVisible(null /* starting */,
-                0 /* configChanges */ , false /* preserveWindows */,
                 true /* notifyClients */);
 
         // Remove the translucent activity and clear invocations for next test
         translucentActivity.getTask().removeImmediately("test");
         clearInvocations(mDefaultDisplay);
+    }
+
+    @Test
+    public void testCompleteResume_updateCompatDisplayInsets() {
+        final ActivityRecord activity = new ActivityBuilder(mAtm).setCreateTask(true).build();
+        doReturn(true).when(activity).shouldCreateAppCompatDisplayInsets();
+        activity.setState(RESUMED, "test");
+        activity.completeResumeLocked();
+        assertNotNull(activity.getAppCompatDisplayInsets());
     }
 
     /**
@@ -1729,10 +1725,12 @@ public class ActivityRecordTests extends WindowTestsBase {
     @Test
     public void testDestroyImmediately_hadApp_notFinishing() {
         final ActivityRecord activity = createActivityWithTask();
+        activity.idle = true;
         activity.finishing = false;
         activity.destroyImmediately("test");
 
         assertEquals(DESTROYED, activity.getState());
+        assertFalse(activity.idle);
     }
 
     /**
@@ -1769,32 +1767,6 @@ public class ActivityRecordTests extends WindowTestsBase {
         assertEquals(DESTROYED, activity.getState());
         assertEquals(task, activity.getTask());
         assertEquals(1, task.getChildCount());
-    }
-
-    /**
-     * Test that an activity will not be destroyed if it is marked as non-destroyable.
-     */
-    @Test
-    public void testSafelyDestroy_nonDestroyable() {
-        final ActivityRecord activity = createActivityWithTask();
-        doReturn(false).when(activity).isDestroyable();
-
-        activity.safelyDestroy("test");
-
-        verify(activity, never()).destroyImmediately(anyString());
-    }
-
-    /**
-     * Test that an activity will not be destroyed if it is marked as non-destroyable.
-     */
-    @Test
-    public void testSafelyDestroy_destroyable() {
-        final ActivityRecord activity = createActivityWithTask();
-        doReturn(true).when(activity).isDestroyable();
-
-        activity.safelyDestroy("test");
-
-        verify(activity).destroyImmediately(anyString());
     }
 
     @Test
@@ -1961,6 +1933,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         display.continueUpdateOrientationForDiffOrienLaunchingApp();
         assertTrue(display.isFixedRotationLaunchingApp(activity));
 
+        activity.stopFreezingScreen(true /* unfreezeSurfaceNow */, true /* force */);
         // Simulate the rotation has been updated to previous one, e.g. sensor updates before the
         // remote rotation is completed.
         doReturn(originalRotation).when(displayRotation).rotationForOrientation(
@@ -1971,14 +1944,12 @@ public class ActivityRecordTests extends WindowTestsBase {
         activity.finishFixedRotationTransform();
         final ScreenRotationAnimation rotationAnim = display.getRotationAnimation();
         assertNotNull(rotationAnim);
-        rotationAnim.setRotation(display.getPendingTransaction(), originalRotation);
 
         // Because the display doesn't rotate, the rotated activity needs to cancel the fixed
         // rotation. There should be a rotation animation to cover the change of activity.
         verify(activity).onCancelFixedRotationTransform(rotatedInfo.rotation);
         assertTrue(activity.isFreezingScreen());
         assertFalse(displayRotation.isRotatingSeamlessly());
-        assertTrue(rotationAnim.isRotating());
 
         // Simulate the remote rotation has completed and the configuration doesn't change, then
         // the rotated activity should also be restored by clearing the transform.
@@ -2086,7 +2057,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         final ActivityRecord activity = createActivityWithTask();
         // TaskSnapshotSurface requires a fullscreen opaque window.
         final WindowManager.LayoutParams params = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.TYPE_APPLICATION_STARTING);
+                TYPE_BASE_APPLICATION);
         params.width = params.height = WindowManager.LayoutParams.MATCH_PARENT;
         final TestWindowState w = new TestWindowState(
                 mAtm.mWindowManager, getTestSession(), new TestIWindow(), params, activity);
@@ -2508,10 +2479,10 @@ public class ActivityRecordTests extends WindowTestsBase {
         assertTrue(activity.mChildren.contains(win4));
 
         // The starting window should be on-top of all other windows.
-        assertEquals(startingWin, activity.mChildren.peekLast());
+        assertEquals(startingWin, activity.getTopChild());
 
         // The base application window should be below all other windows.
-        assertEquals(baseWin, activity.mChildren.peekFirst());
+        assertEquals(baseWin, activity.getBottomChild());
         activity.removeImmediately();
     }
 
@@ -2530,25 +2501,6 @@ public class ActivityRecordTests extends WindowTestsBase {
         final WindowState window2 = createWindow(null, TYPE_APPLICATION_STARTING, activity,
                 "window2");
         assertEquals(window2, activity.findMainWindow());
-        activity.removeImmediately();
-    }
-
-    @Test
-    @Presubmit
-    public void testGetTopFullscreenOpaqueWindow() {
-        final ActivityRecord activity = new ActivityBuilder(mAtm).setCreateTask(true).build();
-        assertNull(activity.getTopFullscreenOpaqueWindow());
-
-        final WindowState window1 = createWindow(null, TYPE_BASE_APPLICATION, activity, "window1");
-        final WindowState window11 = createWindow(null, TYPE_APPLICATION, activity, "window11");
-        final WindowState window12 = createWindow(null, TYPE_APPLICATION, activity, "window12");
-        assertEquals(window12, activity.getTopFullscreenOpaqueWindow());
-        window12.mAttrs.width = 500;
-        assertEquals(window11, activity.getTopFullscreenOpaqueWindow());
-        window11.mAttrs.width = 500;
-        assertEquals(window1, activity.getTopFullscreenOpaqueWindow());
-        window1.mAttrs.alpha = 0f;
-        assertNull(activity.getTopFullscreenOpaqueWindow());
         activity.removeImmediately();
     }
 
@@ -2645,6 +2597,9 @@ public class ActivityRecordTests extends WindowTestsBase {
         // Can specify orientation if the current orientation candidate is orientation behind.
         assertEquals(SCREEN_ORIENTATION_LANDSCAPE,
                 activity.getOrientation(SCREEN_ORIENTATION_BEHIND));
+        activity.makeFinishingLocked();
+        assertEquals("Finishing activity must not report orientation",
+                SCREEN_ORIENTATION_UNSET, activity.getOrientation(SCREEN_ORIENTATION_BEHIND));
 
         final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
                 .setActivityTheme(android.R.style.Theme_Translucent)
@@ -2702,21 +2657,47 @@ public class ActivityRecordTests extends WindowTestsBase {
 
     @Test
     public void testSetOrientation() {
-        final ActivityRecord activity = new ActivityBuilder(mAtm).setCreateTask(true).build();
-        activity.setVisible(true);
+        assertSetOrientation(Build.VERSION_CODES.VANILLA_ICE_CREAM, CATEGORY_SOCIAL, true);
+    }
+
+    @Test
+    public void testSetOrientation_restrictedByTargetSdk() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_UNIVERSAL_RESIZABLE_BY_DEFAULT);
+        mDisplayContent.setIgnoreOrientationRequest(true);
+        makeDisplayLargeScreen(mDisplayContent);
+
+        assertSetOrientation(Build.VERSION_CODES.CUR_DEVELOPMENT, CATEGORY_SOCIAL, false);
+        assertSetOrientation(Build.VERSION_CODES.CUR_DEVELOPMENT, CATEGORY_GAME, true);
+
+        // Blanket application, also ignoring Target SDK
+        mWm.mConstants.mIgnoreActivityOrientationRequestLargeScreen = true;
+        assertSetOrientation(Build.VERSION_CODES.VANILLA_ICE_CREAM, CATEGORY_SOCIAL, false);
+    }
+
+    private void assertSetOrientation(int targetSdk, int category, boolean expectRotate) {
+        final String packageName = targetSdk <= Build.VERSION_CODES.VANILLA_ICE_CREAM
+                ? mContext.getPackageName() // WmTests uses legacy sdk.
+                : null; // Simulate CUR_DEVELOPMENT by invalid package (see PlatformCompat).
+        final ActivityRecord activity = new ActivityBuilder(mAtm).setCreateTask(true)
+                .setComponent(getUniqueComponentName(packageName)).build();
+        activity.info.applicationInfo.category = category;
 
         // Assert orientation is unspecified to start.
         assertEquals(SCREEN_ORIENTATION_UNSPECIFIED, activity.getOrientation());
 
+        // Request orientation and see if it can be applied.
         activity.setOrientation(SCREEN_ORIENTATION_LANDSCAPE);
-        assertEquals(SCREEN_ORIENTATION_LANDSCAPE, activity.getOrientation());
+        if (expectRotate) {
+            assertEquals("targetSdk=" + targetSdk + " should be able to enter landscape",
+                    SCREEN_ORIENTATION_LANDSCAPE, activity.getOrientation());
+        } else {
+            assertEquals("targetSdk=" + targetSdk + " should not be able to enter landscape",
+                    SCREEN_ORIENTATION_UNSPECIFIED, activity.getOrientation());
+        }
 
         mDisplayContent.removeAppToken(activity.token);
         // Assert orientation is unset to after container is removed.
         assertEquals(SCREEN_ORIENTATION_UNSET, activity.getOrientation());
-
-        // Reset display frozen state
-        mWm.mDisplayFrozen = false;
     }
 
     @Test
@@ -2768,6 +2749,19 @@ public class ActivityRecordTests extends WindowTestsBase {
         assertHasStartingWindow(activity);
         activity.removeStartingWindow();
         waitUntilHandlersIdle();
+        assertNoStartingWindow(activity);
+    }
+
+    @Test
+    public void testPostCleanupStartingWindow() {
+        registerTestStartingWindowOrganizer();
+        final ActivityRecord activity = new ActivityBuilder(mAtm).setCreateTask(true).build();
+        activity.addStartingWindow(mPackageName, android.R.style.Theme, null, true, true, false,
+                true, false, false, false);
+        waitUntilHandlersIdle();
+        assertHasStartingWindow(activity);
+        // Simulate Shell remove starting window actively.
+        activity.mStartingWindow.removeImmediately();
         assertNoStartingWindow(activity);
     }
 
@@ -2826,24 +2820,6 @@ public class ActivityRecordTests extends WindowTestsBase {
                 false, true, false, false, false);
         waitUntilHandlersIdle();
         assertFalse(mDisplayContent.mSkipAppTransitionAnimation);
-        assertNoStartingWindow(activity1);
-        assertHasStartingWindow(activity2);
-    }
-
-    @Test
-    public void testTransferStartingWindowWhileCreating() {
-        final TestStartingWindowOrganizer organizer = registerTestStartingWindowOrganizer();
-        final ActivityRecord activity1 = new ActivityBuilder(mAtm).setCreateTask(true).build();
-        final ActivityRecord activity2 = new ActivityBuilder(mAtm).setCreateTask(true).build();
-        organizer.setRunnableWhenAddingSplashScreen(
-                () -> {
-                    // Surprise, ...! Transfer window in the middle of the creation flow.
-                    activity2.addStartingWindow(mPackageName, android.R.style.Theme, activity1,
-                            true, true, false, true, false, false, false);
-                });
-        activity1.addStartingWindow(mPackageName, android.R.style.Theme, null, true, true, false,
-                true, false, false, false);
-        waitUntilHandlersIdle();
         assertNoStartingWindow(activity1);
         assertHasStartingWindow(activity2);
     }
@@ -3001,7 +2977,8 @@ public class ActivityRecordTests extends WindowTestsBase {
 
     @Test
     public void testStartingWindowInTaskFragment() {
-        final ActivityRecord activity1 = new ActivityBuilder(mAtm).setCreateTask(true).build();
+        final ActivityRecord activity1 = new ActivityBuilder(mAtm).setCreateTask(true)
+                .setVisible(false).build();
         final WindowState startingWindow = createWindowState(
                 new WindowManager.LayoutParams(TYPE_APPLICATION_STARTING), activity1);
         activity1.addWindow(startingWindow);
@@ -3053,6 +3030,28 @@ public class ActivityRecordTests extends WindowTestsBase {
         activity1.onFirstWindowDrawn(activityWindow);
         activity2.onFirstWindowDrawn(activityWindow);
         assertNull(activity1.mStartingWindow);
+        assertNull(task.mSharedStartingData);
+    }
+
+    @Test
+    public void testStartingWindowInTaskFragmentWithVisibleTask() {
+        final ActivityRecord activity1 = new ActivityBuilder(mAtm).setCreateTask(true).build();
+        final Task task = activity1.getTask();
+        final Rect taskBounds = task.getBounds();
+        final Rect tfBounds = new Rect(taskBounds.left, taskBounds.top,
+                taskBounds.left + taskBounds.width() / 2, taskBounds.bottom);
+        final TaskFragment taskFragment = new TaskFragmentBuilder(mAtm).setParentTask(task)
+                .setBounds(tfBounds).build();
+
+        final ActivityRecord activity2 = new ActivityBuilder(mAtm).build();
+        final WindowState startingWindow = createWindowState(
+                new WindowManager.LayoutParams(TYPE_APPLICATION_STARTING), activity1);
+        taskFragment.addChild(activity2);
+        activity2.addWindow(startingWindow);
+        activity2.mStartingData = mock(StartingData.class);
+        activity2.attachStartingWindow(startingWindow);
+
+        assertNull(activity2.mStartingData.mAssociatedTask);
         assertNull(task.mSharedStartingData);
     }
 
@@ -3139,7 +3138,41 @@ public class ActivityRecordTests extends WindowTestsBase {
     }
 
     @Test
+    public void testOnStartingWindowDrawn() {
+        // Skip unnecessary resume top.
+        mSupervisor.beginDeferResume();
+        final ActivityRecord activity = new ActivityBuilder(mAtm).setCreateTask(true).build();
+        // The task-has-been-visible should not affect the decision of making transition ready.
+        activity.getTask().setHasBeenVisible(true);
+        activity.detachFromProcess();
+        activity.mStartingData = new SplashScreenStartingData(mWm, 0, 0);
+        registerTestTransitionPlayer();
+        final Transition transition = activity.mTransitionController.requestTransitionIfNeeded(
+                WindowManager.TRANSIT_OPEN, 0 /* flags */, null /* trigger */, mDisplayContent);
+        activity.onStartingWindowDrawn();
+        assertTrue(activity.mStartingData.mIsDisplayed);
+        // The transition can be ready by the starting window of a visible-requested activity
+        // without a running process.
+        if (!transition.allReady()) {
+            // Print unsatisfied conditions.
+            transition.onReadyTimeout();
+            Assert.fail(transition + " must be ready by onStartingWindowDrawn");
+        }
+
+        // If other event makes the transition unready, the reentrant of onStartingWindowDrawn
+        // should not replace the readiness again.
+        transition.setReady(mDisplayContent, false);
+        activity.onStartingWindowDrawn();
+        assertFalse(transition.allReady());
+    }
+
+
+    @Test
     public void testCloseToSquareFixedOrientation() {
+        if (Flags.insetsDecoupledConfiguration()) {
+            // No test needed as decor insets no longer affects orientation.
+            return;
+        }
         // create a square display
         final DisplayContent squareDisplay = new TestDisplayContent.Builder(mAtm, 2000, 2000)
                 .setSystemDecorations(true).build();
@@ -3177,12 +3210,12 @@ public class ActivityRecordTests extends WindowTestsBase {
         // By default, activity is visible.
         assertTrue(activity.isVisible());
         assertTrue(activity.isVisibleRequested());
-        assertTrue(activity.mDisplayContent.mOpeningApps.contains(activity));
         assertFalse(activity.mDisplayContent.mClosingApps.contains(activity));
 
         // Request the activity to be visible. Although the activity is already visible, app
         // transition animation should be applied on this activity. This might be unnecessary, but
         // until we verify no logic relies on this behavior, we'll keep this as is.
+        mDisplayContent.prepareAppTransition(0);
         activity.setVisibility(true);
         assertTrue(activity.isVisible());
         assertTrue(activity.isVisibleRequested());
@@ -3190,23 +3223,32 @@ public class ActivityRecordTests extends WindowTestsBase {
         assertFalse(activity.mDisplayContent.mClosingApps.contains(activity));
     }
 
+    @SetupWindows(addWindows = W_ACTIVITY)
     @Test
     public void testSetVisibility_visibleToInvisible() {
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setCreateTask(true).build();
+        final TestTransitionPlayer player = registerTestTransitionPlayer();
+        final ActivityRecord activity = mAppWindow.mActivityRecord;
+        makeWindowVisibleAndDrawn(mAppWindow);
         // By default, activity is visible.
         assertTrue(activity.isVisible());
         assertTrue(activity.isVisibleRequested());
-        assertTrue(activity.mDisplayContent.mOpeningApps.contains(activity));
-        assertFalse(activity.mDisplayContent.mClosingApps.contains(activity));
+        assertTrue(mAppWindow.isDrawn());
+        assertFalse(mAppWindow.setReportResizeHints());
 
         // Request the activity to be invisible. Since the visibility changes, app transition
         // animation should be applied on this activity.
+        activity.mTransitionController.requestCloseTransitionIfNeeded(activity);
         activity.setVisibility(false);
         assertTrue(activity.isVisible());
         assertFalse(activity.isVisibleRequested());
-        assertFalse(activity.mDisplayContent.mOpeningApps.contains(activity));
-        assertTrue(activity.mDisplayContent.mClosingApps.contains(activity));
+
+        player.start();
+        mSetFlagsRule.enableFlags(Flags.FLAG_RESET_DRAW_STATE_ON_CLIENT_INVISIBLE);
+        // ActivityRecord#commitVisibility(false) -> WindowState#sendAppVisibilityToClients().
+        player.finish();
+        assertFalse(activity.isVisible());
+        assertFalse("Reset draw state after committing invisible", mAppWindow.isDrawn());
+        assertTrue("Set pending redraw hint", mAppWindow.setReportResizeHints());
     }
 
     @Test
@@ -3217,7 +3259,6 @@ public class ActivityRecordTests extends WindowTestsBase {
         // activity.
         assertFalse(activity.isVisible());
         assertTrue(activity.isVisibleRequested());
-        assertTrue(activity.mDisplayContent.mOpeningApps.contains(activity));
         assertFalse(activity.mDisplayContent.mClosingApps.contains(activity));
 
         // Request the activity to be visible. Since the visibility changes, app transition
@@ -3233,7 +3274,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         mDisplayContent.mOpeningApps.remove(activity);
         mDisplayContent.mClosingApps.remove(activity);
         activity.commitVisibility(false /* visible */, false /* performLayout */);
-        mDisplayContent.getDisplayPolicy().screenTurnedOff();
+        mDisplayContent.getDisplayPolicy().screenTurnedOff(false /* acquireSleepToken */);
         final KeyguardController controller = mSupervisor.getKeyguardController();
         doReturn(true).when(controller).isKeyguardGoingAway(anyInt());
         activity.setVisibility(true);
@@ -3316,7 +3357,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         // keyguard to back to the app, expect IME insets is not frozen
         app.mActivityRecord.commitVisibility(true, false);
         mDisplayContent.updateImeInputAndControlTarget(app);
-        mDisplayContent.mWmService.mRoot.performSurfacePlacement();
+        performSurfacePlacementAndWaitForWindowAnimator();
 
         assertFalse(app.mActivityRecord.mImeInsetsFrozenUntilStartInput);
 
@@ -3350,7 +3391,8 @@ public class ActivityRecordTests extends WindowTestsBase {
 
         // app1 requests IME visible.
         app1.setRequestedVisibleTypes(ime(), ime());
-        mDisplayContent.getInsetsStateController().onRequestedVisibleTypesChanged(app1);
+        mDisplayContent.getInsetsStateController().onRequestedVisibleTypesChanged(app1,
+                null /* statsToken */);
 
         // Verify app1's IME insets is visible and app2's IME insets frozen flag set.
         assertTrue(app1.getInsetsState().peekSource(ID_IME).isVisible());
@@ -3365,20 +3407,14 @@ public class ActivityRecordTests extends WindowTestsBase {
         mDisplayContent.setImeLayeringTarget(app2);
         app2.mActivityRecord.commitVisibility(true, false);
         mDisplayContent.updateImeInputAndControlTarget(app2);
-        mDisplayContent.mWmService.mRoot.performSurfacePlacement();
+        performSurfacePlacementAndWaitForWindowAnimator();
 
         // Verify after unfreezing app2's IME insets state, we won't dispatch visible IME insets
         // to client if the app didn't request IME visible.
         assertFalse(app2.mActivityRecord.mImeInsetsFrozenUntilStartInput);
 
-        if (mWm.mFlags.mWindowStateResizeItemFlag) {
-            verify(app2.getProcess()).scheduleClientTransactionItem(
-                    isA(WindowStateResizeItem.class));
-        } else {
-            verify(app2.mClient, atLeastOnce()).resized(any(), anyBoolean(), any(),
-                    insetsStateCaptor.capture(), anyBoolean(), anyBoolean(), anyInt(), anyInt(),
-                    anyBoolean());
-        }
+        verify(app2.getProcess(), atLeastOnce()).scheduleClientTransactionItem(
+                isA(WindowStateResizeItem.class));
         assertFalse(app2.getInsetsState().isSourceOrDefaultVisible(ID_IME, ime()));
     }
 
@@ -3419,14 +3455,15 @@ public class ActivityRecordTests extends WindowTestsBase {
         // frozen until the input started.
         mDisplayContent.setImeLayeringTarget(app1);
         mDisplayContent.updateImeInputAndControlTarget(app1);
-        mDisplayContent.mWmService.mRoot.performSurfacePlacement();
+        mDisplayContent.computeImeTarget(true /* updateImeTarget */);
+        performSurfacePlacementAndWaitForWindowAnimator();
 
         assertEquals(app1, mDisplayContent.getImeInputTarget());
         assertFalse(activity1.mImeInsetsFrozenUntilStartInput);
         assertFalse(activity2.mImeInsetsFrozenUntilStartInput);
 
         app1.setRequestedVisibleTypes(ime());
-        controller.onRequestedVisibleTypesChanged(app1);
+        controller.onRequestedVisibleTypesChanged(app1, null /* statsToken */);
 
         // Expect all activities in split-screen will get IME insets visible state
         assertTrue(app1.getInsetsState().peekSource(ID_IME).isVisible());
@@ -3446,6 +3483,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         // Remove window during transition, so it is requested to hide, but won't be committed until
         // the transition is finished.
         app.mActivityRecord.onRemovedFromDisplay();
+        app.mActivityRecord.prepareSurfaces();
 
         assertTrue(mDisplayContent.mClosingApps.contains(app.mActivityRecord));
         assertFalse(app.mActivityRecord.isVisibleRequested());
@@ -3463,6 +3501,7 @@ public class ActivityRecordTests extends WindowTestsBase {
     public void testInClosingAnimation_visibilityCommitted_hideSurface() {
         final WindowState app = createWindow(null, TYPE_APPLICATION, "app");
         makeWindowVisibleAndDrawn(app);
+        app.mActivityRecord.prepareSurfaces();
 
         // Put the activity in close transition.
         mDisplayContent.mOpeningApps.clear();
@@ -3482,178 +3521,6 @@ public class ActivityRecordTests extends WindowTestsBase {
         // Because the app visibility has been committed before the transition start, it should hide
         // the surface.
         assertFalse(app.mActivityRecord.isSurfaceShowing());
-    }
-
-    @Test
-    public void testUpdateCameraCompatState_flagIsEnabled_controlStateIsUpdated() {
-        final ActivityRecord activity = createActivityWithTask();
-        // Mock a flag being enabled.
-        doReturn(true).when(activity).isCameraCompatControlEnabled();
-
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ false, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED);
-
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ true, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_APPLIED);
-
-        activity.updateCameraCompatState(/* showControl */ false,
-                /* transformationApplied */ false, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(), CAMERA_COMPAT_CONTROL_HIDDEN);
-
-        activity.updateCameraCompatState(/* showControl */ false,
-                /* transformationApplied */ true, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(), CAMERA_COMPAT_CONTROL_HIDDEN);
-    }
-
-    @Test
-    public void testUpdateCameraCompatState_flagIsDisabled_controlStateIsHidden() {
-        final ActivityRecord activity = createActivityWithTask();
-        // Mock a flag being disabled.
-        doReturn(false).when(activity).isCameraCompatControlEnabled();
-
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ false, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(), CAMERA_COMPAT_CONTROL_HIDDEN);
-
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ true, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(), CAMERA_COMPAT_CONTROL_HIDDEN);
-    }
-
-    @Test
-    public void testUpdateCameraCompatStateFromUser_clickedOnDismiss() throws RemoteException {
-        final ActivityRecord activity = createActivityWithTask();
-        // Mock a flag being enabled.
-        doReturn(true).when(activity).isCameraCompatControlEnabled();
-
-        ICompatCameraControlCallback callback = getCompatCameraControlCallback();
-        spyOn(callback);
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ false, callback);
-
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED);
-
-        // Clicking on the button.
-        activity.updateCameraCompatStateFromUser(CAMERA_COMPAT_CONTROL_DISMISSED);
-
-        verify(callback, never()).revertCameraCompatTreatment();
-        verify(callback, never()).applyCameraCompatTreatment();
-        assertEquals(activity.getCameraCompatControlState(), CAMERA_COMPAT_CONTROL_DISMISSED);
-
-        // All following updates are ignored.
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ false, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(), CAMERA_COMPAT_CONTROL_DISMISSED);
-
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ true, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(), CAMERA_COMPAT_CONTROL_DISMISSED);
-
-        activity.updateCameraCompatState(/* showControl */ false,
-                /* transformationApplied */ true, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(), CAMERA_COMPAT_CONTROL_DISMISSED);
-    }
-
-    @Test
-    public void testUpdateCameraCompatStateFromUser_clickedOnApplyTreatment()
-            throws RemoteException {
-        final ActivityRecord activity = createActivityWithTask();
-        // Mock a flag being enabled.
-        doReturn(true).when(activity).isCameraCompatControlEnabled();
-
-        ICompatCameraControlCallback callback = getCompatCameraControlCallback();
-        spyOn(callback);
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ false, callback);
-
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED);
-
-        // Clicking on the button.
-        activity.updateCameraCompatStateFromUser(CAMERA_COMPAT_CONTROL_TREATMENT_APPLIED);
-
-        verify(callback, never()).revertCameraCompatTreatment();
-        verify(callback).applyCameraCompatTreatment();
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_APPLIED);
-
-        // Request from the client to show the control are ignored respecting the user choice.
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ false, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_APPLIED);
-
-        // Request from the client to hide the control is respected.
-        activity.updateCameraCompatState(/* showControl */ false,
-                /* transformationApplied */ true, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(), CAMERA_COMPAT_CONTROL_HIDDEN);
-
-        // Request from the client to show the control again is respected.
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ false, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED);
-    }
-
-    @Test
-    public void testUpdateCameraCompatStateFromUser_clickedOnRevertTreatment()
-            throws RemoteException {
-        final ActivityRecord activity = createActivityWithTask();
-        // Mock a flag being enabled.
-        doReturn(true).when(activity).isCameraCompatControlEnabled();
-
-        ICompatCameraControlCallback callback = getCompatCameraControlCallback();
-        spyOn(callback);
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ true, callback);
-
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_APPLIED);
-
-        // Clicking on the button.
-        activity.updateCameraCompatStateFromUser(CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED);
-
-        verify(callback).revertCameraCompatTreatment();
-        verify(callback, never()).applyCameraCompatTreatment();
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED);
-
-        // Request from the client to show the control are ignored respecting the user choice.
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ true, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_SUGGESTED);
-
-        // Request from the client to hide the control is respected.
-        activity.updateCameraCompatState(/* showControl */ false,
-                /* transformationApplied */ true, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(), CAMERA_COMPAT_CONTROL_HIDDEN);
-
-        // Request from the client to show the control again is respected.
-        activity.updateCameraCompatState(/* showControl */ true,
-                /* transformationApplied */ true, /* callback */ null);
-
-        assertEquals(activity.getCameraCompatControlState(),
-                CAMERA_COMPAT_CONTROL_TREATMENT_APPLIED);
     }
 
     @Test // b/162542125
@@ -3698,7 +3565,7 @@ public class ActivityRecordTests extends WindowTestsBase {
         doReturn(false).when(activity).showToCurrentUser();
         spyOn(taskFragment);
         doReturn(false).when(taskFragment).shouldBeVisible(any());
-        display.ensureActivitiesVisible(null, 0, false, false);
+        display.ensureActivitiesVisible(null /* starting */, false /* notifyClients */);
         assertFalse(activity.isVisibleRequested());
     }
 
@@ -3713,7 +3580,9 @@ public class ActivityRecordTests extends WindowTestsBase {
         assertEquals(WINDOWING_MODE_FULLSCREEN, activity.getWindowingMode());
 
         registerTestTransitionPlayer();
-        task.mTransitionController.requestTransitionIfNeeded(TRANSIT_PIP, task);
+        Transition tr = task.mTransitionController.requestStartTransition(
+                task.mTransitionController.createTransition(TRANSIT_PIP), task, null, null);
+        tr.collect(task);
         task.setWindowingMode(WINDOWING_MODE_PINNED);
 
         // Collect activity in the transition if the Task windowing mode is going to change.
@@ -3755,14 +3624,66 @@ public class ActivityRecordTests extends WindowTestsBase {
         assertFalse(ar.moveFocusableActivityToTop("test"));
     }
 
-    private ICompatCameraControlCallback getCompatCameraControlCallback() {
-        return new ICompatCameraControlCallback.Stub() {
-            @Override
-            public void applyCameraCompatTreatment() {}
+    @Test
+    public void testPauseConfigDispatch() throws RemoteException {
+        final Task task = new TaskBuilder(mSupervisor)
+                .setDisplay(mDisplayContent).setCreateActivity(true).build();
+        final ActivityRecord activity = task.getTopNonFinishingActivity();
+        final WindowManager.LayoutParams attrs = new WindowManager.LayoutParams(
+                TYPE_BASE_APPLICATION);
+        attrs.setTitle("AppWindow");
+        final TestWindowState appWindow = createWindowState(attrs, activity);
+        activity.addWindow(appWindow);
 
-            @Override
-            public void revertCameraCompatTreatment() {}
-        };
+        clearInvocations(mClientLifecycleManager);
+        clearInvocations(activity);
+
+        Configuration ro = activity.getRequestedOverrideConfiguration();
+        ro.windowConfiguration.setBounds(new Rect(20, 0, 120, 200));
+        activity.onRequestedOverrideConfigurationChanged(ro);
+        activity.ensureActivityConfiguration();
+        mWm.mRoot.performSurfacePlacement();
+
+        // policy will center the bounds, so just check for matching size here.
+        assertEquals(100, activity.getWindowConfiguration().getBounds().width());
+        assertEquals(100, appWindow.getWindowConfiguration().getBounds().width());
+        // No scheduled transactions since it asked for a restart.
+        verify(mClientLifecycleManager, times(1)).scheduleTransaction(any());
+        verify(activity, times(1)).setLastReportedConfiguration(any(), any());
+        assertTrue(appWindow.mResizeReported);
+
+        // act like everything drew and went idle
+        appWindow.mResizeReported = false;
+        makeLastConfigReportedToClient(appWindow, true);
+
+        // Now pause dispatch and try to resize
+        activity.pauseConfigurationDispatch();
+
+        ro.windowConfiguration.setBounds(new Rect(20, 0, 150, 200));
+        activity.onRequestedOverrideConfigurationChanged(ro);
+        activity.ensureActivityConfiguration();
+        mWm.mRoot.performSurfacePlacement();
+
+        // Activity should get new config (core-side)
+        assertEquals(130, activity.getWindowConfiguration().getBounds().width());
+        // But windows should not get new config.
+        assertEquals(100, appWindow.getWindowConfiguration().getBounds().width());
+        // The client shouldn't receive any changes
+        verify(mClientLifecycleManager, times(1)).scheduleTransaction(any());
+        // and lastReported shouldn't be set.
+        verify(activity, times(1)).setLastReportedConfiguration(any(), any());
+        // There should be no resize reported to client.
+        assertFalse(appWindow.mResizeReported);
+
+        // Now resume dispatch
+        activity.resumeConfigurationDispatch();
+        mWm.mRoot.performSurfacePlacement();
+
+        // Windows and client should now receive updates
+        verify(activity, times(2)).setLastReportedConfiguration(any(), any());
+        verify(mClientLifecycleManager, times(2)).scheduleTransaction(any());
+        assertEquals(130, appWindow.getWindowConfiguration().getBounds().width());
+        assertTrue(appWindow.mResizeReported);
     }
 
     private void assertHasStartingWindow(ActivityRecord atoken) {

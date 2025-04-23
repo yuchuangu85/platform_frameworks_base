@@ -19,6 +19,8 @@ package com.android.systemui.qs.logging
 import android.content.res.Configuration.ORIENTATION_LANDSCAPE
 import android.content.res.Configuration.ORIENTATION_PORTRAIT
 import android.content.res.Configuration.Orientation
+import android.content.res.Configuration.SCREENLAYOUT_LONG_NO
+import android.content.res.Configuration.SCREENLAYOUT_LONG_YES
 import android.service.quicksettings.Tile
 import android.view.View
 import com.android.systemui.log.ConstantStringsLogger
@@ -26,10 +28,12 @@ import com.android.systemui.log.ConstantStringsLoggerImpl
 import com.android.systemui.log.LogBuffer
 import com.android.systemui.log.core.LogLevel.DEBUG
 import com.android.systemui.log.core.LogLevel.ERROR
+import com.android.systemui.log.core.LogLevel.INFO
 import com.android.systemui.log.core.LogLevel.VERBOSE
 import com.android.systemui.log.dagger.QSConfigLog
 import com.android.systemui.log.dagger.QSLog
 import com.android.systemui.plugins.qs.QSTile
+import com.android.systemui.plugins.qs.QSTile.State
 import com.android.systemui.statusbar.StatusBarState
 import com.google.errorprone.annotations.CompileTimeConstant
 import javax.inject.Inject
@@ -55,6 +59,10 @@ constructor(
         buffer.log(TAG, DEBUG, { str1 = arg.toString() }, { "$msg: $str1" })
     }
 
+    fun i(@CompileTimeConstant msg: String, arg: Any) {
+        buffer.log(TAG, INFO, { str1 = arg.toString() }, { "$msg: $str1" })
+    }
+
     fun logTileAdded(tileSpec: String) {
         buffer.log(TAG, DEBUG, { str1 = tileSpec }, { "[$str1] Tile added" })
     }
@@ -67,7 +75,19 @@ constructor(
                 str1 = tileSpec
                 str2 = reason
             },
-            { "[$str1] Tile destroyed. Reason: $str2" }
+            { "[$str1] Tile destroyed. Reason: $str2" },
+        )
+    }
+
+    fun logStateChanged(tileSpec: String, state: State) {
+        buffer.log(
+            TAG,
+            DEBUG,
+            {
+                str1 = tileSpec
+                str2 = state.toString()
+            },
+            { "[$str1] Tile state=$str2" },
         )
     }
 
@@ -79,7 +99,7 @@ constructor(
                 bool1 = listening
                 str1 = tileSpec
             },
-            { "[$str1] Tile listening=$bool1" }
+            { "[$str1] Tile listening=$bool1" },
         )
     }
 
@@ -92,7 +112,7 @@ constructor(
                 str1 = containerName
                 str2 = allSpecs
             },
-            { "Tiles listening=$bool1 in $str1. $str2" }
+            { "Tiles listening=$bool1 in $str1. $str2" },
         )
     }
 
@@ -106,7 +126,7 @@ constructor(
                 str2 = StatusBarState.toString(statusBarState)
                 str3 = toStateString(state)
             },
-            { "[$str1][$int1] Tile clicked. StatusBarState=$str2. TileState=$str3" }
+            { "[$str1][$int1] Tile clicked. StatusBarState=$str2. TileState=$str3" },
         )
     }
 
@@ -118,7 +138,7 @@ constructor(
                 str1 = tileSpec
                 int1 = eventId
             },
-            { "[$str1][$int1] Tile handling click." }
+            { "[$str1][$int1] Tile handling click." },
         )
     }
 
@@ -132,7 +152,7 @@ constructor(
                 str2 = StatusBarState.toString(statusBarState)
                 str3 = toStateString(state)
             },
-            { "[$str1][$int1] Tile secondary clicked. StatusBarState=$str2. TileState=$str3" }
+            { "[$str1][$int1] Tile secondary clicked. StatusBarState=$str2. TileState=$str3" },
         )
     }
 
@@ -144,7 +164,7 @@ constructor(
                 str1 = tileSpec
                 int1 = eventId
             },
-            { "[$str1][$int1] Tile handling secondary click." }
+            { "[$str1][$int1] Tile handling secondary click." },
         )
     }
 
@@ -158,7 +178,7 @@ constructor(
                 str2 = StatusBarState.toString(statusBarState)
                 str3 = toStateString(state)
             },
-            { "[$str1][$int1] Tile long clicked. StatusBarState=$str2. TileState=$str3" }
+            { "[$str1][$int1] Tile long clicked. StatusBarState=$str2. TileState=$str3" },
         )
     }
 
@@ -170,7 +190,7 @@ constructor(
                 str1 = tileSpec
                 int1 = eventId
             },
-            { "[$str1][$int1] Tile handling long click." }
+            { "[$str1][$int1] Tile handling long click." },
         )
     }
 
@@ -183,16 +203,16 @@ constructor(
                 int1 = lastType
                 str2 = callback
             },
-            { "[$str1] mLastTileState=$int1, Callback=$str2." }
+            { "[$str1] mLastTileState=$int1, Callback=$str2." },
         )
     }
 
     // TODO(b/250618218): Remove this method once we know the root cause of b/250618218.
     fun logTileBackgroundColorUpdateIfInternetTile(
-        tileSpec: String,
+        tileSpec: String?,
         state: Int,
         disabledByPolicy: Boolean,
-        color: Int
+        color: Int,
     ) {
         // This method is added to further debug b/250618218 which has only been observed from the
         // InternetTile, so we are only logging the background color change for the InternetTile
@@ -209,7 +229,7 @@ constructor(
                 bool1 = disabledByPolicy
                 int2 = color
             },
-            { "[$str1] state=$int1, disabledByPolicy=$bool1, color=$int2." }
+            { "[$str1] state=$int1, disabledByPolicy=$bool1, color=$int2." },
         )
     }
 
@@ -223,7 +243,7 @@ constructor(
                 str3 = state.icon?.toString()
                 int1 = state.state
             },
-            { "[$str1] Tile updated. Label=$str2. State=$int1. Icon=$str3." }
+            { "[$str1] Tile updated. Label=$str2. State=$int1. Icon=$str3." },
         )
     }
 
@@ -235,7 +255,7 @@ constructor(
                 str1 = containerName
                 bool1 = expanded
             },
-            { "$str1 expanded=$bool1" }
+            { "$str1 expanded=$bool1" },
         )
     }
 
@@ -247,7 +267,7 @@ constructor(
                 str1 = containerName
                 int1 = orientation
             },
-            { "onViewAttached: $str1 orientation $int1" }
+            { "onViewAttached: $str1 orientation $int1" },
         )
     }
 
@@ -259,16 +279,18 @@ constructor(
                 str1 = containerName
                 int1 = orientation
             },
-            { "onViewDetached: $str1 orientation $int1" }
+            { "onViewDetached: $str1 orientation $int1" },
         )
     }
 
     fun logOnConfigurationChanged(
         @Orientation oldOrientation: Int,
         @Orientation newOrientation: Int,
-        newShouldUseSplitShade: Boolean,
         oldShouldUseSplitShade: Boolean,
-        containerName: String
+        newShouldUseSplitShade: Boolean,
+        oldScreenLayout: Int,
+        newScreenLayout: Int,
+        containerName: String,
     ) {
         configChangedBuffer.log(
             TAG,
@@ -277,6 +299,8 @@ constructor(
                 str1 = containerName
                 int1 = oldOrientation
                 int2 = newOrientation
+                long1 = oldScreenLayout.toLong()
+                long2 = newScreenLayout.toLong()
                 bool1 = oldShouldUseSplitShade
                 bool2 = newShouldUseSplitShade
             },
@@ -284,8 +308,10 @@ constructor(
                 "config change: " +
                     "$str1 orientation=${toOrientationString(int2)} " +
                     "(was ${toOrientationString(int1)}), " +
+                    "screen layout=${toScreenLayoutString(long1.toInt())} " +
+                    "(was ${toScreenLayoutString(long2.toInt())}), " +
                     "splitShade=$bool2 (was $bool1)"
-            }
+            },
         )
     }
 
@@ -293,7 +319,7 @@ constructor(
         after: Boolean,
         before: Boolean,
         force: Boolean,
-        containerName: String
+        containerName: String,
     ) {
         buffer.log(
             TAG,
@@ -304,7 +330,7 @@ constructor(
                 bool2 = before
                 bool3 = force
             },
-            { "change tile layout: $str1 horizontal=$bool1 (was $bool2), force? $bool3" }
+            { "change tile layout: $str1 horizontal=$bool1 (was $bool2), force? $bool3" },
         )
     }
 
@@ -316,7 +342,7 @@ constructor(
                 int1 = tilesPerPageCount
                 int2 = totalTilesCount
             },
-            { "Distributing tiles: [tilesPerPageCount=$int1] [totalTilesCount=$int2]" }
+            { "Distributing tiles: [tilesPerPageCount=$int1] [totalTilesCount=$int2]" },
         )
     }
 
@@ -328,7 +354,7 @@ constructor(
                 str1 = tileName
                 int1 = pageIndex
             },
-            { "Adding $str1 to page number $int1" }
+            { "Adding $str1 to page number $int1" },
         )
     }
 
@@ -349,7 +375,7 @@ constructor(
                 str1 = viewName
                 str2 = toVisibilityString(visibility)
             },
-            { "$str1 visibility: $str2" }
+            { "$str1 visibility: $str2" },
         )
     }
 
@@ -367,6 +393,14 @@ private inline fun toOrientationString(@Orientation orientation: Int): String {
     return when (orientation) {
         ORIENTATION_LANDSCAPE -> "land"
         ORIENTATION_PORTRAIT -> "port"
+        else -> "undefined"
+    }
+}
+
+private inline fun toScreenLayoutString(screenLayout: Int): String {
+    return when (screenLayout) {
+        SCREENLAYOUT_LONG_YES -> "long"
+        SCREENLAYOUT_LONG_NO -> "notlong"
         else -> "undefined"
     }
 }

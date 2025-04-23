@@ -79,11 +79,28 @@ message CombinedVibrationEffectProto {
     repeated int32 delays = 2;
 }
 
+// Next Tag: 5
 message VibrationAttributesProto {
     option (.android.msg_privacy).dest = DEST_AUTOMATIC;
     optional int32 usage = 1;
     optional int32 audio_usage = 2;
     optional int32 flags = 3;
+    optional int32 category = 4;
+}
+
+// Next Tag: 4
+message VibrationParamProto {
+    option (.android.msg_privacy).dest = DEST_AUTOMATIC;
+    optional VibrationScaleParamProto scale = 1;
+    optional int64 create_time = 2;
+    optional bool is_from_request = 3;
+}
+
+// Next Tag: 3
+message VibrationScaleParamProto {
+    option (.android.msg_privacy).dest = DEST_AUTOMATIC;
+    optional int32 types_mask = 1;
+    optional float scale = 2;
 }
 
 // Next Tag: 9
@@ -99,7 +116,7 @@ message VibrationProto {
     reserved 6; // prev int32 status
 
     // Also used by VibrationReported from frameworks/proto_logging/stats/atoms.proto.
-    // Next Tag: 26
+    // Next Tag: 29
     enum Status {
         UNKNOWN = 0;
         RUNNING = 1;
@@ -118,7 +135,6 @@ message VibrationProto {
         IGNORED_ERROR_TOKEN= 14;
         IGNORED_APP_OPS = 15;
         IGNORED_BACKGROUND = 16;
-        IGNORED_UNKNOWN_VIBRATION = 17;
         IGNORED_UNSUPPORTED = 18;
         IGNORED_FOR_EXTERNAL = 19;
         IGNORED_FOR_HIGHER_IMPORTANCE = 20;
@@ -129,19 +145,23 @@ message VibrationProto {
         IGNORED_SUPERSEDED = 25;
         IGNORED_FROM_VIRTUAL_DEVICE = 26;
         IGNORED_ON_WIRELESS_CHARGER = 27;
+        IGNORED_MISSING_PERMISSION = 28;
+        CANCELLED_BY_APP_OPS = 29;
+        CANCELLED_BY_FOREGROUND_USER = 30;
+        reserved 17; // prev IGNORED_UNKNOWN_VIBRATION
     }
 }
 
-// Next Tag: 25
+// Next Tag: 29
 message VibratorManagerServiceDumpProto {
     option (.android.msg_privacy).dest = DEST_AUTOMATIC;
     repeated int32 vibrator_ids = 1;
     optional VibrationProto current_vibration = 2;
-    optional bool is_vibrating = 3;
-    optional VibrationProto current_external_vibration = 4;
-    optional bool vibrator_under_external_control = 5;
+    optional int32 is_vibrator_controller_registered = 27;
     optional bool low_power_mode = 6;
     optional bool vibrate_on = 24;
+    reserved 25; // prev keyboard_vibration_on
+    optional int32 default_vibration_amplitude = 26;
     optional int32 alarm_intensity = 18;
     optional int32 alarm_default_intensity = 19;
     optional int32 haptic_feedback_intensity = 7;
@@ -158,5 +178,9 @@ message VibratorManagerServiceDumpProto {
     repeated VibrationProto previous_notification_vibrations = 14;
     repeated VibrationProto previous_alarm_vibrations = 15;
     repeated VibrationProto previous_vibrations = 16;
-    repeated VibrationProto previous_external_vibrations = 17;
+    repeated VibrationParamProto previous_vibration_params = 28;
+    reserved 17; // prev previous_external_vibrations
+    reserved 3; // prev is_vibrating, check current_vibration instead
+    reserved 5; // prev vibrator_under_external_control, check current_external_vibration instead
+    reserved 4; // prev current_external_vibration, check current_vibration instead
 }

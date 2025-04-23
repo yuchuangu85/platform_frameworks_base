@@ -20,15 +20,23 @@ import com.android.app.animation.Interpolators.EMPHASIZED_DECELERATE
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.deviceentry.domain.interactor.DeviceEntryUdfpsInteractor
 import com.android.systemui.keyguard.domain.interactor.FromGoneTransitionInteractor.Companion.TO_AOD_DURATION
-import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor
+import com.android.systemui.keyguard.shared.model.Edge
+import com.android.systemui.keyguard.shared.model.KeyguardState.AOD
+import com.android.systemui.keyguard.shared.model.KeyguardState.GONE
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
+import com.android.systemui.keyguard.ui.StateToValue
 import com.android.systemui.keyguard.ui.transitions.DeviceEntryIconTransition
+import com.android.systemui.power.domain.interactor.PowerInteractor
+import com.android.systemui.power.shared.model.WakeSleepReason.FOLD
+import com.android.systemui.scene.shared.model.Scenes
+import com.android.systemui.util.kotlin.sample
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.transform
 
 /** Breaks down GONE->AOD transition into discrete steps for corresponding views to consume. */
 @ExperimentalCoroutinesApi
@@ -36,37 +44,72 @@ import kotlinx.coroutines.flow.flatMapLatest
 class GoneToAodTransitionViewModel
 @Inject
 constructor(
-    interactor: KeyguardTransitionInteractor,
     deviceEntryUdfpsInteractor: DeviceEntryUdfpsInteractor,
+    private val powerInteractor: PowerInteractor,
     animationFlow: KeyguardTransitionAnimationFlow,
 ) : DeviceEntryIconTransition {
 
     private val transitionAnimation =
-        animationFlow.setup(
-            duration = TO_AOD_DURATION,
-            stepFlow = interactor.goneToAodTransition,
-        )
+        animationFlow
+            .setup(
+                duration = TO_AOD_DURATION,
+                edge = Edge.create(from = Scenes.Gone, to = AOD),
+            )
+            .setupWithoutSceneContainer(
+                edge = Edge.create(from = GONE, to = AOD),
+            )
 
     /** y-translation from the top of the screen for AOD */
-    fun enterFromTopTranslationY(translatePx: Int): Flow<Float> {
-        return transitionAnimation.sharedFlow(
-            startTime = 600.milliseconds,
-            duration = 500.milliseconds,
-            onStart = { translatePx },
-            onStep = { translatePx + it * -translatePx },
-            onFinish = { 0f },
-            onCancel = { 0f },
-            interpolator = EMPHASIZED_DECELERATE,
-        )
+    fun enterFromTopTranslationY(translatePx: Int): Flow<StateToValue> {
+        return transitionAnimation
+            .sharedFlowWithState(
+                startTime = 600.milliseconds,
+                duration = 500.milliseconds,
+                onStep = { translatePx + it * -translatePx },
+                onFinish = { 0f },
+                interpolator = EMPHASIZED_DECELERATE,
+            )
+            .sample(powerInteractor.detailedWakefulness, ::Pair)
+            .transform { (stateToValue, wakefulness) ->
+                if (wakefulness.lastSleepReason != FOLD) {
+                    emit(stateToValue)
+                }
+            }
     }
+
+    /** x-translation from the side of the screen for fold animation */
+    fun enterFromSideTranslationX(translatePx: Int): Flow<StateToValue> {
+        return transitionAnimation
+            .sharedFlowWithState(
+                startTime = 500.milliseconds,
+                duration = 600.milliseconds,
+                onStep = { translatePx + it * -translatePx },
+                onFinish = { 0f },
+                interpolator = EMPHASIZED_DECELERATE,
+            )
+            .sample(powerInteractor.detailedWakefulness, ::Pair)
+            .transform { (stateToValue, wakefulness) ->
+                if (wakefulness.lastSleepReason == FOLD) {
+                    emit(stateToValue)
+                }
+            }
+    }
+
+    val notificationAlpha: Flow<Float> =
+        transitionAnimation.sharedFlow(
+            duration = 200.milliseconds,
+            onStep = { 1f - it },
+            // Needs to be 1f in order for HUNs to appear on AOD
+            onFinish = { 1f },
+        )
 
     /** alpha animation upon entering AOD */
     val enterFromTopAnimationAlpha: Flow<Float> =
         transitionAnimation.sharedFlow(
-            startTime = 600.milliseconds,
-            duration = 500.milliseconds,
-            onStart = { 0f },
+            startTime = 700.milliseconds,
+            duration = 400.milliseconds,
             onStep = { it },
+            onFinish = { 1f },
         )
     val deviceEntryBackgroundViewAlpha: Flow<Float> =
         transitionAnimation.immediatelyTransitionTo(0f)
@@ -79,6 +122,7 @@ constructor(
                     startTime = 1100.milliseconds,
                     duration = 200.milliseconds,
                     onStep = { it },
+                    onCancel = { 1f },
                     onFinish = { 1f },
                 )
             } else {

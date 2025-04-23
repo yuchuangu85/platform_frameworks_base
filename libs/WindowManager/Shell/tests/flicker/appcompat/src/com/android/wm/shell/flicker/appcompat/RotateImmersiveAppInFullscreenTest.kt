@@ -16,20 +16,20 @@
 
 package com.android.wm.shell.flicker.appcompat
 
+import android.graphics.Rect
 import android.os.Build
 import android.platform.test.annotations.Postsubmit
 import android.system.helpers.CommandsHelper
-import android.tools.common.NavBar
-import android.tools.common.Rotation
-import android.tools.common.datatypes.Rect
-import android.tools.common.flicker.assertions.FlickerTest
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
-import android.tools.device.helpers.FIND_TIMEOUT
-import android.tools.device.traces.parsers.toFlickerComponent
+import android.tools.NavBar
+import android.tools.Rotation
+import android.tools.flicker.assertions.FlickerTest
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.helpers.FIND_TIMEOUT
+import android.tools.traces.component.ComponentNameMatcher
+import android.tools.traces.parsers.toFlickerComponent
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
@@ -45,7 +45,7 @@ import org.junit.runners.Parameterized
 /**
  * Test rotating an immersive app in fullscreen.
  *
- * To run this test: `atest WMShellFlickerTestsOther:RotateImmersiveAppInFullscreenTest`
+ * To run this test: `atest WMShellFlickerTestsAppCompat:RotateImmersiveAppInFullscreenTest`
  *
  * Actions:
  * ```
@@ -167,7 +167,7 @@ class RotateImmersiveAppInFullscreenTest(flicker: LegacyFlickerTest) : BaseAppCo
     }
 
     companion object {
-        private var startDisplayBounds = Rect.EMPTY
+        private var startDisplayBounds = Rect()
         const val LAUNCHER_PACKAGE = "com.google.android.apps.nexuslauncher"
 
         /**

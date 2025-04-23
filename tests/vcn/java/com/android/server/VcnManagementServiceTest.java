@@ -41,6 +41,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -77,12 +78,17 @@ import android.net.vcn.VcnConfigTest;
 import android.net.vcn.VcnGatewayConnectionConfigTest;
 import android.net.vcn.VcnManager;
 import android.net.vcn.VcnUnderlyingNetworkPolicy;
+import android.net.vcn.util.PersistableBundleUtils;
+import android.net.vcn.util.PersistableBundleUtils.PersistableBundleWrapper;
+import android.os.Build;
 import android.os.IBinder;
 import android.os.ParcelUuid;
 import android.os.PersistableBundle;
 import android.os.Process;
 import android.os.UserHandle;
+import android.os.UserManager;
 import android.os.test.TestLooper;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.telephony.SubscriptionInfo;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
@@ -97,10 +103,9 @@ import com.android.server.vcn.TelephonySubscriptionTracker;
 import com.android.server.vcn.Vcn;
 import com.android.server.vcn.VcnContext;
 import com.android.server.vcn.VcnNetworkProvider;
-import com.android.server.vcn.util.PersistableBundleUtils;
-import com.android.server.vcn.util.PersistableBundleUtils.PersistableBundleWrapper;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
@@ -114,10 +119,11 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.UUID;
 
-/** Tests for {@link VcnManagementService}. */
 @RunWith(AndroidJUnit4.class)
 @SmallTest
 public class VcnManagementServiceTest {
+    @Rule public final SetFlagsRule mSetFlagsRule = new SetFlagsRule();
+
     private static final String CONTEXT_ATTRIBUTION_TAG = "VCN";
     private static final String TEST_PACKAGE_NAME =
             VcnManagementServiceTest.class.getPackage().getName();
@@ -129,11 +135,18 @@ public class VcnManagementServiceTest {
     private static final ParcelUuid TEST_UUID_3 = new ParcelUuid(new UUID(2, 2));
     private static final VcnConfig TEST_VCN_CONFIG;
     private static final VcnConfig TEST_VCN_CONFIG_PKG_2;
-    private static final int TEST_UID = Process.FIRST_APPLICATION_UID;
+
+    private static final int TEST_UID = 1010000; // A non-system user
+    private static final UserHandle TEST_USER_HANDLE = UserHandle.getUserHandleForUid(TEST_UID);
+    private static final UserHandle TEST_USER_HANDLE_OTHER =
+            UserHandle.of(TEST_USER_HANDLE.getIdentifier() + 1);
+
     private static final String TEST_IFACE_NAME = "TEST_IFACE";
     private static final String TEST_IFACE_NAME_2 = "TEST_IFACE2";
     private static final LinkProperties TEST_LP_1 = new LinkProperties();
     private static final LinkProperties TEST_LP_2 = new LinkProperties();
+
+    private static final int ACTIVE_MODEM_COUNT = 2;
 
     static {
         TEST_LP_1.setInterfaceName(TEST_IFACE_NAME);
@@ -187,6 +200,7 @@ public class VcnManagementServiceTest {
     private final TelephonyManager mTelMgr = mock(TelephonyManager.class);
     private final SubscriptionManager mSubMgr = mock(SubscriptionManager.class);
     private final AppOpsManager mAppOpsMgr = mock(AppOpsManager.class);
+    private final UserManager mUserManager = mock(UserManager.class);
     private final VcnContext mVcnContext = mock(VcnContext.class);
     private final PersistableBundleUtils.LockingReadWriteHelper mConfigReadWriteHelper =
             mock(PersistableBundleUtils.LockingReadWriteHelper.class);
@@ -218,6 +232,10 @@ public class VcnManagementServiceTest {
                 Context.TELEPHONY_SUBSCRIPTION_SERVICE,
                 SubscriptionManager.class);
         setupSystemService(mMockContext, mAppOpsMgr, Context.APP_OPS_SERVICE, AppOpsManager.class);
+        setupSystemService(mMockContext, mUserManager, Context.USER_SERVICE, UserManager.class);
+
+        doReturn(TEST_USER_HANDLE).when(mUserManager).getMainUser();
+        doReturn(ACTIVE_MODEM_COUNT).when(mTelMgr).getActiveModemCount();
 
         doReturn(TEST_PACKAGE_NAME).when(mMockContext).getOpPackageName();
 
@@ -424,6 +442,14 @@ public class VcnManagementServiceTest {
             }
             return subIds;
         }).when(snapshot).getAllSubIdsInGroup(any());
+
+        doAnswer(invocation -> {
+            final Set<ParcelUuid> subGroups = new ArraySet<>();
+            for (Entry<Integer, ParcelUuid> entry : subIdToGroupMap.entrySet()) {
+                subGroups.add(entry.getValue());
+            }
+            return subGroups;
+        }).when(snapshot).getAllSubscriptionGroups();
 
         return snapshot;
     }
@@ -717,10 +743,8 @@ public class VcnManagementServiceTest {
     }
 
     @Test
-    public void testSetVcnConfigRequiresSystemUser() throws Exception {
-        doReturn(UserHandle.getUid(UserHandle.MIN_SECONDARY_USER_ID, TEST_UID))
-                .when(mMockDeps)
-                .getBinderCallingUid();
+    public void testSetVcnConfigRequiresMainUser() throws Exception {
+        doReturn(TEST_USER_HANDLE_OTHER).when(mUserManager).getMainUser();
 
         try {
             mVcnMgmtSvc.setVcnConfig(TEST_UUID_1, TEST_VCN_CONFIG, TEST_PACKAGE_NAME);
@@ -832,10 +856,8 @@ public class VcnManagementServiceTest {
     }
 
     @Test
-    public void testClearVcnConfigRequiresSystemUser() throws Exception {
-        doReturn(UserHandle.getUid(UserHandle.MIN_SECONDARY_USER_ID, TEST_UID))
-                .when(mMockDeps)
-                .getBinderCallingUid();
+    public void testClearVcnConfigRequiresMainUser() throws Exception {
+        doReturn(TEST_USER_HANDLE_OTHER).when(mUserManager).getMainUser();
 
         try {
             mVcnMgmtSvc.clearVcnConfig(TEST_UUID_1, TEST_PACKAGE_NAME);
@@ -921,10 +943,8 @@ public class VcnManagementServiceTest {
     }
 
     @Test
-    public void testGetConfiguredSubscriptionGroupsRequiresSystemUser() throws Exception {
-        doReturn(UserHandle.getUid(UserHandle.MIN_SECONDARY_USER_ID, TEST_UID))
-                .when(mMockDeps)
-                .getBinderCallingUid();
+    public void testGetConfiguredSubscriptionGroupsRequiresMainUser() throws Exception {
+        doReturn(TEST_USER_HANDLE_OTHER).when(mUserManager).getMainUser();
 
         try {
             mVcnMgmtSvc.getConfiguredSubscriptionGroups(TEST_PACKAGE_NAME);
@@ -1065,6 +1085,10 @@ public class VcnManagementServiceTest {
 
     @Test
     public void testGetRestrictedTransportsFromCarrierConfig() {
+        assumeTrue(
+                "Configuring restricted transport types is only allowed on a debuggable build",
+                Build.isDebuggable());
+
         final Set<Integer> restrictedTransports = new ArraySet<>();
         restrictedTransports.add(TRANSPORT_CELLULAR);
         restrictedTransports.add(TRANSPORT_WIFI);
@@ -1086,6 +1110,10 @@ public class VcnManagementServiceTest {
 
     @Test
     public void testGetRestrictedTransportsFromCarrierConfig_noRestrictPolicyConfigured() {
+        assumeTrue(
+                "Configuring restricted transport types is only allowed on a debuggable build",
+                Build.isDebuggable());
+
         final Set<Integer> restrictedTransports = Collections.singleton(TRANSPORT_WIFI);
 
         final PersistableBundleWrapper carrierConfig =
@@ -1100,6 +1128,10 @@ public class VcnManagementServiceTest {
 
     @Test
     public void testGetRestrictedTransportsFromCarrierConfig_noCarrierConfig() {
+        assumeTrue(
+                "Configuring restricted transport types is only allowed on a debuggable build",
+                Build.isDebuggable());
+
         final Set<Integer> restrictedTransports = Collections.singleton(TRANSPORT_WIFI);
 
         final TelephonySubscriptionSnapshot lastSnapshot =
@@ -1111,6 +1143,10 @@ public class VcnManagementServiceTest {
 
     @Test
     public void testGetRestrictedTransportsFromCarrierConfigAndVcnConfig() {
+        assumeTrue(
+                "Configuring restricted transport types is only allowed on a debuggable build",
+                Build.isDebuggable());
+
         // Configure restricted transport in CarrierConfig
         final Set<Integer> restrictedTransportInCarrierConfig =
                 Collections.singleton(TRANSPORT_WIFI);
@@ -1473,6 +1509,28 @@ public class VcnManagementServiceTest {
                 Collections.singletonMap(TEST_SUBSCRIPTION_ID, TEST_UUID_2));
 
         verify(mMockPolicyListener).onPolicyChanged();
+    }
+
+    @Test
+    public void testGarbageCollectionKeepConfigUntilNewSnapshot() throws Exception {
+        setupActiveSubscription(TEST_UUID_2);
+        startAndGetVcnInstance(TEST_UUID_2);
+
+        // Report loss of subscription from mSubMgr
+        doReturn(Collections.emptyList()).when(mSubMgr).getSubscriptionsInGroup(any());
+        triggerSubscriptionTrackerCbAndGetSnapshot(
+                TEST_UUID_2,
+                Collections.singleton(TEST_UUID_2),
+                Collections.singletonMap(TEST_SUBSCRIPTION_ID, TEST_UUID_2));
+
+        assertTrue(mVcnMgmtSvc.getConfigs().containsKey(TEST_UUID_2));
+
+        // Report loss of subscription from snapshot
+        triggerSubscriptionTrackerCbAndGetSnapshot(null, Collections.emptySet());
+
+        mTestLooper.moveTimeForward(VcnManagementService.CARRIER_PRIVILEGES_LOST_TEARDOWN_DELAY_MS);
+        mTestLooper.dispatchAll();
+        assertFalse(mVcnMgmtSvc.getConfigs().containsKey(TEST_UUID_2));
     }
 
     @Test

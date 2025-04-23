@@ -16,20 +16,60 @@
 
 package com.android.credentialmanager.ui.mappers
 
+import android.graphics.drawable.Drawable
 import com.android.credentialmanager.model.Request
 import com.android.credentialmanager.CredentialSelectorUiState
+import com.android.credentialmanager.CredentialSelectorUiState.Get.MultipleEntry.PerNameEntries
+import com.android.credentialmanager.model.CredentialType
+import com.android.credentialmanager.model.get.CredentialEntryInfo
+import java.time.Instant
 
-fun Request.Get.toGet(): CredentialSelectorUiState.Get {
-    // TODO: b/301206470 returning a hard coded state for MVP
-    if (true) return CredentialSelectorUiState.Get.SingleProviderSinglePassword
+fun Request.Get.toGet(isPrimary: Boolean): CredentialSelectorUiState.Get {
 
-    return if (providerInfos.size == 1) {
-        if (providerInfos.first().credentialEntryList.size == 1) {
-            CredentialSelectorUiState.Get.SingleProviderSinglePassword
+    val accounts = providerInfos
+        .flatMap { it.credentialEntryList }
+        .groupBy {
+            if (it.displayName.isNullOrBlank()) it.userName else checkNotNull(it.displayName)
+        }
+        .entries
+        .toList()
+
+    return if (isPrimary) {
+        if (accounts.size == 1) {
+            CredentialSelectorUiState.Get.SingleEntry(
+                entry = accounts[0].value.minWith(comparator)
+            )
         } else {
-            TODO() // b/301206470 - Implement other get flows
+            val sortedEntries = accounts.map {
+                it.value.minWith(comparator)
+            }.sortedWith(comparator)
+
+            var icon: Drawable? = null
+            // provide icon if all entries have the same provider
+            if (sortedEntries.isNotEmpty() &&
+                sortedEntries.all {it.providerId == sortedEntries[0].providerId}) {
+                icon = providerInfos[0].icon
+            }
+
+            CredentialSelectorUiState.Get.MultipleEntryPrimaryScreen(
+                sortedEntries = sortedEntries,
+                icon = icon,
+                authenticationEntryList = providerInfos.flatMap { it.authenticationEntryList }
+            )
         }
     } else {
-        TODO() // b/301206470 - Implement other get flows
+        CredentialSelectorUiState.Get.MultipleEntry(
+            accounts = accounts.map { PerNameEntries(
+                it.key,
+                it.value.sortedWith(comparator)
+            )
+            },
+            actionEntryList = providerInfos.flatMap { it.actionEntryList },
+            authenticationEntryList = providerInfos.flatMap { it.authenticationEntryList }
+        )
     }
 }
+val comparator = compareBy<CredentialEntryInfo> { entryInfo ->
+    // Passkey type always go first
+    entryInfo.credentialType.let { if (it == CredentialType.PASSKEY) 0 else 1 }
+}.thenByDescending { it.lastUsedTimeMillis ?: Instant.EPOCH }

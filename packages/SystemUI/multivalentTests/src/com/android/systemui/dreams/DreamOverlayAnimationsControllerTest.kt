@@ -7,11 +7,11 @@ import android.view.View
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.systemui.SysuiTestCase
+import com.android.systemui.ambient.statusbar.ui.AmbientStatusBarViewController
 import com.android.systemui.complication.ComplicationHostViewController
-import com.android.systemui.keyguard.ui.viewmodel.DreamingToLockscreenTransitionViewModel
+import com.android.systemui.dreams.ui.viewmodel.DreamViewModel
 import com.android.systemui.log.core.FakeLogBuffer
 import com.android.systemui.statusbar.BlurUtils
-import com.android.systemui.statusbar.policy.ConfigurationController
 import com.android.systemui.util.mockito.argumentCaptor
 import com.android.systemui.util.mockito.mock
 import com.android.systemui.util.mockito.whenever
@@ -44,10 +44,9 @@ class DreamOverlayAnimationsControllerTest : SysuiTestCase() {
     @Mock private lateinit var mockAnimator: AnimatorSet
     @Mock private lateinit var blurUtils: BlurUtils
     @Mock private lateinit var hostViewController: ComplicationHostViewController
-    @Mock private lateinit var statusBarViewController: DreamOverlayStatusBarViewController
+    @Mock private lateinit var statusBarViewController: AmbientStatusBarViewController
     @Mock private lateinit var stateController: DreamOverlayStateController
-    @Mock private lateinit var configController: ConfigurationController
-    @Mock private lateinit var transitionViewModel: DreamingToLockscreenTransitionViewModel
+    @Mock private lateinit var transitionViewModel: DreamViewModel
     private val logBuffer = FakeLogBuffer.Factory.create()
     private lateinit var controller: DreamOverlayAnimationsController
 
@@ -62,7 +61,6 @@ class DreamOverlayAnimationsControllerTest : SysuiTestCase() {
                 stateController,
                 DREAM_BLUR_RADIUS,
                 transitionViewModel,
-                configController,
                 DREAM_IN_BLUR_ANIMATION_DURATION,
                 DREAM_IN_COMPLICATIONS_ANIMATION_DURATION,
                 DREAM_IN_TRANSLATION_Y_DISTANCE,
@@ -86,25 +84,18 @@ class DreamOverlayAnimationsControllerTest : SysuiTestCase() {
         verify(mockAnimator, atLeastOnce()).addListener(captor.capture())
 
         captor.allValues.forEach { it.onAnimationEnd(mockAnimator) }
-        verify(stateController).setExitAnimationsRunning(false)
+        verify(stateController, times(2)).setExitAnimationsRunning(false)
     }
 
     @Test
-    fun testWakeUpSetsExitAnimationsRunning() {
-        controller.wakeUp()
-
-        verify(stateController).setExitAnimationsRunning(true)
-    }
-
-    @Test
-    fun testWakeUpAfterStartWillCancel() {
+    fun testOnWakeUpAfterStartWillCancel() {
         val mockStartAnimator: AnimatorSet = mock()
 
         controller.startEntryAnimations(false, animatorBuilder = { mockStartAnimator })
 
         verify(mockStartAnimator, never()).cancel()
 
-        controller.wakeUp()
+        controller.onWakeUp()
 
         // Verify that we cancelled the start animator in favor of the exit
         // animator.
@@ -155,5 +146,11 @@ class DreamOverlayAnimationsControllerTest : SysuiTestCase() {
                 it.animatedValue == -DREAM_IN_TRANSLATION_Y_DISTANCE.toFloat()
             }
         )
+    }
+
+    @Test
+    fun testCancelAnimations_clearsExitAnimationsRunning() {
+        controller.cancelAnimations()
+        verify(stateController).setExitAnimationsRunning(false)
     }
 }

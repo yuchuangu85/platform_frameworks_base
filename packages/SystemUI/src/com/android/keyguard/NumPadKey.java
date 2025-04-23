@@ -15,11 +15,13 @@
  */
 package com.android.keyguard;
 
+import static com.android.systemui.Flags.gsfBouncer;
 import static com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants.ColorId.NUM_PAD_KEY;
 
 import android.content.Context;
 import android.content.res.Configuration;
 import android.content.res.TypedArray;
+import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.PowerManager;
@@ -30,12 +32,13 @@ import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.accessibility.AccessibilityManager;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.TextView;
 
 import androidx.annotation.Nullable;
 
 import com.android.settingslib.Utils;
+import com.android.systemui.bouncer.ui.helper.BouncerHapticPlayer;
 import com.android.systemui.res.R;
 
 /**
@@ -57,6 +60,8 @@ public class NumPadKey extends ViewGroup implements NumPadAnimationListener {
     @Nullable
     private NumPadAnimator mAnimator;
     private int mOrientation;
+    @Nullable
+    private BouncerHapticPlayer mBouncerHapticPlayer;
 
     private View.OnClickListener mListener = new View.OnClickListener() {
         @Override
@@ -105,8 +110,6 @@ public class NumPadKey extends ViewGroup implements NumPadAnimationListener {
         }
 
         setOnClickListener(mListener);
-        setOnHoverListener(new LiftToActivateListener(
-                (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE)));
 
         mPM = (PowerManager) mContext.getSystemService(Context.POWER_SERVICE);
         LayoutInflater inflater = (LayoutInflater) getContext().getSystemService(
@@ -157,6 +160,9 @@ public class NumPadKey extends ViewGroup implements NumPadAnimationListener {
         int klondikeColor = Utils.getColorAttr(getContext(), android.R.attr.textColorSecondary)
                 .getDefaultColor();
         mDigitText.setTextColor(textColor);
+        if (gsfBouncer()) {
+            mDigitText.setTypeface(Typeface.create("gsf-label-large-emphasized", Typeface.NORMAL));
+        }
         mKlondikeText.setTextColor(klondikeColor);
 
         if (mAnimator != null) mAnimator.reloadColors(getContext());
@@ -223,8 +229,12 @@ public class NumPadKey extends ViewGroup implements NumPadAnimationListener {
 
     // Cause a VIRTUAL_KEY vibration
     public void doHapticKeyClick() {
-        performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY,
-                HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
+        if (mBouncerHapticPlayer != null && mBouncerHapticPlayer.isEnabled()) {
+            mBouncerHapticPlayer.playNumpadKeyFeedback();
+        } else {
+            performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY,
+                    HapticFeedbackConstants.FLAG_IGNORE_VIEW_SETTING);
+        }
     }
 
     @Override
@@ -239,5 +249,15 @@ public class NumPadKey extends ViewGroup implements NumPadAnimationListener {
      */
     public void setAnimationEnabled(boolean enabled) {
         mAnimationsEnabled = enabled;
+    }
+
+    @Override
+    public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
+        super.onInitializeAccessibilityNodeInfo(info);
+        info.setTextEntryKey(true);
+    }
+
+    public void setBouncerHapticHelper(@Nullable BouncerHapticPlayer bouncerHapticPlayer) {
+        mBouncerHapticPlayer = bouncerHapticPlayer;
     }
 }

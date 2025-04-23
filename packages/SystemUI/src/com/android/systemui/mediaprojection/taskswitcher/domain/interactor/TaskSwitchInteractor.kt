@@ -16,12 +16,13 @@
 
 package com.android.systemui.mediaprojection.taskswitcher.domain.interactor
 
+import android.app.ActivityManager.RunningTaskInfo
 import android.app.TaskInfo
 import android.content.Intent
 import android.util.Log
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.mediaprojection.taskswitcher.data.model.MediaProjectionState
-import com.android.systemui.mediaprojection.taskswitcher.data.repository.MediaProjectionRepository
+import com.android.systemui.mediaprojection.data.model.MediaProjectionState
+import com.android.systemui.mediaprojection.data.repository.MediaProjectionRepository
 import com.android.systemui.mediaprojection.taskswitcher.data.repository.TasksRepository
 import com.android.systemui.mediaprojection.taskswitcher.domain.model.TaskSwitchState
 import javax.inject.Inject
@@ -37,9 +38,17 @@ import kotlinx.coroutines.flow.map
 class TaskSwitchInteractor
 @Inject
 constructor(
-    mediaProjectionRepository: MediaProjectionRepository,
+    private val mediaProjectionRepository: MediaProjectionRepository,
     private val tasksRepository: TasksRepository,
 ) {
+
+    suspend fun switchProjectedTask(task: RunningTaskInfo) {
+        mediaProjectionRepository.switchProjectedTask(task)
+    }
+
+    suspend fun goBackToTask(task: RunningTaskInfo) {
+        tasksRepository.launchRecentTask(task)
+    }
 
     /**
      * Emits a stream of changes to the state of task switching, in the context of media projection.
@@ -48,7 +57,7 @@ constructor(
         mediaProjectionRepository.mediaProjectionState.flatMapLatest { projectionState ->
             Log.d(TAG, "MediaProjectionState -> $projectionState")
             when (projectionState) {
-                is MediaProjectionState.SingleTask -> {
+                is MediaProjectionState.Projecting.SingleTask -> {
                     val projectedTask = projectionState.task
                     tasksRepository.foregroundTask.map { foregroundTask ->
                         if (hasForegroundTaskSwitched(projectedTask, foregroundTask)) {
@@ -58,7 +67,8 @@ constructor(
                         }
                     }
                 }
-                is MediaProjectionState.EntireScreen,
+                is MediaProjectionState.Projecting.EntireScreen,
+                is MediaProjectionState.Projecting.NoScreen,
                 is MediaProjectionState.NotProjecting -> {
                     flowOf(TaskSwitchState.NotProjectingTask)
                 }

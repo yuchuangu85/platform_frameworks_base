@@ -16,6 +16,8 @@
 
 package com.android.server.accessibility;
 
+import static android.view.InputDevice.SOURCE_CLASS_POINTER;
+import static android.view.MotionEvent.ACTION_SCROLL;
 import static android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_MAGNIFICATION_OVERLAY;
 import static android.view.WindowManager.LayoutParams.TYPE_MAGNIFICATION_OVERLAY;
 
@@ -24,7 +26,12 @@ import android.annotation.MainThread;
 import android.annotation.NonNull;
 import android.content.Context;
 import android.graphics.Region;
+import android.hardware.input.InputManager;
+import android.hardware.input.KeyGestureEvent;
+import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Slog;
 import android.util.SparseArray;
@@ -35,13 +42,20 @@ import android.view.InputEvent;
 import android.view.InputFilter;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.MotionEvent.PointerCoords;
+import android.view.MotionEvent.PointerProperties;
 import android.view.accessibility.AccessibilityEvent;
+
+import androidx.annotation.Nullable;
 
 import com.android.server.LocalServices;
 import com.android.server.accessibility.gestures.TouchExplorer;
+import com.android.server.accessibility.magnification.FullScreenMagnificationController;
 import com.android.server.accessibility.magnification.FullScreenMagnificationGestureHandler;
 import com.android.server.accessibility.magnification.FullScreenMagnificationVibrationHelper;
+import com.android.server.accessibility.magnification.MagnificationController;
 import com.android.server.accessibility.magnification.MagnificationGestureHandler;
+import com.android.server.accessibility.magnification.MouseEventHandler;
 import com.android.server.accessibility.magnification.WindowMagnificationGestureHandler;
 import com.android.server.accessibility.magnification.WindowMagnificationPromptController;
 import com.android.server.policy.WindowManagerPolicy;
@@ -49,6 +63,7 @@ import com.android.server.policy.WindowManagerPolicy;
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Objects;
 import java.util.StringJoiner;
 
 /**
@@ -57,7 +72,6 @@ import java.util.StringJoiner;
  *
  * NOTE: This class has to be created and poked only from the main thread.
  */
-@SuppressWarnings("MissingPermissionAnnotation")
 class AccessibilityInputFilter extends InputFilter implements EventStreamTransformation {
 
     private static final String TAG = AccessibilityInputFilter.class.getSimpleName();
@@ -153,6 +167,13 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
      */
     static final int FLAG_FEATURE_MAGNIFICATION_TWO_FINGER_TRIPLE_TAP = 0x00001000;
 
+    /**
+     * Flag for enabling the Accessibility mouse key events feature.
+     *
+     * @see #setUserAndEnabledFeatures(int, int)
+     */
+    static final int FLAG_FEATURE_MOUSE_KEYS = 0x00002000;
+
     static final int FEATURES_AFFECTING_MOTION_EVENTS =
             FLAG_FEATURE_INJECT_MOTION_EVENTS
                     | FLAG_FEATURE_AUTOCLICK
@@ -171,6 +192,8 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
 
     private final AccessibilityManagerService mAms;
 
+    private final InputManager mInputManager;
+
     private final SparseArray<EventStreamTransformation> mEventHandler;
 
     private final SparseArray<TouchExplorer> mTouchExplorer = new SparseArray<>(0);
@@ -183,6 +206,8 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
     private AutoclickController mAutoclickController;
 
     private KeyboardInterceptor mKeyboardInterceptor;
+
+    private MouseKeysInterceptor mMouseKeysInterceptor;
 
     private boolean mInstalled;
 
@@ -203,6 +228,103 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
 
     private EventStreamState mKeyboardStreamState;
 
+    /**
+     * The last MotionEvent emitted from the input device that's currently active. This is used to
+     * keep track of which input device is currently active, and also to generate the cancel event
+     * if a new device becomes active.
+     */
+    private MotionEvent mLastActiveDeviceMotionEvent = null;
+
+    private boolean mKeyGestureEventHandlerInstalled = false;
+    private InputManager.KeyGestureEventHandler mKeyGestureEventHandler =
+            new InputManager.KeyGestureEventHandler() {
+                @Override
+                public boolean handleKeyGestureEvent(
+                        @NonNull KeyGestureEvent event,
+                        @Nullable IBinder focusedToken) {
+                    final boolean complete =
+                            event.getAction() == KeyGestureEvent.ACTION_GESTURE_COMPLETE
+                                    && !event.isCancelled();
+                    final int gestureType = event.getKeyGestureType();
+                    final int displayId = isDisplayIdValid(event.getDisplayId())
+                            ? event.getDisplayId() : Display.DEFAULT_DISPLAY;
+
+                    switch (gestureType) {
+                        case KeyGestureEvent.KEY_GESTURE_TYPE_MAGNIFIER_ZOOM_IN:
+                            if (complete) {
+                                mAms.getMagnificationController().scaleMagnificationByStep(
+                                        displayId, MagnificationController.ZOOM_DIRECTION_IN);
+                            }
+                            return true;
+                        case KeyGestureEvent.KEY_GESTURE_TYPE_MAGNIFIER_ZOOM_OUT:
+                            if (complete) {
+                                mAms.getMagnificationController().scaleMagnificationByStep(
+                                        displayId, MagnificationController.ZOOM_DIRECTION_OUT);
+                            }
+                            return true;
+                    }
+                    return false;
+                }
+
+                @Override
+                public boolean isKeyGestureSupported(int gestureType) {
+                    return switch (gestureType) {
+                        case KeyGestureEvent.KEY_GESTURE_TYPE_MAGNIFIER_ZOOM_IN,
+                             KeyGestureEvent.KEY_GESTURE_TYPE_MAGNIFIER_ZOOM_OUT -> true;
+                        default -> false;
+                    };
+                }
+            };
+
+    private static MotionEvent cancelMotion(MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_CANCEL
+                || event.getActionMasked() == MotionEvent.ACTION_HOVER_EXIT
+                || event.getActionMasked() == MotionEvent.ACTION_UP) {
+            throw new IllegalArgumentException("Can't cancel " + event);
+        }
+        final int action;
+        if (event.getActionMasked() == MotionEvent.ACTION_HOVER_ENTER
+                || event.getActionMasked() == MotionEvent.ACTION_HOVER_MOVE) {
+            action = MotionEvent.ACTION_HOVER_EXIT;
+        } else {
+            action = MotionEvent.ACTION_CANCEL;
+        }
+
+        final int pointerCount;
+        if (event.getActionMasked() == MotionEvent.ACTION_POINTER_UP) {
+            pointerCount = event.getPointerCount() - 1;
+        } else {
+            pointerCount = event.getPointerCount();
+        }
+        final PointerProperties[] properties = new PointerProperties[pointerCount];
+        final PointerCoords[] coords = new PointerCoords[pointerCount];
+        int newPointerIndex = 0;
+        for (int i = 0; i < event.getPointerCount(); i++) {
+            if (event.getActionMasked() == MotionEvent.ACTION_POINTER_UP) {
+                if (event.getActionIndex() == i) {
+                    // Skip the pointer that's going away
+                    continue;
+                }
+            }
+            final PointerCoords c = new PointerCoords();
+            c.x = event.getX(i);
+            c.y = event.getY(i);
+            coords[newPointerIndex] = c;
+            final PointerProperties p = new PointerProperties();
+            p.id = event.getPointerId(i);
+            p.toolType = event.getToolType(i);
+            properties[newPointerIndex] = p;
+            newPointerIndex++;
+        }
+
+        return MotionEvent.obtain(event.getDownTime(), SystemClock.uptimeMillis(), action,
+                pointerCount, properties, coords,
+                event.getMetaState(), event.getButtonState(),
+                event.getXPrecision(), event.getYPrecision(), event.getDeviceId(),
+                event.getEdgeFlags(), event.getSource(), event.getDisplayId(), event.getFlags(),
+                event.getClassification());
+    }
+
     AccessibilityInputFilter(Context context, AccessibilityManagerService service) {
         this(context, service, new SparseArray<>(0));
     }
@@ -213,6 +335,7 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
         mContext = context;
         mAms = service;
         mPm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+        mInputManager = context.getSystemService(InputManager.class);
         mEventHandler = eventHandler;
     }
 
@@ -260,6 +383,17 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
                     AccessibilityTrace.FLAGS_INPUT_FILTER,
                     "event=" + event + ";policyFlags=" + policyFlags);
         }
+        if (Flags.handleMultiDeviceInput()) {
+            if (!shouldProcessMultiDeviceEvent(event, policyFlags)) {
+                // We are only allowing a single device to be active at a time.
+                return;
+            }
+        }
+
+        onInputEventInternal(event, policyFlags);
+    }
+
+    private void onInputEventInternal(InputEvent event, int policyFlags) {
         if (mEventHandler.size() == 0) {
             if (DEBUG) Slog.d(TAG, "No mEventHandler for event " + event);
             super.onInputEvent(event, policyFlags);
@@ -275,8 +409,9 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
         final int eventSource = event.getSource();
         final int displayId = event.getDisplayId();
         if ((policyFlags & WindowManagerPolicy.FLAG_PASS_TO_USER) == 0) {
-            state.reset();
-            clearEventStreamHandler(displayId, eventSource);
+            if (DEBUG) {
+                Slog.d(TAG, "Not processing event " + event);
+            }
             super.onInputEvent(event, policyFlags);
             return;
         }
@@ -353,8 +488,71 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
         }
     }
 
+    boolean shouldProcessMultiDeviceEvent(InputEvent event, int policyFlags) {
+        if (event instanceof MotionEvent motion) {
+            if (!motion.isFromSource(SOURCE_CLASS_POINTER) || motion.getAction() == ACTION_SCROLL) {
+                // Non-pointer events are focus-dispatched and don't require special logic.
+                // Scroll events are stand-alone and therefore can be considered to not be part of
+                // a stream.
+                return true;
+            }
+            // Only allow 1 device to be sending motion events at a time
+            // If the event is from an active device, let it through.
+            // If the event is not from an active device, only let it through if it starts a new
+            // gesture like ACTION_DOWN or ACTION_HOVER_ENTER
+            final boolean eventIsFromCurrentDevice = mLastActiveDeviceMotionEvent != null
+                    && mLastActiveDeviceMotionEvent.getDeviceId() == motion.getDeviceId();
+            final int actionMasked = motion.getActionMasked();
+            switch (actionMasked) {
+                case MotionEvent.ACTION_DOWN:
+                case MotionEvent.ACTION_HOVER_ENTER:
+                case MotionEvent.ACTION_HOVER_MOVE: {
+                    if (mLastActiveDeviceMotionEvent != null
+                            && mLastActiveDeviceMotionEvent.getDeviceId() != motion.getDeviceId()) {
+                        // This is a new gesture from a new device. Cancel the existing state
+                        // and let this through
+                        MotionEvent canceled = cancelMotion(mLastActiveDeviceMotionEvent);
+                        onInputEventInternal(canceled, policyFlags);
+                    }
+                    mLastActiveDeviceMotionEvent = MotionEvent.obtain(motion);
+                    return true;
+                }
+                case MotionEvent.ACTION_MOVE:
+                case MotionEvent.ACTION_POINTER_DOWN:
+                case MotionEvent.ACTION_POINTER_UP: {
+                    if (eventIsFromCurrentDevice) {
+                        mLastActiveDeviceMotionEvent = MotionEvent.obtain(motion);
+                        return true;
+                    } else {
+                        return false;
+                    }
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                case MotionEvent.ACTION_HOVER_EXIT: {
+                    if (eventIsFromCurrentDevice) {
+                        // This is the last event of the gesture from this device.
+                        mLastActiveDeviceMotionEvent = null;
+                        return true;
+                    } else {
+                        // Event is from another device
+                        return false;
+                    }
+                }
+                default: {
+                    if (mLastActiveDeviceMotionEvent != null
+                            && event.getDeviceId() != mLastActiveDeviceMotionEvent.getDeviceId()) {
+                        // This is an event from another device, ignore it.
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
     private void processMotionEvent(EventStreamState state, MotionEvent event, int policyFlags) {
-        if (!state.shouldProcessScroll() && event.getActionMasked() == MotionEvent.ACTION_SCROLL) {
+        if (!state.shouldProcessScroll() && event.getActionMasked() == ACTION_SCROLL) {
             super.onInputEvent(event, policyFlags);
             return;
         }
@@ -368,8 +566,14 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
 
     private void processKeyEvent(EventStreamState state, KeyEvent event, int policyFlags) {
         if (!state.shouldProcessKeyEvent(event)) {
+            if (DEBUG) {
+                Slog.d(TAG, "processKeyEvent: not processing: " + event);
+            }
             super.onInputEvent(event, policyFlags);
             return;
+        }
+        if (DEBUG) {
+            Slog.d(TAG, "processKeyEvent: " + event);
         }
         // Since the display id of KeyEvent always would be -1 and there is only one
         // KeyboardInterceptor for all display, pass KeyEvent to the mEventHandler of
@@ -464,7 +668,7 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
         }
     }
 
-    void notifyAccessibilityButtonClicked(int displayId) {
+    void notifyMagnificationShortcutTriggered(int displayId) {
         if (mMagnificationGestureHandler.size() != 0) {
             final MagnificationGestureHandler handler = mMagnificationGestureHandler.get(displayId);
             if (handler != null) {
@@ -564,6 +768,12 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
                     createMagnificationGestureHandler(displayId, displayContext);
             addFirstEventHandler(displayId, magnificationGestureHandler);
             mMagnificationGestureHandler.put(displayId, magnificationGestureHandler);
+
+            if (com.android.hardware.input.Flags.enableTalkbackAndMagnifierKeyGestures()
+                    && !mKeyGestureEventHandlerInstalled) {
+                mInputManager.registerKeyGestureEventHandler(mKeyGestureEventHandler);
+                mKeyGestureEventHandlerInstalled = true;
+            }
         }
 
         if ((mEnabledFeatures & FLAG_FEATURE_INJECT_MOTION_EVENTS) != 0) {
@@ -586,6 +796,14 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
             // the display with input focus directly, we only need one KeyboardInterceptor for
             // default display.
             addFirstEventHandler(Display.DEFAULT_DISPLAY, mKeyboardInterceptor);
+        }
+
+        if ((mEnabledFeatures & FLAG_FEATURE_MOUSE_KEYS) != 0) {
+            mMouseKeysInterceptor = new MouseKeysInterceptor(mAms,
+                    Objects.requireNonNull(mContext.getSystemService(InputManager.class)),
+                    Looper.myLooper(),
+                    Display.DEFAULT_DISPLAY);
+            addFirstEventHandler(Display.DEFAULT_DISPLAY, mMouseKeysInterceptor);
         }
     }
 
@@ -670,6 +888,16 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
             mKeyboardInterceptor.onDestroy();
             mKeyboardInterceptor = null;
         }
+
+        if (mMouseKeysInterceptor != null) {
+            mMouseKeysInterceptor.onDestroy();
+            mMouseKeysInterceptor = null;
+        }
+
+        if (mKeyGestureEventHandlerInstalled) {
+            mInputManager.unregisterKeyGestureEventHandler(mKeyGestureEventHandler);
+            mKeyGestureEventHandlerInstalled = false;
+        }
     }
 
     private MagnificationGestureHandler createMagnificationGestureHandler(
@@ -696,15 +924,21 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
                     TYPE_MAGNIFICATION_OVERLAY, null /* options */);
             FullScreenMagnificationVibrationHelper fullScreenMagnificationVibrationHelper =
                     new FullScreenMagnificationVibrationHelper(uiContext);
-            magnificationGestureHandler = new FullScreenMagnificationGestureHandler(uiContext,
-                    mAms.getMagnificationController().getFullScreenMagnificationController(),
-                    mAms.getTraceManager(),
-                    mAms.getMagnificationController(),
-                    detectControlGestures,
-                    detectTwoFingerTripleTap,
-                    triggerable,
-                    new WindowMagnificationPromptController(displayContext, mUserId), displayId,
-                    fullScreenMagnificationVibrationHelper);
+            FullScreenMagnificationController controller =
+                    mAms.getMagnificationController().getFullScreenMagnificationController();
+            magnificationGestureHandler =
+                    new FullScreenMagnificationGestureHandler(
+                            uiContext,
+                            controller,
+                            mAms.getTraceManager(),
+                            mAms.getMagnificationController(),
+                            detectControlGestures,
+                            detectTwoFingerTripleTap,
+                            triggerable,
+                            new WindowMagnificationPromptController(displayContext, mUserId),
+                            displayId,
+                            fullScreenMagnificationVibrationHelper,
+                            new MouseEventHandler(controller));
         }
         return magnificationGestureHandler;
     }
@@ -941,29 +1175,30 @@ class AccessibilityInputFilter extends InputFilter implements EventStreamTransfo
         }
     }
 
-    private boolean anyServiceWantsToObserveMotionEvent(MotionEvent event) {
-        // Disable SOURCE_TOUCHSCREEN generic event interception if any service is performing
-        // touch exploration.
-        if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)
-                && (mEnabledFeatures & FLAG_FEATURE_TOUCH_EXPLORATION) != 0) {
-            return false;
-        }
-        final int eventSourceWithoutClass = event.getSource() & ~InputDevice.SOURCE_CLASS_MASK;
-        return (mCombinedGenericMotionEventSources
-                        & mCombinedMotionEventObservedSources
-                        & eventSourceWithoutClass)
-                != 0;
-    }
-
     private boolean anyServiceWantsGenericMotionEvent(MotionEvent event) {
-        // Disable SOURCE_TOUCHSCREEN generic event interception if any service is performing
-        // touch exploration.
-        if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)
-                && (mEnabledFeatures & FLAG_FEATURE_TOUCH_EXPLORATION) != 0) {
+        final boolean isTouchEvent = event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN);
+        if (isTouchEvent && !canShareGenericTouchEvent()) {
             return false;
         }
         final int eventSourceWithoutClass = event.getSource() & ~InputDevice.SOURCE_CLASS_MASK;
         return (mCombinedGenericMotionEventSources & eventSourceWithoutClass) != 0;
+    }
+
+    private boolean anyServiceWantsToObserveMotionEvent(MotionEvent event) {
+        final int eventSourceWithoutClass = event.getSource() & ~InputDevice.SOURCE_CLASS_MASK;
+        return (mCombinedMotionEventObservedSources & eventSourceWithoutClass) != 0;
+    }
+
+    private boolean canShareGenericTouchEvent() {
+        if ((mCombinedMotionEventObservedSources & InputDevice.SOURCE_TOUCHSCREEN) != 0) {
+            // Share touch events if a MotionEvent-observing service wants them.
+            return true;
+        }
+        if ((mEnabledFeatures & FLAG_FEATURE_TOUCH_EXPLORATION) == 0) {
+            // Share touch events if touch exploration is not enabled.
+            return true;
+        }
+        return false;
     }
 
     public void setCombinedGenericMotionEventSources(int sources) {

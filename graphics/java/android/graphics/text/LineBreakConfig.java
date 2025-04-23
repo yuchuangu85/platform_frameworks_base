@@ -23,9 +23,8 @@ import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.app.compat.CompatChanges;
-import android.compat.annotation.ChangeId;
-import android.compat.annotation.EnabledSince;
+import android.annotation.SuppressLint;
+import android.app.ActivityThread;
 import android.os.Build;
 import android.os.LocaleList;
 import android.os.Parcel;
@@ -43,15 +42,6 @@ import java.util.Objects;
  * line-break property</a> for more information.
  */
 public final class LineBreakConfig implements Parcelable {
-
-    /**
-     * A feature ID for automatic line break word style.
-     * @hide
-     */
-    @ChangeId
-    @EnabledSince(targetSdkVersion = Build.VERSION_CODES.VANILLA_ICE_CREAM)
-    public static final long WORD_STYLE_AUTO = 280005585L;
-
     /**
      * No hyphenation preference is specified.
      *
@@ -187,6 +177,9 @@ public final class LineBreakConfig implements Parcelable {
      * - If at least one locale in the locale list contains Japanese script, this option is
      * equivalent to {@link #LINE_BREAK_STYLE_STRICT}.
      * - Otherwise, this option is equivalent to {@link #LINE_BREAK_STYLE_NONE}.
+     *
+     * <p>
+     * Note: future versions may have special line breaking style rules for other locales.
      */
     @FlaggedApi(FLAG_WORD_STYLE_AUTO)
     public static final int LINE_BREAK_STYLE_AUTO = 5;
@@ -260,6 +253,9 @@ public final class LineBreakConfig implements Parcelable {
      * option is equivalent to {@link #LINE_BREAK_WORD_STYLE_PHRASE} if the result of its line
      * count is less than 5 lines.
      * - Otherwise, this option is equivalent to {@link #LINE_BREAK_WORD_STYLE_NONE}.
+     *
+     * <p>
+     * Note: future versions may have special line breaking word style rules for other locales.
      */
     @FlaggedApi(FLAG_WORD_STYLE_AUTO)
     public static final int LINE_BREAK_WORD_STYLE_AUTO = 2;
@@ -319,6 +315,7 @@ public final class LineBreakConfig implements Parcelable {
          * @param config an override line break config
          * @return This {@code Builder}.
          */
+        @SuppressLint("BuilderSetStyle")
         @FlaggedApi(FLAG_NO_BREAK_NO_HYPHENATION_SPAN)
         public @NonNull Builder merge(@NonNull LineBreakConfig config) {
             if (config.mLineBreakStyle != LINE_BREAK_STYLE_UNSPECIFIED) {
@@ -354,12 +351,12 @@ public final class LineBreakConfig implements Parcelable {
             return this;
         }
 
+        // TODO(316208691): Revive following removed API docs.
+        // Note: different from {@link #merge(LineBreakConfig)} if this function is called with
+        // {@link #LINE_BREAK_STYLE_UNSPECIFIED}, the line break style is reset to
+        // {@link #LINE_BREAK_STYLE_UNSPECIFIED}.
         /**
          * Sets the line-break style.
-         *
-         * Note: different from {@link #merge(LineBreakConfig)} if this function is called with
-         * {@link #LINE_BREAK_STYLE_UNSPECIFIED}, the line break style is reset to
-         * {@link #LINE_BREAK_STYLE_UNSPECIFIED}.
          *
          * @see <a href="https://unicode.org/reports/tr35/#UnicodeLineBreakStyleIdentifier">
          *     Unicode Line Break Style Identifier</a>
@@ -374,12 +371,12 @@ public final class LineBreakConfig implements Parcelable {
             return this;
         }
 
+        // TODO(316208691): Revive following removed API docs.
+        // Note: different from {@link #merge(LineBreakConfig)} method, if this function is called
+        // with {@link #LINE_BREAK_WORD_STYLE_UNSPECIFIED}, the line break style is reset to
+        // {@link #LINE_BREAK_WORD_STYLE_UNSPECIFIED}.
         /**
          * Sets the line-break word style.
-         *
-         * Note: different from {@link #merge(LineBreakConfig)} method, if this function is called
-         * with {@link #LINE_BREAK_WORD_STYLE_UNSPECIFIED}, the line break style is reset to
-         * {@link #LINE_BREAK_WORD_STYLE_UNSPECIFIED}.
          *
          * @see <a href="https://unicode.org/reports/tr35/#UnicodeLineBreakWordIdentifier">
          *     Unicode Line Break Word Identifier</a>
@@ -487,8 +484,15 @@ public final class LineBreakConfig implements Parcelable {
      * @hide
      */
     public static @LineBreakStyle int getResolvedLineBreakStyle(@Nullable LineBreakConfig config) {
-        final int defaultStyle = CompatChanges.isChangeEnabled(WORD_STYLE_AUTO)
-                ? LINE_BREAK_STYLE_AUTO : LINE_BREAK_STYLE_NONE;
+        final int targetSdkVersion = ActivityThread.currentApplication().getApplicationInfo()
+                .targetSdkVersion;
+        final int defaultStyle;
+        final int vicVersion = Build.VERSION_CODES.VANILLA_ICE_CREAM;
+        if (targetSdkVersion >= vicVersion) {
+            defaultStyle = LINE_BREAK_STYLE_AUTO;
+        } else {
+            defaultStyle = LINE_BREAK_STYLE_NONE;
+        }
         if (config == null) {
             return defaultStyle;
         }
@@ -515,8 +519,15 @@ public final class LineBreakConfig implements Parcelable {
      */
     public static @LineBreakWordStyle int getResolvedLineBreakWordStyle(
             @Nullable LineBreakConfig config) {
-        final int defaultWordStyle = CompatChanges.isChangeEnabled(WORD_STYLE_AUTO)
-                ? LINE_BREAK_WORD_STYLE_AUTO : LINE_BREAK_WORD_STYLE_NONE;
+        final int targetSdkVersion = ActivityThread.currentApplication().getApplicationInfo()
+                .targetSdkVersion;
+        final int defaultWordStyle;
+        final int vicVersion = Build.VERSION_CODES.VANILLA_ICE_CREAM;
+        if (targetSdkVersion >= vicVersion) {
+            defaultWordStyle = LINE_BREAK_WORD_STYLE_AUTO;
+        } else {
+            defaultWordStyle = LINE_BREAK_WORD_STYLE_NONE;
+        }
         if (config == null) {
             return defaultWordStyle;
         }

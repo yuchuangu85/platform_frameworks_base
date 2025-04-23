@@ -18,20 +18,16 @@ package com.android.systemui.keyguard.ui.viewmodel
 
 import com.android.app.animation.Interpolators.EMPHASIZED
 import com.android.systemui.dagger.SysUISingleton
-import com.android.systemui.deviceentry.domain.interactor.DeviceEntryUdfpsInteractor
-import com.android.systemui.keyguard.domain.interactor.FromDreamingTransitionInteractor
 import com.android.systemui.keyguard.domain.interactor.FromDreamingTransitionInteractor.Companion.TO_LOCKSCREEN_DURATION
-import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor
-import com.android.systemui.keyguard.shared.model.TransitionState
+import com.android.systemui.keyguard.shared.model.Edge
+import com.android.systemui.keyguard.shared.model.KeyguardState.DREAMING
+import com.android.systemui.keyguard.shared.model.KeyguardState.LOCKSCREEN
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
 import com.android.systemui.keyguard.ui.transitions.DeviceEntryIconTransition
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.flatMapLatest
 
 /**
  * Breaks down DREAMING->LOCKSCREEN transition into discrete steps for corresponding views to
@@ -42,24 +38,14 @@ import kotlinx.coroutines.flow.flatMapLatest
 class DreamingToLockscreenTransitionViewModel
 @Inject
 constructor(
-    keyguardTransitionInteractor: KeyguardTransitionInteractor,
-    private val fromDreamingTransitionInteractor: FromDreamingTransitionInteractor,
-    private val deviceEntryUdfpsInteractor: DeviceEntryUdfpsInteractor,
     animationFlow: KeyguardTransitionAnimationFlow,
 ) : DeviceEntryIconTransition {
-    fun startTransition() = fromDreamingTransitionInteractor.startToLockscreenTransition()
 
     private val transitionAnimation =
         animationFlow.setup(
             duration = TO_LOCKSCREEN_DURATION,
-            stepFlow = keyguardTransitionInteractor.dreamingToLockscreenTransition,
+            edge = Edge.create(from = DREAMING, to = LOCKSCREEN),
         )
-
-    val transitionEnded =
-        keyguardTransitionInteractor.fromDreamingTransition.filter { step ->
-            step.transitionState == TransitionState.FINISHED ||
-                step.transitionState == TransitionState.CANCELED
-        }
 
     /** Dream overlay y-translation on exit */
     fun dreamOverlayTranslationY(translatePx: Int): Flow<Float> {
@@ -105,14 +91,12 @@ constructor(
             onCancel = { 0f },
         )
 
-    val deviceEntryBackgroundViewAlpha =
-        deviceEntryUdfpsInteractor.isUdfpsSupported.flatMapLatest { isUdfps ->
-            if (isUdfps) {
-                // immediately show; will fade in with deviceEntryParentViewAlpha
-                transitionAnimation.immediatelyTransitionTo(1f)
-            } else {
-                emptyFlow()
-            }
-        }
-    override val deviceEntryParentViewAlpha = lockscreenAlpha
+    val deviceEntryBackgroundViewAlpha = transitionAnimation.immediatelyTransitionTo(1f)
+    override val deviceEntryParentViewAlpha =
+        transitionAnimation.sharedFlow(
+            startTime = 233.milliseconds,
+            duration = 250.milliseconds,
+            onCancel = { 1f },
+            onStep = { it },
+        )
 }

@@ -44,13 +44,14 @@ class FlashlightMapperTest : SysuiTestCase() {
                     addOverride(R.drawable.qs_flashlight_icon_on, TestStubDrawable())
                 }
                 .resources,
-            context.theme
+            context.theme,
         )
     }
 
     @Test
     fun mapsDisabledDataToInactiveState() {
-        val tileState: QSTileState = mapper.map(qsTileConfig, FlashlightTileModel(false))
+        val tileState: QSTileState =
+            mapper.map(qsTileConfig, FlashlightTileModel.FlashlightAvailable(false))
 
         val actualActivationState = tileState.activationState
 
@@ -59,7 +60,8 @@ class FlashlightMapperTest : SysuiTestCase() {
 
     @Test
     fun mapsEnabledDataToActiveState() {
-        val tileState: QSTileState = mapper.map(qsTileConfig, FlashlightTileModel(true))
+        val tileState: QSTileState =
+            mapper.map(qsTileConfig, FlashlightTileModel.FlashlightAvailable(true))
 
         val actualActivationState = tileState.activationState
         assertEquals(QSTileState.ActivationState.ACTIVE, actualActivationState)
@@ -67,30 +69,53 @@ class FlashlightMapperTest : SysuiTestCase() {
 
     @Test
     fun mapsEnabledDataToOnIconState() {
-        val tileState: QSTileState = mapper.map(qsTileConfig, FlashlightTileModel(true))
+        val tileState: QSTileState =
+            mapper.map(qsTileConfig, FlashlightTileModel.FlashlightAvailable(true))
 
         val expectedIcon =
             Icon.Loaded(context.getDrawable(R.drawable.qs_flashlight_icon_on)!!, null)
-        val actualIcon = tileState.icon()
+        val actualIcon = tileState.icon
         assertThat(actualIcon).isEqualTo(expectedIcon)
     }
 
     @Test
     fun mapsDisabledDataToOffIconState() {
-        val tileState: QSTileState = mapper.map(qsTileConfig, FlashlightTileModel(false))
+        val tileState: QSTileState =
+            mapper.map(qsTileConfig, FlashlightTileModel.FlashlightAvailable(false))
 
         val expectedIcon =
             Icon.Loaded(context.getDrawable(R.drawable.qs_flashlight_icon_off)!!, null)
-        val actualIcon = tileState.icon()
+        val actualIcon = tileState.icon
         assertThat(actualIcon).isEqualTo(expectedIcon)
     }
 
     @Test
-    fun supportsOnlyClickAction() {
+    fun mapsUnavailableDataToOffIconState() {
+        val tileState: QSTileState =
+            mapper.map(qsTileConfig, FlashlightTileModel.FlashlightTemporarilyUnavailable)
+
+        val expectedIcon =
+            Icon.Loaded(context.getDrawable(R.drawable.qs_flashlight_icon_off)!!, null)
+        val actualIcon = tileState.icon
+        assertThat(actualIcon).isEqualTo(expectedIcon)
+    }
+
+    @Test
+    fun supportClickActionWhenAvailable() {
         val dontCare = true
-        val tileState: QSTileState = mapper.map(qsTileConfig, FlashlightTileModel(dontCare))
+        val tileState: QSTileState =
+            mapper.map(qsTileConfig, FlashlightTileModel.FlashlightAvailable(dontCare))
 
         val supportedActions = tileState.supportedActions
         assertThat(supportedActions).containsExactly(QSTileState.UserAction.CLICK)
+    }
+
+    @Test
+    fun doesNotSupportClickActionWhenUnavailable() {
+        val tileState: QSTileState =
+            mapper.map(qsTileConfig, FlashlightTileModel.FlashlightTemporarilyUnavailable)
+
+        val supportedActions = tileState.supportedActions
+        assertThat(supportedActions).isEmpty()
     }
 }

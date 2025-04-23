@@ -17,13 +17,13 @@
 package com.android.server.wm.flicker.ime
 
 import android.platform.test.annotations.Presubmit
-import android.tools.common.Rotation
-import android.tools.common.flicker.subject.region.RegionSubject
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.Rotation
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.flicker.subject.region.RegionSubject
+import android.tools.traces.component.ComponentNameMatcher
 import com.android.server.wm.flicker.BaseTest
 import com.android.server.wm.flicker.helpers.ImeEditorPopupDialogAppHelper
 import org.junit.FixMethodOrder
@@ -32,6 +32,9 @@ import org.junit.runner.RunWith
 import org.junit.runners.MethodSorters
 import org.junit.runners.Parameterized
 
+/**
+ * To run this test: `atest FlickerTestsIme:CloseImeOnDismissPopupDialogTest`
+ */
 @RunWith(Parameterized::class)
 @Parameterized.UseParametersRunnerFactory(FlickerParametersRunnerFactory::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
@@ -83,12 +86,12 @@ class CloseImeOnDismissPopupDialogTest(flicker: LegacyFlickerTest) : BaseTest(fl
                     }
                 if (imeSnapshotLayers.isNotEmpty()) {
                     val visibleAreas =
-                        imeSnapshotLayers
-                            .mapNotNull { imeSnapshotLayer -> imeSnapshotLayer.layer.visibleRegion }
-                            .toTypedArray()
+                        imeSnapshotLayers.mapNotNull { imeSnapshotLayer ->
+                            imeSnapshotLayer.layer.visibleRegion
+                        }
                     val imeVisibleRegion = RegionSubject(visibleAreas, timestamp)
                     val appVisibleRegion = it.visibleRegion(imeTestApp)
-                    if (imeVisibleRegion.region.isNotEmpty) {
+                    if (!imeVisibleRegion.region.isEmpty) {
                         imeVisibleRegion.coversAtMost(appVisibleRegion.region)
                     }
                 }

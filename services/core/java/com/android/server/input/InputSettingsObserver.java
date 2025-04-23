@@ -16,6 +16,13 @@
 
 package com.android.server.input;
 
+import static android.view.PointerIcon.DEFAULT_POINTER_SCALE;
+import static android.view.PointerIcon.POINTER_ICON_VECTOR_STYLE_FILL_BLACK;
+import static android.view.PointerIcon.POINTER_ICON_VECTOR_STYLE_STROKE_WHITE;
+import static android.view.flags.Flags.enableVectorCursorA11ySettings;
+
+import static com.android.input.flags.Flags.rateLimitUserActivityPokeInDispatcher;
+
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -28,7 +35,6 @@ import android.os.UserHandle;
 import android.provider.DeviceConfig;
 import android.provider.Settings;
 import android.util.Log;
-import android.view.PointerIcon;
 import android.view.ViewConfiguration;
 
 import java.util.Map;
@@ -57,14 +63,26 @@ class InputSettingsObserver extends ContentObserver {
         mObservers = Map.ofEntries(
                 Map.entry(Settings.System.getUriFor(Settings.System.POINTER_SPEED),
                         (reason) -> updateMousePointerSpeed()),
+                Map.entry(Settings.System.getUriFor(
+                        Settings.System.MOUSE_REVERSE_VERTICAL_SCROLLING),
+                        (reason) -> updateMouseReverseVerticalScrolling()),
+                Map.entry(Settings.System.getUriFor(
+                                Settings.System.MOUSE_SWAP_PRIMARY_BUTTON),
+                        (reason) -> updateMouseSwapPrimaryButton()),
                 Map.entry(Settings.System.getUriFor(Settings.System.TOUCHPAD_POINTER_SPEED),
                         (reason) -> updateTouchpadPointerSpeed()),
                 Map.entry(Settings.System.getUriFor(Settings.System.TOUCHPAD_NATURAL_SCROLLING),
                         (reason) -> updateTouchpadNaturalScrollingEnabled()),
                 Map.entry(Settings.System.getUriFor(Settings.System.TOUCHPAD_TAP_TO_CLICK),
                         (reason) -> updateTouchpadTapToClickEnabled()),
+                Map.entry(Settings.System.getUriFor(Settings.System.TOUCHPAD_TAP_DRAGGING),
+                        (reason) -> updateTouchpadTapDraggingEnabled()),
+                Map.entry(Settings.System.getUriFor(Settings.System.TOUCHPAD_VISUALIZER),
+                        (reason) -> updateTouchpadHardwareStateNotificationsEnabled()),
                 Map.entry(Settings.System.getUriFor(Settings.System.TOUCHPAD_RIGHT_CLICK_ZONE),
                         (reason) -> updateTouchpadRightClickZoneEnabled()),
+                Map.entry(Settings.System.getUriFor(Settings.System.TOUCHPAD_SYSTEM_GESTURES),
+                        (reason) -> updateTouchpadSystemGesturesEnabled()),
                 Map.entry(Settings.System.getUriFor(Settings.System.SHOW_TOUCHES),
                         (reason) -> updateShowTouches()),
                 Map.entry(Settings.System.getUriFor(Settings.System.POINTER_LOCATION),
@@ -84,10 +102,27 @@ class InputSettingsObserver extends ContentObserver {
                         (reason) -> updateKeyRepeatInfo()),
                 Map.entry(Settings.Secure.getUriFor(Settings.Secure.KEY_REPEAT_DELAY_MS),
                         (reason) -> updateKeyRepeatInfo()),
+                Map.entry(Settings.Secure.getUriFor(Settings.Secure.KEY_REPEAT_ENABLED),
+                        (reason) -> updateKeyRepeatInfo()),
                 Map.entry(Settings.System.getUriFor(Settings.System.SHOW_ROTARY_INPUT),
                         (reason) -> updateShowRotaryInput()),
-                Map.entry(Settings.System.getUriFor(Settings.Secure.ACCESSIBILITY_BOUNCE_KEYS),
-                        (reason) -> updateAccessibilityBounceKeys()));
+                Map.entry(Settings.Secure.getUriFor(Settings.Secure.ACCESSIBILITY_BOUNCE_KEYS),
+                        (reason) -> updateAccessibilityBounceKeys()),
+                Map.entry(Settings.Secure.getUriFor(Settings.Secure.ACCESSIBILITY_SLOW_KEYS),
+                        (reason) -> updateAccessibilitySlowKeys()),
+                Map.entry(Settings.Secure.getUriFor(Settings.Secure.ACCESSIBILITY_STICKY_KEYS),
+                        (reason) -> updateAccessibilityStickyKeys()),
+                Map.entry(Settings.Secure.getUriFor(Settings.Secure.STYLUS_POINTER_ICON_ENABLED),
+                        (reason) -> updateStylusPointerIconEnabled()),
+                Map.entry(Settings.System.getUriFor(Settings.System.POINTER_FILL_STYLE),
+                        (reason) -> updatePointerFillStyleFromSettings()),
+                Map.entry(Settings.System.getUriFor(Settings.System.POINTER_STROKE_STYLE),
+                        (reason) -> updatePointerStrokeStyleFromSettings()),
+                Map.entry(Settings.System.getUriFor(Settings.System.POINTER_SCALE),
+                        (reason) -> updatePointerScaleFromSettings()),
+                Map.entry(Settings.System.getUriFor(
+                                Settings.System.TOUCHPAD_THREE_FINGER_TAP_CUSTOMIZATION),
+                        (reason) -> updateTouchpadThreeFingerTapShortcutEnabled()));
     }
 
     /**
@@ -112,6 +147,8 @@ class InputSettingsObserver extends ContentObserver {
         for (Consumer<String> observer : mObservers.values()) {
             observer.accept("just booted");
         }
+
+        configureUserActivityPokeInterval();
     }
 
     @Override
@@ -137,6 +174,16 @@ class InputSettingsObserver extends ContentObserver {
         mNative.setPointerSpeed(constrainPointerSpeedValue(speed));
     }
 
+    private void updateMouseReverseVerticalScrolling() {
+        mNative.setMouseReverseVerticalScrollingEnabled(
+                InputSettings.isMouseReverseVerticalScrollingEnabled(mContext));
+    }
+
+    private void updateMouseSwapPrimaryButton() {
+        mNative.setMouseSwapPrimaryButtonEnabled(
+                InputSettings.isMouseSwapPrimaryButtonEnabled(mContext));
+    }
+
     private void updateTouchpadPointerSpeed() {
         mNative.setTouchpadPointerSpeed(
                 constrainPointerSpeedValue(InputSettings.getTouchpadPointerSpeed(mContext)));
@@ -151,8 +198,25 @@ class InputSettingsObserver extends ContentObserver {
         mNative.setTouchpadTapToClickEnabled(InputSettings.useTouchpadTapToClick(mContext));
     }
 
+    private void updateTouchpadTapDraggingEnabled() {
+        mNative.setTouchpadTapDraggingEnabled(InputSettings.useTouchpadTapDragging(mContext));
+    }
+
+    private void updateTouchpadHardwareStateNotificationsEnabled() {
+        mService.updateTouchpadVisualizerEnabled(InputSettings.useTouchpadVisualizer(mContext));
+    }
+
     private void updateTouchpadRightClickZoneEnabled() {
         mNative.setTouchpadRightClickZoneEnabled(InputSettings.useTouchpadRightClickZone(mContext));
+    }
+
+    private void updateTouchpadThreeFingerTapShortcutEnabled() {
+        mNative.setTouchpadThreeFingerTapShortcutEnabled(
+                InputSettings.useTouchpadThreeFingerTapShortcut(mContext));
+    }
+
+    private void updateTouchpadSystemGesturesEnabled() {
+        mNative.setTouchpadSystemGesturesEnabled(InputSettings.useTouchpadSystemGestures(mContext));
     }
 
     private void updateShowTouches() {
@@ -176,8 +240,7 @@ class InputSettingsObserver extends ContentObserver {
         final int accessibilityConfig = Settings.Secure.getIntForUser(
                 mContext.getContentResolver(), Settings.Secure.ACCESSIBILITY_LARGE_POINTER_ICON,
                 0, UserHandle.USER_CURRENT);
-        PointerIcon.setUseLargeIcons(accessibilityConfig == 1);
-        mNative.reloadPointerIcons();
+        mService.setUseLargePointerIcons(accessibilityConfig == 1);
     }
 
     private void updateLongPressTimeout(String reason) {
@@ -199,6 +262,11 @@ class InputSettingsObserver extends ContentObserver {
     }
 
     private void updateKeyRepeatInfo() {
+        // Key repeat is enabled by default
+        final boolean keyRepeatEnabled = Settings.Secure.getIntForUser(
+                mContext.getContentResolver(), Settings.Secure.KEY_REPEAT_ENABLED, 1,
+                UserHandle.USER_CURRENT) != 0;
+
         // Use ViewConfiguration getters only as fallbacks because they may return stale values.
         final int timeoutMs = Settings.Secure.getIntForUser(mContext.getContentResolver(),
                 Settings.Secure.KEY_REPEAT_TIMEOUT_MS, ViewConfiguration.getKeyRepeatTimeout(),
@@ -206,7 +274,7 @@ class InputSettingsObserver extends ContentObserver {
         final int delayMs = Settings.Secure.getIntForUser(mContext.getContentResolver(),
                 Settings.Secure.KEY_REPEAT_DELAY_MS, ViewConfiguration.getKeyRepeatDelay(),
                 UserHandle.USER_CURRENT);
-        mNative.setKeyRepeatConfiguration(timeoutMs, delayMs);
+        mNative.setKeyRepeatConfiguration(timeoutMs, delayMs, keyRepeatEnabled);
     }
 
     private void updateMaximumObscuringOpacityForTouch() {
@@ -222,5 +290,61 @@ class InputSettingsObserver extends ContentObserver {
     private void updateAccessibilityBounceKeys() {
         mService.setAccessibilityBounceKeysThreshold(
                 InputSettings.getAccessibilityBounceKeysThreshold(mContext));
+    }
+
+    private void updateAccessibilitySlowKeys() {
+        mService.setAccessibilitySlowKeysThreshold(
+                InputSettings.getAccessibilitySlowKeysThreshold(mContext));
+    }
+
+    private void updateAccessibilityStickyKeys() {
+        mService.setAccessibilityStickyKeysEnabled(
+                InputSettings.isAccessibilityStickyKeysEnabled(mContext));
+    }
+
+    private void configureUserActivityPokeInterval() {
+        if (rateLimitUserActivityPokeInDispatcher()) {
+            final int intervalMillis = mContext.getResources().getInteger(
+                    com.android.internal.R.integer.config_minMillisBetweenInputUserActivityEvents);
+            Log.i(TAG, "Setting user activity interval (ms) of " + intervalMillis);
+            mNative.setMinTimeBetweenUserActivityPokes(intervalMillis);
+        }
+    }
+
+    private void updateStylusPointerIconEnabled() {
+        mNative.setStylusPointerIconEnabled(
+                InputSettings.isStylusPointerIconEnabled(mContext, true /* forceReloadSetting */));
+    }
+
+    private void updatePointerFillStyleFromSettings() {
+        if (!enableVectorCursorA11ySettings()) {
+            return;
+        }
+        final int pointerFillStyle = Settings.System.getIntForUser(
+                mContext.getContentResolver(), Settings.System.POINTER_FILL_STYLE,
+                POINTER_ICON_VECTOR_STYLE_FILL_BLACK,
+                UserHandle.USER_CURRENT);
+        mService.setPointerFillStyle(pointerFillStyle);
+    }
+
+    private void updatePointerStrokeStyleFromSettings() {
+        if (!enableVectorCursorA11ySettings()) {
+            return;
+        }
+        final int pointerStrokeStyle = Settings.System.getIntForUser(
+                mContext.getContentResolver(), Settings.System.POINTER_STROKE_STYLE,
+                POINTER_ICON_VECTOR_STYLE_STROKE_WHITE,
+                UserHandle.USER_CURRENT);
+        mService.setPointerStrokeStyle(pointerStrokeStyle);
+    }
+
+    private void updatePointerScaleFromSettings() {
+        if (!enableVectorCursorA11ySettings()) {
+            return;
+        }
+        final float pointerScale = Settings.System.getFloatForUser(mContext.getContentResolver(),
+                Settings.System.POINTER_SCALE, DEFAULT_POINTER_SCALE,
+                UserHandle.USER_CURRENT);
+        mService.setPointerScale(pointerScale);
     }
 }

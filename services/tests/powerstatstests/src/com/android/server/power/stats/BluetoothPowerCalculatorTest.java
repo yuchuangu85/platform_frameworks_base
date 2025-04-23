@@ -18,6 +18,9 @@ package com.android.server.power.stats;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import android.annotation.Nullable;
 import android.bluetooth.BluetoothActivityEnergyInfo;
 import android.bluetooth.UidTraffic;
@@ -28,6 +31,7 @@ import android.os.Parcel;
 import android.os.Process;
 import android.os.UidBatteryConsumer;
 import android.os.WorkSource;
+import android.platform.test.ravenwood.RavenwoodRule;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
@@ -46,10 +50,15 @@ import java.util.List;
 @SmallTest
 @SuppressWarnings("GuardedBy")
 public class BluetoothPowerCalculatorTest {
+    @Rule(order = 0)
+    public final RavenwoodRule mRavenwood = new RavenwoodRule.Builder()
+            .setProvideMainThread(true)
+            .build();
+
     private static final double PRECISION = 0.00001;
     private static final int APP_UID = Process.FIRST_APPLICATION_UID + 42;
 
-    @Rule
+    @Rule(order = 1)
     public final BatteryUsageStatsRule mStatsRule = new BatteryUsageStatsRule()
             .setAveragePower(PowerProfile.POWER_BLUETOOTH_CONTROLLER_IDLE, 10.0)
             .setAveragePower(PowerProfile.POWER_BLUETOOTH_CONTROLLER_RX, 50.0)
@@ -73,16 +82,16 @@ public class BluetoothPowerCalculatorTest {
 
         assertBluetoothPowerAndDuration(
                 mStatsRule.getUidBatteryConsumer(Process.BLUETOOTH_UID),
-                0.06944, 3000, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.06944, 3000);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getUidBatteryConsumer(APP_UID),
-                0.19444, 9000, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.19444, 9000);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getDeviceBatteryConsumer(),
-                0.26388, 12000, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.26388, 12000);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getAppsBatteryConsumer(),
-                0.26388, 12000, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.26388, 12000);
     }
 
     @Test
@@ -135,8 +144,6 @@ public class BluetoothPowerCalculatorTest {
                 .isEqualTo(6166);
         assertThat(uidConsumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_BLUETOOTH))
                 .isWithin(PRECISION).of(0.1226666);
-        assertThat(uidConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_BLUETOOTH))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_POWER_PROFILE);
 
         final BatteryConsumer.Key foreground = uidConsumer.getKey(
                 BatteryConsumer.POWER_COMPONENT_BLUETOOTH,
@@ -169,16 +176,16 @@ public class BluetoothPowerCalculatorTest {
 
         assertBluetoothPowerAndDuration(
                 mStatsRule.getUidBatteryConsumer(Process.BLUETOOTH_UID),
-                0.08216, 3583, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.08216, 3583);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getUidBatteryConsumer(APP_UID),
-                0.18169, 8416, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.18169, 8416);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getDeviceBatteryConsumer(),
-                0.30030, 12000, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.30030, 12000);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getAppsBatteryConsumer(),
-                0.26386, 11999, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.26386, 11999);
     }
 
     @Test
@@ -193,16 +200,16 @@ public class BluetoothPowerCalculatorTest {
 
         assertBluetoothPowerAndDuration(
                 mStatsRule.getUidBatteryConsumer(Process.BLUETOOTH_UID),
-                0.10378, 3583, BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
+                0.10378, 3583);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getUidBatteryConsumer(APP_UID),
-                0.22950, 8416, BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
+                0.22950, 8416);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getDeviceBatteryConsumer(),
-                0.33333, 12000, BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
+                0.33333, 12000);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getAppsBatteryConsumer(),
-                0.33329, 11999, BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
+                0.33329, 11999);
     }
 
     @Test
@@ -255,8 +262,6 @@ public class BluetoothPowerCalculatorTest {
                 .isEqualTo(6166);
         assertThat(uidConsumer.getConsumedPower(BatteryConsumer.POWER_COMPONENT_BLUETOOTH))
                 .isWithin(PRECISION).of(0.8220561);
-        assertThat(uidConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_BLUETOOTH))
-                .isEqualTo(BatteryConsumer.POWER_MODEL_ENERGY_CONSUMPTION);
 
         final BatteryConsumer.Key foreground = uidConsumer.getKey(
                 BatteryConsumer.POWER_COMPONENT_BLUETOOTH,
@@ -290,16 +295,16 @@ public class BluetoothPowerCalculatorTest {
 
         assertBluetoothPowerAndDuration(
                 mStatsRule.getUidBatteryConsumer(Process.BLUETOOTH_UID),
-                0.08216, 3583, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.08216, 3583);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getUidBatteryConsumer(APP_UID),
-                0.18169, 8416, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.18169, 8416);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getDeviceBatteryConsumer(),
-                0.26388, 12000, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.26388, 12000);
         assertBluetoothPowerAndDuration(
                 mStatsRule.getAppsBatteryConsumer(),
-                0.26386, 11999, BatteryConsumer.POWER_MODEL_POWER_PROFILE);
+                0.26386, 11999);
     }
 
     private void setupBluetoothEnergyInfo(long reportedEnergyUc, long consumedEnergyUc) {
@@ -317,47 +322,65 @@ public class BluetoothPowerCalculatorTest {
     }
 
     private void assertBluetoothPowerAndDuration(@Nullable BatteryConsumer batteryConsumer,
-            double powerMah, int durationMs, @BatteryConsumer.PowerModel int powerModel) {
+            double powerMah, int durationMs) {
         assertThat(batteryConsumer).isNotNull();
 
         double consumedPower = batteryConsumer.getConsumedPower(
                 BatteryConsumer.POWER_COMPONENT_BLUETOOTH);
         assertThat(consumedPower).isWithin(PRECISION).of(powerMah);
-        assertThat(batteryConsumer.getPowerModel(BatteryConsumer.POWER_COMPONENT_BLUETOOTH))
-                .isEqualTo(powerModel);
 
         long usageDurationMillis = batteryConsumer.getUsageDurationMillis(
                 BatteryConsumer.POWER_COMPONENT_BLUETOOTH);
         assertThat(usageDurationMillis).isEqualTo(durationMs);
     }
 
-    private UidTraffic createUidTraffic(int uid, long traffic1, long traffic2) {
-        final Parcel uidTrafficParcel = Parcel.obtain();
-        uidTrafficParcel.writeInt(uid);
-        uidTrafficParcel.writeLong(traffic1);
-        uidTrafficParcel.writeLong(traffic2);
-        uidTrafficParcel.setDataPosition(0);
+    private UidTraffic createUidTraffic(int appUid, long rxBytes, long txBytes) {
+        if (RavenwoodRule.isUnderRavenwood()) {
+            UidTraffic uidTraffic = mock(UidTraffic.class);
+            when(uidTraffic.getUid()).thenReturn(appUid);
+            when(uidTraffic.getRxBytes()).thenReturn(rxBytes);
+            when(uidTraffic.getTxBytes()).thenReturn(txBytes);
+            return uidTraffic;
+        } else {
+            final Parcel uidTrafficParcel = Parcel.obtain();
+            uidTrafficParcel.writeInt(appUid);
+            uidTrafficParcel.writeLong(rxBytes);
+            uidTrafficParcel.writeLong(txBytes);
+            uidTrafficParcel.setDataPosition(0);
 
-        UidTraffic traffic = UidTraffic.CREATOR.createFromParcel(uidTrafficParcel);
-        uidTrafficParcel.recycle();
-        return traffic;
+            UidTraffic traffic = UidTraffic.CREATOR.createFromParcel(uidTrafficParcel);
+            uidTrafficParcel.recycle();
+            return traffic;
+        }
     }
 
     private BluetoothActivityEnergyInfo createBtEnergyInfo(long timestamp, int stackState,
             long txTime, long rxTime, long idleTime, long energyUsed, List<UidTraffic> traffic) {
-        final Parcel btActivityEnergyInfoParcel = Parcel.obtain();
-        btActivityEnergyInfoParcel.writeLong(timestamp);
-        btActivityEnergyInfoParcel.writeInt(stackState);
-        btActivityEnergyInfoParcel.writeLong(txTime);
-        btActivityEnergyInfoParcel.writeLong(rxTime);
-        btActivityEnergyInfoParcel.writeLong(idleTime);
-        btActivityEnergyInfoParcel.writeLong(energyUsed);
-        btActivityEnergyInfoParcel.writeTypedList(traffic);
-        btActivityEnergyInfoParcel.setDataPosition(0);
+        if (RavenwoodRule.isUnderRavenwood()) {
+            BluetoothActivityEnergyInfo info = mock(BluetoothActivityEnergyInfo.class);
+            when(info.getTimestampMillis()).thenReturn(timestamp);
+            when(info.getBluetoothStackState()).thenReturn(stackState);
+            when(info.getControllerTxTimeMillis()).thenReturn(txTime);
+            when(info.getControllerRxTimeMillis()).thenReturn(rxTime);
+            when(info.getControllerIdleTimeMillis()).thenReturn(idleTime);
+            when(info.getControllerEnergyUsed()).thenReturn(energyUsed);
+            when(info.getUidTraffic()).thenReturn(ImmutableList.copyOf(traffic));
+            return info;
+        } else {
+            final Parcel btActivityEnergyInfoParcel = Parcel.obtain();
+            btActivityEnergyInfoParcel.writeLong(timestamp);
+            btActivityEnergyInfoParcel.writeInt(stackState);
+            btActivityEnergyInfoParcel.writeLong(txTime);
+            btActivityEnergyInfoParcel.writeLong(rxTime);
+            btActivityEnergyInfoParcel.writeLong(idleTime);
+            btActivityEnergyInfoParcel.writeLong(energyUsed);
+            btActivityEnergyInfoParcel.writeTypedList(traffic);
+            btActivityEnergyInfoParcel.setDataPosition(0);
 
-        BluetoothActivityEnergyInfo info = BluetoothActivityEnergyInfo.CREATOR
-                .createFromParcel(btActivityEnergyInfoParcel);
-        btActivityEnergyInfoParcel.recycle();
-        return info;
+            BluetoothActivityEnergyInfo info = BluetoothActivityEnergyInfo.CREATOR
+                    .createFromParcel(btActivityEnergyInfoParcel);
+            btActivityEnergyInfoParcel.recycle();
+            return info;
+        }
     }
 }

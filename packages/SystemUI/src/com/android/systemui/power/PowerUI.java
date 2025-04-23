@@ -16,6 +16,8 @@
 
 package com.android.systemui.power;
 
+import static com.android.systemui.util.ConvenienceExtensionsKt.toKotlinLazy;
+
 import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
@@ -44,16 +46,20 @@ import android.util.Slog;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.android.app.viewcapture.ViewCapture;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.settingslib.fuelgauge.Estimate;
 import com.android.settingslib.utils.ThreadUtils;
 import com.android.systemui.CoreStartable;
-import com.android.systemui.res.R;
 import com.android.systemui.broadcast.BroadcastDispatcher;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.keyguard.WakefulnessLifecycle;
+import com.android.systemui.res.R;
 import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.CommandQueue;
+import com.android.systemui.statusbar.policy.ConfigurationController;
+
+import kotlin.Lazy;
 
 import java.io.PrintWriter;
 import java.util.Arrays;
@@ -62,7 +68,10 @@ import java.util.concurrent.Future;
 import javax.inject.Inject;
 
 @SysUISingleton
-public class PowerUI implements CoreStartable, CommandQueue.Callbacks {
+public class PowerUI implements
+        CoreStartable,
+        ConfigurationController.ConfigurationListener,
+        CommandQueue.Callbacks {
 
     static final String TAG = "PowerUI";
     static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
@@ -113,6 +122,7 @@ public class PowerUI implements CoreStartable, CommandQueue.Callbacks {
     private final Context mContext;
     private final BroadcastDispatcher mBroadcastDispatcher;
     private final CommandQueue mCommandQueue;
+    private final Lazy<ViewCapture> mLazyViewCapture;
     @Nullable
     private final IVrManager mVrManager;
     private final WakefulnessLifecycle.Observer mWakefulnessObserver =
@@ -153,7 +163,8 @@ public class PowerUI implements CoreStartable, CommandQueue.Callbacks {
             EnhancedEstimates enhancedEstimates,
             WakefulnessLifecycle wakefulnessLifecycle,
             PowerManager powerManager,
-            UserTracker userTracker) {
+            UserTracker userTracker,
+            dagger.Lazy<ViewCapture> daggerLazyViewCapture) {
         mContext = context;
         mBroadcastDispatcher = broadcastDispatcher;
         mCommandQueue = commandQueue;
@@ -163,6 +174,7 @@ public class PowerUI implements CoreStartable, CommandQueue.Callbacks {
         mPowerManager = powerManager;
         mWakefulnessLifecycle = wakefulnessLifecycle;
         mUserTracker = userTracker;
+        mLazyViewCapture = toKotlinLazy(daggerLazyViewCapture);
     }
 
     public void start() {
@@ -223,7 +235,7 @@ public class PowerUI implements CoreStartable, CommandQueue.Callbacks {
     }
 
     @Override
-    public void onConfigurationChanged(Configuration newConfig) {
+    public void onConfigChanged(Configuration newConfig) {
         final int mask = ActivityInfo.CONFIG_MCC | ActivityInfo.CONFIG_MNC;
 
         // Safe to modify mLastConfiguration here as it's only updated by the main thread (here).
@@ -637,7 +649,7 @@ public class PowerUI implements CoreStartable, CommandQueue.Callbacks {
     @Override
     public void showInattentiveSleepWarning() {
         if (mOverlayView == null) {
-            mOverlayView = new InattentiveSleepWarningView(mContext);
+            mOverlayView = new InattentiveSleepWarningView(mContext, mLazyViewCapture);
         }
 
         mOverlayView.show();

@@ -15,8 +15,12 @@
  */
 package com.android.systemui.statusbar.notification.data
 
-import com.android.systemui.statusbar.notification.data.repository.NotificationsKeyguardStateRepositoryModule
+import com.android.systemui.statusbar.notification.data.repository.HeadsUpRepository
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManagerImpl
+import dagger.Binds
 import dagger.Module
 
-@Module(includes = [NotificationsKeyguardStateRepositoryModule::class])
-interface NotificationDataLayerModule
+@Module(includes = [NotificationSettingsRepositoryModule::class])
+interface NotificationDataLayerModule {
+    @Binds fun bindHeadsUpNotificationRepository(impl: HeadsUpManagerImpl): HeadsUpRepository
+}

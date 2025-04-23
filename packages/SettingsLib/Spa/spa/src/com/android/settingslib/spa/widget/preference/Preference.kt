@@ -18,7 +18,6 @@ package com.android.settingslib.spa.widget.preference
 
 import androidx.compose.foundation.clickable
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.android.settingslib.spa.framework.common.EntryMacro
@@ -65,10 +64,22 @@ interface PreferenceModel {
     val title: String
 
     /**
+     * The content description of [title].
+     */
+    val titleContentDescription: String?
+        get() = null
+
+    /**
      * The summary of this [Preference].
      */
     val summary: () -> String
         get() = { "" }
+
+    /**
+     * The content description of [summary].
+     */
+    val summaryContentDescription: () -> String?
+        get() = { null }
 
     /**
      * The icon of this [Preference].
@@ -107,18 +118,15 @@ fun Preference(
 ) {
     val onClickWithLog = wrapOnClickWithLog(model.onClick)
     val enabled = model.enabled()
-    val modifier = remember(enabled) {
-        if (onClickWithLog != null) {
-            Modifier.clickable(
-                enabled = enabled,
-                onClick = onClickWithLog
-            )
-        } else Modifier
-    }
+    val modifier = if (onClickWithLog != null) {
+        Modifier.clickable(enabled = enabled, onClick = onClickWithLog)
+    } else Modifier
     EntryHighlight {
         BasePreference(
             title = model.title,
+            titleContentDescription = model.titleContentDescription,
             summary = model.summary,
+            summaryContentDescription = model.summaryContentDescription,
             singleLineSummary = singleLineSummary,
             modifier = modifier,
             icon = model.icon,

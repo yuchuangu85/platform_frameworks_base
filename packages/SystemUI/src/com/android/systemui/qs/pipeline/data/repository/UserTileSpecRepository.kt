@@ -23,7 +23,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.scan
 import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -50,9 +50,8 @@ constructor(
     private val defaultTiles: List<TileSpec>
         get() = defaultTilesRepository.defaultTiles
 
-    private val changeEvents = MutableSharedFlow<ChangeAction>(
-        extraBufferCapacity = CHANGES_BUFFER_SIZE
-    )
+    private val changeEvents =
+        MutableSharedFlow<ChangeAction>(extraBufferCapacity = CHANGES_BUFFER_SIZE)
 
     private lateinit var _tiles: StateFlow<List<TileSpec>>
 
@@ -61,15 +60,21 @@ constructor(
             _tiles =
                 changeEvents
                     .scan(loadTilesFromSettingsAndParse(userId)) { current, change ->
-                        change.apply(current).also {
-                            if (current != it) {
-                                if (change is RestoreTiles) {
-                                    logger.logTilesRestoredAndReconciled(current, it, userId)
-                                } else {
-                                    logger.logProcessTileChange(change, it, userId)
+                        change
+                            .apply(current)
+                            .also {
+                                if (current != it) {
+                                    if (change is RestoreTiles) {
+                                        logger.logTilesRestoredAndReconciled(current, it, userId)
+                                    } else {
+                                        logger.logProcessTileChange(change, it, userId)
+                                    }
                                 }
                             }
-                        }
+                            // Distinct preserves the order of the elements removing later
+                            // duplicates,
+                            // all tiles should be different
+                            .distinct()
                     }
                     .flowOn(backgroundDispatcher)
                     .stateIn(applicationScope)
@@ -79,7 +84,7 @@ constructor(
     }
 
     private fun startFlowCollections(tiles: StateFlow<List<TileSpec>>) {
-        applicationScope.launch(backgroundDispatcher) {
+        applicationScope.launch(context = backgroundDispatcher) {
             launch { tiles.collect { storeTiles(userId, it) } }
             launch {
                 // As Settings is not the source of truth, once we started tracking tiles for a
@@ -93,8 +98,8 @@ constructor(
                                     trySend(Unit)
                                 }
                             }
-                        secureSettings.registerContentObserverForUser(SETTING, observer, userId)
-                        awaitClose { secureSettings.unregisterContentObserver(observer) }
+                        secureSettings.registerContentObserverForUserSync(SETTING, observer, userId)
+                        awaitClose { secureSettings.unregisterContentObserverSync(observer) }
                     }
                     .map { loadTilesFromSettings(userId) }
                     .flowOn(backgroundDispatcher)
@@ -114,14 +119,7 @@ constructor(
                 .filter { it !is TileSpec.Invalid }
                 .joinToString(DELIMITER, transform = TileSpec::spec)
         withContext(backgroundDispatcher) {
-            secureSettings.putStringForUser(
-                SETTING,
-                toStore,
-                null,
-                false,
-                forUser,
-                true,
-            )
+            secureSettings.putStringForUser(SETTING, toStore, null, false, forUser, true)
         }
     }
 
@@ -163,13 +161,21 @@ constructor(
         changeEvents.emit(RestoreTiles(restoreData, currentAutoAdded))
     }
 
+    suspend fun prependDefault() {
+        changeEvents.emit(PrependDefault(defaultTiles))
+    }
+
+    suspend fun resetToDefault() {
+        changeEvents.emit(ResetToDefault(defaultTiles))
+    }
+
     sealed interface ChangeAction {
         fun apply(currentTiles: List<TileSpec>): List<TileSpec>
     }
 
     private data class AddTile(
         val tileSpec: TileSpec,
-        val position: Int = TileSpecRepository.POSITION_AT_END
+        val position: Int = TileSpecRepository.POSITION_AT_END,
     ) : ChangeAction {
         override fun apply(currentTiles: List<TileSpec>): List<TileSpec> {
             val tilesList = currentTiles.toMutableList()
@@ -190,12 +196,22 @@ constructor(
         }
     }
 
-    private data class ChangeTiles(
-        val newTiles: List<TileSpec>,
-    ) : ChangeAction {
+    private data class ChangeTiles(val newTiles: List<TileSpec>) : ChangeAction {
         override fun apply(currentTiles: List<TileSpec>): List<TileSpec> {
             val new = newTiles.filter { it !is TileSpec.Invalid }
             return if (new.isNotEmpty()) new else currentTiles
+        }
+    }
+
+    private data class PrependDefault(val defaultTiles: List<TileSpec>) : ChangeAction {
+        override fun apply(currentTiles: List<TileSpec>): List<TileSpec> {
+            return defaultTiles + currentTiles
+        }
+    }
+
+    private data class ResetToDefault(val defaultTiles: List<TileSpec>) : ChangeAction {
+        override fun apply(currentTiles: List<TileSpec>): List<TileSpec> {
+            return defaultTiles
         }
     }
 
@@ -221,7 +237,7 @@ constructor(
         fun reconcileTiles(
             currentTiles: List<TileSpec>,
             currentAutoAdded: Set<TileSpec>,
-            restoreData: RestoreData
+            restoreData: RestoreData,
         ): List<TileSpec> {
             val toRestore = restoreData.restoredTiles.toMutableList()
             val freshlyAutoAdded =
@@ -245,8 +261,6 @@ constructor(
 
     @AssistedFactory
     interface Factory {
-        fun create(
-            userId: Int,
-        ): UserTileSpecRepository
+        fun create(userId: Int): UserTileSpecRepository
     }
 }

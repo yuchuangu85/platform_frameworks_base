@@ -20,7 +20,6 @@ import android.annotation.DimenRes
 import android.content.res.Resources
 import android.os.UserHandle
 import android.service.notification.StatusBarNotification
-import android.testing.AndroidTestingRunner
 import android.testing.TestableLooper
 import android.testing.ViewUtils
 import android.view.NotificationHeaderView
@@ -29,6 +28,7 @@ import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.internal.R
 import com.android.internal.widget.NotificationActionListLayout
@@ -37,6 +37,7 @@ import com.android.systemui.SysuiTestCase
 import com.android.systemui.statusbar.notification.FeedbackIcon
 import com.android.systemui.statusbar.notification.collection.NotificationEntry
 import com.android.systemui.statusbar.notification.people.PeopleNotificationIdentifier
+import com.android.systemui.util.mockito.any
 import com.android.systemui.util.mockito.mock
 import com.android.systemui.util.mockito.whenever
 import junit.framework.Assert.assertEquals
@@ -49,6 +50,8 @@ import org.junit.runner.RunWith
 import org.mockito.Mock
 import org.mockito.Mockito
 import org.mockito.Mockito.anyBoolean
+import org.mockito.Mockito.anyInt
+import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.never
 import org.mockito.Mockito.spy
@@ -57,7 +60,7 @@ import org.mockito.Mockito.verify
 import org.mockito.MockitoAnnotations.initMocks
 
 @SmallTest
-@RunWith(AndroidTestingRunner::class)
+@RunWith(AndroidJUnit4::class)
 @TestableLooper.RunWithLooper
 class NotificationContentViewTest : SysuiTestCase() {
 
@@ -74,11 +77,13 @@ class NotificationContentViewTest : SysuiTestCase() {
     @Before
     fun setup() {
         initMocks(this)
-        fakeParent = FrameLayout(mContext, /* attrs= */ null).also { it.visibility = View.GONE }
+        fakeParent =
+            spy(FrameLayout(mContext, /* attrs= */ null).also { it.visibility = View.GONE })
+        val mockEntry = createMockNotificationEntry()
         row =
             spy(
-                ExpandableNotificationRow(mContext, /* attrs= */ null).apply {
-                    entry = createMockNotificationEntry()
+                ExpandableNotificationRow(mContext, /* attrs= */ null, mockEntry).apply {
+                    entry = mockEntry
                 }
             )
         ViewUtils.attachView(fakeParent)
@@ -558,6 +563,35 @@ class NotificationContentViewTest : SysuiTestCase() {
         verify(view.headsUpWrapper, never()).setAnimationsRunning(false)
     }
 
+    @Test
+    fun notifySubtreeAccessibilityStateChanged_notifiesParent() {
+        // Given: a contentView is created
+        val view = createContentView()
+        clearInvocations(fakeParent)
+
+        // When: the contentView is notified for an A11y change
+        view.notifySubtreeAccessibilityStateChanged(view.contractedChild, view.contractedChild, 0)
+
+        // Then: the contentView propagates the event to its parent
+        verify(fakeParent).notifySubtreeAccessibilityStateChanged(any(), any(), anyInt())
+    }
+
+    @Test
+    fun notifySubtreeAccessibilityStateChanged_animatingContentView_dontNotifyParent() {
+        // Given: a collapsed contentView is created
+        val view = createContentView()
+        clearInvocations(fakeParent)
+
+        // And: it is animating to expanded
+        view.setAnimationStartVisibleType(NotificationContentView.VISIBLE_TYPE_EXPANDED)
+
+        // When: the contentView is notified for an A11y change
+        view.notifySubtreeAccessibilityStateChanged(view.contractedChild, view.contractedChild, 0)
+
+        // Then: the contentView DOESN'T propagates the event to its parent
+        verify(fakeParent, never()).notifySubtreeAccessibilityStateChanged(any(), any(), anyInt())
+    }
+
     private fun createMockContainingNotification(notificationEntry: NotificationEntry) =
         mock<ExpandableNotificationRow>().apply {
             whenever(this.entry).thenReturn(notificationEntry)
@@ -597,7 +631,7 @@ class NotificationContentViewTest : SysuiTestCase() {
         }
 
     private fun createContentView(
-        isSystemExpanded: Boolean,
+        isSystemExpanded: Boolean = false,
         contractedView: View = createViewWithHeight(contractedHeight),
         expandedView: View = createViewWithHeight(expandedHeight),
         headsUpView: View = createViewWithHeight(contractedHeight),
@@ -608,7 +642,7 @@ class NotificationContentViewTest : SysuiTestCase() {
 
         return spy(NotificationContentView(mContext, /* attrs= */ null))
             .apply {
-                initialize(mPeopleNotificationIdentifier, mock(), mock(), mock(), mock())
+                initialize(mPeopleNotificationIdentifier, mock(), mock(), mock(), mock(), mock())
                 setContainingNotification(row)
                 setHeights(
                     /* smallHeight= */ contractedHeight,
@@ -647,5 +681,5 @@ private fun NotificationContentView.mockRequestLayout() {
 }
 
 private fun NotificationContentView.clearInvocations() {
-    Mockito.clearInvocations(contractedWrapper, expandedWrapper, headsUpWrapper)
+    clearInvocations(contractedWrapper, expandedWrapper, headsUpWrapper)
 }

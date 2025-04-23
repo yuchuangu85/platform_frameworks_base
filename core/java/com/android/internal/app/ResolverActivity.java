@@ -170,6 +170,10 @@ public class ResolverActivity extends Activity implements
     // Expected to be true if this object is ResolverActivity or is ResolverWrapperActivity.
     private final boolean mIsIntentPicker;
 
+    // Whether this activity was instantiated with a specialized constructor that predefines a list
+    // of resolutions to be displayed for the target intent (as in, e.g., the NFC use case).
+    private boolean mHasSubclassSpecifiedResolutions;
+
     // Whether or not this activity supports choosing a default handler for the intent.
     @VisibleForTesting
     protected boolean mSupportsAlwaysUseOption;
@@ -217,6 +221,12 @@ public class ResolverActivity extends Activity implements
     public static final String EXTRA_IS_AUDIO_CAPTURE_DEVICE = "is_audio_capture_device";
 
     /**
+     * Boolean extra to indicate if Resolver Sheet needs to be started in single user mode.
+     */
+    protected static final String EXTRA_RESTRICT_TO_SINGLE_USER =
+            "com.android.internal.app.ResolverActivity.EXTRA_RESTRICT_TO_SINGLE_USER";
+
+    /**
      * Integer extra to indicate which profile should be automatically selected.
      * <p>Can only be used if there is a work profile.
      * <p>Possible values can be either {@link #PROFILE_PERSONAL} or {@link #PROFILE_WORK}.
@@ -249,6 +259,7 @@ public class ResolverActivity extends Activity implements
 
     private UserHandle mCloneProfileUserHandle;
     private UserHandle mTabOwnerUserHandleForLaunch;
+    private UserHandle mPrivateProfileUserHandle;
 
     protected final LatencyTracker mLatencyTracker = getLatencyTracker();
 
@@ -414,6 +425,8 @@ public class ResolverActivity extends Activity implements
         setTheme(appliedThemeResId());
         super.onCreate(savedInstanceState);
 
+        mHasSubclassSpecifiedResolutions = (rList != null);
+
         mQuietModeManager = createQuietModeManager();
 
         // Determine whether we should show that intent is forwarded
@@ -441,6 +454,7 @@ public class ResolverActivity extends Activity implements
         mPersonalProfileUserHandle = fetchPersonalProfileUserHandle();
         mWorkProfileUserHandle = fetchWorkProfileUserProfile();
         mCloneProfileUserHandle = fetchCloneProfileUserHandle();
+        mPrivateProfileUserHandle = fetchPrivateProfileUserHandle();
         mTabOwnerUserHandleForLaunch = fetchTabOwnerUserHandleForLaunch();
 
         // The last argument of createResolverListAdapter is whether to do special handling
@@ -648,7 +662,8 @@ public class ResolverActivity extends Activity implements
                 initialIntents,
                 rList,
                 filterLastUsed,
-                /* userHandle */ getPersonalProfileUserHandle());
+                getPersonalProfileUserHandle());
+
         QuietModeManager quietModeManager = createQuietModeManager();
         return new ResolverMultiProfilePagerAdapter(
                 /* context */ this,
@@ -747,6 +762,11 @@ public class ResolverActivity extends Activity implements
     }
 
     protected UserHandle getPersonalProfileUserHandle() {
+        // When launched in single user mode, only personal tab is populated, so we use
+        // tabOwnerUserHandleForLaunch as personal tab's user handle.
+        if (privateSpaceEnabled() && isLaunchedInSingleUserMode()) {
+            return getTabOwnerUserHandleForLaunch();
+        }
         return mPersonalProfileUserHandle;
     }
     protected @Nullable UserHandle getWorkProfileUserHandle() {
@@ -759,6 +779,10 @@ public class ResolverActivity extends Activity implements
 
     protected UserHandle getTabOwnerUserHandleForLaunch() {
         return mTabOwnerUserHandleForLaunch;
+    }
+
+    protected UserHandle getPrivateProfileUserHandle() {
+        return mPrivateProfileUserHandle;
     }
 
     protected UserHandle fetchPersonalProfileUserHandle() {
@@ -795,12 +819,28 @@ public class ResolverActivity extends Activity implements
         return mCloneProfileUserHandle;
     }
 
+    protected @Nullable UserHandle fetchPrivateProfileUserHandle() {
+        mPrivateProfileUserHandle = null;
+        UserManager userManager = getSystemService(UserManager.class);
+        for (final UserInfo userInfo :
+                userManager.getProfiles(mPersonalProfileUserHandle.getIdentifier())) {
+            if (userInfo.isPrivateProfile()) {
+                mPrivateProfileUserHandle = userInfo.getUserHandle();
+                break;
+            }
+        }
+        return mPrivateProfileUserHandle;
+    }
+
     private UserHandle fetchTabOwnerUserHandleForLaunch() {
-        // If we are in work profile's process, return WorkProfile user as owner, otherwise we
-        // always return PersonalProfile user as owner
-        return UserHandle.of(UserHandle.myUserId()).equals(getWorkProfileUserHandle())
-                ? getWorkProfileUserHandle()
-                : getPersonalProfileUserHandle();
+        // If we are in work or private profile's process, return WorkProfile/PrivateProfile user
+        // as owner, otherwise we always return PersonalProfile user as owner
+        if (UserHandle.of(UserHandle.myUserId()).equals(getWorkProfileUserHandle())) {
+            return mWorkProfileUserHandle;
+        } else if (privateSpaceEnabled() && isLaunchedAsPrivateProfile()) {
+            return mPrivateProfileUserHandle;
+        }
+        return mPersonalProfileUserHandle;
     }
 
     private boolean hasWorkProfile() {
@@ -816,7 +856,25 @@ public class ResolverActivity extends Activity implements
                 && (UserHandle.myUserId() == getCloneProfileUserHandle().getIdentifier());
     }
 
+    protected final boolean isLaunchedAsPrivateProfile() {
+        return getPrivateProfileUserHandle() != null
+                && (UserHandle.myUserId() == getPrivateProfileUserHandle().getIdentifier());
+    }
+
+    protected final boolean isLaunchedInSingleUserMode() {
+        // When launched from Private Profile, return true
+        if (isLaunchedAsPrivateProfile()) {
+            return true;
+        }
+        return getIntent()
+                .getBooleanExtra(EXTRA_RESTRICT_TO_SINGLE_USER, /* defaultValue = */ false);
+    }
+
     protected boolean shouldShowTabs() {
+        // No Tabs are shown when launched in single user mode.
+        if (privateSpaceEnabled() && isLaunchedInSingleUserMode()) {
+            return false;
+        }
         return hasWorkProfile() && ENABLE_TABBED_VIEW;
     }
 
@@ -871,8 +929,11 @@ public class ResolverActivity extends Activity implements
 
         if (shouldUseMiniResolver()) {
             View buttonContainer = findViewById(R.id.button_bar_container);
-            buttonContainer.setPadding(0, 0, 0, mSystemWindowInsets.bottom
-                    + getResources().getDimensionPixelOffset(R.dimen.resolver_button_bar_spacing));
+            if (buttonContainer != null) {
+                buttonContainer.setPadding(0, 0, 0, mSystemWindowInsets.bottom
+                        + getResources().getDimensionPixelOffset(
+                                R.dimen.resolver_button_bar_spacing));
+            }
         }
 
         // Need extra padding so the list can fully scroll up
@@ -1151,9 +1212,19 @@ public class ResolverActivity extends Activity implements
         if (!isChangingConfigurations() && mPickOptionRequest != null) {
             mPickOptionRequest.cancel();
         }
-        if (mMultiProfilePagerAdapter != null
-                && mMultiProfilePagerAdapter.getActiveListAdapter() != null) {
-            mMultiProfilePagerAdapter.getActiveListAdapter().onDestroy();
+        if (mMultiProfilePagerAdapter != null) {
+            ResolverListAdapter activeAdapter =
+                    mMultiProfilePagerAdapter.getActiveListAdapter();
+            if (activeAdapter != null) {
+                activeAdapter.onDestroy();
+            }
+            if (android.service.chooser.Flags.fixResolverMemoryLeak()) {
+                ResolverListAdapter inactiveAdapter =
+                        mMultiProfilePagerAdapter.getInactiveListAdapter();
+                if (inactiveAdapter != null) {
+                    inactiveAdapter.onDestroy();
+                }
+            }
         }
     }
 
@@ -1646,17 +1717,25 @@ public class ResolverActivity extends Activity implements
                 isAudioCaptureDevice, initialIntentsUserSpace);
     }
 
+    private AbstractResolverComparator makeResolverComparator(UserHandle userHandle) {
+        if (mHasSubclassSpecifiedResolutions) {
+            return new NoOpResolverComparator(
+                    this, getTargetIntent(), getResolverRankerServiceUserHandleList(userHandle));
+        } else {
+            return new ResolverRankerServiceResolverComparator(
+                   this,
+                   getTargetIntent(),
+                   getReferrerPackageName(),
+                   null,
+                   null,
+                   getResolverRankerServiceUserHandleList(userHandle));
+        }
+    }
+
     @VisibleForTesting
     protected ResolverListController createListController(UserHandle userHandle) {
         UserHandle queryIntentsUser = getQueryIntentsUser(userHandle);
-        ResolverRankerServiceResolverComparator resolverComparator =
-                new ResolverRankerServiceResolverComparator(
-                        this,
-                        getTargetIntent(),
-                        getReferrerPackageName(),
-                        null,
-                        null,
-                        getResolverRankerServiceUserHandleList(userHandle));
+        AbstractResolverComparator resolverComparator = makeResolverComparator(userHandle);
         return new ResolverListController(
                 this,
                 mPm,
@@ -2617,6 +2696,12 @@ public class ResolverActivity extends Activity implements
             Log.e(TAG, "ResolveInfo with null UserHandle found: " + resolveInfo);
         }
         return resolveInfo.userHandle;
+    }
+
+    private boolean privateSpaceEnabled() {
+        return mIsIntentPicker && android.os.Flags.allowPrivateProfile()
+                && android.multiuser.Flags.allowResolverSheetForPrivateSpace()
+                && android.multiuser.Flags.enablePrivateSpaceFeatures();
     }
 
     /**

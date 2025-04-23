@@ -16,7 +16,6 @@
 
 package com.android.keyguard
 
-import android.telephony.PinResult
 import android.telephony.TelephonyManager
 import android.testing.TestableLooper
 import android.view.LayoutInflater
@@ -24,13 +23,18 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.internal.util.LatencyTracker
 import com.android.internal.widget.LockPatternUtils
+import com.android.keyguard.domain.interactor.KeyguardKeyboardInteractor
+import com.android.systemui.Flags
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.classifier.FalsingCollector
 import com.android.systemui.flags.FakeFeatureFlags
-import com.android.systemui.flags.Flags
+import com.android.systemui.haptics.msdl.bouncerHapticPlayer
+import com.android.systemui.keyboard.data.repository.FakeKeyboardRepository
 import com.android.systemui.res.R
+import com.android.systemui.testKosmos
 import com.android.systemui.user.domain.interactor.SelectedUserInteractor
 import com.android.systemui.util.mockito.any
+import com.android.systemui.util.mockito.mock
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -39,7 +43,6 @@ import org.mockito.ArgumentMatchers.anyString
 import org.mockito.Mock
 import org.mockito.Mockito
 import org.mockito.Mockito.anyInt
-import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.reset
 import org.mockito.Mockito.verify
@@ -48,7 +51,9 @@ import org.mockito.MockitoAnnotations
 
 @SmallTest
 @RunWith(AndroidJUnit4::class)
-@TestableLooper.RunWithLooper
+// collectFlow in KeyguardPinBasedInputViewController.onViewAttached calls JavaAdapter.CollectFlow,
+// which calls View.onRepeatWhenAttached, which requires being run on main thread.
+@TestableLooper.RunWithLooper(setAsMainLooper = true)
 class KeyguardSimPinViewControllerTest : SysuiTestCase() {
     private lateinit var simPinView: KeyguardSimPinView
     private lateinit var underTest: KeyguardSimPinViewController
@@ -66,8 +71,11 @@ class KeyguardSimPinViewControllerTest : SysuiTestCase() {
     @Mock
     private lateinit var keyguardMessageAreaController:
         KeyguardMessageAreaController<BouncerKeyguardMessageArea>
+    @Mock private lateinit var mUserActivityNotifier: UserActivityNotifier
     private val updateMonitorCallbackArgumentCaptor =
         ArgumentCaptor.forClass(KeyguardUpdateMonitorCallback::class.java)
+
+    private val kosmos = testKosmos()
 
     @Before
     fun setup() {
@@ -75,14 +83,14 @@ class KeyguardSimPinViewControllerTest : SysuiTestCase() {
         `when`(messageAreaControllerFactory.create(Mockito.any(KeyguardMessageArea::class.java)))
             .thenReturn(keyguardMessageAreaController)
         `when`(telephonyManager.createForSubscriptionId(anyInt())).thenReturn(telephonyManager)
-        `when`(telephonyManager.supplyIccLockPin(anyString()))
-            .thenReturn(mock(PinResult::class.java))
+        `when`(telephonyManager.supplyIccLockPin(anyString())).thenReturn(mock())
         simPinView =
             LayoutInflater.from(context).inflate(R.layout.keyguard_sim_pin_view, null)
                 as KeyguardSimPinView
         val fakeFeatureFlags = FakeFeatureFlags()
-        fakeFeatureFlags.set(Flags.REVAMPED_BOUNCER_MESSAGES, true)
+        val keyguardKeyboardInteractor = KeyguardKeyboardInteractor(FakeKeyboardRepository())
 
+        mSetFlagsRule.enableFlags(Flags.FLAG_REVAMPED_BOUNCER_MESSAGES)
         underTest =
             KeyguardSimPinViewController(
                 simPinView,
@@ -97,38 +105,44 @@ class KeyguardSimPinViewControllerTest : SysuiTestCase() {
                 falsingCollector,
                 emergencyButtonController,
                 fakeFeatureFlags,
-                mSelectedUserInteractor
+                mSelectedUserInteractor,
+                keyguardKeyboardInteractor,
+                kosmos.bouncerHapticPlayer,
+                mUserActivityNotifier,
             )
         underTest.init()
+        underTest.onViewAttached()
         underTest.onResume(0)
         verify(keyguardUpdateMonitor)
             .registerCallback(updateMonitorCallbackArgumentCaptor.capture())
+        reset(keyguardMessageAreaController)
+        reset(keyguardUpdateMonitor)
     }
 
     @Test
     fun onViewAttached() {
         underTest.onViewAttached()
+        verify(keyguardMessageAreaController).setIsVisible(true)
         verify(keyguardMessageAreaController)
             .setMessage(context.resources.getString(R.string.keyguard_enter_your_pin), false)
-    }
-
-    @Test
-    fun onViewDetached() {
-        underTest.onViewDetached()
-    }
-
-    @Test
-    fun onResume() {
-        reset(keyguardUpdateMonitor)
-        underTest.onResume(KeyguardSecurityView.VIEW_REVEALED)
         verify(keyguardUpdateMonitor)
             .registerCallback(any(KeyguardUpdateMonitorCallback::class.java))
     }
 
     @Test
+    fun onViewDetached() {
+        underTest.onViewDetached()
+        verify(keyguardUpdateMonitor).removeCallback(any(KeyguardUpdateMonitorCallback::class.java))
+    }
+
+    @Test
+    fun onResume() {
+        underTest.onResume(KeyguardSecurityView.VIEW_REVEALED)
+    }
+
+    @Test
     fun onPause() {
         underTest.onPause()
-        verify(keyguardUpdateMonitor).removeCallback(any(KeyguardUpdateMonitorCallback::class.java))
     }
 
     @Test
@@ -152,14 +166,14 @@ class KeyguardSimPinViewControllerTest : SysuiTestCase() {
         updateMonitorCallbackArgumentCaptor.value.onSimStateChanged(
             /* subId= */ 0,
             /* slotId= */ 0,
-            TelephonyManager.SIM_STATE_PIN_REQUIRED
+            TelephonyManager.SIM_STATE_PIN_REQUIRED,
         )
         verify(keyguardSecurityCallback, never()).showCurrentSecurityScreen()
 
         updateMonitorCallbackArgumentCaptor.value.onSimStateChanged(
             /* subId= */ 0,
             /* slotId= */ 0,
-            TelephonyManager.SIM_STATE_PUK_REQUIRED
+            TelephonyManager.SIM_STATE_PUK_REQUIRED,
         )
 
         verify(keyguardSecurityCallback).showCurrentSecurityScreen()

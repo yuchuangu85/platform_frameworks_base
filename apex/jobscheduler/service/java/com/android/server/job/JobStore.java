@@ -269,7 +269,9 @@ public final class JobStore {
                         convertRtcBoundsToElapsed(utcTimes, elapsedNow);
                 JobStatus newJob = new JobStatus(job,
                         elapsedRuntimes.first, elapsedRuntimes.second,
-                        0, 0, job.getLastSuccessfulRunTime(), job.getLastFailedRunTime(),
+                        0 /* numFailures */, 0 /* numAbandonedFailures */,
+                        0 /* numSystemStops */, job.getLastSuccessfulRunTime(),
+                        job.getLastFailedRunTime(),
                         job.getCumulativeExecutionTimeMs());
                 newJob.prepareLocked();
                 toAdd.add(newJob);
@@ -1495,7 +1497,7 @@ public final class JobStore {
                 // return value), the deadline is dropped. Periodic jobs require all constraints
                 // to be met, so there's no issue with their deadlines.
                 // The same logic applies for other target SDK-based validation checks.
-                builtJob = jobBuilder.build(false, false, false);
+                builtJob = jobBuilder.build(false, false, false, false);
             } catch (Exception e) {
                 Slog.w(TAG, "Unable to build job from XML, ignoring: " + jobBuilder.summarize(), e);
                 return null;

@@ -16,15 +16,26 @@
 
 package com.android.keyguard;
 
+import static com.android.systemui.Flags.pinInputFieldStyledFocusState;
+import static com.android.systemui.util.kotlin.JavaAdapterKt.collectFlow;
+
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
+import android.util.TypedValue;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.View.OnKeyListener;
 import android.view.View.OnTouchListener;
+import android.view.ViewGroup;
 
 import com.android.internal.util.LatencyTracker;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.keyguard.KeyguardSecurityModel.SecurityMode;
+import com.android.keyguard.domain.interactor.KeyguardKeyboardInteractor;
+import com.android.systemui.Flags;
+import com.android.systemui.bouncer.ui.helper.BouncerHapticPlayer;
 import com.android.systemui.classifier.FalsingCollector;
 import com.android.systemui.flags.FeatureFlags;
 import com.android.systemui.res.R;
@@ -35,6 +46,7 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
 
     private final LiftToActivateListener mLiftToActivateListener;
     private final FalsingCollector mFalsingCollector;
+    private final KeyguardKeyboardInteractor mKeyguardKeyboardInteractor;
     protected PasswordTextView mPasswordEntry;
 
     private final OnKeyListener mOnKeyListener = (v, keyCode, event) -> {
@@ -65,12 +77,17 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
             EmergencyButtonController emergencyButtonController,
             FalsingCollector falsingCollector,
             FeatureFlags featureFlags,
-            SelectedUserInteractor selectedUserInteractor) {
+            SelectedUserInteractor selectedUserInteractor,
+            KeyguardKeyboardInteractor keyguardKeyboardInteractor,
+            BouncerHapticPlayer bouncerHapticPlayer,
+            UserActivityNotifier userActivityNotifier) {
         super(view, keyguardUpdateMonitor, securityMode, lockPatternUtils, keyguardSecurityCallback,
                 messageAreaControllerFactory, latencyTracker, falsingCollector,
-                emergencyButtonController, featureFlags, selectedUserInteractor);
+                emergencyButtonController, featureFlags, selectedUserInteractor,
+                bouncerHapticPlayer, userActivityNotifier);
         mLiftToActivateListener = liftToActivateListener;
         mFalsingCollector = falsingCollector;
+        mKeyguardKeyboardInteractor = keyguardKeyboardInteractor;
         mPasswordEntry = mView.findViewById(mView.getPasswordTextViewId());
     }
 
@@ -89,12 +106,22 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
                 return false;
             });
             button.setAnimationEnabled(showAnimations);
+            button.setBouncerHapticHelper(mBouncerHapticPlayer);
         }
         mPasswordEntry.setOnKeyListener(mOnKeyListener);
         mPasswordEntry.setUserActivityListener(this::onUserInput);
 
         View deleteButton = mView.findViewById(R.id.delete_button);
-        deleteButton.setOnTouchListener(mActionButtonTouchListener);
+        if (mBouncerHapticPlayer.isEnabled()) {
+            deleteButton.setOnTouchListener((View view, MotionEvent event) -> {
+                if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                    mBouncerHapticPlayer.playDeleteKeyPressFeedback();
+                }
+                return false;
+            });
+        } else {
+            deleteButton.setOnTouchListener(mActionButtonTouchListener);
+        }
         deleteButton.setOnClickListener(v -> {
             // check for time-based lockouts
             if (mPasswordEntry.isEnabled()) {
@@ -106,21 +133,63 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
             if (mPasswordEntry.isEnabled()) {
                 mView.resetPasswordText(true /* animate */, true /* announce */);
             }
-            mView.doHapticKeyClick();
+            if (mBouncerHapticPlayer.isEnabled()) {
+                mBouncerHapticPlayer.playDeleteKeyLongPressedFeedback();
+            } else {
+                mView.doHapticKeyClick();
+            }
             return true;
         });
 
         View okButton = mView.findViewById(R.id.key_enter);
         if (okButton != null) {
-            okButton.setOnTouchListener(mActionButtonTouchListener);
+            if (!mBouncerHapticPlayer.isEnabled()) {
+                okButton.setOnTouchListener(mActionButtonTouchListener);
+            }
             okButton.setOnClickListener(v -> {
                 if (mPasswordEntry.isEnabled()) {
                     verifyPasswordAndUnlock();
                 }
             });
-            okButton.setOnHoverListener(mLiftToActivateListener);
+
+            if (!Flags.simPinTalkbackFixForDoubleSubmit()) {
+                okButton.setOnHoverListener(mLiftToActivateListener);
+            }
+        }
+        if (pinInputFieldStyledFocusState()) {
+            collectFlow(mPasswordEntry, mKeyguardKeyboardInteractor.isAnyKeyboardConnected(),
+                    this::setKeyboardBasedFocusOutline);
+
+            /**
+             * new UI Specs for PIN Input field have new dimensions go/pin-focus-states.
+             * However we want these changes behind a flag, and resource files cannot be flagged
+             * hence the dimension change in code. When the flags are removed these dimensions
+             * should be set in resources permanently and the code below removed.
+             */
+            ViewGroup.LayoutParams layoutParams = mPasswordEntry.getLayoutParams();
+            layoutParams.width = (int) getResources().getDimension(
+                    R.dimen.keyguard_pin_field_width);
+            layoutParams.height = (int) getResources().getDimension(
+                    R.dimen.keyguard_pin_field_height);
         }
     }
+
+    private void setKeyboardBasedFocusOutline(boolean isAnyKeyboardConnected) {
+        Drawable background = mPasswordEntry.getBackground();
+        if (!(background instanceof StateListDrawable)) return;
+        Drawable stateDrawable = ((StateListDrawable) background).getStateDrawable(0);
+        if (!(stateDrawable instanceof GradientDrawable gradientDrawable)) return;
+
+        int color = getResources().getColor(R.color.bouncer_password_focus_color);
+        if (!isAnyKeyboardConnected) {
+            gradientDrawable.setStroke(0, color);
+        } else {
+            int strokeWidthInDP = (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 3,
+                    getResources().getDisplayMetrics());
+            gradientDrawable.setStroke(strokeWidthInDP, color);
+        }
+    }
+
 
     @Override
     protected void onViewDetached() {
@@ -128,6 +197,7 @@ public abstract class KeyguardPinBasedInputViewController<T extends KeyguardPinB
 
         for (NumPadKey button : mView.getButtons()) {
             button.setOnTouchListener(null);
+            button.setBouncerHapticHelper(null);
         }
     }
 

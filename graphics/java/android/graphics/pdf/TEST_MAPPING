@@ -1,7 +1,7 @@
 {
   "presubmit": [
     {
-      "name": "CtsPdfTestCases"
+      "name": "CtsPdfTestCases_cts_pdfdocumenttest"
     }
   ]
 }

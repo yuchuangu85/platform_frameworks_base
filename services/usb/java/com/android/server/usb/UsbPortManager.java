@@ -200,7 +200,11 @@ public class UsbPortManager implements IBinder.DeathRecipient {
         mHandler.sendEmptyMessage(MSG_SYSTEM_READY);
     }
 
-    private void updateContaminantNotification() {
+    private void updateContaminantNotificationLocked() {
+        if (mNotificationManager == null) {
+            return;
+        }
+
         PortInfo currentPortInfo = null;
         Resources r = mContext.getResources();
         int contaminantStatus = UsbPortStatus.CONTAMINANT_DETECTION_NOT_DETECTED;
@@ -315,6 +319,16 @@ public class UsbPortManager implements IBinder.DeathRecipient {
         synchronized (mLock) {
             final PortInfo portInfo = mPorts.get(portId);
             return portInfo != null ? portInfo.mUsbPortStatus : null;
+        }
+    }
+
+    /**
+     * Returns true if the provided port supports changing its mode.
+     */
+    public boolean isModeChangeSupported(String portId) {
+        synchronized (mLock) {
+            final PortInfo portInfo = mPorts.get(portId);
+            return portInfo != null ? portInfo.mCanChangeMode : false;
         }
     }
 
@@ -1161,7 +1175,7 @@ public class UsbPortManager implements IBinder.DeathRecipient {
     private void handlePortLocked(PortInfo portInfo, IndentingPrintWriter pw) {
         sendPortChangedBroadcastLocked(portInfo);
         logToStatsd(portInfo, pw);
-        updateContaminantNotification();
+        updateContaminantNotificationLocked();
     }
 
     private void handlePortAddedLocked(PortInfo portInfo, IndentingPrintWriter pw) {
@@ -1423,6 +1437,9 @@ public class UsbPortManager implements IBinder.DeathRecipient {
                 case MSG_SYSTEM_READY: {
                     mNotificationManager = (NotificationManager)
                             mContext.getSystemService(Context.NOTIFICATION_SERVICE);
+                    synchronized (mLock) {
+                        updateContaminantNotificationLocked();
+                    }
                     break;
                 }
             }

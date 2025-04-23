@@ -16,6 +16,8 @@
 
 package com.android.systemui.screenshot
 
+import android.app.ActivityOptions
+import android.app.ExitTransitionCoordinator
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -29,12 +31,16 @@ import android.view.RemoteAnimationAdapter
 import android.view.RemoteAnimationTarget
 import android.view.WindowManager
 import android.view.WindowManagerGlobal
-import com.android.app.tracing.TraceUtils.Companion.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 import com.android.internal.infra.ServiceConnector
+import com.android.systemui.Flags
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Main
+import com.android.systemui.screenshot.proxy.ScreenshotProxy
 import com.android.systemui.settings.DisplayTracker
+import com.android.systemui.shared.system.ActivityManagerWrapper
+import com.android.systemui.statusbar.phone.CentralSurfaces
 import javax.inject.Inject
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
@@ -46,8 +52,10 @@ class ActionIntentExecutor
 @Inject
 constructor(
     private val context: Context,
+    private val activityManagerWrapper: ActivityManagerWrapper,
     @Application private val applicationScope: CoroutineScope,
     @Main private val mainDispatcher: CoroutineDispatcher,
+    private val screenshotProxy: ScreenshotProxy,
     private val displayTracker: DisplayTracker,
 ) {
     /**
@@ -59,27 +67,41 @@ constructor(
      */
     fun launchIntentAsync(
         intent: Intent,
-        options: Bundle?,
         user: UserHandle,
         overrideTransition: Boolean,
+        options: ActivityOptions?,
+        transitionCoordinator: ExitTransitionCoordinator?,
     ) {
         applicationScope.launch("$TAG#launchIntentAsync") {
-            launchIntent(intent, options, user, overrideTransition)
+            launchIntent(intent, user, overrideTransition, options, transitionCoordinator)
         }
     }
 
     suspend fun launchIntent(
         intent: Intent,
-        options: Bundle?,
         user: UserHandle,
         overrideTransition: Boolean,
+        options: ActivityOptions?,
+        transitionCoordinator: ExitTransitionCoordinator?,
     ) {
-        dismissKeyguard()
+        if (Flags.fixScreenshotActionDismissSystemWindows()) {
+            activityManagerWrapper.closeSystemWindows(
+                CentralSurfaces.SYSTEM_DIALOG_REASON_SCREENSHOT
+            )
+        }
+        screenshotProxy.dismissKeyguard()
+        var transitionOptions: ActivityOptions? = null
+        if (transitionCoordinator?.decor?.isAttachedToWindow == true) {
+            transitionCoordinator.startExit()
+            transitionOptions = options
+        }
 
         if (user == myUserHandle()) {
-            withContext(mainDispatcher) { context.startActivity(intent, options) }
+            withContext(mainDispatcher) {
+                context.startActivity(intent, transitionOptions?.toBundle())
+            }
         } else {
-            launchCrossProfileIntent(user, intent, options)
+            launchCrossProfileIntent(user, intent, transitionOptions?.toBundle())
         }
 
         if (overrideTransition) {
@@ -91,27 +113,6 @@ constructor(
                 Log.e(TAG, "Error overriding screenshot app transition", e)
             }
         }
-    }
-
-    private val proxyConnector: ServiceConnector<IScreenshotProxy> =
-        ServiceConnector.Impl(
-            context,
-            Intent(context, ScreenshotProxyService::class.java),
-            Context.BIND_AUTO_CREATE or Context.BIND_WAIVE_PRIORITY or Context.BIND_NOT_VISIBLE,
-            context.userId,
-            IScreenshotProxy.Stub::asInterface,
-        )
-
-    private suspend fun dismissKeyguard() {
-        val completion = CompletableDeferred<Unit>()
-        val onDoneBinder =
-            object : IOnDoneCallback.Stub() {
-                override fun onDone(success: Boolean) {
-                    completion.complete(Unit)
-                }
-            }
-        proxyConnector.post { it.dismissKeyguard(onDoneBinder) }
-        completion.await()
     }
 
     private fun getCrossProfileConnector(user: UserHandle): ServiceConnector<ICrossProfileService> =
@@ -126,7 +127,7 @@ constructor(
     private suspend fun launchCrossProfileIntent(
         user: UserHandle,
         intent: Intent,
-        bundle: Bundle?
+        bundle: Bundle?,
     ) {
         val connector = getCrossProfileConnector(user)
         val completion = CompletableDeferred<Unit>()

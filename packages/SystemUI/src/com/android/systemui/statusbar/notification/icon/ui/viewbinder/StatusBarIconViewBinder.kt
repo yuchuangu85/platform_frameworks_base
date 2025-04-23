@@ -16,14 +16,14 @@
 
 package com.android.systemui.statusbar.notification.icon.ui.viewbinder
 
-import android.graphics.Rect
-import android.view.View
+import com.android.app.tracing.traceSection
 import com.android.internal.util.ContrastColorUtil
 import com.android.systemui.res.R
 import com.android.systemui.statusbar.StatusBarIconView
 import com.android.systemui.statusbar.StatusBarIconView.NO_COLOR
 import com.android.systemui.statusbar.notification.NotificationUtils
 import com.android.systemui.statusbar.notification.icon.ui.viewmodel.NotificationIconColors
+import com.android.systemui.util.view.viewBoundsOnScreen
 import kotlinx.coroutines.flow.Flow
 
 object StatusBarIconViewBinder {
@@ -33,18 +33,20 @@ object StatusBarIconViewBinder {
     //  view-model (which, at the time of this writing, does not yet exist).
 
     suspend fun bindColor(view: StatusBarIconView, color: Flow<Int>) {
-        color.collect { color ->
+        color.collectTracingEach("SBIV#bindColor") { color ->
+            // Set the color for the icons
             view.staticDrawableColor = color
+            // Set the color for the overflow dot
             view.setDecorColor(color)
         }
     }
 
     suspend fun bindTintAlpha(view: StatusBarIconView, tintAlpha: Flow<Float>) {
-        tintAlpha.collect { amt -> view.setTintAlpha(amt) }
+        tintAlpha.collectTracingEach("SBIV#bindTintAlpha") { amt -> view.setTintAlpha(amt) }
     }
 
     suspend fun bindAnimationsEnabled(view: StatusBarIconView, allowAnimation: Flow<Boolean>) {
-        allowAnimation.collect(view::setAllowAnimation)
+        allowAnimation.collectTracingEach("SBIV#bindAnimationsEnabled", view::setAllowAnimation)
     }
 
     suspend fun bindIconColors(
@@ -52,24 +54,19 @@ object StatusBarIconViewBinder {
         iconColors: Flow<NotificationIconColors>,
         contrastColorUtil: ContrastColorUtil,
     ) {
-        iconColors.collect { colors ->
+        iconColors.collectTracingEach("SBIV#bindIconColors") { colors ->
+            // Set the icon color
             val isPreL = java.lang.Boolean.TRUE == view.getTag(R.id.icon_is_pre_L)
             val isColorized = !isPreL || NotificationUtils.isGrayscale(view, contrastColorUtil)
             view.staticDrawableColor =
-                if (isColorized) colors.staticDrawableColor(view.viewBounds) else NO_COLOR
+                if (isColorized) colors.staticDrawableColor(view.viewBoundsOnScreen()) else NO_COLOR
+            // Set the color for the overflow dot
             view.setDecorColor(colors.tint)
         }
     }
 }
 
-private val View.viewBounds: Rect
-    get() {
-        val tmpArray = intArrayOf(0, 0)
-        getLocationOnScreen(tmpArray)
-        return Rect(
-            /* left = */ tmpArray[0],
-            /* top = */ tmpArray[1],
-            /* right = */ left + width,
-            /* bottom = */ top + height,
-        )
-    }
+private suspend inline fun <T> Flow<T>.collectTracingEach(
+    tag: String,
+    crossinline collector: (T) -> Unit,
+) = collect { traceSection(tag) { collector(it) } }

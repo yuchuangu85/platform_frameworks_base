@@ -38,6 +38,10 @@ applications that come with the platform
         <permission name="android.permission.CRYPT_KEEPER"/>
     </privapp-permissions>
 
+    <privapp-permissions package="com.android.credentialmanager">
+        <permission name="android.permission.SET_BIOMETRIC_DIALOG_ADVANCED" />
+    </privapp-permissions>
+
     <privapp-permissions package="com.android.externalstorage">
         <permission name="android.permission.MOUNT_UNMOUNT_FILESYSTEMS"/>
         <permission name="android.permission.WRITE_MEDIA_STORAGE"/>
@@ -51,6 +55,7 @@ applications that come with the platform
 
     <privapp-permissions package="com.android.launcher3">
         <permission name="android.permission.WRITE_SECURE_SETTINGS"/>
+        <permission name="android.permission.READ_SYSTEM_GRAMMATICAL_GENDER"/>
     </privapp-permissions>
 
     <privapp-permissions package="com.android.location.fused">
@@ -79,12 +84,17 @@ applications that come with the platform
         <permission name="android.permission.WRITE_SECURE_SETTINGS"/>
         <permission name="android.permission.START_ACTIVITIES_FROM_BACKGROUND"/>
         <permission name="android.permission.START_FOREGROUND_SERVICES_FROM_BACKGROUND"/>
+        <permission name="android.permission.READ_SYSTEM_GRAMMATICAL_GENDER"/>
     </privapp-permissions>
 
     <privapp-permissions package="com.android.mms.service">
         <permission name="android.permission.BIND_CARRIER_MESSAGING_SERVICE"/>
         <permission name="android.permission.BIND_CARRIER_SERVICES"/>
         <permission name="android.permission.INTERACT_ACROSS_USERS"/>
+    </privapp-permissions>
+
+    <privapp-permissions package="com.android.media.quality">
+        <permission name="android.permission.OBSERVE_PICTURE_PROFILES"/>
     </privapp-permissions>
 
     <privapp-permissions package="com.android.mtp">
@@ -114,6 +124,7 @@ applications that come with the platform
         <permission name="android.permission.UPDATE_APP_OPS_STATS"/>
         <permission name="android.permission.SUBSTITUTE_NOTIFICATION_APP_NAME"/>
         <permission name="android.permission.PACKAGE_USAGE_STATS"/>
+        <permission name="android.permission.READ_SYSTEM_GRAMMATICAL_GENDER"/>
     </privapp-permissions>
 
     <privapp-permissions package="com.android.phone">
@@ -121,6 +132,7 @@ applications that come with the platform
         <permission name="android.permission.BIND_CARRIER_MESSAGING_SERVICE"/>
         <permission name="android.permission.BIND_CARRIER_SERVICES"/>
         <permission name="android.permission.BIND_CELL_BROADCAST_SERVICE"/>
+        <permission name="android.permission.BIND_DOMAIN_SELECTION_SERVICE"/>
         <permission name="android.permission.BIND_IMS_SERVICE"/>
         <permission name="android.permission.BIND_SATELLITE_GATEWAY_SERVICE"/>
         <permission name="android.permission.BIND_SATELLITE_SERVICE"/>
@@ -134,6 +146,7 @@ applications that come with the platform
         <permission name="android.permission.CONTROL_INCALL_EXPERIENCE"/>
         <permission name="android.permission.DUMP"/>
         <permission name="android.permission.INTERACT_ACROSS_USERS"/>
+        <permission name="android.permission.LOCATION_BYPASS"/>
         <permission name="android.permission.LOCAL_MAC_ADDRESS"/>
         <permission name="android.permission.MANAGE_USERS"/>
         <permission name="android.permission.MANAGE_SUBSCRIPTION_PLANS" />
@@ -149,6 +162,7 @@ applications that come with the platform
         <permission name="android.permission.REGISTER_CALL_PROVIDER"/>
         <permission name="android.permission.REGISTER_SIM_SUBSCRIPTION"/>
         <permission name="android.permission.REGISTER_STATS_PULL_ATOM"/>
+        <permission name="android.permission.SATELLITE_COMMUNICATION"/>
         <permission name="android.permission.SEND_RESPOND_VIA_MESSAGE"/>
         <permission name="android.permission.SHUTDOWN"/>
         <permission name="android.permission.START_ACTIVITIES_FROM_BACKGROUND"/>
@@ -167,6 +181,9 @@ applications that come with the platform
         <permission name="android.permission.LOG_COMPAT_CHANGE"/>
         <permission name="android.permission.READ_COMPAT_CHANGE_CONFIG"/>
         <permission name="android.permission.UWB_PRIVILEGED"/>
+        <permission name="android.permission.READ_SYSTEM_GRAMMATICAL_GENDER"/>
+        <permission name="android.permission.UPDATE_CONFIG"/>
+        <permission name="android.permission.SEND_SAFETY_CENTER_UPDATE" />
     </privapp-permissions>
 
     <privapp-permissions package="com.android.providers.calendar">
@@ -249,6 +266,8 @@ applications that come with the platform
         <!-- BLUETOOTH_PRIVILEGED is needed for test only -->
         <permission name="android.permission.BLUETOOTH_PRIVILEGED"/>
         <permission name="android.permission.BIND_APPWIDGET"/>
+        <!-- Needed for CTS tests only -->
+        <permission name="android.permission.OBSERVE_PICTURE_PROFILES"/>
         <permission name="android.permission.CHANGE_APP_IDLE_STATE"/>
         <permission name="android.permission.CHANGE_COMPONENT_ENABLED_STATE"/>
         <permission name="android.permission.CHANGE_CONFIGURATION"/>
@@ -290,6 +309,8 @@ applications that come with the platform
         <permission name="android.permission.SET_LOW_POWER_STANDBY_PORTS" />
         <permission name="android.permission.MANAGE_ROLLBACKS"/>
         <permission name="android.permission.MANAGE_USB"/>
+        <!-- Permission required to test Launcher Apps APIs for hidden profiles -->
+        <permission name="android.permission.ACCESS_HIDDEN_PROFILES_FULL" />
         <!-- Needed for tests only -->
         <permission name="android.permission.MANAGE_CLOUDSEARCH" />
         <permission name="android.permission.MANAGE_WALLPAPER_EFFECTS_GENERATION" />
@@ -387,6 +408,9 @@ applications that come with the platform
         <permission name="android.permission.SHOW_CUSTOMIZED_RESOLVER"/>
         <!-- Permission required for access VIBRATOR_STATE. -->
         <permission name="android.permission.ACCESS_VIBRATOR_STATE"/>
+        <!-- Permission required for vendor vibration effects and sessions. -->
+        <permission name="android.permission.VIBRATE_VENDOR_EFFECTS"/>
+        <permission name="android.permission.START_VIBRATION_SESSIONS"/>
         <!-- Permission required for UsageStatsTest CTS test. -->
         <permission name="android.permission.MANAGE_NOTIFICATIONS"/>
         <!-- Permission required for CompanionDeviceManager CTS test. -->
@@ -397,6 +421,8 @@ applications that come with the platform
         <permission name="android.permission.REQUEST_COMPANION_PROFILE_NEARBY_DEVICE_STREAMING" />
         <permission name="android.permission.REQUEST_COMPANION_PROFILE_COMPUTER" />
         <permission name="android.permission.REQUEST_COMPANION_SELF_MANAGED" />
+        <permission name="android.permission.REQUEST_OBSERVE_DEVICE_UUID_PRESENCE" />
+
         <!-- Permission required for testing registering pull atom callbacks. -->
         <permission name="android.permission.REGISTER_STATS_PULL_ATOM"/>
         <!-- Permission required for testing system audio effect APIs. -->
@@ -424,6 +450,8 @@ applications that come with the platform
         <!-- Permissions required for CTS test - android.server.biometrics -->
         <permission name="android.permission.USE_BIOMETRIC" />
         <permission name="android.permission.TEST_BIOMETRIC" />
+        <permission name="android.permission.SET_BIOMETRIC_DIALOG_ADVANCED" />
+        <permission name="android.permission.MANAGE_BIOMETRIC_DIALOG" />
         <!-- Permissions required for CTS test - CtsContactsProviderTestCases -->
         <permission name="android.contacts.permission.MANAGE_SIM_ACCOUNTS" />
         <!-- Permissions required for CTS test - CtsHdmiCecHostTestCases -->
@@ -504,11 +532,14 @@ applications that come with the platform
         <permission name="com.android.cellbroadcastservice.FULL_ACCESS_CELL_BROADCAST_HISTORY" />
         <!-- Permission required for ATS test - CarDevicePolicyManagerTest -->
         <permission name="android.permission.LOCK_DEVICE" />
+        <!-- Permission required for AuthenticationPolicyManagerTest -->
+        <permission name="android.permission.MANAGE_SECURE_LOCK_DEVICE" />
         <!-- Permissions required for CTS test - CtsSafetyCenterTestCases -->
         <permission name="android.permission.SEND_SAFETY_CENTER_UPDATE" />
         <permission name="android.permission.READ_SAFETY_CENTER_STATUS" />
         <!-- Permission required for CTS test - CtsTelephonyTestCases -->
         <permission name="android.permission.BIND_TELECOM_CONNECTION_SERVICE" />
+        <permission name="android.permission.ACCESS_LAST_KNOWN_CELL_ID" />
         <!-- Permission required for CTS test - CtsAppTestCases -->
         <permission name="android.permission.CAPTURE_MEDIA_OUTPUT" />
         <permission name="android.permission.CAPTURE_TUNER_AUDIO_INPUT" />
@@ -518,6 +549,10 @@ applications that come with the platform
         <permission name="android.permission.ACCESS_BROADCAST_RADIO"/>
         <!-- Permission required for CTS test - CtsAmbientContextServiceTestCases -->
         <permission name="android.permission.ACCESS_AMBIENT_CONTEXT_EVENT"/>
+        <!-- Permission required for CTS test - CtsWearableSensingServiceTestCases -->
+        <permission name="android.permission.MANAGE_WEARABLE_SENSING_SERVICE"/>
+        <!-- Permission required for CTS test - OnDeviceIntelligenceManagerTest -->
+        <permission name="android.permission.USE_ON_DEVICE_INTELLIGENCE" />
         <!-- Permission required for CTS test - CtsTelephonyProviderTestCases -->
         <permission name="android.permission.WRITE_APN_SETTINGS"/>
         <!-- Permission required for GTS test - GtsStatsdHostTestCases -->
@@ -537,16 +572,48 @@ applications that come with the platform
         <permission name="android.permission.GET_BINDING_UID_IMPORTANCE"/>
         <!-- Permission required for CTS test NotificationManagerZenTest -->
         <permission name="android.permission.CONTROL_DISPLAY_COLOR_TRANSFORMS" />
-    </privapp-permissions>
-
-    <privapp-permissions package="com.android.statementservice">
-        <permission name="android.permission.INTENT_FILTER_VERIFICATION_AGENT"/>
+        <!-- Permission required for BinaryTransparencyService shell API and host test -->
+        <permission name="android.permission.GET_BACKGROUND_INSTALLED_PACKAGES" />
+        <permission name="android.permission.READ_SYSTEM_GRAMMATICAL_GENDER"/>
+        <!-- Permissions required for CTS test - CtsContactKeysProviderPrivilegedApp -->
+        <permission name="android.permission.WRITE_VERIFICATION_STATE_E2EE_CONTACT_KEYS"/>
+        <!-- Permission required for CTS test BlockedNumberContractTest -->
+        <permission name="android.permission.WRITE_BLOCKED_NUMBERS" />
+        <permission name="android.permission.READ_BLOCKED_NUMBERS" />
+        <!-- Permission required for CTS test - PackageManagerTest -->
         <permission name="android.permission.DOMAIN_VERIFICATION_AGENT"/>
-        <permission name="android.permission.INTERACT_ACROSS_USERS"/>
+        <!-- Permission required for CTS test CtsInputTestCases -->
+        <permission name="android.permission.OVERRIDE_SYSTEM_KEY_BEHAVIOR_IN_FOCUSED_WINDOW" />
+        <!-- Permission required for CTS test - PackageManagerShellCommandInstallTest -->
+        <permission name="android.permission.EMERGENCY_INSTALL_PACKAGES" />
+        <!-- Permission required for Cts test - CtsSettingsTestCases -->
+        <permission name="android.permission.PREPARE_FACTORY_RESET" />
+        <!-- Permission required for CTS test - FileIntegrityManagerTest -->
+        <permission name="android.permission.SETUP_FSVERITY" />
+        <!-- Permissions required for CTS test - AppFunctionManagerTest -->
+        <permission name="android.permission.EXECUTE_APP_FUNCTIONS_TRUSTED" />
+        <permission name="android.permission.EXECUTE_APP_FUNCTIONS" />
+        <!-- Permission required for CTS test - CtsNfcTestCases -->
+        <permission name="android.permission.NFC_SET_CONTROLLER_ALWAYS_ON" />
+        <!-- Permission required for CTS test - CtsAppTestCases -->
+        <permission name="android.permission.KILL_UID" />
+        <!-- Permission required for CTS test - AdvancedProtectionManagerTest -->
+        <permission name="android.permission.MANAGE_ADVANCED_PROTECTION_MODE" />
+        <permission name="android.permission.QUERY_ADVANCED_PROTECTION_MODE" />
+        <!-- Permissions required for CTS test - SettingsPreferenceServiceClientTest -->
+        <permission name="android.permission.READ_SYSTEM_PREFERENCES" />
+        <permission name="android.permission.WRITE_SYSTEM_PREFERENCES" />
+        <!-- Permission required for CTS test - IntrusionDetectionManagerTest -->
+        <permission name="android.permission.READ_INTRUSION_DETECTION_STATE" />
+        <permission name="android.permission.MANAGE_INTRUSION_DETECTION_STATE" />
     </privapp-permissions>
 
     <privapp-permissions package="com.android.soundpicker">
         <permission name="android.permission.INTERACT_ACROSS_USERS" />
+    </privapp-permissions>
+
+    <privapp-permissions package="com.android.providers.tv">
+        <permission name="android.permission.INTERACT_ACROSS_USERS"/>
     </privapp-permissions>
 
     <privapp-permissions package="com.android.tv">
@@ -573,6 +640,7 @@ applications that come with the platform
         <permission name="android.permission.SET_WALLPAPER_COMPONENT"/>
         <permission name="android.permission.BIND_WALLPAPER"/>
         <permission name="android.permission.CUSTOMIZE_SYSTEM_UI"/>
+        <permission name="android.permission.SET_WALLPAPER_DIM_AMOUNT"/>
     </privapp-permissions>
 
     <privapp-permissions package="com.android.dynsystem">
@@ -580,11 +648,13 @@ applications that come with the platform
         <permission name="android.permission.MANAGE_DYNAMIC_SYSTEM"/>
         <permission name="android.permission.READ_OEM_UNLOCK_STATE"/>
     </privapp-permissions>
+
     <privapp-permissions package="com.android.settings">
         <permission name="android.permission.INSTALL_DYNAMIC_SYSTEM"/>
         <permission name="android.permission.BIND_CELL_BROADCAST_SERVICE"/>
         <permission name="android.permission.READ_SAFETY_CENTER_STATUS" />
         <permission name="android.permission.SEND_SAFETY_CENTER_UPDATE" />
+        <permission name="android.permission.READ_SYSTEM_GRAMMATICAL_GENDER"/>
     </privapp-permissions>
 
     <privapp-permissions package="com.android.bips">
@@ -593,5 +663,11 @@ applications that come with the platform
 
     <privapp-permissions package="com.android.calllogbackup">
         <permission name="com.android.voicemail.permission.READ_VOICEMAIL"/>
+    </privapp-permissions>
+
+   <privapp-permissions package="com.android.devicediagnostics">
+        <permission name="android.permission.READ_PRIVILEGED_PHONE_STATE"/>
+        <permission name="android.permission.BATTERY_STATS"/>
+        <permission name="android.permission.ENTER_TRADE_IN_MODE"/>
     </privapp-permissions>
 </permissions>

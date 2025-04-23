@@ -19,10 +19,11 @@ package com.android.server.vcn.routeselection;
 import static android.net.vcn.VcnManager.VCN_NETWORK_SELECTION_IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_KEY;
 import static android.net.vcn.VcnManager.VCN_NETWORK_SELECTION_MAX_SEQ_NUM_INCREASE_PER_SECOND_KEY;
 import static android.net.vcn.VcnManager.VCN_NETWORK_SELECTION_POLL_IPSEC_STATE_INTERVAL_SECONDS_KEY;
+import static android.net.vcn.util.PersistableBundleUtils.PersistableBundleWrapper;
 
+import static com.android.server.vcn.routeselection.IpSecPacketLossDetector.IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_DISABLE_DETECTOR;
 import static com.android.server.vcn.routeselection.IpSecPacketLossDetector.MIN_VALID_EXPECTED_RX_PACKET_NUM;
 import static com.android.server.vcn.routeselection.IpSecPacketLossDetector.getMaxSeqNumIncreasePerSecond;
-import static com.android.server.vcn.util.PersistableBundleUtils.PersistableBundleWrapper;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -46,6 +47,9 @@ import android.net.IpSecTransformState;
 import android.os.OutcomeReceiver;
 import android.os.PowerManager;
 
+import androidx.test.filters.SmallTest;
+import androidx.test.runner.AndroidJUnit4;
+
 import com.android.server.vcn.routeselection.IpSecPacketLossDetector.PacketLossCalculationResult;
 import com.android.server.vcn.routeselection.IpSecPacketLossDetector.PacketLossCalculator;
 import com.android.server.vcn.routeselection.NetworkMetricMonitor.IpSecTransformWrapper;
@@ -53,6 +57,7 @@ import com.android.server.vcn.routeselection.NetworkMetricMonitor.NetworkMetricM
 
 import org.junit.Before;
 import org.junit.Test;
+import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
@@ -62,6 +67,8 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.concurrent.TimeUnit;
 
+@RunWith(AndroidJUnit4.class)
+@SmallTest
 public class IpSecPacketLossDetectorTest extends NetworkEvaluationTestBase {
     private static final String TAG = IpSecPacketLossDetectorTest.class.getSimpleName();
 
@@ -283,8 +290,11 @@ public class IpSecPacketLossDetectorTest extends NetworkEvaluationTestBase {
 
         // Stop the monitor
         mIpSecPacketLossDetector.close();
+        mIpSecPacketLossDetector.close();
         verifyStopped();
-        verify(mIpSecTransform).close();
+
+        verify(mIpSecTransform, never()).close();
+        verify(mContext).unregisterReceiver(any());
     }
 
     @Test
@@ -583,5 +593,57 @@ public class IpSecPacketLossDetectorTest extends NetworkEvaluationTestBase {
         assertEquals(
                 MAX_SEQ_NUM_INCREASE_DEFAULT_DISABLED,
                 getMaxSeqNumIncreasePerSecond(mCarrierConfig));
+    }
+
+    private IpSecPacketLossDetector newDetectorAndSetTransform(int threshold) throws Exception {
+        when(mCarrierConfig.getInt(
+                        eq(VCN_NETWORK_SELECTION_IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_KEY),
+                        anyInt()))
+                .thenReturn(threshold);
+
+        final IpSecPacketLossDetector detector =
+                new IpSecPacketLossDetector(
+                        mVcnContext,
+                        mNetwork,
+                        mCarrierConfig,
+                        mMetricMonitorCallback,
+                        mDependencies);
+
+        detector.setIsSelectedUnderlyingNetwork(true /* setIsSelected */);
+        detector.setInboundTransformInternal(mIpSecTransform);
+
+        return detector;
+    }
+
+    @Test
+    public void testDisableAndEnableDetectorWithCarrierConfig() throws Exception {
+        final IpSecPacketLossDetector detector =
+                newDetectorAndSetTransform(IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_DISABLE_DETECTOR);
+
+        assertFalse(detector.isStarted());
+
+        when(mCarrierConfig.getInt(
+                        eq(VCN_NETWORK_SELECTION_IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_KEY),
+                        anyInt()))
+                .thenReturn(IPSEC_PACKET_LOSS_PERCENT_THRESHOLD);
+        detector.setCarrierConfig(mCarrierConfig);
+
+        assertTrue(detector.isStarted());
+    }
+
+    @Test
+    public void testEnableAndDisableDetectorWithCarrierConfig() throws Exception {
+        final IpSecPacketLossDetector detector =
+                newDetectorAndSetTransform(IPSEC_PACKET_LOSS_PERCENT_THRESHOLD);
+
+        assertTrue(detector.isStarted());
+
+        when(mCarrierConfig.getInt(
+                        eq(VCN_NETWORK_SELECTION_IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_KEY),
+                        anyInt()))
+                .thenReturn(IPSEC_PACKET_LOSS_PERCENT_THRESHOLD_DISABLE_DETECTOR);
+        detector.setCarrierConfig(mCarrierConfig);
+
+        assertFalse(detector.isStarted());
     }
 }

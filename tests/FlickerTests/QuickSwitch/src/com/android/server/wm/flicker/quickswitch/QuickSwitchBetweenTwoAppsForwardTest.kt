@@ -16,13 +16,13 @@
 
 package com.android.server.wm.flicker.quickswitch
 
-import android.tools.common.NavBar
-import android.tools.common.datatypes.Rect
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import android.graphics.Rect
+import android.tools.NavBar
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.traces.component.ComponentNameMatcher
 import androidx.test.filters.FlakyTest
 import com.android.server.wm.flicker.BaseTest
 import com.android.server.wm.flicker.helpers.NonResizeableAppHelper
@@ -37,7 +37,7 @@ import org.junit.runners.Parameterized
 /**
  * Test quick switching back to previous app from last opened app
  *
- * To run this test: `atest FlickerTests:QuickSwitchBetweenTwoAppsForwardTest`
+ * To run this test: `atest FlickerTestsQuickswitch:QuickSwitchBetweenTwoAppsForwardTest`
  *
  * Actions:
  * ```
@@ -285,7 +285,7 @@ class QuickSwitchBetweenTwoAppsForwardTest(flicker: LegacyFlickerTest) : BaseTes
         super.visibleWindowsShownMoreThanOneConsecutiveEntry()
 
     companion object {
-        private var startDisplayBounds = Rect.EMPTY
+        private var startDisplayBounds = Rect()
 
         @Parameterized.Parameters(name = "{0}")
         @JvmStatic

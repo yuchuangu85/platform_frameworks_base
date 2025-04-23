@@ -18,9 +18,9 @@
 
 #include <unordered_set>
 
-#include "android-base/logging.h"
-
 #include "ResourceUtils.h"
+#include "android-base/logging.h"
+#include "process/SymbolTable.h"
 #include "trace/TraceBuffer.h"
 #include "util/Util.h"
 #include "xml/XmlActionExecutor.h"
@@ -170,6 +170,59 @@ static bool RequiredNameIsJavaClassName(xml::Element* el, android::SourcePathDia
     return false;
   }
   return NameIsJavaClassName(el, attr, diag);
+}
+
+static bool UpdateConfigChangesIfNeeded(xml::Element* el, IAaptContext* context) {
+  xml::Attribute* attr = el->FindAttribute(xml::kSchemaAndroid, "configChanges");
+  if (attr == nullptr) {
+    return true;
+  }
+
+  if (attr->value != "allKnown" && attr->value.find("allKnown") != std::string::npos) {
+    context->GetDiagnostics()->Error(
+        android::DiagMessage(el->line_number)
+        << "If you want to declare 'allKnown' in attribute 'android:configChanges' in <" << el->name
+        << ">, " << attr->value << " is not allowed', allKnown has to be used "
+        << "by itself, for example: 'android:configChanges=allKnown', it cannot be combined with "
+        << "the other flags");
+    return false;
+  }
+
+  if (attr->value == "allKnown") {
+    SymbolTable* symbol_table = context->GetExternalSymbols();
+    const SymbolTable::Symbol* symbol =
+        symbol_table->FindByName(ResourceName("android", ResourceType::kAttr, "configChanges"));
+
+    if (symbol == nullptr) {
+      context->GetDiagnostics()->Error(
+          android::DiagMessage(el->line_number)
+          << "Cannot find symbol for android:configChanges with min sdk: "
+          << context->GetMinSdkVersion());
+      return false;
+    }
+
+    std::stringstream new_value;
+
+    const auto& symbols = symbol->attribute->symbols;
+    for (auto it = symbols.begin(); it != symbols.end(); ++it) {
+      // Skip 'resourcesUnused' which is the flag to fully disable activity restart specifically
+      // for games.
+      if (it->symbol.name.value().entry == "resourcesUnused") {
+        continue;
+      }
+      if (it != symbols.begin()) {
+        new_value << "|";
+      }
+      new_value << it->symbol.name.value().entry;
+    }
+    const auto& old_value = attr->value;
+    auto new_value_str = new_value.str();
+    context->GetDiagnostics()->Note(android::DiagMessage(el->line_number)
+                                    << "Updating value of 'android:configChanges' from "
+                                    << old_value << " to " << new_value_str);
+    attr->value = std::move(new_value_str);
+  }
+  return true;
 }
 
 static bool RequiredNameIsJavaPackage(xml::Element* el, android::SourcePathDiagnostics* diag) {
@@ -382,8 +435,9 @@ static void EnsureNamespaceIsDeclared(const std::string& prefix, const std::stri
   }
 }
 
-bool ManifestFixer::BuildRules(xml::XmlActionExecutor* executor, android::IDiagnostics* diag) {
+bool ManifestFixer::BuildRules(xml::XmlActionExecutor* executor, IAaptContext* context) {
   // First verify some options.
+  android::IDiagnostics* diag = context->GetDiagnostics();
   if (options_.rename_manifest_package) {
     if (!util::IsJavaPackageName(options_.rename_manifest_package.value())) {
       diag->Error(android::DiagMessage() << "invalid manifest package override '"
@@ -415,6 +469,8 @@ bool ManifestFixer::BuildRules(xml::XmlActionExecutor* executor, android::IDiagn
   intent_filter_action["action"].Action(RequiredNameIsNotEmpty);
   intent_filter_action["category"].Action(RequiredNameIsNotEmpty);
   intent_filter_action["data"];
+  intent_filter_action["uri-relative-filter-group"];
+  intent_filter_action["uri-relative-filter-group"]["data"];
 
   // Common <meta-data> actions.
   xml::XmlNodeAction meta_data_action;
@@ -430,6 +486,8 @@ bool ManifestFixer::BuildRules(xml::XmlActionExecutor* executor, android::IDiagn
   // Common component actions.
   xml::XmlNodeAction component_action;
   component_action.Action(RequiredNameIsJavaClassName);
+  component_action.Action(
+      [context](xml::Element* el) -> bool { return UpdateConfigChangesIfNeeded(el, context); });
   component_action["intent-filter"] = intent_filter_action;
   component_action["preferred"] = intent_filter_action;
   component_action["meta-data"] = meta_data_action;
@@ -441,7 +499,7 @@ bool ManifestFixer::BuildRules(xml::XmlActionExecutor* executor, android::IDiagn
   manifest_action.Action(AutoGenerateIsSplitRequired);
   manifest_action.Action(VerifyManifest);
   manifest_action.Action(FixCoreAppAttribute);
-  manifest_action.Action([&](xml::Element* el) -> bool {
+  manifest_action.Action([this, diag](xml::Element* el) -> bool {
     EnsureNamespaceIsDeclared("android", xml::kSchemaAndroid, &el->namespace_decls);
 
     if (options_.version_name_default) {
@@ -504,7 +562,7 @@ bool ManifestFixer::BuildRules(xml::XmlActionExecutor* executor, android::IDiagn
   manifest_action["eat-comment"];
 
   // Uses-sdk actions.
-  manifest_action["uses-sdk"].Action([&](xml::Element* el) -> bool {
+  manifest_action["uses-sdk"].Action([this](xml::Element* el) -> bool {
     if (options_.min_sdk_version_default &&
         el->FindAttribute(xml::kSchemaAndroid, "minSdkVersion") == nullptr) {
       // There was no minSdkVersion defined and we have a default to assign.
@@ -526,7 +584,7 @@ bool ManifestFixer::BuildRules(xml::XmlActionExecutor* executor, android::IDiagn
 
   // Instrumentation actions.
   manifest_action["instrumentation"].Action(RequiredNameIsJavaClassName);
-  manifest_action["instrumentation"].Action([&](xml::Element* el) -> bool {
+  manifest_action["instrumentation"].Action([this](xml::Element* el) -> bool {
     if (!options_.rename_instrumentation_target_package) {
       return true;
     }
@@ -542,7 +600,7 @@ bool ManifestFixer::BuildRules(xml::XmlActionExecutor* executor, android::IDiagn
   manifest_action["attribution"];
   manifest_action["attribution"]["inherit-from"];
   manifest_action["original-package"];
-  manifest_action["overlay"].Action([&](xml::Element* el) -> bool {
+  manifest_action["overlay"].Action([this](xml::Element* el) -> bool {
     if (options_.rename_overlay_target_package) {
       if (xml::Attribute* attr = el->FindAttribute(xml::kSchemaAndroid, "targetPackage")) {
         attr->value = options_.rename_overlay_target_package.value();
@@ -623,7 +681,7 @@ bool ManifestFixer::BuildRules(xml::XmlActionExecutor* executor, android::IDiagn
   uses_package_action["additional-certificate"];
 
   if (options_.debug_mode) {
-    application_action.Action([&](xml::Element* el) -> bool {
+    application_action.Action([](xml::Element* el) -> bool {
       xml::Attribute *attr = el->FindOrCreateAttribute(xml::kSchemaAndroid, "debuggable");
       attr->value = "true";
       return true;
@@ -776,7 +834,7 @@ bool ManifestFixer::Consume(IAaptContext* context, xml::XmlResource* doc) {
   }
 
   xml::XmlActionExecutor executor;
-  if (!BuildRules(&executor, context->GetDiagnostics())) {
+  if (!BuildRules(&executor, context)) {
     return false;
   }
 

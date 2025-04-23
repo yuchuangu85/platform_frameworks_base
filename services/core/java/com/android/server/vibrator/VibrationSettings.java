@@ -16,11 +16,11 @@
 
 package com.android.server.vibrator;
 
-import static android.os.VibrationAttributes.CATEGORY_KEYBOARD;
 import static android.os.VibrationAttributes.USAGE_ACCESSIBILITY;
 import static android.os.VibrationAttributes.USAGE_ALARM;
 import static android.os.VibrationAttributes.USAGE_COMMUNICATION_REQUEST;
 import static android.os.VibrationAttributes.USAGE_HARDWARE_FEEDBACK;
+import static android.os.VibrationAttributes.USAGE_IME_FEEDBACK;
 import static android.os.VibrationAttributes.USAGE_MEDIA;
 import static android.os.VibrationAttributes.USAGE_NOTIFICATION;
 import static android.os.VibrationAttributes.USAGE_PHYSICAL_EMULATION;
@@ -31,6 +31,8 @@ import static android.os.VibrationAttributes.USAGE_UNKNOWN;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
+import android.app.IActivityManager;
+import android.app.SynchronousUserSwitchObserver;
 import android.app.UidObserver;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -53,7 +55,6 @@ import android.os.VibrationAttributes;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.Vibrator.VibrationIntensity;
-import android.os.vibrator.Flags;
 import android.os.vibrator.VibrationConfig;
 import android.provider.Settings;
 import android.util.IndentingPrintWriter;
@@ -66,12 +67,15 @@ import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalServices;
 import com.android.server.companion.virtual.VirtualDeviceManagerInternal;
+import com.android.server.vibrator.VibrationSession.CallerInfo;
+import com.android.server.vibrator.VibrationSession.Status;
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 
 /** Controls all the system settings related to vibration. */
@@ -145,11 +149,6 @@ final class VibrationSettings {
                     PowerManager.GO_TO_SLEEP_REASON_INATTENTIVE,
                     PowerManager.GO_TO_SLEEP_REASON_TIMEOUT));
 
-    private static final IntentFilter USER_SWITCHED_INTENT_FILTER =
-            new IntentFilter(Intent.ACTION_USER_SWITCHED);
-    private static final IntentFilter INTERNAL_RINGER_MODE_CHANGED_INTENT_FILTER =
-            new IntentFilter(AudioManager.INTERNAL_RINGER_MODE_CHANGED_ACTION);
-
     /** Listener for changes on vibration settings. */
     interface OnVibratorSettingsChanged {
         /** Callback triggered when any of the vibrator settings change. */
@@ -158,13 +157,18 @@ final class VibrationSettings {
 
     private final Object mLock = new Object();
     private final Context mContext;
-    private final String mSystemUiPackage;
     @VisibleForTesting
     final SettingsContentObserver mSettingObserver;
     @VisibleForTesting
-    final MyUidObserver mUidObserver;
+    final RingerModeBroadcastReceiver mRingerModeBroadcastReceiver;
     @VisibleForTesting
-    final SettingsBroadcastReceiver mSettingChangeReceiver;
+    final BatteryBroadcastReceiver mBatteryBroadcastReceiver;
+    @VisibleForTesting
+    final VibrationUidObserver mUidObserver;
+    @VisibleForTesting
+    final VibrationUserSwitchObserver mUserSwitchObserver;
+    @VisibleForTesting
+    final VibrationLowPowerModeListener mLowPowerModeListener;
 
     @GuardedBy("mLock")
     private final List<OnVibratorSettingsChanged> mListeners = new ArrayList<>();
@@ -178,9 +182,12 @@ final class VibrationSettings {
     @GuardedBy("mLock")
     @Nullable
     private PowerManagerInternal mPowerManagerInternal;
+    @GuardedBy("mLock")
     @Nullable
     private VirtualDeviceManagerInternal mVirtualDeviceManagerInternal;
 
+    @GuardedBy("mLock")
+    private String mSystemUiPackage;
     @GuardedBy("mLock")
     private boolean mVibrateInputDevices;
     @GuardedBy("mLock")
@@ -189,8 +196,6 @@ final class VibrationSettings {
     private boolean mBatterySaverMode;
     @GuardedBy("mLock")
     private boolean mVibrateOn;
-    @GuardedBy("mLock")
-    private boolean mKeyboardVibrationOn;
     @GuardedBy("mLock")
     private int mRingerMode;
     @GuardedBy("mLock")
@@ -205,10 +210,11 @@ final class VibrationSettings {
         mContext = context;
         mVibrationConfig = config;
         mSettingObserver = new SettingsContentObserver(handler);
-        mUidObserver = new MyUidObserver();
-        mSettingChangeReceiver = new SettingsBroadcastReceiver();
-        mSystemUiPackage = LocalServices.getService(PackageManagerInternal.class)
-                .getSystemUiServiceComponent().getPackageName();
+        mRingerModeBroadcastReceiver = new RingerModeBroadcastReceiver();
+        mBatteryBroadcastReceiver = new BatteryBroadcastReceiver();
+        mUidObserver = new VibrationUidObserver();
+        mUserSwitchObserver = new VibrationUserSwitchObserver();
+        mLowPowerModeListener = new VibrationLowPowerModeListener();
 
         VibrationEffect clickEffect = createEffectFromResource(
                 com.android.internal.R.array.config_virtualKeyVibePattern);
@@ -232,46 +238,51 @@ final class VibrationSettings {
     }
 
     public void onSystemReady() {
-        PowerManagerInternal pm = LocalServices.getService(PowerManagerInternal.class);
-        AudioManager am = mContext.getSystemService(AudioManager.class);
-        int ringerMode = am.getRingerModeInternal();
+        onSystemReady(LocalServices.getService(PackageManagerInternal.class),
+                LocalServices.getService(PowerManagerInternal.class),
+                ActivityManager.getService(),
+                LocalServices.getService(VirtualDeviceManagerInternal.class),
+                mContext.getSystemService(AudioManager.class));
+    }
+
+    @VisibleForTesting
+    void onSystemReady(PackageManagerInternal packageManagerInternal,
+            PowerManagerInternal powerManagerInternal,
+            IActivityManager activityManagerInternal,
+            @Nullable VirtualDeviceManagerInternal virtualDeviceManagerInternal,
+            @Nullable AudioManager audioManager) {
+        int ringerMode = (audioManager == null)
+                ? AudioManager.RINGER_MODE_NORMAL
+                : audioManager.getRingerModeInternal();
+        String sysUiPackage = packageManagerInternal.getSystemUiServiceComponent().getPackageName();
 
         synchronized (mLock) {
-            mPowerManagerInternal = pm;
-            mAudioManager = am;
+            mPowerManagerInternal = powerManagerInternal;
+            mVirtualDeviceManagerInternal = virtualDeviceManagerInternal;
+            mAudioManager = audioManager;
             mRingerMode = ringerMode;
+            mSystemUiPackage = sysUiPackage;
         }
 
         try {
-            ActivityManager.getService().registerUidObserver(mUidObserver,
+            activityManagerInternal.registerUidObserver(mUidObserver,
                     ActivityManager.UID_OBSERVER_PROCSTATE | ActivityManager.UID_OBSERVER_GONE,
-                    ActivityManager.PROCESS_STATE_UNKNOWN, null);
+                    ActivityManager.PROCESS_STATE_UNKNOWN, /* callingPackage= */ null);
         } catch (RemoteException e) {
             // ignored; both services live in system_server
         }
 
-        pm.registerLowPowerModeObserver(
-                new PowerManagerInternal.LowPowerModeListener() {
-                    @Override
-                    public int getServiceType() {
-                        return PowerManager.ServiceType.VIBRATION;
-                    }
+        try {
+            activityManagerInternal.registerUserSwitchObserver(mUserSwitchObserver, TAG);
+        } catch (RemoteException e) {
+            // ignored; both services live in system_server
+        }
 
-                    @Override
-                    public void onLowPowerModeChanged(PowerSaveState result) {
-                        boolean shouldNotifyListeners;
-                        synchronized (mLock) {
-                            shouldNotifyListeners = result.batterySaverEnabled != mBatterySaverMode;
-                            mBatterySaverMode = result.batterySaverEnabled;
-                        }
-                        if (shouldNotifyListeners) {
-                            notifyListeners();
-                        }
-                    }
-                });
+        powerManagerInternal.registerLowPowerModeObserver(mLowPowerModeListener);
 
-        registerSettingsChangeReceiver(USER_SWITCHED_INTENT_FILTER);
-        registerSettingsChangeReceiver(INTERNAL_RINGER_MODE_CHANGED_INTENT_FILTER);
+        mContext.registerReceiver(mRingerModeBroadcastReceiver,
+                new IntentFilter(AudioManager.INTERNAL_RINGER_MODE_CHANGED_ACTION),
+                Context.RECEIVER_EXPORTED_UNAUDITED);
 
         // Listen to all settings that might affect the result of Vibrator.getVibrationIntensity.
         registerSettingsObserver(Settings.System.getUriFor(Settings.System.VIBRATE_INPUT_DEVICES));
@@ -295,12 +306,7 @@ final class VibrationSettings {
 
         if (mVibrationConfig.ignoreVibrationsOnWirelessCharger()) {
             Intent batteryStatus = mContext.registerReceiver(
-                    new BroadcastReceiver() {
-                        @Override
-                        public void onReceive(Context context, Intent intent) {
-                            updateBatteryInfo(intent);
-                        }
-                    },
+                    mBatteryBroadcastReceiver,
                     new IntentFilter(Intent.ACTION_BATTERY_CHANGED),
                     Context.RECEIVER_NOT_EXPORTED);
             // After registering the receiver for battery status, process the sticky broadcast that
@@ -376,6 +382,24 @@ final class VibrationSettings {
     }
 
     /**
+     * Returns the duration, in milliseconds, that the vibrator control service will wait for new
+     * vibration params.
+     * @return The request vibration params timeout in milliseconds.
+     */
+    public int getRequestVibrationParamsTimeoutMs() {
+        return mVibrationConfig.getRequestVibrationParamsTimeoutMs();
+    }
+
+    /**
+     * The list of usages that should request vibration params before they are played. These
+     * usages don't have strong latency requirements, e.g. ringtone and notification, and can be
+     * slightly delayed.
+     */
+    public int[] getRequestVibrationParamsForUsages() {
+        return mVibrationConfig.getRequestVibrationParamsForUsages();
+    }
+
+    /**
      * Return a {@link VibrationEffect} that should be played if the device do not support given
      * {@code effectId}.
      *
@@ -394,46 +418,46 @@ final class VibrationSettings {
     /**
      * Check if given vibration should be ignored by the service.
      *
-     * @return One of Vibration.Status.IGNORED_* values if the vibration should be ignored,
+     * @return One of VibrationSession.Status.IGNORED_* values if the vibration should be ignored,
      * null otherwise.
      */
     @Nullable
-    public Vibration.Status shouldIgnoreVibration(@NonNull Vibration.CallerInfo callerInfo) {
+    public Status shouldIgnoreVibration(@NonNull CallerInfo callerInfo) {
         final int usage = callerInfo.attrs.getUsage();
         synchronized (mLock) {
             if (!mUidObserver.isUidForeground(callerInfo.uid)
                     && !BACKGROUND_PROCESS_USAGE_ALLOWLIST.contains(usage)) {
-                return Vibration.Status.IGNORED_BACKGROUND;
+                return Status.IGNORED_BACKGROUND;
             }
 
             if (callerInfo.deviceId != Context.DEVICE_ID_DEFAULT
                     && callerInfo.deviceId != Context.DEVICE_ID_INVALID) {
-                return Vibration.Status.IGNORED_FROM_VIRTUAL_DEVICE;
+                return Status.IGNORED_FROM_VIRTUAL_DEVICE;
             }
 
             if (callerInfo.deviceId == Context.DEVICE_ID_INVALID
                     && isAppRunningOnAnyVirtualDevice(callerInfo.uid)) {
-                return Vibration.Status.IGNORED_FROM_VIRTUAL_DEVICE;
+                return Status.IGNORED_FROM_VIRTUAL_DEVICE;
             }
 
             if (mBatterySaverMode && !BATTERY_SAVER_USAGE_ALLOWLIST.contains(usage)) {
-                return Vibration.Status.IGNORED_FOR_POWER;
+                return Status.IGNORED_FOR_POWER;
             }
 
             if (!callerInfo.attrs.isFlagSet(
                     VibrationAttributes.FLAG_BYPASS_USER_VIBRATION_INTENSITY_OFF)
                     && !shouldVibrateForUserSetting(callerInfo)) {
-                return Vibration.Status.IGNORED_FOR_SETTINGS;
+                return Status.IGNORED_FOR_SETTINGS;
             }
 
             if (!callerInfo.attrs.isFlagSet(VibrationAttributes.FLAG_BYPASS_INTERRUPTION_POLICY)) {
                 if (!shouldVibrateForRingerModeLocked(usage)) {
-                    return Vibration.Status.IGNORED_FOR_RINGER_MODE;
+                    return Status.IGNORED_FOR_RINGER_MODE;
                 }
             }
 
             if (mVibrationConfig.ignoreVibrationsOnWirelessCharger() && mOnWirelessCharger) {
-                return Vibration.Status.IGNORED_ON_WIRELESS_CHARGER;
+                return Status.IGNORED_ON_WIRELESS_CHARGER;
             }
         }
         return null;
@@ -449,11 +473,13 @@ final class VibrationSettings {
      *
      * @return true if the vibration should be cancelled when the screen goes off, false otherwise.
      */
-    public boolean shouldCancelVibrationOnScreenOff(@NonNull Vibration.CallerInfo callerInfo,
+    public boolean shouldCancelVibrationOnScreenOff(@NonNull CallerInfo callerInfo,
             long vibrationStartUptimeMillis) {
         PowerManagerInternal pm;
+        String sysUiPackageName;
         synchronized (mLock) {
             pm = mPowerManagerInternal;
+            sysUiPackageName = mSystemUiPackage;
         }
         if (pm != null) {
             // The SleepData from PowerManager may refer to a more recent sleep than the broadcast
@@ -461,8 +487,8 @@ final class VibrationSettings {
             // ignored here and not cancel a vibration, and those are usually triggered by timeout
             // or inactivity, so it's unlikely that it will override a more active goToSleep reason.
             PowerManager.SleepData sleepData = pm.getLastGoToSleep();
-            if ((sleepData.goToSleepUptimeMillis < vibrationStartUptimeMillis)
-                    || POWER_MANAGER_SLEEP_REASON_ALLOWLIST.contains(sleepData.goToSleepReason)) {
+            if (sleepData != null && (sleepData.goToSleepUptimeMillis < vibrationStartUptimeMillis
+                    || POWER_MANAGER_SLEEP_REASON_ALLOWLIST.contains(sleepData.goToSleepReason))) {
                 // Ignore screen off events triggered before the vibration started, and all
                 // automatic "go to sleep" events from allowlist.
                 Slog.d(TAG, "Ignoring screen off event triggered at uptime "
@@ -477,7 +503,7 @@ final class VibrationSettings {
         }
         // Only allow vibrations from System packages to continue vibrating when the screen goes off
         return callerInfo.uid != Process.SYSTEM_UID && callerInfo.uid != 0
-                && !mSystemUiPackage.equals(callerInfo.opPkg);
+                && !Objects.equals(sysUiPackageName, callerInfo.opPkg);
     }
 
     /**
@@ -500,19 +526,11 @@ final class VibrationSettings {
      * {@code false} to ignore the vibration.
      */
     @GuardedBy("mLock")
-    private boolean shouldVibrateForUserSetting(Vibration.CallerInfo callerInfo) {
+    private boolean shouldVibrateForUserSetting(CallerInfo callerInfo) {
         final int usage = callerInfo.attrs.getUsage();
         if (!mVibrateOn && (VIBRATE_ON_DISABLED_USAGE_ALLOWED != usage)) {
             // Main setting disabled.
             return false;
-        }
-
-        if (Flags.keyboardCategoryEnabled()) {
-            int category = callerInfo.attrs.getCategory();
-            if (usage == USAGE_TOUCH && category == CATEGORY_KEYBOARD) {
-                // Keyboard touch has a different user setting.
-                return mKeyboardVibrationOn;
-            }
         }
 
         // Apply individual user setting based on usage.
@@ -521,41 +539,46 @@ final class VibrationSettings {
 
     /** Update all cached settings and triggers registered listeners. */
     void update() {
-        updateSettings();
+        updateSettings(UserHandle.USER_CURRENT);
         updateRingerMode();
         notifyListeners();
     }
 
-    private void updateSettings() {
+    private void updateSettings(int userHandle) {
         synchronized (mLock) {
-            mVibrateInputDevices = loadSystemSetting(Settings.System.VIBRATE_INPUT_DEVICES, 0) > 0;
-            mVibrateOn = loadSystemSetting(Settings.System.VIBRATE_ON, 1) > 0;
-            mKeyboardVibrationOn = loadSystemSetting(Settings.System.KEYBOARD_VIBRATION_ENABLED,
-                    mVibrationConfig.isDefaultKeyboardVibrationEnabled() ? 1 : 0) > 0;
+            mVibrateInputDevices =
+                    loadSystemSetting(Settings.System.VIBRATE_INPUT_DEVICES, 0, userHandle) > 0;
+            mVibrateOn = loadSystemSetting(Settings.System.VIBRATE_ON, 1, userHandle) > 0;
 
+            boolean isKeyboardVibrationOn = loadSystemSetting(
+                    Settings.System.KEYBOARD_VIBRATION_ENABLED, 1, userHandle) > 0;
+            int keyboardIntensity = toIntensity(isKeyboardVibrationOn,
+                    getDefaultIntensity(USAGE_IME_FEEDBACK));
             int alarmIntensity = toIntensity(
-                    loadSystemSetting(Settings.System.ALARM_VIBRATION_INTENSITY, -1),
+                    loadSystemSetting(Settings.System.ALARM_VIBRATION_INTENSITY, -1, userHandle),
                     getDefaultIntensity(USAGE_ALARM));
             int defaultHapticFeedbackIntensity = getDefaultIntensity(USAGE_TOUCH);
             int hapticFeedbackIntensity = toIntensity(
-                    loadSystemSetting(Settings.System.HAPTIC_FEEDBACK_INTENSITY, -1),
+                    loadSystemSetting(Settings.System.HAPTIC_FEEDBACK_INTENSITY, -1, userHandle),
                     defaultHapticFeedbackIntensity);
             int positiveHapticFeedbackIntensity = toPositiveIntensity(
                     hapticFeedbackIntensity, defaultHapticFeedbackIntensity);
             int hardwareFeedbackIntensity = toIntensity(
-                    loadSystemSetting(Settings.System.HARDWARE_HAPTIC_FEEDBACK_INTENSITY, -1),
+                    loadSystemSetting(Settings.System.HARDWARE_HAPTIC_FEEDBACK_INTENSITY, -1,
+                            userHandle),
                     positiveHapticFeedbackIntensity);
             int mediaIntensity = toIntensity(
-                    loadSystemSetting(Settings.System.MEDIA_VIBRATION_INTENSITY, -1),
+                    loadSystemSetting(Settings.System.MEDIA_VIBRATION_INTENSITY, -1, userHandle),
                     getDefaultIntensity(USAGE_MEDIA));
             int defaultNotificationIntensity = getDefaultIntensity(USAGE_NOTIFICATION);
             int notificationIntensity = toIntensity(
-                    loadSystemSetting(Settings.System.NOTIFICATION_VIBRATION_INTENSITY, -1),
+                    loadSystemSetting(Settings.System.NOTIFICATION_VIBRATION_INTENSITY, -1,
+                            userHandle),
                     defaultNotificationIntensity);
             int positiveNotificationIntensity = toPositiveIntensity(
                     notificationIntensity, defaultNotificationIntensity);
             int ringIntensity = toIntensity(
-                    loadSystemSetting(Settings.System.RING_VIBRATION_INTENSITY, -1),
+                    loadSystemSetting(Settings.System.RING_VIBRATION_INTENSITY, -1, userHandle),
                     getDefaultIntensity(USAGE_RINGTONE));
 
             mCurrentVibrationIntensities.clear();
@@ -574,11 +597,17 @@ final class VibrationSettings {
             mCurrentVibrationIntensities.put(USAGE_HARDWARE_FEEDBACK, hardwareFeedbackIntensity);
             mCurrentVibrationIntensities.put(USAGE_PHYSICAL_EMULATION, hardwareFeedbackIntensity);
 
-            if (!loadBooleanSetting(Settings.System.HAPTIC_FEEDBACK_ENABLED)) {
+            if (!loadBooleanSetting(Settings.System.HAPTIC_FEEDBACK_ENABLED, userHandle)) {
                 // Make sure deprecated boolean setting still disables touch vibrations.
                 mCurrentVibrationIntensities.put(USAGE_TOUCH, Vibrator.VIBRATION_INTENSITY_OFF);
             } else {
                 mCurrentVibrationIntensities.put(USAGE_TOUCH, hapticFeedbackIntensity);
+            }
+
+            if (mVibrationConfig.isKeyboardVibrationSettingsSupported()) {
+                mCurrentVibrationIntensities.put(USAGE_IME_FEEDBACK, keyboardIntensity);
+            } else {
+                mCurrentVibrationIntensities.put(USAGE_IME_FEEDBACK, hapticFeedbackIntensity);
             }
 
             // A11y is not disabled by any haptic feedback setting.
@@ -588,11 +617,11 @@ final class VibrationSettings {
 
     private void updateRingerMode() {
         synchronized (mLock) {
-            // If audio manager was not loaded yet then assume most restrictive mode.
-            // This will be loaded again as soon as the audio manager is loaded in onSystemReady.
-            mRingerMode = (mAudioManager == null)
-                    ? AudioManager.RINGER_MODE_SILENT
-                    : mAudioManager.getRingerModeInternal();
+            if (mAudioManager == null) {
+                // Service not ready yet or audio service not available, skip this update request.
+                return;
+            }
+            mRingerMode = mAudioManager.getRingerModeInternal();
         }
     }
 
@@ -618,9 +647,11 @@ final class VibrationSettings {
             vibrationIntensitiesString.append('}');
             return "VibrationSettings{"
                     + "mVibratorConfig=" + mVibrationConfig
+                    + ", mVibrateOn=" + mVibrateOn
                     + ", mVibrateInputDevices=" + mVibrateInputDevices
                     + ", mBatterySaverMode=" + mBatterySaverMode
-                    + ", mVibrateOn=" + mVibrateOn
+                    + ", mRingerMode=" + ringerModeToString(mRingerMode)
+                    + ", mOnWirelessCharger=" + mOnWirelessCharger
                     + ", mVibrationIntensities=" + vibrationIntensitiesString
                     + ", mProcStatesCache=" + mUidObserver.mProcStatesCache
                     + '}';
@@ -629,26 +660,30 @@ final class VibrationSettings {
 
     /** Write current settings into given {@link PrintWriter}. */
     void dump(IndentingPrintWriter pw) {
-        pw.println("VibrationSettings:");
-        pw.increaseIndent();
-        pw.println("vibrateOn = " + mVibrateOn);
-        pw.println("vibrateInputDevices = " + mVibrateInputDevices);
-        pw.println("batterySaverMode = " + mBatterySaverMode);
-        pw.println("VibrationIntensities:");
+        synchronized (mLock) {
+            pw.println("VibrationSettings:");
+            pw.increaseIndent();
+            pw.println("vibrateOn = " + mVibrateOn);
+            pw.println("vibrateInputDevices = " + mVibrateInputDevices);
+            pw.println("batterySaverMode = " + mBatterySaverMode);
+            pw.println("ringerMode = " + ringerModeToString(mRingerMode));
+            pw.println("onWirelessCharger = " + mOnWirelessCharger);
+            pw.println("processStateCache size = " + mUidObserver.mProcStatesCache.size());
 
-        pw.increaseIndent();
-        for (int i = 0; i < mCurrentVibrationIntensities.size(); i++) {
-            int usage = mCurrentVibrationIntensities.keyAt(i);
-            int intensity = mCurrentVibrationIntensities.valueAt(i);
-            pw.println(VibrationAttributes.usageToString(usage) + " = "
-                    + intensityToString(intensity)
-                    + ", default: " + intensityToString(getDefaultIntensity(usage)));
+            pw.println("VibrationIntensities:");
+            pw.increaseIndent();
+            for (int i = 0; i < mCurrentVibrationIntensities.size(); i++) {
+                int usage = mCurrentVibrationIntensities.keyAt(i);
+                int intensity = mCurrentVibrationIntensities.valueAt(i);
+                pw.println(VibrationAttributes.usageToString(usage) + " = "
+                        + intensityToString(intensity)
+                        + ", default: " + intensityToString(getDefaultIntensity(usage)));
+            }
+            pw.decreaseIndent();
+
+            mVibrationConfig.dumpWithoutDefaultSettings(pw);
+            pw.decreaseIndent();
         }
-        pw.decreaseIndent();
-
-        mVibrationConfig.dumpWithoutDefaultSettings(pw);
-        pw.println("processStateCache = " + mUidObserver.mProcStatesCache);
-        pw.decreaseIndent();
     }
 
     /** Write current settings into given {@link ProtoOutputStream}. */
@@ -694,18 +729,22 @@ final class VibrationSettings {
     }
 
     private static String intensityToString(int intensity) {
-        switch (intensity) {
-            case Vibrator.VIBRATION_INTENSITY_OFF:
-                return "OFF";
-            case Vibrator.VIBRATION_INTENSITY_LOW:
-                return "LOW";
-            case Vibrator.VIBRATION_INTENSITY_MEDIUM:
-                return "MEDIUM";
-            case Vibrator.VIBRATION_INTENSITY_HIGH:
-                return "HIGH";
-            default:
-                return "UNKNOWN INTENSITY " + intensity;
-        }
+        return switch (intensity) {
+            case Vibrator.VIBRATION_INTENSITY_OFF -> "OFF";
+            case Vibrator.VIBRATION_INTENSITY_LOW -> "LOW";
+            case Vibrator.VIBRATION_INTENSITY_MEDIUM -> "MEDIUM";
+            case Vibrator.VIBRATION_INTENSITY_HIGH -> "HIGH";
+            default -> "UNKNOWN INTENSITY " + intensity;
+        };
+    }
+
+    private static String ringerModeToString(int ringerMode) {
+        return switch (ringerMode) {
+            case AudioManager.RINGER_MODE_SILENT -> "silent";
+            case AudioManager.RINGER_MODE_VIBRATE -> "vibrate";
+            case AudioManager.RINGER_MODE_NORMAL -> "normal";
+            default -> String.valueOf(ringerMode);
+        };
     }
 
     @VibrationIntensity
@@ -725,25 +764,24 @@ final class VibrationSettings {
         return value;
     }
 
-    private boolean loadBooleanSetting(String settingKey) {
-        return Settings.System.getIntForUser(mContext.getContentResolver(),
-                settingKey, 0, UserHandle.USER_CURRENT) != 0;
+    @VibrationIntensity
+    private int toIntensity(boolean enabled, @VibrationIntensity int defaultValue) {
+        return enabled ? defaultValue : Vibrator.VIBRATION_INTENSITY_OFF;
     }
 
-    private int loadSystemSetting(String settingName, int defaultValue) {
+    private boolean loadBooleanSetting(String settingKey, int userHandle) {
+        return loadSystemSetting(settingKey, 0, userHandle) != 0;
+    }
+
+    private int loadSystemSetting(String settingName, int defaultValue, int userHandle) {
         return Settings.System.getIntForUser(mContext.getContentResolver(),
-                settingName, defaultValue, UserHandle.USER_CURRENT);
+                settingName, defaultValue, userHandle);
     }
 
     private void registerSettingsObserver(Uri settingUri) {
         mContext.getContentResolver().registerContentObserver(
                 settingUri, /* notifyForDescendants= */ true, mSettingObserver,
                 UserHandle.USER_ALL);
-    }
-
-    private void registerSettingsChangeReceiver(IntentFilter intentFilter) {
-        mContext.registerReceiver(mSettingChangeReceiver, intentFilter,
-                Context.RECEIVER_EXPORTED_UNAUDITED);
     }
 
     @Nullable
@@ -792,12 +830,11 @@ final class VibrationSettings {
     }
 
     private boolean isAppRunningOnAnyVirtualDevice(int uid) {
-        if (mVirtualDeviceManagerInternal == null) {
-            mVirtualDeviceManagerInternal =
-                    LocalServices.getService(VirtualDeviceManagerInternal.class);
+        VirtualDeviceManagerInternal vdm;
+        synchronized (mLock) {
+            vdm = mVirtualDeviceManagerInternal;
         }
-        return mVirtualDeviceManagerInternal != null
-                && mVirtualDeviceManagerInternal.isAppRunningOnAnyVirtualDevice(uid);
+        return vdm != null && vdm.isAppRunningOnAnyVirtualDevice(uid);
     }
 
     /** Implementation of {@link ContentObserver} to be registered to a setting {@link Uri}. */
@@ -809,33 +846,39 @@ final class VibrationSettings {
 
         @Override
         public void onChange(boolean selfChange) {
-            updateSettings();
+            updateSettings(UserHandle.USER_CURRENT);
             notifyListeners();
         }
     }
 
-    /**
-     * Implementation of {@link BroadcastReceiver} to update settings on current user or ringer
-     * mode change.
-     */
+    /** Implementation of {@link BroadcastReceiver} to update on ringer mode change. */
     @VisibleForTesting
-    final class SettingsBroadcastReceiver extends BroadcastReceiver {
+    final class RingerModeBroadcastReceiver extends BroadcastReceiver {
         @Override
         public void onReceive(Context context, Intent intent) {
             String action = intent.getAction();
-            if (Intent.ACTION_USER_SWITCHED.equals(action)) {
-                // Reload all settings, as they are user-based.
-                update();
-            } else if (AudioManager.INTERNAL_RINGER_MODE_CHANGED_ACTION.equals(action)) {
+            if (AudioManager.INTERNAL_RINGER_MODE_CHANGED_ACTION.equals(action)) {
                 updateRingerMode();
                 notifyListeners();
             }
         }
     }
 
+    /** Implementation of {@link BroadcastReceiver} to update on battery mode change. */
+    @VisibleForTesting
+    final class BatteryBroadcastReceiver extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            if (Intent.ACTION_BATTERY_CHANGED.equals(action)) {
+                updateBatteryInfo(intent);
+            }
+        }
+    }
+
     /** Implementation of {@link ContentObserver} to be registered to a setting {@link Uri}. */
     @VisibleForTesting
-    final class MyUidObserver extends UidObserver {
+    final class VibrationUidObserver extends UidObserver {
         private final SparseArray<Integer> mProcStatesCache = new SparseArray<>();
 
         public boolean isUidForeground(int uid) {
@@ -856,6 +899,46 @@ final class VibrationSettings {
         public void onUidStateChanged(int uid, int procState, long procStateSeq, int capability) {
             synchronized (this) {
                 mProcStatesCache.put(uid, procState);
+            }
+        }
+    }
+
+    /** Implementation of {@link SynchronousUserSwitchObserver} to update on user switch. */
+    @VisibleForTesting
+    final class VibrationUserSwitchObserver extends SynchronousUserSwitchObserver {
+
+        @Override
+        public void onUserSwitching(int newUserId) {
+            // Reload settings early based on new user id.
+            updateSettings(newUserId);
+            notifyListeners();
+        }
+
+        @Override
+        public void onUserSwitchComplete(int newUserId) {
+            // Reload all settings including ones from AudioManager,
+            // as they are based on UserHandle.USER_CURRENT.
+            update();
+        }
+    }
+
+    /** Implementation of {@link PowerManagerInternal.LowPowerModeListener} for low battery. */
+    @VisibleForTesting
+    final class VibrationLowPowerModeListener implements PowerManagerInternal.LowPowerModeListener {
+        @Override
+        public int getServiceType() {
+            return PowerManager.ServiceType.VIBRATION;
+        }
+
+        @Override
+        public void onLowPowerModeChanged(PowerSaveState result) {
+            boolean shouldNotifyListeners;
+            synchronized (mLock) {
+                shouldNotifyListeners = result.batterySaverEnabled != mBatterySaverMode;
+                mBatterySaverMode = result.batterySaverEnabled;
+            }
+            if (shouldNotifyListeners) {
+                notifyListeners();
             }
         }
     }

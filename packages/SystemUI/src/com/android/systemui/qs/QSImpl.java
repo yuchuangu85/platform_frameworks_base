@@ -34,11 +34,11 @@ import android.util.IndentingPrintWriter;
 import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.LinearLayout;
 
 import androidx.annotation.FloatRange;
 import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
+import androidx.compose.ui.platform.ComposeView;
 import androidx.lifecycle.Lifecycle;
 import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.LifecycleRegistry;
@@ -47,20 +47,19 @@ import com.android.app.animation.Interpolators;
 import com.android.keyguard.BouncerPanelExpansionCalculator;
 import com.android.systemui.Dumpable;
 import com.android.systemui.animation.ShadeInterpolation;
-import com.android.systemui.compose.ComposeFacade;
 import com.android.systemui.dump.DumpManager;
-import com.android.systemui.flags.FeatureFlags;
-import com.android.systemui.flags.Flags;
-import com.android.systemui.media.controls.ui.MediaHost;
+import com.android.systemui.media.controls.ui.view.MediaHost;
 import com.android.systemui.plugins.qs.QS;
 import com.android.systemui.plugins.qs.QSContainerController;
 import com.android.systemui.plugins.statusbar.StatusBarStateController;
 import com.android.systemui.qs.customize.QSCustomizerController;
 import com.android.systemui.qs.dagger.QSComponent;
-import com.android.systemui.qs.footer.ui.binder.FooterActionsViewBinder;
+import com.android.systemui.qs.flags.QSComposeFragment;
 import com.android.systemui.qs.footer.ui.viewmodel.FooterActionsViewModel;
 import com.android.systemui.qs.logging.QSLogger;
 import com.android.systemui.res.R;
+import com.android.systemui.scene.shared.flag.SceneContainerFlag;
+import com.android.systemui.settings.brightness.MirrorController;
 import com.android.systemui.shade.transition.LargeScreenShadeInterpolator;
 import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.StatusBarState;
@@ -68,7 +67,6 @@ import com.android.systemui.statusbar.SysuiStatusBarStateController;
 import com.android.systemui.statusbar.disableflags.DisableFlagsLogger;
 import com.android.systemui.statusbar.notification.stack.StackStateAnimator;
 import com.android.systemui.statusbar.phone.KeyguardBypassController;
-import com.android.systemui.statusbar.policy.BrightnessMirrorController;
 import com.android.systemui.statusbar.policy.RemoteInputQuickSettingsDisabler;
 import com.android.systemui.util.Utils;
 
@@ -117,11 +115,9 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
     private final MediaHost mQqsMediaHost;
     private final QSDisableFlagsLogger mQsDisableFlagsLogger;
     private final LargeScreenShadeInterpolator mLargeScreenShadeInterpolator;
-    private final FeatureFlags mFeatureFlags;
     private final QSLogger mLogger;
     private final FooterActionsController mFooterActionsController;
     private final FooterActionsViewModel.Factory mFooterActionsViewModelFactory;
-    private final FooterActionsViewBinder mFooterActionsViewBinder;
     private final ListeningAndVisibilityLifecycleOwner mListeningAndVisibilityLifecycleOwner;
     private boolean mShowCollapsedOnKeyguard;
     private boolean mLastKeyguardAndExpanded;
@@ -168,10 +164,14 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
 
     private boolean mIsSmallScreen;
 
+    /** Should the squishiness fraction be updated on the media host. */
+    private boolean mShouldUpdateMediaSquishiness;
+
     private CommandQueue mCommandQueue;
 
     private View mRootView;
-    private View mFooterActionsView;
+    @Nullable
+    private ComposeView mFooterActionsView;
 
     @Inject
     public QSImpl(RemoteInputQuickSettingsDisabler remoteInputQsDisabler,
@@ -183,24 +183,23 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
             DumpManager dumpManager, QSLogger qsLogger,
             FooterActionsController footerActionsController,
             FooterActionsViewModel.Factory footerActionsViewModelFactory,
-            FooterActionsViewBinder footerActionsViewBinder,
-            LargeScreenShadeInterpolator largeScreenShadeInterpolator,
-            FeatureFlags featureFlags) {
+            LargeScreenShadeInterpolator largeScreenShadeInterpolator) {
         mRemoteInputQuickSettingsDisabler = remoteInputQsDisabler;
         mQsMediaHost = qsMediaHost;
         mQqsMediaHost = qqsMediaHost;
         mQsDisableFlagsLogger = qsDisableFlagsLogger;
         mLogger = qsLogger;
         mLargeScreenShadeInterpolator = largeScreenShadeInterpolator;
-        mFeatureFlags = featureFlags;
         mCommandQueue = commandQueue;
         mBypassController = keyguardBypassController;
         mStatusBarStateController = statusBarStateController;
         mDumpManager = dumpManager;
         mFooterActionsController = footerActionsController;
         mFooterActionsViewModelFactory = footerActionsViewModelFactory;
-        mFooterActionsViewBinder = footerActionsViewBinder;
         mListeningAndVisibilityLifecycleOwner = new ListeningAndVisibilityLifecycleOwner();
+        if (SceneContainerFlag.isEnabled()) {
+            mStatusBarState = StatusBarState.SHADE;
+        }
     }
 
     /**
@@ -216,10 +215,17 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
         mQSPanelController.init();
         mQuickQSPanelController.init();
 
-        mQSFooterActionsViewModel = mFooterActionsViewModelFactory
-                .create(mListeningAndVisibilityLifecycleOwner);
-        bindFooterActionsView(mRootView);
-        mFooterActionsController.init();
+        if (!SceneContainerFlag.isEnabled()) {
+            mQSFooterActionsViewModel = mFooterActionsViewModelFactory
+                    .create(mListeningAndVisibilityLifecycleOwner);
+            bindFooterActionsView(mRootView);
+            mFooterActionsController.init();
+        } else {
+            View footerView = mRootView.findViewById(R.id.qs_footer_actions);
+            if (footerView != null) {
+                ((ViewGroup) footerView.getParent()).removeView(footerView);
+            }
+        }
 
         mQSPanelScrollView = mRootView.findViewById(R.id.expanded_qs_scroll_view);
         mQSPanelScrollView.addOnLayoutChangeListener(
@@ -234,6 +240,7 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
                         mScrollListener.onQsPanelScrollChanged(scrollY);
                     }
                 });
+        mQSPanelScrollView.setScrollingEnabled(!SceneContainerFlag.isEnabled());
         mHeader = mRootView.findViewById(R.id.header);
         mFooter = qsComponent.getQSFooter();
 
@@ -282,44 +289,9 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
     }
 
     private void bindFooterActionsView(View root) {
-        LinearLayout footerActionsView = root.findViewById(R.id.qs_footer_actions);
-
-        if (!mFeatureFlags.isEnabled(Flags.COMPOSE_QS_FOOTER_ACTIONS)
-                || !ComposeFacade.INSTANCE.isComposeAvailable()) {
-            Log.d(TAG, "Binding the View implementation of the QS footer actions");
-            mFooterActionsView = footerActionsView;
-            mFooterActionsViewBinder.bind(footerActionsView, mQSFooterActionsViewModel,
-                    mListeningAndVisibilityLifecycleOwner);
-            return;
-        }
-
-        // Compose is available, so let's use the Compose implementation of the footer actions.
-        Log.d(TAG, "Binding the Compose implementation of the QS footer actions");
-        View composeView = ComposeFacade.INSTANCE.createFooterActionsView(root.getContext(),
+        mFooterActionsView = root.findViewById(R.id.qs_footer_actions);
+        QSUtils.setFooterActionsViewContent(mFooterActionsView,
                 mQSFooterActionsViewModel, mListeningAndVisibilityLifecycleOwner);
-        mFooterActionsView = composeView;
-
-        // The id R.id.qs_footer_actions is used by QSContainerImpl to set the horizontal margin
-        // to all views except for qs_footer_actions, so we set it to the Compose view.
-        composeView.setId(R.id.qs_footer_actions);
-
-        // Set this tag so that QSContainerImpl does not add horizontal paddings to this Compose
-        // implementation of the footer actions. They will be set in Compose instead so that the
-        // background fills the full screen width.
-        composeView.setTag(R.id.tag_compose_qs_footer_actions, true);
-
-        // Set the same elevation as the View implementation, otherwise the footer actions will be
-        // drawn below the scroll view with QS grid and clicks won't get through on small devices
-        // where there isn't enough vertical space to show all the tiles and the footer actions.
-        composeView.setElevation(
-                composeView.getContext().getResources().getDimension(R.dimen.qs_panel_elevation));
-
-        // Replace the View by the Compose provided one.
-        ViewGroup parent = (ViewGroup) footerActionsView.getParent();
-        ViewGroup.LayoutParams layoutParams = footerActionsView.getLayoutParams();
-        int index = parent.indexOfChild(footerActionsView);
-        parent.removeViewAt(index);
-        parent.addView(composeView, index, layoutParams);
     }
 
     @Override
@@ -384,7 +356,33 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
 
     @Override
     public View getHeader() {
+        QSComposeFragment.assertInLegacyMode();
         return mHeader;
+    }
+
+    @Override
+    public int getHeaderTop() {
+        return mHeader.getTop();
+    }
+
+    @Override
+    public int getHeaderBottom() {
+        return mHeader.getBottom();
+    }
+
+    @Override
+    public int getHeaderLeft() {
+        return mHeader.getLeft();
+    }
+
+    @Override
+    public void getHeaderBoundsOnScreen(Rect outBounds) {
+        mHeader.getBoundsOnScreen(outBounds);
+    }
+
+    @Override
+    public boolean isHeaderShown() {
+        return mHeader.isShown();
     }
 
     @Override
@@ -481,7 +479,9 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
         boolean footerVisible = qsPanelVisible && (mQsExpanded || !keyguardShowing
                 || mHeaderAnimating || mShowCollapsedOnKeyguard);
         mFooter.setVisibility(footerVisible ? View.VISIBLE : View.INVISIBLE);
-        mFooterActionsView.setVisibility(footerVisible ? View.VISIBLE : View.INVISIBLE);
+        if (mFooterActionsView != null) {
+            mFooterActionsView.setVisibility(footerVisible ? View.VISIBLE : View.INVISIBLE);
+        }
         mFooter.setExpanded((keyguardShowing && !mHeaderAnimating && !mShowCollapsedOnKeyguard)
                 || (mQsExpanded && !mStackScrollerOverscrolling));
         mQSPanelController.setVisibility(qsPanelVisible ? View.VISIBLE : View.INVISIBLE);
@@ -490,10 +490,20 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
         }
     }
 
-    private boolean isKeyguardState() {
-        // We want the freshest state here since otherwise we'll have some weirdness if earlier
-        // listeners trigger updates
-        return mStatusBarStateController.getCurrentOrUpcomingState() == KEYGUARD;
+    @VisibleForTesting
+    boolean isKeyguardState() {
+        if (SceneContainerFlag.isEnabled()) {
+            return false;
+        } else {
+            // We want the freshest state here since otherwise we'll have some weirdness if earlier
+            // listeners trigger updates
+            return mStatusBarStateController.getCurrentOrUpcomingState() == KEYGUARD;
+        }
+    }
+
+    @VisibleForTesting
+    int getStatusBarState() {
+        return mStatusBarState;
     }
 
     private void updateShowCollapsedOnKeyguard() {
@@ -517,7 +527,7 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
     }
 
     public void setBrightnessMirrorController(
-            BrightnessMirrorController brightnessMirrorController) {
+            @Nullable MirrorController brightnessMirrorController) {
         mQSPanelController.setBrightnessMirror(brightnessMirrorController);
     }
 
@@ -546,15 +556,17 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
     }
 
     private void setKeyguardShowing(boolean keyguardShowing) {
-        if (DEBUG) Log.d(TAG, "setKeyguardShowing " + keyguardShowing);
-        mLastQSExpansion = -1;
+        if (!SceneContainerFlag.isEnabled()) {
+            if (DEBUG) Log.d(TAG, "setKeyguardShowing " + keyguardShowing);
+            mLastQSExpansion = -1;
 
-        if (mQSAnimator != null) {
-            mQSAnimator.setOnKeyguard(keyguardShowing);
+            if (mQSAnimator != null) {
+                mQSAnimator.setOnKeyguard(keyguardShowing);
+            }
+
+            mFooter.setKeyguardShowing(keyguardShowing);
+            updateQsState();
         }
-
-        mFooter.setKeyguardShowing(keyguardShowing);
-        updateQsState();
     }
 
     @Override
@@ -622,13 +634,24 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
 
     @Override
     public int getHeightDiff() {
-        return mQSPanelScrollView.getBottom() - mHeader.getBottom()
-                + mHeader.getPaddingBottom();
+        if (SceneContainerFlag.isEnabled()) {
+            return mQSPanelController.getViewBottom() - mHeader.getBottom()
+                    + mHeader.getPaddingBottom();
+        } else {
+            return mQSPanelScrollView.getBottom() - mHeader.getBottom()
+                    + mHeader.getPaddingBottom();
+        }
     }
 
     @Override
     public void setIsNotificationPanelFullWidth(boolean isFullWidth) {
         mIsSmallScreen = isFullWidth;
+    }
+
+    @Override
+    public void setShouldUpdateSquishinessOnMedia(boolean shouldUpdate) {
+        if (DEBUG) Log.d(TAG, "setShouldUpdateSquishinessOnMedia " + shouldUpdate);
+        mShouldUpdateMediaSquishiness = shouldUpdate;
     }
 
     @Override
@@ -678,25 +701,29 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
         mFooter.setExpansion(onKeyguardAndExpanded ? 1 : expansion);
         float footerActionsExpansion =
                 onKeyguardAndExpanded ? 1 : mInSplitShade ? alphaProgress : expansion;
-        mQSFooterActionsViewModel.onQuickSettingsExpansionChanged(footerActionsExpansion,
-                mInSplitShade);
+        if (mQSFooterActionsViewModel != null) {
+            mQSFooterActionsViewModel.onQuickSettingsExpansionChanged(footerActionsExpansion,
+                    mInSplitShade);
+        }
         mQSPanelController.setRevealExpansion(expansion);
         mQSPanelController.getTileLayout().setExpansion(expansion, proposedTranslation);
         mQuickQSPanelController.getTileLayout().setExpansion(expansion, proposedTranslation);
 
-        float qsScrollViewTranslation =
-                onKeyguard && !mShowCollapsedOnKeyguard ? panelTranslationY : 0;
-        mQSPanelScrollView.setTranslationY(qsScrollViewTranslation);
+        if (!SceneContainerFlag.isEnabled()) {
+            float qsScrollViewTranslation =
+                    onKeyguard && !mShowCollapsedOnKeyguard ? panelTranslationY : 0;
+            mQSPanelScrollView.setTranslationY(qsScrollViewTranslation);
 
-        if (fullyCollapsed) {
-            mQSPanelScrollView.setScrollY(0);
-        }
+            if (fullyCollapsed) {
+                mQSPanelScrollView.setScrollY(0);
+            }
 
-        if (!fullyExpanded) {
-            // Set bounds on the QS panel so it doesn't run over the header when animating.
-            mQsBounds.top = (int) -mQSPanelScrollView.getTranslationY();
-            mQsBounds.right = mQSPanelScrollView.getWidth();
-            mQsBounds.bottom = mQSPanelScrollView.getHeight();
+            if (!fullyExpanded) {
+                // Set bounds on the QS panel so it doesn't run over the header when animating.
+                mQsBounds.top = (int) -mQSPanelScrollView.getTranslationY();
+                mQsBounds.right = mQSPanelScrollView.getWidth();
+                mQsBounds.bottom = mQSPanelScrollView.getHeight();
+            }
         }
         updateQsBounds();
 
@@ -706,9 +733,11 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
         if (mQSAnimator != null) {
             mQSAnimator.setPosition(expansion);
         }
-        if (!mInSplitShade
+        if (!mShouldUpdateMediaSquishiness
+                && (!mInSplitShade
                 || mStatusBarStateController.getState() == KEYGUARD
-                || mStatusBarStateController.getState() == SHADE_LOCKED) {
+                || mStatusBarStateController.getState() == SHADE_LOCKED)
+        ) {
             // At beginning, state is 0 and will apply wrong squishiness to MediaHost in lockscreen
             // and media player expect no change by squishiness in lock screen shade. Don't bother
             // squishing mQsMediaHost when not in split shade to prevent problems with stale state.
@@ -786,15 +815,17 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
             mQsBounds.set(-sideMargin, 0, mQSPanelScrollView.getWidth() + sideMargin,
                     mQSPanelScrollView.getHeight());
         }
-        mQSPanelScrollView.setClipBounds(mQsBounds);
+        if (!SceneContainerFlag.isEnabled()) {
+            mQSPanelScrollView.setClipBounds(mQsBounds);
 
-        mQSPanelScrollView.getLocationOnScreen(mLocationTemp);
-        int left = mLocationTemp[0];
-        int top = mLocationTemp[1];
-        mQsMediaHost.getCurrentClipping().set(left, top,
-                left + getView().getMeasuredWidth(),
-                top + mQSPanelScrollView.getMeasuredHeight()
-                        - mQSPanelController.getPaddingBottom());
+            mQSPanelScrollView.getLocationOnScreen(mLocationTemp);
+            int left = mLocationTemp[0];
+            int top = mLocationTemp[1];
+            mQsMediaHost.getCurrentClipping().set(left, top,
+                    left + getView().getMeasuredWidth(),
+                    top + mQSPanelScrollView.getMeasuredHeight()
+                            - mQSPanelController.getPaddingBottom());
+        }
     }
 
     private void updateMediaPositions() {
@@ -867,9 +898,15 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
         // The customize state changed, so our height changed.
         mContainer.updateExpansion();
         boolean customizing = isCustomizing();
-        mQSPanelScrollView.setVisibility(!customizing ? View.VISIBLE : View.INVISIBLE);
+        if (SceneContainerFlag.isEnabled()) {
+            mQSPanelController.setVisibility(!customizing ? View.VISIBLE : View.INVISIBLE);
+        } else {
+            mQSPanelScrollView.setVisibility(!customizing ? View.VISIBLE : View.INVISIBLE);
+        }
         mFooter.setVisibility(!customizing ? View.VISIBLE : View.INVISIBLE);
-        mFooterActionsView.setVisibility(!customizing ? View.VISIBLE : View.INVISIBLE);
+        if (mFooterActionsView != null) {
+            mFooterActionsView.setVisibility(!customizing ? View.VISIBLE : View.INVISIBLE);
+        }
         mHeader.setVisibility(!customizing ? View.VISIBLE : View.INVISIBLE);
         // Let the panel know the position changed and it needs to update where notifications
         // and whatnot are.
@@ -938,7 +975,7 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
 
     @Override
     public void onStateChanged(int newState) {
-        if (newState == mStatusBarState) {
+        if (SceneContainerFlag.isEnabled() || newState == mStatusBarState) {
             return;
         }
         mStatusBarState = newState;
@@ -949,6 +986,37 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
     @VisibleForTesting
     public ListeningAndVisibilityLifecycleOwner getListeningAndVisibilityLifecycleOwner() {
         return mListeningAndVisibilityLifecycleOwner;
+    }
+
+    public int getQQSHeight() {
+        return mContainer.getQqsHeight();
+    }
+
+    /**
+     * @return height with the squishiness fraction applied.
+     */
+    public int getSquishedQqsHeight() {
+        return mContainer.getSquishedQqsHeight();
+    }
+
+    public int getQSHeight() {
+        return mContainer.getQsHeight();
+    }
+
+    /**
+     * @return height with the squishiness fraction applied.
+     */
+    public int getSquishedQsHeight() {
+        return mContainer.getSquishedQsHeight();
+    }
+
+    /**
+     * Pass the size of the navbar when it's at the bottom of the device so it can be used as
+     * padding
+     * @param padding size of the bottom nav bar in px
+     */
+    public void applyBottomNavBarToCustomizerPadding(int padding) {
+        mQSCustomizerController.applyBottomNavBarSizeToRecyclerViewPadding(padding);
     }
 
     @NeverCompile
@@ -979,6 +1047,7 @@ public class QSImpl implements QS, CommandQueue.Callbacks, StatusBarStateControl
         indentingPw.println("mTransitioningToFullShade: " + mTransitioningToFullShade);
         indentingPw.println("mLockscreenToShadeProgress: " + mLockscreenToShadeProgress);
         indentingPw.println("mOverScrolling: " + mOverScrolling);
+        indentingPw.println("mShouldUpdateMediaSquishiness: " + mShouldUpdateMediaSquishiness);
         indentingPw.println("isCustomizing: " + mQSCustomizerController.isCustomizing());
         View view = getView();
         if (view != null) {

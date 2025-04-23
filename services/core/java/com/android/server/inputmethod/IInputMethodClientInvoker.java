@@ -25,6 +25,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Slog;
+import android.view.inputmethod.ImeTracker;
 
 import com.android.internal.inputmethod.IInputMethodClient;
 import com.android.internal.inputmethod.InputBindResult;
@@ -43,6 +44,9 @@ import com.android.internal.inputmethod.InputBindResult;
  * the given {@link Handler} thread if {@link IInputMethodClient} is not a proxy object. Be careful
  * about its call ordering characteristics.</p>
  */
+// TODO(b/322895594) Mark this class to be host side test compatible once enabling fw/services in
+//     Ravenwood (mark this class with @RavenwoodKeepWholeClass and #create with @RavenwoodReplace,
+//     so Ravenwood can properly swap create method during test execution).
 final class IInputMethodClientInvoker {
     private static final String TAG = InputMethodManagerService.TAG;
     private static final boolean DEBUG = InputMethodManagerService.DEBUG;
@@ -62,6 +66,16 @@ final class IInputMethodClientInvoker {
         }
         final boolean isProxy = Binder.isProxy(inputMethodClient);
         return new IInputMethodClientInvoker(inputMethodClient, isProxy, isProxy ? null : handler);
+    }
+
+    @AnyThread
+    @Nullable
+    static IInputMethodClientInvoker create$ravenwood(
+            @Nullable IInputMethodClient inputMethodClient, @NonNull Handler handler) {
+        if (inputMethodClient == null) {
+            return null;
+        }
+        return new IInputMethodClientInvoker(inputMethodClient, true, null);
     }
 
     private IInputMethodClientInvoker(@NonNull IInputMethodClient target,
@@ -105,6 +119,30 @@ final class IInputMethodClientInvoker {
     private void onBindMethodInternal(@NonNull InputBindResult res) {
         try {
             mTarget.onBindMethod(res);
+        } catch (RemoteException e) {
+            logRemoteException(e);
+        } finally {
+            // Dispose the channel if the input method is not local to this process
+            // because the remote proxy will get its own copy when unparceled.
+            if (res.channel != null && mIsProxy) {
+                res.channel.dispose();
+            }
+        }
+    }
+
+    @AnyThread
+    void onStartInputResult(@NonNull InputBindResult res, int startInputSeq) {
+        if (mIsProxy) {
+            onStartInputResultInternal(res, startInputSeq);
+        } else {
+            mHandler.post(() -> onStartInputResultInternal(res, startInputSeq));
+        }
+    }
+
+    @AnyThread
+    private void onStartInputResultInternal(@NonNull InputBindResult res, int startInputSeq) {
+        try {
+            mTarget.onStartInputResult(res, startInputSeq);
         } catch (RemoteException e) {
             logRemoteException(e);
         } finally {
@@ -207,6 +245,24 @@ final class IInputMethodClientInvoker {
     private void setInteractiveInternal(boolean interactive, boolean fullscreen) {
         try {
             mTarget.setInteractive(interactive, fullscreen);
+        } catch (RemoteException e) {
+            logRemoteException(e);
+        }
+    }
+
+    @AnyThread
+    void setImeVisibility(boolean visible, @Nullable ImeTracker.Token statsToken) {
+        if (mIsProxy) {
+            setImeVisibilityInternal(visible, statsToken);
+        } else {
+            mHandler.post(() -> setImeVisibilityInternal(visible, statsToken));
+        }
+    }
+
+    @AnyThread
+    private void setImeVisibilityInternal(boolean visible, @Nullable ImeTracker.Token statsToken) {
+        try {
+            mTarget.setImeVisibility(visible, statsToken);
         } catch (RemoteException e) {
             logRemoteException(e);
         }

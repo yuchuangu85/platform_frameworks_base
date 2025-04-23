@@ -18,9 +18,8 @@ package android.app.usage;
 
 import static junit.framework.Assert.fail;
 
-import android.test.suitebuilder.annotation.SmallTest;
-
-import androidx.test.runner.AndroidJUnit4;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.filters.SmallTest;
 
 import com.android.internal.util.ArrayUtils;
 

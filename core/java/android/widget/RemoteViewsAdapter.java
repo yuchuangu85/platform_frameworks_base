@@ -241,6 +241,11 @@ public class RemoteViewsAdapter extends BaseAdapter implements Handler.Callback 
         }
 
         @Override
+        public void onNullBinding(ComponentName name) {
+            enqueueDeferredUnbindServiceMessage();
+        }
+
+        @Override
         public void handleMessage(Message msg) {
             RemoteViewsAdapter adapter = mAdapter.get();
 
@@ -368,7 +373,7 @@ public class RemoteViewsAdapter extends BaseAdapter implements Handler.Callback 
      * A FrameLayout which contains a loading view, and manages the re/applying of RemoteViews when
      * they are loaded.
      */
-    static class RemoteViewsFrameLayout extends AppWidgetHostView {
+    static class RemoteViewsFrameLayout extends AppWidgetHostView.AdapterChildHostView {
         private final FixedSizeRemoteViewsCache mCache;
 
         public int cacheIndex = -1;
@@ -405,11 +410,6 @@ public class RemoteViewsAdapter extends BaseAdapter implements Handler.Callback 
                     this, false);
             loadingTextView.setHeight(viewHeight);
             return loadingTextView;
-        }
-
-        @Override
-        protected Context getRemoteContextEnsuringCorrectCachedApkPath() {
-            return null;
         }
 
         @Override

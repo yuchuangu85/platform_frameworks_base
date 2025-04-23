@@ -47,6 +47,8 @@ import android.os.Build;
 import android.os.LocaleList;
 import android.os.ParcelFileDescriptor;
 import android.os.Trace;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodThrow;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.util.Log;
@@ -82,6 +84,7 @@ import java.util.Locale;
  *
  * @hide
  */
+@RavenwoodKeepWholeClass
 public class ResourcesImpl {
     static final String TAG = "Resources";
 
@@ -144,6 +147,10 @@ public class ResourcesImpl {
 
     // Cyclical cache used for recently-accessed XML files.
     private int mLastCachedXmlBlockIndex = -1;
+
+    // The hash that allows to detect when the shared libraries applied to this object have changed,
+    // and it is outdated and needs to be replaced.
+    private final int mAppliedSharedLibsHash;
     private final int[] mCachedXmlBlockCookies = new int[XML_BLOCK_CACHE_SIZE];
     private final String[] mCachedXmlBlockFiles = new String[XML_BLOCK_CACHE_SIZE];
     private final XmlBlock[] mCachedXmlBlocks = new XmlBlock[XML_BLOCK_CACHE_SIZE];
@@ -196,11 +203,29 @@ public class ResourcesImpl {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     public ResourcesImpl(@NonNull AssetManager assets, @Nullable DisplayMetrics metrics,
             @Nullable Configuration config, @NonNull DisplayAdjustments displayAdjustments) {
-        mAssets = assets;
+        // Don't reuse assets by default as we have no control over whether they're already
+        // inside some other ResourcesImpl.
+        this(assets, metrics, config, displayAdjustments, false);
+    }
+
+    public ResourcesImpl(@NonNull ResourcesImpl orig) {
+        // We know for sure that the other assets are in use, so can't reuse the object here.
+        this(orig.getAssets(), orig.getMetrics(), orig.getConfiguration(),
+                orig.getDisplayAdjustments(), false);
+    }
+
+    public ResourcesImpl(@NonNull AssetManager assets, @Nullable DisplayMetrics metrics,
+            @Nullable Configuration config, @NonNull DisplayAdjustments displayAdjustments,
+            boolean reuseAssets) {
+        final var assetsAndHash =
+                ResourcesManager.getInstance().updateResourceImplAssetsWithRegisteredLibs(assets,
+                        reuseAssets);
+        mAssets = assetsAndHash.first;
+        mAppliedSharedLibsHash = assetsAndHash.second;
         mMetrics.setToDefaults();
         mDisplayAdjustments = displayAdjustments;
         mConfiguration.setToDefaults();
-        updateConfiguration(config, metrics, displayAdjustments.getCompatibilityInfo());
+        updateConfigurationImpl(config, metrics, displayAdjustments.getCompatibilityInfo(), true);
     }
 
     public DisplayAdjustments getDisplayAdjustments() {
@@ -212,6 +237,11 @@ public class ResourcesImpl {
         return mAssets;
     }
 
+    @UnsupportedAppUsage
+    public DisplayMetrics getMetrics() {
+        return mMetrics;
+    }
+
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     DisplayMetrics getDisplayMetrics() {
         if (DEBUG_CONFIG) Slog.v(TAG, "Returning DisplayMetrics: " + mMetrics.widthPixels
@@ -219,7 +249,8 @@ public class ResourcesImpl {
         return mMetrics;
     }
 
-    Configuration getConfiguration() {
+    @UnsupportedAppUsage
+    public Configuration getConfiguration() {
         return mConfiguration;
     }
 
@@ -273,14 +304,27 @@ public class ResourcesImpl {
         throw new NotFoundException("String resource name " + name);
     }
 
+    private static boolean isIntLike(@NonNull String s) {
+        if (s.isEmpty() || s.length() > 10) return false;
+        for (int i = 0, size = s.length(); i < size; i++) {
+            final char c = s.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
+    }
+
     int getIdentifier(String name, String defType, String defPackage) {
         if (name == null) {
             throw new NullPointerException("name is null");
         }
-        try {
-            return Integer.parseInt(name);
-        } catch (Exception e) {
-            // Ignore
+        if (isIntLike(name)) {
+            try {
+                return Integer.parseInt(name);
+            } catch (Exception e) {
+                // Ignore
+            }
         }
         return mAssets.getResourceIdentifier(name, defType, defPackage);
     }
@@ -389,7 +433,12 @@ public class ResourcesImpl {
     }
 
     public void updateConfiguration(Configuration config, DisplayMetrics metrics,
-                                    CompatibilityInfo compat) {
+            CompatibilityInfo compat) {
+        updateConfigurationImpl(config, metrics, compat, false);
+    }
+
+    private void updateConfigurationImpl(Configuration config, DisplayMetrics metrics,
+                                    CompatibilityInfo compat, boolean forceAssetsRefresh) {
         Trace.traceBegin(Trace.TRACE_TAG_RESOURCES, "ResourcesImpl#updateConfiguration");
         try {
             synchronized (mAccessLock) {
@@ -515,7 +564,7 @@ public class ResourcesImpl {
                     keyboardHidden = mConfiguration.keyboardHidden;
                 }
 
-                mAssets.setConfiguration(mConfiguration.mcc, mConfiguration.mnc,
+                mAssets.setConfigurationInternal(mConfiguration.mcc, mConfiguration.mnc,
                         defaultLocale,
                         selectedLocales,
                         mConfiguration.orientation,
@@ -526,7 +575,7 @@ public class ResourcesImpl {
                         mConfiguration.screenWidthDp, mConfiguration.screenHeightDp,
                         mConfiguration.screenLayout, mConfiguration.uiMode,
                         mConfiguration.colorMode, mConfiguration.getGrammaticalGender(),
-                        Build.VERSION.RESOURCES_SDK_INT);
+                        Build.VERSION.RESOURCES_SDK_INT, forceAssetsRefresh);
 
                 if (DEBUG_CONFIG) {
                     Slog.i(TAG, "**** Updating config of " + this + ": final config is "
@@ -659,6 +708,7 @@ public class ResourcesImpl {
     }
 
     @Nullable
+    @RavenwoodThrow(blockedBy = Drawable.class)
     Drawable loadDrawable(@NonNull Resources wrapper, @NonNull TypedValue value, int id,
             int density, @Nullable Resources.Theme theme)
             throws NotFoundException {
@@ -1005,6 +1055,7 @@ public class ResourcesImpl {
      * Loads a font from XML or resources stream.
      */
     @Nullable
+    @RavenwoodThrow(blockedBy = Typeface.class)
     public Typeface loadFont(Resources wrapper, TypedValue value, int id) {
         if (value.string == null) {
             throw new NotFoundException("Resource \"" + getResourceName(id) + "\" ("
@@ -1573,5 +1624,9 @@ public class ResourcesImpl {
         public void pop() {
             mSize--;
         }
+    }
+
+    public int getAppliedSharedLibsHash() {
+        return mAppliedSharedLibsHash;
     }
 }

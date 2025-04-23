@@ -29,9 +29,9 @@ public final class IconPack {
 
     private final boolean mAreIconsAvailable;
     @Nullable private final StatusBarIconView mStatusBarIcon;
+    @Nullable private final StatusBarIconView mStatusBarChipIcon;
     @Nullable private final StatusBarIconView mShelfIcon;
     @Nullable private final StatusBarIconView mAodIcon;
-    @Nullable private final StatusBarIconView mCenteredIcon;
 
     @Nullable private StatusBarIcon mSmallIconDescriptor;
     @Nullable private StatusBarIcon mPeopleAvatarDescriptor;
@@ -51,24 +51,24 @@ public final class IconPack {
      */
     public static IconPack buildPack(
             @NonNull StatusBarIconView statusBarIcon,
+            @Nullable StatusBarIconView statusBarChipIcon,
             @NonNull StatusBarIconView shelfIcon,
             @NonNull StatusBarIconView aodIcon,
-            @Nullable StatusBarIconView centeredIcon,
             @Nullable IconPack source) {
-        return new IconPack(true, statusBarIcon, shelfIcon, aodIcon, centeredIcon, source);
+        return new IconPack(true, statusBarIcon, statusBarChipIcon, shelfIcon, aodIcon, source);
     }
 
     private IconPack(
             boolean areIconsAvailable,
             @Nullable StatusBarIconView statusBarIcon,
+            @Nullable StatusBarIconView statusBarChipIcon,
             @Nullable StatusBarIconView shelfIcon,
             @Nullable StatusBarIconView aodIcon,
-            @Nullable StatusBarIconView centeredIcon,
             @Nullable IconPack source) {
         mAreIconsAvailable = areIconsAvailable;
         mStatusBarIcon = statusBarIcon;
+        mStatusBarChipIcon = statusBarChipIcon;
         mShelfIcon = shelfIcon;
-        mCenteredIcon = centeredIcon;
         mAodIcon = aodIcon;
         if (source != null) {
             mIsImportantConversation = source.mIsImportantConversation;
@@ -82,6 +82,17 @@ public final class IconPack {
     }
 
     /**
+     * The version of the notification icon that appears inside a chip within the status bar.
+     *
+     * Separate from {@link #getStatusBarIcon()} so that we don't have to worry about detaching and
+     * re-attaching the same view when the chip appears and hides.
+     */
+    @Nullable
+    public StatusBarIconView getStatusBarChipIcon() {
+        return mStatusBarChipIcon;
+    }
+
+    /**
      * The version of the icon that appears in the "shelf" at the bottom of the notification shade.
      * In general, this icon also appears somewhere on the notification and is "sucked" into the
      * shelf as the scrolls beyond it.
@@ -89,11 +100,6 @@ public final class IconPack {
     @Nullable
     public StatusBarIconView getShelfIcon() {
         return mShelfIcon;
-    }
-
-    @Nullable
-    public StatusBarIconView getCenteredIcon() {
-        return mCenteredIcon;
     }
 
     /** The version of the icon that's shown when pulsing (in AOD). */

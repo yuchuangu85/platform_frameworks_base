@@ -16,20 +16,23 @@
 
 package com.android.systemui.statusbar.pipeline.wifi.ui.viewmodel
 
+import android.platform.test.annotations.DisableFlags
+import android.platform.test.annotations.EnableFlags
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
 import com.android.settingslib.AccessibilityContentDescriptions.WIFI_OTHER_DEVICE_CONNECTION
+import com.android.systemui.Flags.FLAG_STATUS_BAR_STATIC_INOUT_INDICATORS
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.common.shared.model.ContentDescription.Companion.loadContentDescription
 import com.android.systemui.coroutines.collectLastValue
-import com.android.systemui.log.table.TableLogBuffer
+import com.android.systemui.log.table.logcatTableLogBuffer
 import com.android.systemui.statusbar.connectivity.WifiIcons
 import com.android.systemui.statusbar.phone.StatusBarLocation
 import com.android.systemui.statusbar.pipeline.airplane.data.repository.FakeAirplaneModeRepository
 import com.android.systemui.statusbar.pipeline.airplane.domain.interactor.AirplaneModeInteractor
 import com.android.systemui.statusbar.pipeline.airplane.ui.viewmodel.AirplaneModeViewModel
 import com.android.systemui.statusbar.pipeline.airplane.ui.viewmodel.AirplaneModeViewModelImpl
-import com.android.systemui.statusbar.pipeline.mobile.data.repository.FakeMobileConnectionsRepository
+import com.android.systemui.statusbar.pipeline.mobile.data.repository.fakeMobileConnectionsRepository
 import com.android.systemui.statusbar.pipeline.shared.ConnectivityConstants
 import com.android.systemui.statusbar.pipeline.shared.data.model.ConnectivitySlot
 import com.android.systemui.statusbar.pipeline.shared.data.model.DataActivityModel
@@ -41,6 +44,7 @@ import com.android.systemui.statusbar.pipeline.wifi.shared.WifiConstants
 import com.android.systemui.statusbar.pipeline.wifi.shared.model.WifiNetworkModel
 import com.android.systemui.statusbar.pipeline.wifi.ui.model.WifiIcon
 import com.android.systemui.statusbar.pipeline.wifi.ui.viewmodel.LocationBasedWifiViewModel.Companion.viewModelForLocation
+import com.android.systemui.testKosmos
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestScope
@@ -55,10 +59,11 @@ import org.mockito.MockitoAnnotations
 @SmallTest
 @RunWith(AndroidJUnit4::class)
 class WifiViewModelTest : SysuiTestCase() {
+    private val kosmos = testKosmos()
 
     private lateinit var underTest: WifiViewModel
 
-    @Mock private lateinit var tableLogBuffer: TableLogBuffer
+    private val tableLogBuffer = logcatTableLogBuffer(kosmos, "WifiViewModelTest")
     @Mock private lateinit var connectivityConstants: ConnectivityConstants
     @Mock private lateinit var wifiConstants: WifiConstants
     private lateinit var airplaneModeRepository: FakeAirplaneModeRepository
@@ -83,7 +88,7 @@ class WifiViewModelTest : SysuiTestCase() {
                 AirplaneModeInteractor(
                     airplaneModeRepository,
                     connectivityRepository,
-                    FakeMobileConnectionsRepository(),
+                    kosmos.fakeMobileConnectionsRepository,
                 ),
                 tableLogBuffer,
                 testScope.backgroundScope,
@@ -110,9 +115,7 @@ class WifiViewModelTest : SysuiTestCase() {
             val latestKeyguard by collectLastValue(keyguard.wifiIcon)
             val latestQs by collectLastValue(qs.wifiIcon)
 
-            wifiRepository.setWifiNetwork(
-                WifiNetworkModel.Active(NETWORK_ID, isValidated = true, level = 1)
-            )
+            wifiRepository.setWifiNetwork(WifiNetworkModel.Active.of(isValidated = true, level = 1))
 
             assertThat(latestHome).isInstanceOf(WifiIcon.Visible::class.java)
             assertThat(latestHome).isEqualTo(latestKeyguard)
@@ -126,8 +129,7 @@ class WifiViewModelTest : SysuiTestCase() {
 
             // Even WHEN the network has a valid hotspot type
             wifiRepository.setWifiNetwork(
-                WifiNetworkModel.Active(
-                    NETWORK_ID,
+                WifiNetworkModel.Active.of(
                     isValidated = true,
                     level = 1,
                     hotspotDeviceType = WifiNetworkModel.HotspotDeviceType.LAPTOP,
@@ -183,14 +185,13 @@ class WifiViewModelTest : SysuiTestCase() {
         }
 
     @Test
-    fun activity_nullSsid_outputsFalse() =
+    @DisableFlags(FLAG_STATUS_BAR_STATIC_INOUT_INDICATORS)
+    fun activity_nullSsid_outputsFalse_staticFlagOff() =
         testScope.runTest {
             whenever(connectivityConstants.shouldShowActivityConfig).thenReturn(true)
             createAndSetViewModel()
 
-            wifiRepository.setWifiNetwork(
-                WifiNetworkModel.Active(NETWORK_ID, ssid = null, level = 1)
-            )
+            wifiRepository.setWifiNetwork(WifiNetworkModel.Active.of(ssid = null, level = 1))
 
             val activityIn by collectLastValue(underTest.isActivityInViewVisible)
             val activityOut by collectLastValue(underTest.isActivityOutViewVisible)
@@ -204,6 +205,31 @@ class WifiViewModelTest : SysuiTestCase() {
             assertThat(activityIn).isFalse()
             assertThat(activityOut).isFalse()
             assertThat(activityContainer).isFalse()
+        }
+
+    @Test
+    @EnableFlags(FLAG_STATUS_BAR_STATIC_INOUT_INDICATORS)
+    fun activity_nullSsid_outputsFalse_staticFlagOn() =
+        testScope.runTest {
+            whenever(connectivityConstants.shouldShowActivityConfig).thenReturn(true)
+            createAndSetViewModel()
+
+            wifiRepository.setWifiNetwork(WifiNetworkModel.Active.of(ssid = null, level = 1))
+
+            val activityIn by collectLastValue(underTest.isActivityInViewVisible)
+            val activityOut by collectLastValue(underTest.isActivityOutViewVisible)
+            val activityContainer by collectLastValue(underTest.isActivityContainerVisible)
+
+            // WHEN we update the repo to have activity
+            val activity = DataActivityModel(hasActivityIn = true, hasActivityOut = true)
+            wifiRepository.setWifiActivity(activity)
+
+            // THEN we still output false because our network's SSID is null
+            assertThat(activityIn).isFalse()
+            assertThat(activityOut).isFalse()
+
+            // THEN the inout indicators are sill showing due to the config being true
+            assertThat(activityContainer).isTrue()
         }
 
     @Test
@@ -335,7 +361,8 @@ class WifiViewModelTest : SysuiTestCase() {
         }
 
     @Test
-    fun activityContainer_inAndOutFalse_outputsFalse() =
+    @DisableFlags(FLAG_STATUS_BAR_STATIC_INOUT_INDICATORS)
+    fun activityContainer_inAndOutFalse_outputsTrue_staticFlagOff() =
         testScope.runTest {
             whenever(connectivityConstants.shouldShowActivityConfig).thenReturn(true)
             createAndSetViewModel()
@@ -347,6 +374,24 @@ class WifiViewModelTest : SysuiTestCase() {
             wifiRepository.setWifiActivity(activity)
 
             assertThat(latest).isFalse()
+        }
+
+    @Test
+    @EnableFlags(FLAG_STATUS_BAR_STATIC_INOUT_INDICATORS)
+    fun activityContainer_inAndOutFalse_outputsTrue_staticFlagOn() =
+        testScope.runTest {
+            whenever(connectivityConstants.shouldShowActivityConfig).thenReturn(true)
+            createAndSetViewModel()
+            wifiRepository.setWifiNetwork(ACTIVE_VALID_WIFI_NETWORK)
+
+            val latest by collectLastValue(underTest.isActivityContainerVisible)
+
+            val activity = DataActivityModel(hasActivityIn = false, hasActivityOut = false)
+            wifiRepository.setWifiActivity(activity)
+
+            // The activity container should always be visible, since activity is
+            // shown in UI by changing opacity of the indicators.
+            assertThat(latest).isTrue()
         }
 
     @Test
@@ -418,8 +463,6 @@ class WifiViewModelTest : SysuiTestCase() {
     }
 
     companion object {
-        private const val NETWORK_ID = 2
-        private val ACTIVE_VALID_WIFI_NETWORK =
-            WifiNetworkModel.Active(NETWORK_ID, ssid = "AB", level = 1)
+        private val ACTIVE_VALID_WIFI_NETWORK = WifiNetworkModel.Active.of(ssid = "AB", level = 1)
     }
 }

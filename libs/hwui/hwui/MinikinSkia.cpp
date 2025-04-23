@@ -36,7 +36,7 @@ namespace android {
 
 MinikinFontSkia::MinikinFontSkia(sk_sp<SkTypeface> typeface, int sourceId, const void* fontData,
                                  size_t fontSize, std::string_view filePath, int ttcIndex,
-                                 const std::vector<minikin::FontVariation>& axes)
+                                 const minikin::VariationSettings& axes)
         : mTypeface(std::move(typeface))
         , mSourceId(sourceId)
         , mFontData(fontData)
@@ -123,19 +123,14 @@ int MinikinFontSkia::GetFontIndex() const {
     return mTtcIndex;
 }
 
-const std::vector<minikin::FontVariation>& MinikinFontSkia::GetAxes() const {
+const minikin::VariationSettings& MinikinFontSkia::GetAxes() const {
     return mAxes;
 }
 
 std::shared_ptr<minikin::MinikinFont> MinikinFontSkia::createFontWithVariation(
-        const std::vector<minikin::FontVariation>& variations) const {
+        const minikin::VariationSettings& variations) const {
     SkFontArguments args;
 
-    int ttcIndex;
-    std::unique_ptr<SkStreamAsset> stream(mTypeface->openStream(&ttcIndex));
-    LOG_ALWAYS_FATAL_IF(stream == nullptr, "openStream failed");
-
-    args.setCollectionIndex(ttcIndex);
     std::vector<SkFontArguments::VariationPosition::Coordinate> skVariation;
     skVariation.resize(variations.size());
     for (size_t i = 0; i < variations.size(); i++) {
@@ -143,11 +138,10 @@ std::shared_ptr<minikin::MinikinFont> MinikinFontSkia::createFontWithVariation(
         skVariation[i].value = SkFloatToScalar(variations[i].value);
     }
     args.setVariationDesignPosition({skVariation.data(), static_cast<int>(skVariation.size())});
-    sk_sp<SkFontMgr> fm = android::FreeTypeFontMgr();
-    sk_sp<SkTypeface> face(fm->makeFromStream(std::move(stream), args));
+    sk_sp<SkTypeface> face = mTypeface->makeClone(args);
 
     return std::make_shared<MinikinFontSkia>(std::move(face), mSourceId, mFontData, mFontSize,
-                                             mFilePath, ttcIndex, variations);
+                                             mFilePath, mTtcIndex, variations);
 }
 
 // hinting<<16 | edging<<8 | bools:5bits

@@ -16,13 +16,14 @@
 
 package com.android.server.companion.securechannel;
 
-import static android.security.attestationverification.AttestationVerificationManager.RESULT_SUCCESS;
+import static android.security.attestationverification.AttestationVerificationManager.FLAG_FAILURE_UNKNOWN;
 
 import android.annotation.NonNull;
 import android.content.Context;
 import android.os.Build;
 import android.util.Slog;
 
+import com.google.security.cryptauth.lib.securegcm.ukey2.AlertException;
 import com.google.security.cryptauth.lib.securegcm.ukey2.BadHandleException;
 import com.google.security.cryptauth.lib.securegcm.ukey2.CryptoException;
 import com.google.security.cryptauth.lib.securegcm.ukey2.D2DConnectionContextV1;
@@ -68,7 +69,7 @@ public class SecureChannel {
     private D2DConnectionContextV1 mConnectionContext;
 
     private String mAlias;
-    private int mVerificationResult;
+    private int mVerificationResult = FLAG_FAILURE_UNKNOWN;
     private boolean mPskVerified;
 
 
@@ -203,7 +204,8 @@ public class SecureChannel {
      *
      * This method must only be called from one of the two participants.
      */
-    public void establishSecureConnection() throws IOException, SecureChannelException {
+    public void establishSecureConnection() throws IOException,
+            SecureChannelException, HandshakeException {
         if (isSecured()) {
             Slog.d(TAG, "Channel is already secure.");
             return;
@@ -334,7 +336,7 @@ public class SecureChannel {
         }
     }
 
-    private void initiateHandshake() throws IOException, BadHandleException {
+    private void initiateHandshake() throws IOException, BadHandleException , HandshakeException {
         if (mConnectionContext != null) {
             Slog.d(TAG, "Ukey2 handshake is already completed.");
             return;
@@ -394,8 +396,8 @@ public class SecureChannel {
         }
     }
 
-    private void exchangeHandshake()
-            throws IOException, HandshakeException, BadHandleException, CryptoException {
+    private void exchangeHandshake() throws IOException, HandshakeException,
+            BadHandleException, CryptoException, AlertException {
         if (mConnectionContext != null) {
             Slog.d(TAG, "Ukey2 handshake is already completed.");
             return;
@@ -496,7 +498,7 @@ public class SecureChannel {
 
     private void exchangeAttestation()
             throws IOException, GeneralSecurityException, BadHandleException, CryptoException {
-        if (mVerificationResult == RESULT_SUCCESS) {
+        if (mVerificationResult == 0) {
             Slog.d(TAG, "Remote attestation was already verified.");
             return;
         }
@@ -528,11 +530,11 @@ public class SecureChannel {
         sendMessage(MessageType.AVF_RESULT, verificationResult);
         byte[] remoteVerificationResult = readMessage(MessageType.AVF_RESULT);
 
-        if (ByteBuffer.wrap(remoteVerificationResult).getInt() != RESULT_SUCCESS) {
+        if (ByteBuffer.wrap(remoteVerificationResult).getInt() != 0) {
             throw new SecureChannelException("Remote device failed to verify local attestation.");
         }
 
-        if (mVerificationResult != RESULT_SUCCESS) {
+        if (mVerificationResult != 0) {
             throw new SecureChannelException("Failed to verify remote attestation.");
         }
 
@@ -547,7 +549,7 @@ public class SecureChannel {
             return false;
         }
         // Is authenticated
-        return mPskVerified || mVerificationResult == RESULT_SUCCESS;
+        return mPskVerified || mVerificationResult == 0;
     }
 
     // First byte indicates message type; 0 = CLIENT INIT, 1 = SERVER INIT

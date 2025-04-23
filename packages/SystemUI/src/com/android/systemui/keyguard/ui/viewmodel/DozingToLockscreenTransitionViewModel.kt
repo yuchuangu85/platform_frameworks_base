@@ -18,7 +18,9 @@ package com.android.systemui.keyguard.ui.viewmodel
 
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.keyguard.domain.interactor.FromDozingTransitionInteractor
-import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor
+import com.android.systemui.keyguard.shared.model.Edge
+import com.android.systemui.keyguard.shared.model.KeyguardState.DOZING
+import com.android.systemui.keyguard.shared.model.KeyguardState.LOCKSCREEN
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
 import com.android.systemui.keyguard.ui.transitions.DeviceEntryIconTransition
 import javax.inject.Inject
@@ -34,13 +36,12 @@ import kotlinx.coroutines.flow.Flow
 class DozingToLockscreenTransitionViewModel
 @Inject
 constructor(
-    interactor: KeyguardTransitionInteractor,
     animationFlow: KeyguardTransitionAnimationFlow,
 ) : DeviceEntryIconTransition {
     private val transitionAnimation =
         animationFlow.setup(
             duration = FromDozingTransitionInteractor.TO_LOCKSCREEN_DURATION,
-            stepFlow = interactor.dozingToLockscreenTransition,
+            edge = Edge.create(from = DOZING, to = LOCKSCREEN),
         )
 
     val shortcutsAlpha: Flow<Float> =
@@ -49,6 +50,12 @@ constructor(
             onStep = { it },
             onCancel = { 0f },
         )
+
+    // Show immediately to avoid what can appear to be a flicker on device wakeup
+    val lockscreenAlpha: Flow<Float> = transitionAnimation.immediatelyTransitionTo(1f)
+
+    val deviceEntryBackgroundViewAlpha: Flow<Float> =
+        transitionAnimation.immediatelyTransitionTo(1f)
 
     override val deviceEntryParentViewAlpha: Flow<Float> =
         transitionAnimation.immediatelyTransitionTo(1f)

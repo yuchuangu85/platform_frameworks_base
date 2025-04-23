@@ -29,9 +29,9 @@ import android.app.usage.UsageEvents.Event;
 import android.content.res.Configuration;
 import android.os.Parcel;
 import android.os.PersistableBundle;
-import android.test.suitebuilder.annotation.LargeTest;
 
-import androidx.test.runner.AndroidJUnit4;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.filters.LargeTest;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;

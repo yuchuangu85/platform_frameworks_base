@@ -18,12 +18,14 @@ package android.hardware.location;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
+import android.chre.flags.Flags;
 import android.hardware.contexthub.V1_0.ContextHub;
 import android.os.Parcel;
 import android.os.Parcelable;
 import android.util.proto.ProtoOutputStream;
 
 import java.util.Arrays;
+import java.util.Objects;
 
 /**
  * @hide
@@ -41,6 +43,7 @@ public class ContextHubInfo implements Parcelable {
     private float mSleepPowerDrawMw;
     private float mPeakPowerDrawMw;
     private int mMaxPacketLengthBytes;
+    private boolean mSupportsReliableMessages;
     private byte mChreApiMajorVersion;
     private byte mChreApiMinorVersion;
     private short mChrePatchVersion;
@@ -71,6 +74,7 @@ public class ContextHubInfo implements Parcelable {
         mSleepPowerDrawMw = contextHub.sleepPowerDrawMw;
         mPeakPowerDrawMw = contextHub.peakPowerDrawMw;
         mMaxPacketLengthBytes = contextHub.maxSupportedMsgLen;
+        mSupportsReliableMessages = false;
         mChrePlatformId = contextHub.chrePlatformId;
         mChreApiMajorVersion = contextHub.chreApiMajorVersion;
         mChreApiMinorVersion = contextHub.chreApiMinorVersion;
@@ -94,6 +98,7 @@ public class ContextHubInfo implements Parcelable {
         mSleepPowerDrawMw = 0;
         mPeakPowerDrawMw = 0;
         mMaxPacketLengthBytes = contextHub.maxSupportedMessageLengthBytes;
+        mSupportsReliableMessages = contextHub.supportsReliableMessages;
         mChrePlatformId = contextHub.chrePlatformId;
         mChreApiMajorVersion = contextHub.chreApiMajorVersion;
         mChreApiMinorVersion = contextHub.chreApiMinorVersion;
@@ -104,13 +109,21 @@ public class ContextHubInfo implements Parcelable {
     }
 
     /**
-     * returns the maximum number of bytes that can be sent per message to the hub
+     * Returns the maximum number of bytes for a message to the hub.
      *
-     * @return int - maximum bytes that can be transmitted in a
-     *         single packet
+     * @return int - maximum bytes that can be transmitted in a single packet.
      */
     public int getMaxPacketLengthBytes() {
         return mMaxPacketLengthBytes;
+    }
+
+    /**
+     * Returns whether reliable messages are supported
+     *
+     * @return whether reliable messages are supported.
+     */
+    public boolean supportsReliableMessages() {
+        return mSupportsReliableMessages;
     }
 
     /**
@@ -164,7 +177,10 @@ public class ContextHubInfo implements Parcelable {
      * @return int - platform version number
      */
     public int getStaticSwVersion() {
-        return (mChreApiMajorVersion << 24) | (mChreApiMinorVersion << 16) | (mChrePatchVersion);
+        // Version parts are all unsigned values.
+        return (Byte.toUnsignedInt(mChreApiMajorVersion) << 24)
+                | (Byte.toUnsignedInt(mChreApiMinorVersion) << 16)
+                | (Short.toUnsignedInt(mChrePatchVersion));
     }
 
     /**
@@ -276,22 +292,38 @@ public class ContextHubInfo implements Parcelable {
     @NonNull
     @Override
     public String toString() {
-        String retVal = "";
-        retVal += "ID/handle : " + mId;
-        retVal += ", Name : " + mName;
-        retVal += "\n\tVendor : " + mVendor;
-        retVal += ", Toolchain : " + mToolchain;
-        retVal += ", Toolchain version: 0x" + Integer.toHexString(mToolchainVersion);
-        retVal += "\n\tPlatformVersion : 0x" + Integer.toHexString(mPlatformVersion);
-        retVal += ", SwVersion : "
-                + mChreApiMajorVersion + "." + mChreApiMinorVersion + "." + mChrePatchVersion;
-        retVal += ", CHRE platform ID: 0x" + Long.toHexString(mChrePlatformId);
-        retVal += "\n\tPeakMips : " + mPeakMips;
-        retVal += ", StoppedPowerDraw : " + mStoppedPowerDrawMw + " mW";
-        retVal += ", PeakPowerDraw : " + mPeakPowerDrawMw + " mW";
-        retVal += ", MaxPacketLength : " + mMaxPacketLengthBytes + " Bytes";
-
-        return retVal;
+        StringBuilder out = new StringBuilder();
+        out.append("ID/handle : ");
+        out.append(mId);
+        out.append(", Name : ");
+        out.append(mName);
+        out.append("\n\tVendor : ");
+        out.append(mVendor);
+        out.append(", Toolchain : ");
+        out.append(mToolchain);
+        out.append(", Toolchain version: 0x");
+        out.append(Integer.toHexString(mToolchainVersion));
+        out.append("\n\tPlatformVersion : 0x");
+        out.append(Integer.toHexString(mPlatformVersion));
+        out.append(", SwVersion : ");
+        out.append(Byte.toUnsignedInt(mChreApiMajorVersion));
+        out.append(".");
+        out.append(Byte.toUnsignedInt(mChreApiMinorVersion));
+        out.append(".");
+        out.append(Short.toUnsignedInt(mChrePatchVersion));
+        out.append(", CHRE platform ID: 0x");
+        out.append(Long.toHexString(mChrePlatformId));
+        out.append("\n\tPeakMips : ");
+        out.append(mPeakMips);
+        out.append(", StoppedPowerDraw : ");
+        out.append(mStoppedPowerDrawMw);
+        out.append(" mW, PeakPowerDraw : ");
+        out.append(mPeakPowerDrawMw);
+        out.append(" mW, MaxPacketLength : ");
+        out.append(mMaxPacketLengthBytes);
+        out.append(" Bytes, SupportsReliableMessages : ");
+        out.append(mSupportsReliableMessages);
+        return out.toString();
     }
 
     /**
@@ -316,6 +348,8 @@ public class ContextHubInfo implements Parcelable {
         proto.write(ContextHubInfoProto.SLEEP_POWER_DRAW_MW, mSleepPowerDrawMw);
         proto.write(ContextHubInfoProto.PEAK_POWER_DRAW_MW, mPeakPowerDrawMw);
         proto.write(ContextHubInfoProto.MAX_PACKET_LENGTH_BYTES, mMaxPacketLengthBytes);
+        proto.write(ContextHubInfoProto.SUPPORTS_RELIABLE_MESSAGES,
+                mSupportsReliableMessages);
     }
 
     @Override
@@ -327,23 +361,39 @@ public class ContextHubInfo implements Parcelable {
         boolean isEqual = false;
         if (object instanceof ContextHubInfo) {
             ContextHubInfo other = (ContextHubInfo) object;
-            isEqual = (other.getId() == mId)
-                    && other.getName().equals(mName)
-                    && other.getVendor().equals(mVendor)
-                    && other.getToolchain().equals(mToolchain)
-                    && (other.getToolchainVersion() == mToolchainVersion)
-                    && (other.getStaticSwVersion() == getStaticSwVersion())
-                    && (other.getChrePlatformId() == mChrePlatformId)
-                    && (other.getPeakMips() == mPeakMips)
-                    && (other.getStoppedPowerDrawMw() == mStoppedPowerDrawMw)
-                    && (other.getSleepPowerDrawMw() == mSleepPowerDrawMw)
-                    && (other.getPeakPowerDrawMw() == mPeakPowerDrawMw)
-                    && (other.getMaxPacketLengthBytes() == mMaxPacketLengthBytes)
-                    && Arrays.equals(other.getSupportedSensors(), mSupportedSensors)
-                    && Arrays.equals(other.getMemoryRegions(), mMemoryRegions);
+            isEqual =
+                    (other.getId() == mId)
+                            && other.getName().equals(mName)
+                            && other.getVendor().equals(mVendor)
+                            && other.getToolchain().equals(mToolchain)
+                            && (other.getToolchainVersion() == mToolchainVersion)
+                            && (other.getStaticSwVersion() == getStaticSwVersion())
+                            && (other.getChrePlatformId() == mChrePlatformId)
+                            && (other.getPeakMips() == mPeakMips)
+                            && (other.getStoppedPowerDrawMw() == mStoppedPowerDrawMw)
+                            && (other.getSleepPowerDrawMw() == mSleepPowerDrawMw)
+                            && (other.getPeakPowerDrawMw() == mPeakPowerDrawMw)
+                            && (other.getMaxPacketLengthBytes() == mMaxPacketLengthBytes)
+                            && (other.supportsReliableMessages() == mSupportsReliableMessages)
+                            && Arrays.equals(other.getSupportedSensors(), mSupportedSensors)
+                            && Arrays.equals(other.getMemoryRegions(), mMemoryRegions);
         }
 
         return isEqual;
+    }
+
+    @Override
+    public int hashCode() {
+        if (!Flags.fixApiCheck()) {
+            return super.hashCode();
+        }
+
+        return Objects.hash(mId, mName, mVendor, mToolchain, mToolchainVersion,
+                getStaticSwVersion(), mChrePlatformId, mPeakMips,
+                mStoppedPowerDrawMw, mSleepPowerDrawMw, mPeakPowerDrawMw,
+                mMaxPacketLengthBytes, mSupportsReliableMessages,
+                Arrays.hashCode(mSupportedSensors),
+                Arrays.hashCode(mMemoryRegions));
     }
 
     private ContextHubInfo(Parcel in) {
@@ -367,6 +417,7 @@ public class ContextHubInfo implements Parcelable {
         mSupportedSensors = new int[numSupportedSensors];
         in.readIntArray(mSupportedSensors);
         mMemoryRegions = in.createTypedArray(MemoryRegion.CREATOR);
+        mSupportsReliableMessages = in.readBoolean();
     }
 
     public int describeContents() {
@@ -393,6 +444,7 @@ public class ContextHubInfo implements Parcelable {
         out.writeInt(mSupportedSensors.length);
         out.writeIntArray(mSupportedSensors);
         out.writeTypedArray(mMemoryRegions, flags);
+        out.writeBoolean(mSupportsReliableMessages);
     }
 
     public static final @android.annotation.NonNull Parcelable.Creator<ContextHubInfo> CREATOR

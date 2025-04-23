@@ -29,6 +29,7 @@ import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
 import android.content.res.Configuration;
+import android.graphics.Rect;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -36,9 +37,10 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.PersistableBundle;
 import android.platform.test.annotations.Presubmit;
+import android.window.ActivityWindowInfo;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -72,11 +74,13 @@ public class TransactionParcelTests {
     @Test
     public void testConfigurationChange() {
         // Write to parcel
-        ConfigurationChangeItem item = ConfigurationChangeItem.obtain(config(), 1 /* deviceId */);
+        final ConfigurationChangeItem item =
+                new ConfigurationChangeItem(config(), 1 /* deviceId */);
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
-        ConfigurationChangeItem result = ConfigurationChangeItem.CREATOR.createFromParcel(mParcel);
+        final ConfigurationChangeItem result =
+                ConfigurationChangeItem.CREATOR.createFromParcel(mParcel);
 
         assertEquals(item.hashCode(), result.hashCode());
         assertEquals(item, result);
@@ -85,8 +89,11 @@ public class TransactionParcelTests {
     @Test
     public void testActivityConfigChange() {
         // Write to parcel
-        ActivityConfigurationChangeItem item = ActivityConfigurationChangeItem.obtain(
-                mActivityToken, config());
+        final ActivityWindowInfo activityWindowInfo = new ActivityWindowInfo();
+        activityWindowInfo.set(true /* isEmbedded */, new Rect(0, 0, 500, 1000),
+                new Rect(0, 0, 500, 500));
+        final ActivityConfigurationChangeItem item = new ActivityConfigurationChangeItem(
+                mActivityToken, config(), activityWindowInfo);
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
@@ -100,12 +107,15 @@ public class TransactionParcelTests {
     @Test
     public void testMoveToDisplay() {
         // Write to parcel
-        MoveToDisplayItem item = MoveToDisplayItem.obtain(mActivityToken, 4 /* targetDisplayId */,
-                config());
+        final ActivityWindowInfo activityWindowInfo = new ActivityWindowInfo();
+        activityWindowInfo.set(true /* isEmbedded */, new Rect(0, 0, 500, 1000),
+                new Rect(0, 0, 500, 500));
+        final MoveToDisplayItem item = new MoveToDisplayItem(mActivityToken,
+                4 /* targetDisplayId */, config(), activityWindowInfo);
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
-        MoveToDisplayItem result = MoveToDisplayItem.CREATOR.createFromParcel(mParcel);
+        final MoveToDisplayItem result = MoveToDisplayItem.CREATOR.createFromParcel(mParcel);
 
         assertEquals(item.hashCode(), result.hashCode());
         assertEquals(item, result);
@@ -114,11 +124,12 @@ public class TransactionParcelTests {
     @Test
     public void testNewIntent() {
         // Write to parcel
-        NewIntentItem item = NewIntentItem.obtain(mActivityToken, referrerIntentList(), false);
+        final NewIntentItem item =
+                new NewIntentItem(mActivityToken, referrerIntentList(), false /* resume */);
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
-        NewIntentItem result = NewIntentItem.CREATOR.createFromParcel(mParcel);
+        final NewIntentItem result = NewIntentItem.CREATOR.createFromParcel(mParcel);
 
         assertEquals(item.hashCode(), result.hashCode());
         assertEquals(item, result);
@@ -127,11 +138,11 @@ public class TransactionParcelTests {
     @Test
     public void testActivityResult() {
         // Write to parcel
-        ActivityResultItem item = ActivityResultItem.obtain(mActivityToken, resultInfoList());
+        final ActivityResultItem item = new ActivityResultItem(mActivityToken, resultInfoList());
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
-        ActivityResultItem result = ActivityResultItem.CREATOR.createFromParcel(mParcel);
+        final ActivityResultItem result = ActivityResultItem.CREATOR.createFromParcel(mParcel);
 
         assertEquals(item.hashCode(), result.hashCode());
         assertEquals(item, result);
@@ -139,12 +150,12 @@ public class TransactionParcelTests {
 
     @Test
     public void testDestroy() {
-        DestroyActivityItem item = DestroyActivityItem.obtain(mActivityToken, true /* finished */,
-                135 /* configChanges */);
+        final DestroyActivityItem item =
+                new DestroyActivityItem(mActivityToken, true /* finished */);
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
-        DestroyActivityItem result = DestroyActivityItem.CREATOR.createFromParcel(mParcel);
+        final DestroyActivityItem result = DestroyActivityItem.CREATOR.createFromParcel(mParcel);
 
         assertEquals(item.hashCode(), result.hashCode());
         assertEquals(item, result);
@@ -155,7 +166,7 @@ public class TransactionParcelTests {
         // Write to parcel
         final IBinder activityToken = new Binder();
         final Intent intent = new Intent("action");
-        int ident = 57;
+        final int ident = 57;
         final ActivityInfo activityInfo = new ActivityInfo();
         activityInfo.flags = 42;
         activityInfo.setMaxAspectRatio(2.4f);
@@ -166,12 +177,15 @@ public class TransactionParcelTests {
         final Configuration overrideConfig = new Configuration();
         overrideConfig.assetsSeq = 5;
         final String referrer = "referrer";
-        int procState = 4;
+        final int procState = 4;
         final Bundle bundle = new Bundle();
         bundle.putString("key", "value");
         bundle.putParcelable("data", new ParcelableData(1));
         final PersistableBundle persistableBundle = new PersistableBundle();
         persistableBundle.putInt("k", 4);
+        final ActivityWindowInfo activityWindowInfo = new ActivityWindowInfo();
+        activityWindowInfo.set(true /* isEmbedded */, new Rect(0, 0, 500, 1000),
+                new Rect(0, 0, 500, 500));
 
         final LaunchActivityItem item = new LaunchActivityItemBuilder(
                 activityToken, intent, activityInfo)
@@ -189,6 +203,8 @@ public class TransactionParcelTests {
                 .setAssistToken(new Binder())
                 .setShareableActivityToken(new Binder())
                 .setTaskFragmentToken(new Binder())
+                .setInitialCallerInfoAccessToken(new Binder())
+                .setActivityWindowInfo(activityWindowInfo)
                 .build();
 
         writeAndPrepareForReading(item);
@@ -203,14 +219,17 @@ public class TransactionParcelTests {
     @Test
     public void testRelaunch() {
         // Write to parcel
-        Configuration overrideConfig = new Configuration();
+        final Configuration overrideConfig = new Configuration();
         overrideConfig.assetsSeq = 5;
-        ActivityRelaunchItem item = ActivityRelaunchItem.obtain(mActivityToken, resultInfoList(),
-                referrerIntentList(), 35, mergedConfig(), true);
+        final ActivityWindowInfo activityWindowInfo = new ActivityWindowInfo();
+        activityWindowInfo.set(true /* isEmbedded */, new Rect(0, 0, 500, 1000),
+                new Rect(0, 0, 500, 500));
+        final ActivityRelaunchItem item = new ActivityRelaunchItem(mActivityToken, resultInfoList(),
+                referrerIntentList(), 35, mergedConfig(), true, activityWindowInfo);
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
-        ActivityRelaunchItem result = ActivityRelaunchItem.CREATOR.createFromParcel(mParcel);
+        final ActivityRelaunchItem result = ActivityRelaunchItem.CREATOR.createFromParcel(mParcel);
 
         assertEquals(item.hashCode(), result.hashCode());
         assertEquals(item, result);
@@ -219,13 +238,12 @@ public class TransactionParcelTests {
     @Test
     public void testPause() {
         // Write to parcel
-        PauseActivityItem item = PauseActivityItem.obtain(mActivityToken, true /* finished */,
-                true /* userLeaving */, 135 /* configChanges */, true /* dontReport */,
-                true /* autoEnteringPip */);
+        final PauseActivityItem item = new PauseActivityItem(mActivityToken, true /* finished */,
+                true /* userLeaving */, true /* dontReport */, true /* autoEnteringPip */);
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
-        PauseActivityItem result = PauseActivityItem.CREATOR.createFromParcel(mParcel);
+        final PauseActivityItem result = PauseActivityItem.CREATOR.createFromParcel(mParcel);
 
         assertEquals(item.hashCode(), result.hashCode());
         assertEquals(item, result);
@@ -234,12 +252,12 @@ public class TransactionParcelTests {
     @Test
     public void testResume() {
         // Write to parcel
-        ResumeActivityItem item = ResumeActivityItem.obtain(mActivityToken, 27 /* procState */,
+        final ResumeActivityItem item = new ResumeActivityItem(mActivityToken, 27 /* procState */,
                 true /* isForward */, false /* shouldSendCompatFakeFocus */);
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
-        ResumeActivityItem result = ResumeActivityItem.CREATOR.createFromParcel(mParcel);
+        final ResumeActivityItem result = ResumeActivityItem.CREATOR.createFromParcel(mParcel);
 
         assertEquals(item.hashCode(), result.hashCode());
         assertEquals(item, result);
@@ -248,11 +266,11 @@ public class TransactionParcelTests {
     @Test
     public void testStop() {
         // Write to parcel
-        StopActivityItem item = StopActivityItem.obtain(mActivityToken, 14 /* configChanges */);
+        final StopActivityItem item = new StopActivityItem(mActivityToken);
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
-        StopActivityItem result = StopActivityItem.CREATOR.createFromParcel(mParcel);
+        final StopActivityItem result = StopActivityItem.CREATOR.createFromParcel(mParcel);
 
         assertEquals(item.hashCode(), result.hashCode());
         assertEquals(item, result);
@@ -261,12 +279,12 @@ public class TransactionParcelTests {
     @Test
     public void testStart() {
         // Write to parcel
-        StartActivityItem item = StartActivityItem.obtain(mActivityToken,
-                ActivityOptions.makeBasic());
+        final StartActivityItem item = new StartActivityItem(mActivityToken,
+                new ActivityOptions.SceneTransitionInfo());
         writeAndPrepareForReading(item);
 
         // Read from parcel and assert
-        StartActivityItem result = StartActivityItem.CREATOR.createFromParcel(mParcel);
+        final StartActivityItem result = StartActivityItem.CREATOR.createFromParcel(mParcel);
 
         assertEquals(item.hashCode(), result.hashCode());
         assertEquals(item, result);
@@ -275,67 +293,26 @@ public class TransactionParcelTests {
     @Test
     public void testClientTransaction() {
         // Write to parcel
-        NewIntentItem callback1 = NewIntentItem.obtain(mActivityToken, new ArrayList<>(), true);
-        ActivityConfigurationChangeItem callback2 = ActivityConfigurationChangeItem.obtain(
-                mActivityToken, config());
+        final NewIntentItem callback1 =
+                new NewIntentItem(mActivityToken, new ArrayList<>(), true /* resume */);
+        final ActivityConfigurationChangeItem callback2 = new ActivityConfigurationChangeItem(
+                mActivityToken, config(), new ActivityWindowInfo());
 
-        StopActivityItem lifecycleRequest = StopActivityItem.obtain(mActivityToken,
-                78 /* configChanges */);
+        final StopActivityItem lifecycleRequest = new StopActivityItem(mActivityToken);
 
-        ClientTransaction transaction = ClientTransaction.obtain(null /* client */);
+        final ClientTransaction transaction = new ClientTransaction();
         transaction.addTransactionItem(callback1);
         transaction.addTransactionItem(callback2);
         transaction.addTransactionItem(lifecycleRequest);
 
-        transaction.addCallback(callback1);
-        transaction.addCallback(callback2);
-        transaction.setLifecycleStateRequest(lifecycleRequest);
-
         writeAndPrepareForReading(transaction);
 
         // Read from parcel and assert
-        ClientTransaction result = ClientTransaction.CREATOR.createFromParcel(mParcel);
+        final ClientTransaction result = ClientTransaction.CREATOR.createFromParcel(mParcel);
 
         assertEquals(transaction.hashCode(), result.hashCode());
         assertEquals(transaction, result);
-    }
-
-    @Test
-    public void testClientTransactionCallbacksOnly() {
-        // Write to parcel
-        NewIntentItem callback1 = NewIntentItem.obtain(mActivityToken, new ArrayList<>(), true);
-        ActivityConfigurationChangeItem callback2 = ActivityConfigurationChangeItem.obtain(
-                mActivityToken, config());
-
-        ClientTransaction transaction = ClientTransaction.obtain(null /* client */);
-        transaction.addCallback(callback1);
-        transaction.addCallback(callback2);
-
-        writeAndPrepareForReading(transaction);
-
-        // Read from parcel and assert
-        ClientTransaction result = ClientTransaction.CREATOR.createFromParcel(mParcel);
-
-        assertEquals(transaction.hashCode(), result.hashCode());
-        assertEquals(transaction, result);
-    }
-
-    @Test
-    public void testClientTransactionLifecycleOnly() {
-        // Write to parcel
-        StopActivityItem lifecycleRequest = StopActivityItem.obtain(mActivityToken,
-                78 /* configChanges */);
-
-        ClientTransaction transaction = ClientTransaction.obtain(null /* client */);
-        transaction.setLifecycleStateRequest(lifecycleRequest);
-
-        writeAndPrepareForReading(transaction);
-
-        // Read from parcel and assert
-        ClientTransaction result = ClientTransaction.CREATOR.createFromParcel(mParcel);
-
-        assertEquals(transaction.hashCode(), result.hashCode());
-        assertEquals(transaction, result);
+        assertEquals(mActivityToken, result.getActivityToken());
     }
 
     /** Write to {@link #mParcel} and reset its position to prepare for reading from the start. */
@@ -352,9 +329,7 @@ public class TransactionParcelTests {
      *   android.app.servertransaction.TransactionParcelTests$ParcelableData".
      */
     public static class ParcelableData implements Parcelable {
-        int mValue;
-
-        ParcelableData() {}
+        private final int mValue;
 
         ParcelableData(int value) {
             mValue = value;
@@ -370,12 +345,10 @@ public class TransactionParcelTests {
             dest.writeInt(mValue);
         }
 
-        public static final Creator<ParcelableData> CREATOR = new Creator<ParcelableData>() {
+        public static final Creator<ParcelableData> CREATOR = new Creator<>() {
             @Override
             public ParcelableData createFromParcel(Parcel source) {
-                final ParcelableData data = new ParcelableData();
-                data.mValue = source.readInt();
-                return data;
+                return new ParcelableData(source.readInt());
             }
 
             @Override

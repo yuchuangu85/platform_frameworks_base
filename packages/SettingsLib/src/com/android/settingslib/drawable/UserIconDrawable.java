@@ -22,7 +22,6 @@ import static android.app.admin.DevicePolicyResources.Drawables.WORK_PROFILE_USE
 
 import android.annotation.ColorInt;
 import android.annotation.DrawableRes;
-import android.annotation.NonNull;
 import android.app.admin.DevicePolicyManager;
 import android.content.Context;
 import android.content.res.ColorStateList;
@@ -45,10 +44,9 @@ import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.UserHandle;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
-
-import com.android.settingslib.utils.BuildCompatUtils;
 
 /**
  * Converts the user avatar icon to a circularly clipped one with an optional badge and frame
@@ -88,7 +86,7 @@ public class UserIconDrawable extends Drawable implements Drawable.Callback {
      * @return drawable containing just the badge
      */
     public static Drawable getManagedUserDrawable(Context context) {
-        if (BuildCompatUtils.isAtLeastT()) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             return getUpdatableManagedUserDrawable(context);
         } else {
             return getDrawableForDisplayDensity(
@@ -227,7 +225,7 @@ public class UserIconDrawable extends Drawable implements Drawable.Callback {
     }
 
     private static Drawable getManagementBadge(Context context) {
-        if (BuildCompatUtils.isAtLeastT()) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             return getUpdatableManagementBadge(context);
         } else {
             return getDrawableForDisplayDensity(

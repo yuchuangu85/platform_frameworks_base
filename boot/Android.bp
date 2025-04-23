@@ -26,10 +26,13 @@ package {
 soong_config_module_type {
     name: "custom_platform_bootclasspath",
     module_type: "platform_bootclasspath",
-    config_namespace: "AUTO",
+    config_namespace: "bootclasspath",
     bool_variables: [
         "car_bootclasspath_fragment",
+        "nfc_apex_bootclasspath_fragment",
         "release_crashrecovery_module",
+        "release_ondevice_intelligence_module",
+        "release_package_profiling_module",
     ],
     properties: [
         "fragments",
@@ -73,8 +76,8 @@ custom_platform_bootclasspath {
             module: "art-bootclasspath-fragment",
         },
         {
-            apex: "com.android.btservices",
-            module: "com.android.btservices-bootclasspath-fragment",
+            apex: "com.android.bt",
+            module: "com.android.bt-bootclasspath-fragment",
         },
         {
             apex: "com.android.configinfrastructure",
@@ -156,12 +159,39 @@ custom_platform_bootclasspath {
                 },
             ],
         },
+        nfc_apex_bootclasspath_fragment: {
+            fragments: [
+                // only used if NFC mainline is enabled.
+                {
+                    apex: "com.android.nfcservices",
+                    module: "com.android.nfcservices-bootclasspath-fragment",
+                },
+            ],
+        },
         release_crashrecovery_module: {
             fragments: [
                 // only used when crashrecovery is enabled
                 {
                     apex: "com.android.crashrecovery",
                     module: "com.android.crashrecovery-bootclasspath-fragment",
+                },
+            ],
+        },
+        release_ondevice_intelligence_module: {
+            fragments: [
+                // only used when ondeviceintelligence is moved to neuralnetworks module
+                {
+                    apex: "com.android.neuralnetworks",
+                    module: "com.android.ondeviceintelligence-bootclasspath-fragment",
+                },
+            ],
+        },
+        release_package_profiling_module: {
+            fragments: [
+                // only used if profiling is enabled.
+                {
+                    apex: "com.android.profiling",
+                    module: "com.android.profiling-bootclasspath-fragment",
                 },
             ],
         },
@@ -214,7 +244,7 @@ custom_platform_bootclasspath {
     ],
 }
 
-genrule { // This module exists to make the srcjar output available to Make.
+java_genrule { // This module exists to make the srcjar output available to Make.
     name: "platform-bootclasspath.srcjar",
     srcs: [":platform-bootclasspath{.srcjar}"],
     out: ["platform-bootclasspath.srcjar"],

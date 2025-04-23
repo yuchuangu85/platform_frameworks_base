@@ -16,6 +16,8 @@
 
 package com.android.mediaframeworktest.integration;
 
+import static android.companion.virtual.VirtualDeviceParams.DEVICE_POLICY_DEFAULT;
+import static android.content.Context.DEVICE_ID_DEFAULT;
 import static android.hardware.camera2.CameraDevice.TEMPLATE_PREVIEW;
 
 import static org.mockito.Mockito.any;
@@ -25,11 +27,13 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 
+import android.content.AttributionSourceState;
 import android.graphics.ImageFormat;
 import android.graphics.SurfaceTexture;
 import android.hardware.ICameraService;
 import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraMetadataInfo;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.ICameraDeviceCallbacks;
 import android.hardware.camera2.ICameraDeviceUser;
@@ -46,11 +50,13 @@ import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.os.SystemClock;
 import android.test.AndroidTestCase;
-import android.test.suitebuilder.annotation.SmallTest;
 import android.util.Log;
 import android.view.Surface;
 
+import androidx.test.filters.SmallTest;
+
 import com.android.mediaframeworktest.MediaFrameworkIntegrationTestRunner;
+import com.android.mediaframeworktest.helpers.CameraTestUtils;
 
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatcher;
@@ -136,7 +142,7 @@ public class CameraDeviceBinderTest extends AndroidTestCase {
          * android.hardware.camera2.impl.CameraMetadataNative,
          * android.hardware.camera2.CaptureResultExtras)
          */
-        public void onResultReceived(CameraMetadataNative result, CaptureResultExtras resultExtras,
+        public void onResultReceived(CameraMetadataInfo result, CaptureResultExtras resultExtras,
                 PhysicalCaptureResultInfo physicalResults[]) throws RemoteException {
             // TODO Auto-generated method stub
 
@@ -170,12 +176,25 @@ public class CameraDeviceBinderTest extends AndroidTestCase {
         public void onRepeatingRequestError(long lastFrameNumber, int repeatingRequestId) {
             // TODO Auto-generated method stub
         }
+
+        /**
+         * (non-Javadoc)
+         * @see android.hardware.camera2.ICameraDeviceCallbacks#onClientSharedAccessPriorityChanged
+         */
+        @Override
+        public void onClientSharedAccessPriorityChanged(boolean primaryClient) {
+            // TODO Auto-generated method stub
+        }
     }
 
-    class IsMetadataNotEmpty implements ArgumentMatcher<CameraMetadataNative> {
+    class IsMetadataNotEmpty implements ArgumentMatcher<CameraMetadataInfo> {
         @Override
-        public boolean matches(CameraMetadataNative obj) {
-            return !obj.isEmpty();
+        public boolean matches(CameraMetadataInfo obj) {
+            if (obj.getTag() == CameraMetadataInfo.metadata) {
+                return !(obj.getMetadata().isEmpty());
+            } else {
+                return (obj.getFmqSize() != 0);
+            }
         }
     }
 
@@ -237,15 +256,16 @@ public class CameraDeviceBinderTest extends AndroidTestCase {
 
         ICameraDeviceCallbacks.Stub dummyCallbacks = new DummyCameraDeviceCallbacks();
 
-        String clientPackageName = getContext().getPackageName();
-        String clientAttributionTag = getContext().getAttributionTag();
-
         mMockCb = spy(dummyCallbacks);
 
+        AttributionSourceState clientAttribution = CameraTestUtils.getClientAttribution(mContext);
+        clientAttribution.deviceId = DEVICE_ID_DEFAULT;
+        clientAttribution.uid = ICameraService.USE_CALLING_UID;
+
         mCameraUser = mUtils.getCameraService().connectDevice(mMockCb, mCameraId,
-                clientPackageName, clientAttributionTag, ICameraService.USE_CALLING_UID,
                 /*oomScoreOffset*/0, getContext().getApplicationInfo().targetSdkVersion,
-                /*overrideToPortrait*/false);
+                ICameraService.ROTATION_OVERRIDE_NONE, clientAttribution, DEVICE_POLICY_DEFAULT,
+                /*sharedMode*/false);
         assertNotNull(String.format("Camera %s was null", mCameraId), mCameraUser);
         mHandlerThread = new HandlerThread(TAG);
         mHandlerThread.start();
@@ -271,7 +291,6 @@ public class CameraDeviceBinderTest extends AndroidTestCase {
 
         metadata = mCameraUser.createDefaultRequest(TEMPLATE_PREVIEW);
         assertFalse(metadata.isEmpty());
-
     }
 
     @SmallTest
@@ -305,7 +324,6 @@ public class CameraDeviceBinderTest extends AndroidTestCase {
 
     @SmallTest
     public void testCreateStreamTwo() throws Exception {
-
         // Create first stream
         int streamId = mCameraUser.createStream(mOutputConfiguration);
         assertEquals(0, streamId);
@@ -334,7 +352,6 @@ public class CameraDeviceBinderTest extends AndroidTestCase {
 
     @SmallTest
     public void testSubmitBadRequest() throws Exception {
-
         CaptureRequest.Builder builder = createDefaultBuilder(/* needStream */false);
         CaptureRequest request1 = builder.build();
         try {
@@ -360,7 +377,6 @@ public class CameraDeviceBinderTest extends AndroidTestCase {
 
     @SmallTest
     public void testSubmitGoodRequest() throws Exception {
-
         CaptureRequest.Builder builder = createDefaultBuilder(/* needStream */true);
         CaptureRequest request = builder.build();
 
@@ -369,12 +385,10 @@ public class CameraDeviceBinderTest extends AndroidTestCase {
         SubmitInfo requestInfo2 = submitCameraRequest(request, /* streaming */false);
         assertNotSame("Request IDs should be unique for multiple requests",
                 requestInfo1.getRequestId(), requestInfo2.getRequestId());
-
     }
 
     @SmallTest
     public void testSubmitStreamingRequest() throws Exception {
-
         CaptureRequest.Builder builder = createDefaultBuilder(/* needStream */true);
 
         CaptureRequest request = builder.build();
@@ -417,8 +431,13 @@ public class CameraDeviceBinderTest extends AndroidTestCase {
 
     @SmallTest
     public void testCameraCharacteristics() throws RemoteException {
+        AttributionSourceState clientAttribution = CameraTestUtils.getClientAttribution(mContext);
+        clientAttribution.deviceId = DEVICE_ID_DEFAULT;
+
         CameraMetadataNative info = mUtils.getCameraService().getCameraCharacteristics(mCameraId,
-                getContext().getApplicationInfo().targetSdkVersion, /*overrideToPortrait*/false);
+                getContext().getApplicationInfo().targetSdkVersion,
+                ICameraService.ROTATION_OVERRIDE_NONE,
+                clientAttribution, DEVICE_POLICY_DEFAULT);
 
         assertFalse(info.isEmpty());
         assertNotNull(info.get(CameraCharacteristics.SCALER_AVAILABLE_FORMATS));
@@ -511,7 +530,6 @@ public class CameraDeviceBinderTest extends AndroidTestCase {
 
         // And wait for more idle
         verify(mMockCb, timeout(WAIT_FOR_IDLE_TIMEOUT_MS).times(2)).onDeviceIdle();
-
     }
 
     @SmallTest

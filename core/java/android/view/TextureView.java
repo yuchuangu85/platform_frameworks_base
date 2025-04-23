@@ -16,7 +16,8 @@
 
 package android.view;
 
-import android.annotation.FloatRange;
+import static android.view.Surface.FRAME_RATE_CATEGORY_NORMAL;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.compat.annotation.UnsupportedAppUsage;
@@ -197,13 +198,18 @@ public class TextureView extends View {
     private Canvas mCanvas;
     private int mSaveCount;
 
-    @FloatRange(from = 0.0) float mFrameRate;
-    @Surface.FrameRateCompatibility int mFrameRateCompatibility;
-
     private final Object[] mNativeWindowLock = new Object[0];
     // Set by native code, do not write!
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.R, trackingBug = 170729553)
     private long mNativeWindow;
+    // Used for VRR detecting "normal" frame rate rather than "high". This is the previous
+    // interval for drawing. This can be removed when NORMAL is the default rate for Views.
+    // (b/329156944)
+    private long mMinusTwoFrameIntervalMillis = 0;
+    // Used for VRR detecting "normal" frame rate rather than "high". This is the last
+    // frame time for drawing. This can be removed when NORMAL is the default rate for Views.
+    // (b/329156944)
+    private long mLastFrameTimeMillis = 0;
 
     /**
      * Creates a new TextureView.
@@ -473,13 +479,13 @@ public class TextureView extends View {
             mLayer.setSurfaceTexture(mSurface);
             mSurface.setDefaultBufferSize(getWidth(), getHeight());
             mSurface.setOnFrameAvailableListener(mUpdateListener, mAttachInfo.mHandler);
-            if (Flags.toolkitSetFrameRate()) {
+            if (Flags.toolkitSetFrameRateReadOnly()) {
                 mSurface.setOnSetFrameRateListener(
                         (surfaceTexture, frameRate, compatibility, strategy) -> {
                             if (Trace.isTagEnabled(Trace.TRACE_TAG_VIEW)) {
                                 Trace.instant(Trace.TRACE_TAG_VIEW, "setFrameRate: " + frameRate);
                             }
-                            mFrameRate = frameRate;
+                            setRequestedFrameRate(frameRate);
                             mFrameRateCompatibility = compatibility;
                         }, mAttachInfo.mHandler);
             }
@@ -885,6 +891,31 @@ public class TextureView extends View {
      */
     public void setSurfaceTextureListener(@Nullable SurfaceTextureListener listener) {
         mListener = listener;
+    }
+
+    /**
+     * @hide
+     */
+    @Override
+    protected int calculateFrameRateCategory() {
+        long now = getDrawingTime();
+        // This isn't necessary when the default frame rate is NORMAL (b/329156944)
+        if (mMinusTwoFrameIntervalMillis > 15 && (now - mLastFrameTimeMillis) > 15) {
+            return FRAME_RATE_CATEGORY_NORMAL;
+        }
+        return super.calculateFrameRateCategory();
+    }
+
+    /**
+     * @hide
+     */
+    @Override
+    protected void votePreferredFrameRate() {
+        super.votePreferredFrameRate();
+        // This isn't necessary when the default frame rate is NORMAL (b/329156944)
+        long now = getDrawingTime();
+        mMinusTwoFrameIntervalMillis = now - mLastFrameTimeMillis;
+        mLastFrameTimeMillis = now;
     }
 
     @UnsupportedAppUsage

@@ -17,10 +17,9 @@
 package com.android.systemui.statusbar.phone
 
 import android.content.Context
-import com.android.systemui.animation.DialogLaunchAnimator
+import com.android.systemui.animation.DialogTransitionAnimator
 import com.android.systemui.broadcast.BroadcastDispatcher
 import com.android.systemui.dagger.qualifiers.Application
-import com.android.systemui.flags.FeatureFlagsClassic
 import com.android.systemui.model.SysUiState
 import com.android.systemui.util.Assert
 import javax.inject.Inject
@@ -30,11 +29,10 @@ class SystemUIDialogFactory
 @Inject
 constructor(
     @Application val applicationContext: Context,
-    private val featureFlags: FeatureFlagsClassic,
     private val dialogManager: SystemUIDialogManager,
     private val sysUiState: SysUiState,
     private val broadcastDispatcher: BroadcastDispatcher,
-    private val dialogLaunchAnimator: DialogLaunchAnimator,
+    private val dialogTransitionAnimator: DialogTransitionAnimator,
 ) {
     /**
      * Create a new [ComponentSystemUIDialog].
@@ -50,6 +48,7 @@ constructor(
         context: Context = this.applicationContext,
         theme: Int = SystemUIDialog.DEFAULT_THEME,
         dismissOnDeviceLock: Boolean = SystemUIDialog.DEFAULT_DISMISS_ON_DEVICE_LOCK,
+        dialogDelegate: DialogDelegate<SystemUIDialog> = object : DialogDelegate<SystemUIDialog> {},
     ): ComponentSystemUIDialog {
         Assert.isMainThread()
 
@@ -57,11 +56,11 @@ constructor(
             context,
             theme,
             dismissOnDeviceLock,
-            featureFlags,
             dialogManager,
             sysUiState,
             broadcastDispatcher,
-            dialogLaunchAnimator,
+            dialogTransitionAnimator,
+            dialogDelegate,
         )
     }
 }

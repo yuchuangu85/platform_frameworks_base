@@ -27,6 +27,8 @@ class KeyguardTransitionCoreStartable
 constructor(
     private val interactors: Set<TransitionInteractor>,
     private val auditLogger: KeyguardTransitionAuditLogger,
+    private val statusBarDisableFlagsInteractor: StatusBarDisableFlagsInteractor,
+    private val keyguardStateCallbackInteractor: KeyguardStateCallbackInteractor,
 ) : CoreStartable {
 
     override fun start() {
@@ -42,14 +44,16 @@ constructor(
                     is FromGoneTransitionInteractor -> Log.d(TAG, "Started $it")
                     is FromLockscreenTransitionInteractor -> Log.d(TAG, "Started $it")
                     is FromDreamingTransitionInteractor -> Log.d(TAG, "Started $it")
+                    is FromGlanceableHubTransitionInteractor -> Log.d(TAG, "Started $it")
                     is FromOccludedTransitionInteractor -> Log.d(TAG, "Started $it")
                     is FromDozingTransitionInteractor -> Log.d(TAG, "Started $it")
                     is FromAlternateBouncerTransitionInteractor -> Log.d(TAG, "Started $it")
-                    is FromDreamingLockscreenHostedTransitionInteractor -> Log.d(TAG, "Started $it")
                 }
             it.start()
         }
         auditLogger.start()
+        statusBarDisableFlagsInteractor.start()
+        keyguardStateCallbackInteractor.start()
     }
 
     companion object {

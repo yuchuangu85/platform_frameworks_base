@@ -22,10 +22,9 @@ import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyInt;
-import static org.mockito.Matchers.anyObject;
-import static org.mockito.Matchers.argThat;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -44,8 +43,8 @@ import android.net.NetworkRequest;
 import android.os.Handler;
 import android.os.UserManager;
 import android.security.IKeyChainService;
-import android.test.suitebuilder.annotation.SmallTest;
 
+import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.systemui.SysuiTestCase;
@@ -64,6 +63,7 @@ import org.mockito.Mockito;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @SmallTest
 @RunWith(AndroidJUnit4.class)
@@ -119,9 +119,9 @@ public class SecurityControllerTest extends SysuiTestCase {
 
         verify(mBroadcastDispatcher).registerReceiverWithHandler(
                 brCaptor.capture(),
-                anyObject(),
-                anyObject(),
-                anyObject());
+                any(),
+                any(),
+                any());
 
         mBroadcastReceiver = brCaptor.getValue();
     }
@@ -217,6 +217,28 @@ public class SecurityControllerTest extends SysuiTestCase {
                         request.equals(new NetworkRequest.Builder()
                                 .clearCapabilities().addTransportType(TRANSPORT_VPN).build())
                 ), any(NetworkCallback.class));
+    }
+
+    @Test
+    public void testRemoveCallbackWhileDispatch_doesntCrash() {
+        final AtomicBoolean remove = new AtomicBoolean(false);
+        SecurityController.SecurityControllerCallback callback =
+                new SecurityController.SecurityControllerCallback() {
+                    @Override
+                    public void onStateChanged() {
+                        if (remove.get()) {
+                            mSecurityController.removeCallback(this);
+                        }
+                    }
+                };
+        mSecurityController.addCallback(callback);
+        // Add another callback so the iteration continues
+        mSecurityController.addCallback(() -> {});
+        mBgExecutor.runAllReady();
+        remove.set(true);
+
+        mSecurityController.onUserSwitched(10);
+        mBgExecutor.runAllReady();
     }
 
     /**

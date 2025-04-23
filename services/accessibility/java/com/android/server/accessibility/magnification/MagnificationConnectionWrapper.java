@@ -23,6 +23,7 @@ import static android.os.IBinder.DeathRecipient;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresNoPermission;
 import android.os.RemoteException;
 import android.util.Slog;
 import android.view.accessibility.IMagnificationConnection;
@@ -56,6 +57,22 @@ class MagnificationConnectionWrapper {
 
     void linkToDeath(@NonNull DeathRecipient deathRecipient) throws RemoteException {
         mConnection.asBinder().linkToDeath(deathRecipient, 0);
+    }
+
+    boolean onFullscreenMagnificationActivationChanged(int displayId, boolean activated) {
+        if (mTrace.isA11yTracingEnabledForTypes(FLAGS_MAGNIFICATION_CONNECTION)) {
+            mTrace.logTrace(TAG + ".onFullscreenMagnificationActivationChanged",
+                    FLAGS_MAGNIFICATION_CONNECTION);
+        }
+        try {
+            mConnection.onFullscreenMagnificationActivationChanged(displayId, activated);
+        } catch (RemoteException e) {
+            if (DBG) {
+                Slog.e(TAG, "Error calling onFullscreenMagnificationActivationChanged");
+            }
+            return false;
+        }
+        return true;
     }
 
     boolean enableWindowMagnification(int displayId, float scale, float centerX, float centerY,
@@ -246,7 +263,6 @@ class MagnificationConnectionWrapper {
         return new RemoteAnimationCallback(callback, trace);
     }
 
-    @SuppressWarnings("MissingPermissionAnnotation")
     private static class RemoteAnimationCallback extends
             IRemoteMagnificationAnimationCallback.Stub {
         private final MagnificationAnimationCallback mCallback;
@@ -263,6 +279,7 @@ class MagnificationConnectionWrapper {
             }
         }
 
+        @RequiresNoPermission
         @Override
         public void onResult(boolean success) throws RemoteException {
             mCallback.onResult(success);

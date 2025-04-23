@@ -34,6 +34,7 @@ import android.os.TombstoneWithHeadersProto;
 import android.provider.Downloads;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.system.OsConstants;
 import android.text.TextUtils;
 import android.util.AtomicFile;
 import android.util.EventLog;
@@ -49,9 +50,11 @@ import com.android.modules.utils.TypedXmlPullParser;
 import com.android.modules.utils.TypedXmlSerializer;
 import com.android.server.am.DropboxRateLimiter;
 
+import libcore.io.IoUtils;
 import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileDescriptor;
 import java.io.FileInputStream;
@@ -140,8 +143,16 @@ public class BootReceiver extends BroadcastReceiver {
     private static final int MAX_ERROR_REPORTS = 8;
     private static int sSentReports = 0;
 
+    // Max tombstone file size to add to dropbox.
+    private static final long MAX_TOMBSTONE_SIZE_BYTES =
+            DropBoxManagerService.DEFAULT_QUOTA_KB * 1024;
+
     @Override
     public void onReceive(final Context context, Intent intent) {
+        if (!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) {
+            return;
+        }
+
         // Log boot events in the background to avoid blocking the main thread with I/O
         new Thread() {
             @Override
@@ -207,6 +218,8 @@ public class BootReceiver extends BroadcastReceiver {
                 } catch (Exception e) {
                     Slog.wtf(TAG, "Error watching for trace events", e);
                     return 0;  // Unregister the handler.
+                } finally {
+                    IoUtils.closeQuietly(fd);
                 }
                 return OnFileDescriptorEventListener.EVENT_INPUT;
             }
@@ -230,16 +243,23 @@ public class BootReceiver extends BroadcastReceiver {
     }
 
     private static String getCurrentBootHeaders() throws IOException {
-        return new StringBuilder(512)
-            .append("Build: ").append(Build.FINGERPRINT).append("\n")
-            .append("Hardware: ").append(Build.BOARD).append("\n")
-            .append("Revision: ")
-            .append(SystemProperties.get("ro.revision", "")).append("\n")
-            .append("Bootloader: ").append(Build.BOOTLOADER).append("\n")
-            .append("Radio: ").append(Build.getRadioVersion()).append("\n")
-            .append("Kernel: ")
-            .append(FileUtils.readTextFile(new File("/proc/version"), 1024, "...\n"))
-            .append("\n").toString();
+        StringBuilder builder =  new StringBuilder(512)
+                .append("Build: ").append(Build.FINGERPRINT).append("\n")
+                .append("Hardware: ").append(Build.BOARD).append("\n")
+                .append("Revision: ")
+                .append(SystemProperties.get("ro.revision", "")).append("\n")
+                .append("Bootloader: ").append(Build.BOOTLOADER).append("\n")
+                .append("Radio: ").append(Build.getRadioVersion()).append("\n")
+                .append("Kernel: ")
+                .append(FileUtils.readTextFile(new File("/proc/version"), 1024, "...\n"));
+
+        // If device is not using 4KB pages, add the PageSize
+        long pageSize = Os.sysconf(OsConstants._SC_PAGESIZE);
+        if (pageSize != 4096) {
+            builder.append("PageSize: ").append(pageSize).append("\n");
+        }
+        builder.append("\n");
+        return builder.toString();
     }
 
 
@@ -382,9 +402,24 @@ public class BootReceiver extends BroadcastReceiver {
     private static void addAugmentedProtoToDropbox(
                 File tombstone, DropBoxManager db,
                 DropboxRateLimiter.RateLimitResult rateLimitResult) throws IOException {
-        // Read the proto tombstone file as bytes.
-        final byte[] tombstoneBytes = Files.readAllBytes(tombstone.toPath());
+        // Do not add proto files larger than 20Mb to DropBox as they can cause OOMs when
+        // processing large tombstones. The text tombstone is still added to DropBox.
+        if (tombstone.length() > MAX_TOMBSTONE_SIZE_BYTES) {
+            Slog.w(TAG, "Tombstone too large to add to DropBox: " + tombstone.toPath());
+            return;
+        }
 
+        // Read the proto tombstone file as bytes.
+        // Previously used Files.readAllBytes() which internally creates a ThreadLocal BufferCache
+        // via ChannelInputStream that isn't properly released. Switched to
+        // FileInputStream.transferTo() which avoids the NIO channels completely,
+        // preventing the memory leak while maintaining the same functionality.
+        final byte[] tombstoneBytes;
+        try (FileInputStream fis = new FileInputStream(tombstone);
+                ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
+            fis.transferTo(baos);
+            tombstoneBytes = baos.toByteArray();
+        }
         final File tombstoneProtoWithHeaders = File.createTempFile(
                 tombstone.getName(), ".tmp", TOMBSTONE_TMP_DIR);
         Files.setPosixFilePermissions(

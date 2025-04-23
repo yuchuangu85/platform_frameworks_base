@@ -20,7 +20,7 @@ import static android.service.notification.NotificationListenerService.REASON_CL
 
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.mockitoSession;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.verify;
-import static com.android.systemui.dump.LogBufferHelperKt.logcatLogBuffer;
+import static com.android.systemui.log.LogBufferHelperKt.logcatLogBuffer;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -35,7 +35,6 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
-import static org.mockito.Mockito.verifyZeroInteractions;
 import static org.mockito.Mockito.when;
 
 import android.app.ActivityManager;
@@ -51,9 +50,9 @@ import android.os.RemoteException;
 import android.os.UserHandle;
 import android.service.dreams.IDreamManager;
 import android.service.notification.StatusBarNotification;
-import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.jank.InteractionJankMonitor;
@@ -63,7 +62,7 @@ import com.android.internal.util.FrameworkStatsLog;
 import com.android.internal.widget.LockPatternUtils;
 import com.android.systemui.ActivityIntentHelper;
 import com.android.systemui.SysuiTestCase;
-import com.android.systemui.animation.ActivityLaunchAnimator;
+import com.android.systemui.animation.ActivityTransitionAnimator;
 import com.android.systemui.assist.AssistManager;
 import com.android.systemui.classifier.FalsingCollectorFake;
 import com.android.systemui.flags.FakeFeatureFlags;
@@ -75,10 +74,11 @@ import com.android.systemui.power.domain.interactor.PowerInteractor;
 import com.android.systemui.power.domain.interactor.PowerInteractorFactory;
 import com.android.systemui.settings.UserTracker;
 import com.android.systemui.shade.ShadeControllerImpl;
-import com.android.systemui.shade.ShadeViewController;
 import com.android.systemui.shade.data.repository.FakeShadeRepository;
 import com.android.systemui.shade.data.repository.ShadeAnimationRepository;
+import com.android.systemui.shade.domain.interactor.PanelExpansionInteractor;
 import com.android.systemui.shade.domain.interactor.ShadeAnimationInteractorLegacyImpl;
+import com.android.systemui.statusbar.CommandQueue;
 import com.android.systemui.statusbar.NotificationClickNotifier;
 import com.android.systemui.statusbar.NotificationLockscreenUserManager;
 import com.android.systemui.statusbar.NotificationPresenter;
@@ -95,7 +95,7 @@ import com.android.systemui.statusbar.notification.row.ExpandableNotificationRow
 import com.android.systemui.statusbar.notification.row.NotificationTestHelper;
 import com.android.systemui.statusbar.notification.row.OnUserInteractionCallback;
 import com.android.systemui.statusbar.notification.stack.NotificationListContainer;
-import com.android.systemui.statusbar.policy.HeadsUpManager;
+import com.android.systemui.statusbar.notification.headsup.HeadsUpManager;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 import com.android.systemui.util.concurrency.FakeExecutor;
 import com.android.systemui.util.time.FakeSystemClock;
@@ -118,7 +118,7 @@ import java.util.List;
 import java.util.Optional;
 
 @SmallTest
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @TestableLooper.RunWithLooper(setAsMainLooper = true)
 public class StatusBarNotificationActivityStarterTest extends SysuiTestCase {
 
@@ -129,6 +129,8 @@ public class StatusBarNotificationActivityStarterTest extends SysuiTestCase {
     private AssistManager mAssistManager;
     @Mock
     private ActivityStarter mActivityStarter;
+    @Mock
+    private CommandQueue mCommandQueue;
     @Mock
     private NotificationClickNotifier mClickNotifier;
     @Mock
@@ -159,12 +161,14 @@ public class StatusBarNotificationActivityStarterTest extends SysuiTestCase {
     @Mock
     private StatusBarNotificationActivityStarter mNotificationActivityStarter;
     @Mock
-    private ActivityLaunchAnimator mActivityLaunchAnimator;
+    private ActivityTransitionAnimator mActivityTransitionAnimator;
     @Mock
     private InteractionJankMonitor mJankMonitor;
     private FakePowerRepository mPowerRepository;
     @Mock
     private UserTracker mUserTracker;
+    @Mock
+    private HeadsUpManager mHeadsUpManager;
     private final FakeExecutor mUiBgExecutor = new FakeExecutor(new FakeSystemClock());
     private ExpandableNotificationRow mNotificationRow;
     private ExpandableNotificationRow mBubbleNotificationRow;
@@ -219,13 +223,12 @@ public class StatusBarNotificationActivityStarterTest extends SysuiTestCase {
                 mScreenOffAnimationController,
                 mStatusBarStateController).getPowerInteractor();
 
-        HeadsUpManager headsUpManager = mock(HeadsUpManager.class);
         NotificationLaunchAnimatorControllerProvider notificationAnimationProvider =
                 new NotificationLaunchAnimatorControllerProvider(
                         new NotificationLaunchAnimationInteractor(
                                 new NotificationLaunchAnimationRepository()),
                         mock(NotificationListContainer.class),
-                        headsUpManager,
+                        mHeadsUpManager,
                         mJankMonitor);
         mNotificationActivityStarter =
                 new StatusBarNotificationActivityStarter(
@@ -234,8 +237,9 @@ public class StatusBarNotificationActivityStarterTest extends SysuiTestCase {
                         mHandler,
                         mUiBgExecutor,
                         mVisibilityProvider,
-                        headsUpManager,
+                        mHeadsUpManager,
                         mActivityStarter,
+                        mCommandQueue,
                         mClickNotifier,
                         mStatusBarKeyguardViewManager,
                         mock(KeyguardManager.class),
@@ -253,11 +257,13 @@ public class StatusBarNotificationActivityStarterTest extends SysuiTestCase {
                         new StatusBarNotificationActivityStarterLogger(logcatLogBuffer()),
                         mOnUserInteractionCallback,
                         mock(NotificationPresenter.class),
-                        mock(ShadeViewController.class),
+                        mock(PanelExpansionInteractor.class),
                         mock(NotificationShadeWindowController.class),
-                        mActivityLaunchAnimator,
+                        mActivityTransitionAnimator,
                         new ShadeAnimationInteractorLegacyImpl(
-                                new ShadeAnimationRepository(), new FakeShadeRepository()),
+                                new ShadeAnimationRepository(),
+                                new FakeShadeRepository()
+                        ),
                         notificationAnimationProvider,
                         mock(LaunchFullScreenIntentProvider.class),
                         mPowerInteractor,
@@ -306,7 +312,7 @@ public class StatusBarNotificationActivityStarterTest extends SysuiTestCase {
         // Then
         verify(mShadeController, atLeastOnce()).collapseShade();
 
-        verify(mActivityLaunchAnimator).startPendingIntentWithAnimation(any(),
+        verify(mActivityTransitionAnimator).startPendingIntentWithAnimation(any(),
                 eq(false) /* animate */, any(), any());
 
         verify(mAssistManager).hideAssist();
@@ -345,7 +351,7 @@ public class StatusBarNotificationActivityStarterTest extends SysuiTestCase {
                 eq(entry.getKey()), any(NotificationVisibility.class));
 
         // The content intent should NOT be sent on click.
-        verifyZeroInteractions(mContentIntent);
+        verifyNoMoreInteractions(mContentIntent);
 
         // Notification should not be cancelled.
         verify(mOnUserInteractionCallback, never())
@@ -378,7 +384,7 @@ public class StatusBarNotificationActivityStarterTest extends SysuiTestCase {
                 eq(entry.getKey()), any(NotificationVisibility.class));
 
         // The content intent should NOT be sent on click.
-        verifyZeroInteractions(mContentIntent);
+        verifyNoMoreInteractions(mContentIntent);
     }
 
     @Test
@@ -407,6 +413,59 @@ public class StatusBarNotificationActivityStarterTest extends SysuiTestCase {
 
         // The content intent should NOT be sent on click.
         verify(mContentIntent).isActivity();
+        verifyNoMoreInteractions(mContentIntent);
+    }
+
+    @Test
+    public void testOnNotificationBubbleIconClicked_unbubble_keyGuardShowing()
+            throws RemoteException {
+        NotificationEntry entry = mBubbleNotificationRow.getEntry();
+        StatusBarNotification sbn = entry.getSbn();
+
+        // Given
+        sbn.getNotification().contentIntent = mContentIntent;
+        when(mKeyguardStateController.isShowing()).thenReturn(true);
+        when(mKeyguardStateController.isOccluded()).thenReturn(true);
+
+        // When
+        mNotificationActivityStarter.onNotificationBubbleIconClicked(entry);
+
+        // Then
+        verify(mBubblesManager).onUserChangedBubble(entry, false);
+
+        verify(mHeadsUpManager).removeNotification(
+                entry.getKey(),
+                /* releaseImmediately= */ true,
+                /* reason= */ "onNotificationBubbleIconClicked"
+        );
+
+        verifyNoMoreInteractions(mContentIntent);
+        verifyNoMoreInteractions(mShadeController);
+    }
+
+    @Test
+    public void testOnNotificationBubbleIconClicked_bubble_keyGuardShowing() {
+        NotificationEntry entry = mNotificationRow.getEntry();
+        StatusBarNotification sbn = entry.getSbn();
+
+        // Given
+        sbn.getNotification().contentIntent = mContentIntent;
+        when(mKeyguardStateController.isShowing()).thenReturn(true);
+        when(mKeyguardStateController.isOccluded()).thenReturn(true);
+
+        // When
+        mNotificationActivityStarter.onNotificationBubbleIconClicked(entry);
+
+        // Then
+        verify(mBubblesManager).onUserChangedBubble(entry, true);
+
+        verify(mHeadsUpManager).removeNotification(
+                entry.getKey(),
+                /* releaseImmediately= */ true,
+                /* reason= */ "onNotificationBubbleIconClicked"
+        );
+
+        verify(mContentIntent, atLeastOnce()).isActivity();
         verifyNoMoreInteractions(mContentIntent);
     }
 

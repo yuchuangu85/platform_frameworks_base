@@ -66,7 +66,7 @@ public class NotificationShellCmd extends ShellCommand {
             + "  disallow_listener COMPONENT [user_id (current user if not specified)]\n"
             + "  allow_assistant COMPONENT [user_id (current user if not specified)]\n"
             + "  remove_assistant COMPONENT [user_id (current user if not specified)]\n"
-            + "  set_dnd [on|none (same as on)|priority|alarms|all|off (same as all)]"
+            + "  set_dnd [on|none (same as on)|priority|alarms|all|off (same as all)]\n"
             + "  allow_dnd PACKAGE [user_id (current user if not specified)]\n"
             + "  disallow_dnd PACKAGE [user_id (current user if not specified)]\n"
             + "  reset_assistant_user_set [user_id (current user if not specified)]\n"
@@ -80,6 +80,7 @@ public class NotificationShellCmd extends ShellCommand {
             + "  get <notification-key>\n"
             + "  snooze --for <msec> <notification-key>\n"
             + "  unsnooze <notification-key>\n"
+            + "  set_exempt_th_force_grouping [true|false]\n"
             ;
 
     private static final String NOTIFY_USAGE =
@@ -117,7 +118,6 @@ public class NotificationShellCmd extends ShellCommand {
     private final NotificationManagerService mDirectService;
     private final INotificationManager mBinderService;
     private final PackageManager mPm;
-    private NotificationChannel mChannel;
 
     public NotificationShellCmd(NotificationManagerService service) {
         mDirectService = service;
@@ -183,7 +183,13 @@ public class NotificationShellCmd extends ShellCommand {
                             interruptionFilter = INTERRUPTION_FILTER_ALL;
                     }
                     final int filter = interruptionFilter;
-                    mBinderService.setInterruptionFilter(callingPackage, filter);
+                    if (android.app.Flags.modesApi()) {
+                        mBinderService.setInterruptionFilter(callingPackage, filter,
+                                /* fromUser= */ true);
+                    } else {
+                        mBinderService.setInterruptionFilter(callingPackage, filter,
+                                /* fromUser= */ false);
+                    }
                 }
                 break;
                 case "allow_dnd": {
@@ -421,6 +427,13 @@ public class NotificationShellCmd extends ShellCommand {
                         pw.println("error: invalid value for --" + subflag + ": " + flagarg);
                         return 1;
                     }
+                    break;
+                }
+                case "set_exempt_th_force_grouping": {
+                    String arg = getNextArgRequired();
+                    final boolean exemptTestHarnessFromForceGrouping =
+                            "true".equals(arg) || "1".equals(arg);
+                    mDirectService.setTestHarnessExempted(exemptTestHarnessFromForceGrouping);
                     break;
                 }
                 default:

@@ -41,6 +41,7 @@ import com.android.server.wm.nano.WindowManagerProtos.TaskSnapshotProto;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.util.ArrayDeque;
 
 /**
@@ -49,7 +50,7 @@ import java.util.ArrayDeque;
 class SnapshotPersistQueue {
     private static final String TAG = TAG_WITH_CLASS_NAME ? "TaskSnapshotPersister" : TAG_WM;
     private static final long DELAY_MS = 100;
-    private static final int MAX_STORE_QUEUE_DEPTH = 2;
+    static final int MAX_STORE_QUEUE_DEPTH = 2;
     private static final int COMPRESS_QUALITY = 95;
 
     @GuardedBy("mLock")
@@ -63,6 +64,7 @@ class SnapshotPersistQueue {
     private boolean mStarted;
     private final Object mLock = new Object();
     private final UserManagerInternal mUserManagerInternal;
+    private boolean mShutdown;
 
     SnapshotPersistQueue() {
         mUserManagerInternal = LocalServices.getService(UserManagerInternal.class);
@@ -100,6 +102,46 @@ class SnapshotPersistQueue {
         }
     }
 
+    /**
+     * Prepare to enqueue all visible task snapshots because of shutdown.
+     */
+    void prepareShutdown() {
+        synchronized (mLock) {
+            mShutdown = true;
+        }
+    }
+
+    private boolean isQueueEmpty() {
+        synchronized (mLock) {
+            return mWriteQueue.isEmpty() || mQueueIdling || mPaused;
+        }
+    }
+
+    void waitFlush(long timeout) {
+        if (timeout <= 0) {
+            return;
+        }
+        final long endTime = System.currentTimeMillis() + timeout;
+        while (true) {
+            if (!isQueueEmpty()) {
+                long timeRemaining = endTime - System.currentTimeMillis();
+                if (timeRemaining > 0) {
+                    synchronized (mLock) {
+                        try {
+                            mLock.wait(timeRemaining);
+                        } catch (InterruptedException e) {
+                        }
+                    }
+                } else {
+                    Slog.w(TAG, "Snapshot Persist Queue flush timed out");
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
     @VisibleForTesting
     void waitForQueueEmpty() {
         while (true) {
@@ -112,7 +154,12 @@ class SnapshotPersistQueue {
         }
     }
 
-    @VisibleForTesting
+    int peekWriteQueueSize() {
+        synchronized (mLock) {
+            return mStoreQueueItems.size();
+        }
+    }
+
     int peekQueueSize() {
         synchronized (mLock) {
             return mWriteQueue.size();
@@ -127,7 +174,9 @@ class SnapshotPersistQueue {
             mWriteQueue.addLast(item);
         }
         item.onQueuedLocked();
-        ensureStoreQueueDepthLocked();
+        if (!mShutdown) {
+            ensureStoreQueueDepthLocked();
+        }
         if (!mPaused) {
             mLock.notifyAll();
         }
@@ -155,7 +204,9 @@ class SnapshotPersistQueue {
     void deleteSnapshot(int index, int userId, PersistInfoProvider provider) {
         final File protoFile = provider.getProtoFile(index, userId);
         final File bitmapLowResFile = provider.getLowResolutionBitmapFile(index, userId);
-        protoFile.delete();
+        if (protoFile.exists()) {
+            protoFile.delete();
+        }
         if (bitmapLowResFile.exists()) {
             bitmapLowResFile.delete();
         }
@@ -177,7 +228,7 @@ class SnapshotPersistQueue {
                     } else {
                         next = mWriteQueue.poll();
                         if (next != null) {
-                            if (next.isReady()) {
+                            if (next.isReady(mUserManagerInternal)) {
                                 isReadyToWrite = true;
                                 next.onDequeuedLocked();
                             } else {
@@ -190,12 +241,17 @@ class SnapshotPersistQueue {
                     if (isReadyToWrite) {
                         next.write();
                     }
-                    SystemClock.sleep(DELAY_MS);
+                    if (!mShutdown) {
+                        SystemClock.sleep(DELAY_MS);
+                    }
                 }
                 synchronized (mLock) {
                     final boolean writeQueueEmpty = mWriteQueue.isEmpty();
                     if (!writeQueueEmpty && !mPaused) {
                         continue;
+                    }
+                    if (mShutdown && writeQueueEmpty) {
+                        mLock.notifyAll();
                     }
                     try {
                         mQueueIdling = writeQueueEmpty;
@@ -210,14 +266,16 @@ class SnapshotPersistQueue {
 
     abstract static class WriteQueueItem {
         protected final PersistInfoProvider mPersistInfoProvider;
-        WriteQueueItem(@NonNull PersistInfoProvider persistInfoProvider) {
+        protected final int mUserId;
+        WriteQueueItem(@NonNull PersistInfoProvider persistInfoProvider, int userId) {
             mPersistInfoProvider = persistInfoProvider;
+            mUserId = userId;
         }
         /**
          * @return {@code true} if item is ready to have {@link WriteQueueItem#write} called
          */
-        boolean isReady() {
-            return true;
+        boolean isReady(UserManagerInternal userManager) {
+            return userManager.isUserUnlocked(mUserId);
         }
 
         abstract void write();
@@ -242,14 +300,13 @@ class SnapshotPersistQueue {
 
     class StoreWriteQueueItem extends WriteQueueItem {
         private final int mId;
-        private final int mUserId;
         private final TaskSnapshot mSnapshot;
 
         StoreWriteQueueItem(int id, int userId, TaskSnapshot snapshot,
                 PersistInfoProvider provider) {
-            super(provider);
+            super(provider, userId);
             mId = id;
-            mUserId = userId;
+            snapshot.addReference(TaskSnapshot.REFERENCE_PERSIST);
             mSnapshot = snapshot;
         }
 
@@ -268,13 +325,10 @@ class SnapshotPersistQueue {
         }
 
         @Override
-        boolean isReady() {
-            return mUserManagerInternal.isUserUnlocked(mUserId);
-        }
-
-        @Override
         void write() {
-            Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "StoreWriteQueueItem");
+            if (Trace.isTagEnabled(TRACE_TAG_WINDOW_MANAGER)) {
+                Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "StoreWriteQueueItem#" + mId);
+            }
             if (!mPersistInfoProvider.createDirectory(mUserId)) {
                 Slog.e(TAG, "Unable to create snapshot directory for user dir="
                         + mPersistInfoProvider.getDirectory(mUserId));
@@ -289,6 +343,7 @@ class SnapshotPersistQueue {
             if (failed) {
                 deleteSnapshot(mId, mUserId, mPersistInfoProvider);
             }
+            mSnapshot.removeReference(TaskSnapshot.REFERENCE_PERSIST);
             Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);
         }
 
@@ -311,6 +366,7 @@ class SnapshotPersistQueue {
             proto.appearance = mSnapshot.getAppearance();
             proto.isTranslucent = mSnapshot.isTranslucent();
             proto.topActivityComponent = mSnapshot.getTopActivityComponent().flattenToString();
+            proto.uiMode = mSnapshot.getUiMode();
             proto.id = mSnapshot.getId();
             final byte[] bytes = TaskSnapshotProto.toByteArray(proto);
             final File file = mPersistInfoProvider.getProtoFile(mId, mUserId);
@@ -346,12 +402,13 @@ class SnapshotPersistQueue {
                         + bitmap.isMutable() + ") to (config=ARGB_8888, isMutable=false) failed.");
                 return false;
             }
+            final int width = bitmap.getWidth();
+            final int height = bitmap.getHeight();
+            bitmap.recycle();
 
             final File file = mPersistInfoProvider.getHighResolutionBitmapFile(mId, mUserId);
-            try {
-                FileOutputStream fos = new FileOutputStream(file);
+            try (FileOutputStream fos = new FileOutputStream(file)) {
                 swBitmap.compress(JPEG, COMPRESS_QUALITY, fos);
-                fos.close();
             } catch (IOException e) {
                 Slog.e(TAG, "Unable to open " + file + " for persisting.", e);
                 return false;
@@ -363,16 +420,14 @@ class SnapshotPersistQueue {
             }
 
             final Bitmap lowResBitmap = Bitmap.createScaledBitmap(swBitmap,
-                    (int) (bitmap.getWidth() * mPersistInfoProvider.lowResScaleFactor()),
-                    (int) (bitmap.getHeight() * mPersistInfoProvider.lowResScaleFactor()),
+                    (int) (width * mPersistInfoProvider.lowResScaleFactor()),
+                    (int) (height * mPersistInfoProvider.lowResScaleFactor()),
                     true /* filter */);
             swBitmap.recycle();
 
             final File lowResFile = mPersistInfoProvider.getLowResolutionBitmapFile(mId, mUserId);
-            try {
-                FileOutputStream lowResFos = new FileOutputStream(lowResFile);
+            try (FileOutputStream lowResFos = new FileOutputStream(lowResFile)) {
                 lowResBitmap.compress(JPEG, COMPRESS_QUALITY, lowResFos);
-                lowResFos.close();
             } catch (IOException e) {
                 Slog.e(TAG, "Unable to open " + lowResFile + " for persisting.", e);
                 return false;
@@ -389,6 +444,11 @@ class SnapshotPersistQueue {
             return mId == other.mId && mUserId == other.mUserId
                     && mPersistInfoProvider == other.mPersistInfoProvider;
         }
+
+        @Override
+        public String toString() {
+            return "StoreWriteQueueItem{ID=" + mId + ", UserId=" + mUserId + "}";
+        }
     }
 
     DeleteWriteQueueItem createDeleteWriteQueueItem(int id, int userId,
@@ -398,12 +458,10 @@ class SnapshotPersistQueue {
 
     private class DeleteWriteQueueItem extends WriteQueueItem {
         private final int mId;
-        private final int mUserId;
 
         DeleteWriteQueueItem(int id, int userId, PersistInfoProvider provider) {
-            super(provider);
+            super(provider, userId);
             mId = id;
-            mUserId = userId;
         }
 
         @Override
@@ -411,6 +469,25 @@ class SnapshotPersistQueue {
             Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "DeleteWriteQueueItem");
             deleteSnapshot(mId, mUserId, mPersistInfoProvider);
             Trace.traceEnd(TRACE_TAG_WINDOW_MANAGER);
+        }
+
+        @Override
+        public String toString() {
+            return "DeleteWriteQueueItem{ID=" + mId + ", UserId=" + mUserId + "}";
+        }
+    }
+
+    void dump(PrintWriter pw, String prefix) {
+        final WriteQueueItem[] items;
+        synchronized (mLock) {
+            items = mWriteQueue.toArray(new WriteQueueItem[0]);
+        }
+        if (items.length == 0) {
+            return;
+        }
+        pw.println(prefix + "PersistQueue contains:");
+        for (int i = items.length - 1; i >= 0; --i) {
+            pw.println(prefix + "  " + items[i] + "");
         }
     }
 }

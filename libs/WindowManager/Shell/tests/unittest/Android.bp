@@ -19,11 +19,15 @@ package {
     // to get the below license kinds:
     //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["frameworks_base_license"],
+    default_team: "trendy_team_multitasking_windowing",
 }
 
 android_test {
     name: "WMShellUnitTests",
-
+    defaults: [
+        // For ExtendedMockito dependencies.
+        "modules-utils-testable-device-config-defaults",
+    ],
     srcs: [
         "**/*.java",
         "**/*.kt",
@@ -33,15 +37,19 @@ android_test {
     ],
 
     static_libs: [
+        "TestParameterInjector",
         "WindowManager-Shell",
         "junit",
-        "flag-junit-base",
+        "flag-junit",
         "androidx.test.runner",
         "androidx.test.rules",
         "androidx.test.ext.junit",
+        "androidx.datastore_datastore",
+        "kotlinx_coroutines_test",
         "androidx.dynamicanimation_dynamicanimation",
         "dagger2",
         "frameworks-base-testutils",
+        "kotlin-test",
         "kotlinx-coroutines-android",
         "kotlinx-coroutines-core",
         "mockito-kotlin2",
@@ -51,12 +59,17 @@ android_test {
         "platform-test-annotations",
         "servicestests-utils",
         "com_android_wm_shell_flags_lib",
+        "guava-android-testlib",
+        "com.android.window.flags.window-aconfig-java",
+        "platform-test-annotations",
+        "flag-junit",
+        "platform-parametric-runner-lib",
     ],
 
     libs: [
-        "android.test.mock",
-        "android.test.base",
-        "android.test.runner",
+        "android.test.mock.stubs.system",
+        "android.test.base.stubs.system",
+        "android.test.runner.stubs.system",
     ],
 
     jni_libs: [
@@ -81,4 +94,11 @@ android_test {
         "--extra-packages",
         "com.android.wm.shell.tests",
     ],
+}
+
+test_module_config {
+    name: "WMShellUnitTests_shell_back",
+    base: "WMShellUnitTests",
+    test_suites: ["device-tests"],
+    include_filters: ["com.android.wm.shell.back"],
 }

@@ -23,8 +23,14 @@ import static android.Manifest.permission.INTERACT_ACROSS_USERS;
 import static android.app.ActivityManagerInternal.ALLOW_FULL_ONLY;
 import static android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION;
 import static android.content.Intent.FLAG_GRANT_PREFIX_URI_PERMISSION;
+import static android.content.pm.ActivityInfo.CONTENT_URI_PERMISSION_NONE;
+import static android.content.pm.ActivityInfo.CONTENT_URI_PERMISSION_READ;
+import static android.content.pm.ActivityInfo.CONTENT_URI_PERMISSION_READ_OR_WRITE;
+import static android.content.pm.ActivityInfo.isRequiredContentUriPermissionRead;
+import static android.content.pm.ActivityInfo.isRequiredContentUriPermissionWrite;
 import static android.content.pm.PackageManager.MATCH_ANY_USER;
 import static android.content.pm.PackageManager.MATCH_DEBUG_TRIAGED_MISSING;
+import static android.content.pm.PackageManager.MATCH_DIRECT_BOOT_AUTO;
 import static android.content.pm.PackageManager.MATCH_DIRECT_BOOT_AWARE;
 import static android.content.pm.PackageManager.MATCH_DIRECT_BOOT_UNAWARE;
 import static android.content.pm.PackageManager.MATCH_UNINSTALLED_PACKAGES;
@@ -34,6 +40,8 @@ import static android.os.Process.SYSTEM_UID;
 import static android.os.Process.myUid;
 
 import static com.android.internal.util.XmlUtils.writeBooleanAttribute;
+import static com.android.internal.util.FrameworkStatsLog.CONTENT_OR_FILE_URI_EVENT_REPORTED;
+import static com.android.internal.util.FrameworkStatsLog.CONTENT_OR_FILE_URI_EVENT_REPORTED__EVENT_TYPE__CONTENT_URI_WITHOUT_CALLER_READ_PERMISSION;
 import static com.android.server.uri.UriGrantsManagerService.H.PERSIST_URI_GRANTS_MSG;
 
 import static org.xmlpull.v1.XmlPullParser.END_DOCUMENT;
@@ -52,12 +60,15 @@ import android.content.ContentProvider;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ActivityInfo.RequiredContentUriPermission;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageManagerInternal;
 import android.content.pm.ParceledListSlice;
 import android.content.pm.PathPermission;
 import android.content.pm.ProviderInfo;
 import android.net.Uri;
+import android.os.BadParcelableException;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.IBinder;
@@ -70,6 +81,7 @@ import android.os.UserHandle;
 import android.provider.Downloads;
 import android.text.format.DateUtils;
 import android.util.ArrayMap;
+import android.util.ArraySet;
 import android.util.AtomicFile;
 import android.util.Slog;
 import android.util.SparseArray;
@@ -78,6 +90,7 @@ import android.util.Xml;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.ArrayUtils;
+import com.android.internal.util.FrameworkStatsLog;
 import com.android.internal.util.Preconditions;
 import com.android.modules.utils.TypedXmlPullParser;
 import com.android.modules.utils.TypedXmlSerializer;
@@ -145,6 +158,22 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
     private final SparseArray<ArrayMap<GrantUri, UriPermission>>
             mGrantedUriPermissions = new SparseArray<>();
 
+    /**
+     * Global map of activity launches to sets of passed content URIs. Specifically:
+     * - The caller didn't have read permission to them.
+     * - The callee activity's {@link android.R.attr#requireContentUriPermissionFromCaller} was set
+     *   to "none".
+     *
+     * <p>This map is used for logging the ContentOrFileUriEventReported message.
+     *
+     * <p>The launch id is the ActivityStarter.Request#hashCode and has to be received from
+     * ActivityStarter to {@link #checkGrantUriPermissionFromIntentUnlocked(int, String, Intent,
+     * int, NeededUriGrants, int, Integer, Integer)}.
+     */
+    @GuardedBy("mLaunchToContentUrisWithoutCallerReadPermission")
+    private final SparseArray<ArraySet<Uri>> mLaunchToContentUrisWithoutCallerReadPermission =
+            new SparseArray<>();
+
     private UriGrantsManagerService() {
         this(SystemServiceManager.ensureSystemDir(), "uri-grants");
     }
@@ -209,10 +238,6 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
                 mService.mPmInternal = LocalServices.getService(PackageManagerInternal.class);
                 mService.mMetricsHelper.registerPuller();
             }
-        }
-
-        public UriGrantsManagerService getService() {
-            return mService;
         }
     }
 
@@ -608,7 +633,9 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
 
     /** Like checkGrantUriPermission, but takes an Intent. */
     private NeededUriGrants checkGrantUriPermissionFromIntentUnlocked(int callingUid,
-            String targetPkg, Intent intent, int mode, NeededUriGrants needed, int targetUserId) {
+            String targetPkg, Intent intent, int mode, NeededUriGrants needed, int targetUserId,
+            @RequiredContentUriPermission Integer requireContentUriPermissionFromCaller,
+            Integer requestHashCode) {
         if (DEBUG) Slog.v(TAG,
                 "Checking URI perm to data=" + (intent != null ? intent.getData() : null)
                         + " clip=" + (intent != null ? intent.getClipData() : null)
@@ -622,16 +649,25 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
         if (intent == null) {
             return null;
         }
-        Uri data = intent.getData();
-        ClipData clip = intent.getClipData();
-        if (data == null && clip == null) {
-            return null;
-        }
+
         // Default userId for uris in the intent (if they don't specify it themselves)
         int contentUserHint = intent.getContentUserHint();
         if (contentUserHint == UserHandle.USER_CURRENT) {
             contentUserHint = UserHandle.getUserId(callingUid);
         }
+
+        if (android.security.Flags.contentUriPermissionApis()) {
+            enforceRequireContentUriPermissionFromCallerOnIntentExtraStreamUnlocked(intent,
+                    contentUserHint, mode, callingUid, requireContentUriPermissionFromCaller,
+                    requestHashCode);
+        }
+
+        Uri data = intent.getData();
+        ClipData clip = intent.getClipData();
+        if (data == null && clip == null) {
+            return null;
+        }
+
         int targetUid;
         if (needed != null) {
             targetUid = needed.targetUid;
@@ -646,6 +682,11 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
         }
         if (data != null) {
             GrantUri grantUri = GrantUri.resolve(contentUserHint, data, mode);
+            if (android.security.Flags.contentUriPermissionApis()) {
+                enforceRequireContentUriPermissionFromCallerUnlocked(
+                        requireContentUriPermissionFromCaller, grantUri, callingUid,
+                        requestHashCode);
+            }
             targetUid = checkGrantUriPermissionUnlocked(callingUid, targetPkg, grantUri, mode,
                     targetUid);
             if (targetUid > 0) {
@@ -660,6 +701,11 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
                 Uri uri = clip.getItemAt(i).getUri();
                 if (uri != null) {
                     GrantUri grantUri = GrantUri.resolve(contentUserHint, uri, mode);
+                    if (android.security.Flags.contentUriPermissionApis()) {
+                        enforceRequireContentUriPermissionFromCallerUnlocked(
+                                requireContentUriPermissionFromCaller, grantUri, callingUid,
+                                requestHashCode);
+                    }
                     targetUid = checkGrantUriPermissionUnlocked(callingUid, targetPkg,
                             grantUri, mode, targetUid);
                     if (targetUid > 0) {
@@ -672,7 +718,8 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
                     Intent clipIntent = clip.getItemAt(i).getIntent();
                     if (clipIntent != null) {
                         NeededUriGrants newNeeded = checkGrantUriPermissionFromIntentUnlocked(
-                                callingUid, targetPkg, clipIntent, mode, needed, targetUserId);
+                                callingUid, targetPkg, clipIntent, mode, needed, targetUserId,
+                                requireContentUriPermissionFromCaller, requestHashCode);
                         if (newNeeded != null) {
                             needed = newNeeded;
                         }
@@ -682,6 +729,138 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
         }
 
         return needed;
+    }
+
+    private void enforceRequireContentUriPermissionFromCallerUnlocked(
+            @RequiredContentUriPermission Integer requireContentUriPermissionFromCaller,
+            GrantUri grantUri, int callingUid, Integer requestHashCode) {
+        // Exit early if requireContentUriPermissionFromCaller hasn't been set or the URI is a
+        // non-content URI.
+        if (requireContentUriPermissionFromCaller == null
+                || requireContentUriPermissionFromCaller == CONTENT_URI_PERMISSION_NONE
+                || !ContentResolver.SCHEME_CONTENT.equals(grantUri.uri.getScheme())) {
+            tryAddingContentUriWithoutCallerReadPermissionWhenAttributeIsNoneUnlocked(
+                    requireContentUriPermissionFromCaller, grantUri, callingUid, requestHashCode);
+            return;
+        }
+
+        final boolean hasPermission = hasRequireContentUriPermissionFromCallerUnlocked(
+                requireContentUriPermissionFromCaller, grantUri, callingUid);
+
+        if (!hasPermission) {
+            throw new SecurityException("You can't launch this activity because you don't have the"
+                    + " required " + ActivityInfo.requiredContentUriPermissionToShortString(
+                            requireContentUriPermissionFromCaller) + " access to " + grantUri.uri);
+        }
+    }
+
+    private boolean hasRequireContentUriPermissionFromCallerUnlocked(
+            @RequiredContentUriPermission Integer requireContentUriPermissionFromCaller,
+            GrantUri grantUri, int uid) {
+        final boolean readMet = !isRequiredContentUriPermissionRead(
+                requireContentUriPermissionFromCaller)
+                || checkContentUriPermissionFullUnlocked(grantUri, uid,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+        final boolean writeMet = !isRequiredContentUriPermissionWrite(
+                requireContentUriPermissionFromCaller)
+                || checkContentUriPermissionFullUnlocked(grantUri, uid,
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+
+        return requireContentUriPermissionFromCaller == CONTENT_URI_PERMISSION_READ_OR_WRITE
+                ? (readMet || writeMet) : (readMet && writeMet);
+    }
+
+    private void tryAddingContentUriWithoutCallerReadPermissionWhenAttributeIsNoneUnlocked(
+            @RequiredContentUriPermission Integer requireContentUriPermissionFromCaller,
+            GrantUri grantUri, int callingUid, Integer requestHashCode) {
+        // We're interested in requireContentUriPermissionFromCaller that is set to
+        // CONTENT_URI_PERMISSION_NONE and content URIs. Hence, ignore if
+        // requireContentUriPermissionFromCaller is not set to CONTENT_URI_PERMISSION_NONE or the
+        // URI is a non-content URI.
+        if (requireContentUriPermissionFromCaller == null
+                || requireContentUriPermissionFromCaller != CONTENT_URI_PERMISSION_NONE
+                || !ContentResolver.SCHEME_CONTENT.equals(grantUri.uri.getScheme())
+                || requestHashCode == null) {
+            return;
+        }
+
+        if (!hasRequireContentUriPermissionFromCallerUnlocked(CONTENT_URI_PERMISSION_READ, grantUri,
+                callingUid)) {
+            synchronized (mLaunchToContentUrisWithoutCallerReadPermission) {
+                if (mLaunchToContentUrisWithoutCallerReadPermission.get(requestHashCode) == null) {
+                    mLaunchToContentUrisWithoutCallerReadPermission
+                            .put(requestHashCode, new ArraySet<>());
+                }
+                mLaunchToContentUrisWithoutCallerReadPermission.get(requestHashCode)
+                        .add(grantUri.uri);
+            }
+        }
+    }
+
+    private void enforceRequireContentUriPermissionFromCallerOnIntentExtraStreamUnlocked(
+            Intent intent, int contentUserHint, int mode, int callingUid,
+            @RequiredContentUriPermission Integer requireContentUriPermissionFromCaller,
+            Integer requestHashCode) {
+        try {
+            final Uri uri = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class);
+            if (uri != null) {
+                final GrantUri grantUri = GrantUri.resolve(contentUserHint, uri, mode);
+                enforceRequireContentUriPermissionFromCallerUnlocked(
+                        requireContentUriPermissionFromCaller, grantUri, callingUid,
+                        requestHashCode);
+            }
+        } catch (BadParcelableException e) {
+            Slog.w(TAG, "Failed to unparcel an URI in EXTRA_STREAM, skipping"
+                    + " requireContentUriPermissionFromCaller: " + e);
+        }
+
+        try {
+            final ArrayList<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM,
+                    Uri.class);
+            if (uris != null) {
+                for (int i = uris.size() - 1; i >= 0; i--) {
+                    final GrantUri grantUri = GrantUri.resolve(contentUserHint, uris.get(i), mode);
+                    enforceRequireContentUriPermissionFromCallerUnlocked(
+                            requireContentUriPermissionFromCaller, grantUri, callingUid,
+                            requestHashCode);
+                }
+            }
+        } catch (BadParcelableException e) {
+            Slog.w(TAG, "Failed to unparcel an ArrayList of URIs in EXTRA_STREAM, skipping"
+                    + " requireContentUriPermissionFromCaller: " + e);
+        }
+    }
+
+    private void notifyActivityLaunchRequestCompletedUnlocked(Integer requestHashCode,
+            boolean isSuccessfulLaunch, String intentAction, int callingUid,
+            String callingActivityName, int calleeUid, String calleeActivityName,
+            boolean isStartActivityForResult) {
+        ArraySet<Uri> contentUris;
+        synchronized (mLaunchToContentUrisWithoutCallerReadPermission) {
+            contentUris = mLaunchToContentUrisWithoutCallerReadPermission.get(requestHashCode);
+            mLaunchToContentUrisWithoutCallerReadPermission.remove(requestHashCode);
+        }
+        if (!isSuccessfulLaunch || contentUris == null) return;
+
+        final String[] authorities = new String[contentUris.size()];
+        final String[] schemes = new String[contentUris.size()];
+        for (int i = contentUris.size() - 1; i >= 0; i--) {
+            Uri uri = contentUris.valueAt(i);
+            authorities[i] = uri.getAuthority();
+            schemes[i] = uri.getScheme();
+        }
+        FrameworkStatsLog.write(CONTENT_OR_FILE_URI_EVENT_REPORTED,
+                CONTENT_OR_FILE_URI_EVENT_REPORTED__EVENT_TYPE__CONTENT_URI_WITHOUT_CALLER_READ_PERMISSION,
+                intentAction,
+                callingUid,
+                callingActivityName,
+                calleeUid,
+                calleeActivityName,
+                isStartActivityForResult,
+                String.join(",", authorities),
+                String.join(",", schemes),
+                /* uri_mime_type */ null);
     }
 
     @GuardedBy("mLock")
@@ -1103,18 +1282,13 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
      */
     private int checkGrantUriPermissionUnlocked(int callingUid, String targetPkg, GrantUri grantUri,
             int modeFlags, int lastTargetUid) {
-        if (!Intent.isAccessUriMode(modeFlags)) {
+        if (!isContentUriWithAccessModeFlags(grantUri, modeFlags,
+                /* logAction */ "grant URI permission")) {
             return -1;
         }
 
         if (targetPkg != null) {
             if (DEBUG) Slog.v(TAG, "Checking grant " + targetPkg + " permission to " + grantUri);
-        }
-
-        // If this is not a content: uri, we can't do anything with it.
-        if (!ContentResolver.SCHEME_CONTENT.equals(grantUri.uri.getScheme())) {
-            if (DEBUG) Slog.v(TAG, "Can't grant URI permission for non-content URI: " + grantUri);
-            return -1;
         }
 
         // Bail early if system is trying to hand out permissions directly; it
@@ -1137,7 +1311,7 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
 
         final String authority = grantUri.uri.getAuthority();
         final ProviderInfo pi = getProviderInfo(authority, grantUri.sourceUserId,
-                MATCH_DEBUG_TRIAGED_MISSING, callingUid);
+                MATCH_DIRECT_BOOT_AUTO, callingUid);
         if (pi == null) {
             Slog.w(TAG, "No content provider found for permission check: " +
                     grantUri.uri.toSafeString());
@@ -1283,6 +1457,65 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
         }
 
         return targetUid;
+    }
+
+    private boolean isContentUriWithAccessModeFlags(GrantUri grantUri, int modeFlags,
+            String logAction) {
+        if (!Intent.isAccessUriMode(modeFlags)) {
+            if (DEBUG) Slog.v(TAG, "Mode flags are not access URI mode flags: " + modeFlags);
+            return false;
+        }
+
+        if (!ContentResolver.SCHEME_CONTENT.equals(grantUri.uri.getScheme())) {
+            if (DEBUG) {
+                Slog.v(TAG, "Can't " + logAction + " on non-content URI: " + grantUri);
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    /** Check if the uid has permission to the content URI in grantUri. */
+    private boolean checkContentUriPermissionFullUnlocked(GrantUri grantUri, int uid,
+            int modeFlags) {
+        if (uid < 0) {
+            throw new IllegalArgumentException("Uid must be positive for the content URI "
+                    + "permission check of " + grantUri.uri.toSafeString());
+        }
+
+        if (!isContentUriWithAccessModeFlags(grantUri, modeFlags,
+                /* logAction */ "check content URI permission")) {
+            throw new IllegalArgumentException("The URI must be a content URI and the mode "
+                    + "flags must be at least read and/or write for the content URI permission "
+                    + "check of " + grantUri.uri.toSafeString());
+        }
+
+        final int appId = UserHandle.getAppId(uid);
+        if ((appId == SYSTEM_UID) || (appId == ROOT_UID)) {
+            return true;
+        }
+
+        // Retrieve the URI's content provider
+        final String authority = grantUri.uri.getAuthority();
+        ProviderInfo pi = getProviderInfo(authority, grantUri.sourceUserId, MATCH_DIRECT_BOOT_AUTO,
+                uid);
+
+        if (pi == null) {
+            Slog.w(TAG, "No content provider found for content URI permission check: "
+                    + grantUri.uri.toSafeString());
+            return false;
+        }
+
+        // Check if it has general permission to the URI's content provider
+        if (checkHoldingPermissionsUnlocked(pi, grantUri, uid, modeFlags)) {
+            return true;
+        }
+
+        // Check if it has explicitly granted permissions to the URI
+        synchronized (mLock) {
+            return checkUriPermissionLocked(grantUri, uid, modeFlags);
+        }
     }
 
     /**
@@ -1482,7 +1715,12 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
         }
 
         @Override
-        public boolean checkUriPermission(GrantUri grantUri, int uid, int modeFlags) {
+        public boolean checkUriPermission(GrantUri grantUri, int uid, int modeFlags,
+                boolean isFullAccessForContentUri) {
+            if (isFullAccessForContentUri) {
+                return UriGrantsManagerService.this.checkContentUriPermissionFullUnlocked(grantUri,
+                        uid, modeFlags);
+            }
             synchronized (mLock) {
                 return UriGrantsManagerService.this.checkUriPermissionLocked(grantUri, uid,
                         modeFlags);
@@ -1500,9 +1738,37 @@ public class UriGrantsManagerService extends IUriGrantsManager.Stub implements
         @Override
         public NeededUriGrants checkGrantUriPermissionFromIntent(Intent intent, int callingUid,
                 String targetPkg, int targetUserId) {
+            return internalCheckGrantUriPermissionFromIntent(intent, callingUid, targetPkg,
+                    targetUserId, /* requireContentUriPermissionFromCaller */ null,
+                    /* requestHashCode */ null);
+        }
+
+        @Override
+        public NeededUriGrants checkGrantUriPermissionFromIntent(Intent intent, int callingUid,
+                String targetPkg, int targetUserId, int requireContentUriPermissionFromCaller,
+                int requestHashCode) {
+            return internalCheckGrantUriPermissionFromIntent(intent, callingUid, targetPkg,
+                    targetUserId, requireContentUriPermissionFromCaller, requestHashCode);
+        }
+
+        @Override
+        public void notifyActivityLaunchRequestCompleted(int requestHashCode,
+                boolean isSuccessfulLaunch, String intentAction, int callingUid,
+                String callingActivityName, int calleeUid, String calleeActivityName,
+                boolean isStartActivityForResult) {
+            UriGrantsManagerService.this.notifyActivityLaunchRequestCompletedUnlocked(
+                    requestHashCode, isSuccessfulLaunch, intentAction, callingUid,
+                    callingActivityName, calleeUid, calleeActivityName,
+                    isStartActivityForResult);
+        }
+
+        private NeededUriGrants internalCheckGrantUriPermissionFromIntent(Intent intent,
+                int callingUid, String targetPkg, int targetUserId,
+                @Nullable Integer requireContentUriPermissionFromCaller, Integer requestHashCode) {
             final int mode = (intent != null) ? intent.getFlags() : 0;
             return UriGrantsManagerService.this.checkGrantUriPermissionFromIntentUnlocked(
-                    callingUid, targetPkg, intent, mode, null, targetUserId);
+                    callingUid, targetPkg, intent, mode, null, targetUserId,
+                    requireContentUriPermissionFromCaller, requestHashCode);
         }
 
         @Override

@@ -17,16 +17,19 @@
 
 package com.android.systemui.keyguard.data.repository
 
+import android.os.Handler
 import android.util.Log
-import com.android.systemui.common.ui.data.repository.ConfigurationRepository
+import androidx.annotation.VisibleForTesting
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.dagger.qualifiers.Main
 import com.android.systemui.keyguard.shared.model.KeyguardBlueprint
 import com.android.systemui.keyguard.ui.view.layout.blueprints.DefaultKeyguardBlueprint.Companion.DEFAULT
 import com.android.systemui.keyguard.ui.view.layout.blueprints.KeyguardBlueprintModule
+import com.android.systemui.keyguard.ui.view.layout.blueprints.transitions.IntraBlueprintTransition.Config
+import com.android.systemui.util.ThreadAssert
 import java.io.PrintWriter
 import java.util.TreeMap
 import javax.inject.Inject
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -45,30 +48,17 @@ import kotlinx.coroutines.flow.MutableStateFlow
 class KeyguardBlueprintRepository
 @Inject
 constructor(
-    configurationRepository: ConfigurationRepository,
     blueprints: Set<@JvmSuppressWildcards KeyguardBlueprint>,
+    @Main val handler: Handler,
+    val assert: ThreadAssert,
 ) {
     // This is TreeMap so that we can order the blueprints and assign numerical values to the
     // blueprints in the adb tool.
     private val blueprintIdMap: TreeMap<String, KeyguardBlueprint> =
         TreeMap<String, KeyguardBlueprint>().apply { putAll(blueprints.associateBy { it.id }) }
     val blueprint: MutableStateFlow<KeyguardBlueprint> = MutableStateFlow(blueprintIdMap[DEFAULT]!!)
-    val refreshBluePrint: MutableSharedFlow<Unit> = MutableSharedFlow(extraBufferCapacity = 1)
-    val configurationChange: Flow<Unit> = configurationRepository.onAnyConfigurationChange
-
-    /**
-     * Emits the blueprint value to the collectors.
-     *
-     * @param blueprintId
-     * @return whether the transition has succeeded.
-     */
-    fun applyBlueprint(index: Int): Boolean {
-        ArrayList(blueprintIdMap.values)[index]?.let {
-            applyBlueprint(it)
-            return true
-        }
-        return false
-    }
+    val refreshTransition = MutableSharedFlow<Config>(extraBufferCapacity = 1)
+    @VisibleForTesting var targetTransitionConfig: Config? = null
 
     /**
      * Emits the blueprint value to the collectors.
@@ -78,32 +68,49 @@ constructor(
      */
     fun applyBlueprint(blueprintId: String?): Boolean {
         val blueprint = blueprintIdMap[blueprintId]
-        return if (blueprint != null) {
-            applyBlueprint(blueprint)
-            true
-        } else {
+        if (blueprint == null) {
             Log.e(
                 TAG,
                 "Could not find blueprint with id: $blueprintId. " +
                     "Perhaps it was not added to KeyguardBlueprintModule?"
             )
-            false
+            return false
         }
-    }
 
-    /** Emits the blueprint value to the collectors. */
-    fun applyBlueprint(blueprint: KeyguardBlueprint?) {
         if (blueprint == this.blueprint.value) {
-            refreshBlueprint()
-            return
+            return true
         }
 
-        blueprint?.let { this.blueprint.value = it }
+        this.blueprint.value = blueprint
+        return true
     }
 
-    /** Re-emits the last emitted blueprint value if possible. */
-    fun refreshBlueprint() {
-        refreshBluePrint.tryEmit(Unit)
+    /**
+     * Re-emits the last emitted blueprint value if possible. This is delayed until next frame to
+     * dedupe requests and determine the correct transition to execute.
+     */
+    fun refreshBlueprint(config: Config = Config.DEFAULT) {
+        fun scheduleCallback() {
+            // We use a handler here instead of a CoroutineDispatcher because the one provided by
+            // @Main CoroutineDispatcher is currently Dispatchers.Main.immediate, which doesn't
+            // delay the callback, and instead runs it immediately.
+            handler.post {
+                assert.isMainThread()
+                targetTransitionConfig?.let {
+                    val success = refreshTransition.tryEmit(it)
+                    if (!success) {
+                        Log.e(TAG, "refreshBlueprint: Failed to emit blueprint refresh: $it")
+                    }
+                }
+                targetTransitionConfig = null
+            }
+        }
+
+        assert.isMainThread()
+        if ((targetTransitionConfig?.type?.priority ?: Int.MIN_VALUE) < config.type.priority) {
+            if (targetTransitionConfig == null) scheduleCallback()
+            targetTransitionConfig = config
+        }
     }
 
     /** Prints all available blueprints to the PrintWriter. */

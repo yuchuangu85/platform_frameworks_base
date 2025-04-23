@@ -17,6 +17,7 @@
 package com.android.server.hdmi;
 
 import static com.android.server.hdmi.HdmiCecKeycode.CEC_KEYCODE_VOLUME_UP;
+import static com.android.server.hdmi.HdmiCecFeatureAction.DELAY_GIVE_AUDIO_STATUS;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -174,11 +175,12 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
                 eq(AudioManager.ADJUST_MUTE), anyInt());
         clearInvocations(mAudioManager);
 
-        // New volume only: sets volume only
+        // New volume only: sets both volume and mute.
+        // Volume changes can affect mute status; we need to set mute afterwards to undo this.
         receiveReportAudioStatus(32, true);
         verify(mAudioManager).setStreamVolume(eq(AudioManager.STREAM_MUSIC), eq(8),
                 anyInt());
-        verify(mAudioManager, never()).adjustStreamVolume(eq(AudioManager.STREAM_MUSIC),
+        verify(mAudioManager).adjustStreamVolume(eq(AudioManager.STREAM_MUSIC),
                 eq(AudioManager.ADJUST_MUTE), anyInt());
         clearInvocations(mAudioManager);
 
@@ -190,11 +192,11 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
                 eq(AudioManager.ADJUST_UNMUTE), anyInt());
         clearInvocations(mAudioManager);
 
-        // Repeat of earlier message: sets volume only (to ensure volume UI is shown)
+        // Repeat of earlier message: sets mute only (to ensure volume UI is shown)
         receiveReportAudioStatus(32, false);
-        verify(mAudioManager).setStreamVolume(eq(AudioManager.STREAM_MUSIC), eq(8),
+        verify(mAudioManager, never()).setStreamVolume(eq(AudioManager.STREAM_MUSIC), eq(8),
                 anyInt());
-        verify(mAudioManager, never()).adjustStreamVolume(eq(AudioManager.STREAM_MUSIC),
+        verify(mAudioManager).adjustStreamVolume(eq(AudioManager.STREAM_MUSIC),
                 eq(AudioManager.ADJUST_UNMUTE), anyInt());
         clearInvocations(mAudioManager);
 
@@ -222,6 +224,9 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
         );
         mTestLooper.dispatchAll();
 
+        mTestLooper.moveTimeForward(DELAY_GIVE_AUDIO_STATUS);
+        mTestLooper.dispatchAll();
+
         assertThat(mNativeWrapper.getResultMessages()).contains(
                 HdmiCecMessageBuilder.buildUserControlPressed(getLogicalAddress(),
                         getSystemAudioDeviceLogicalAddress(), CEC_KEYCODE_VOLUME_UP));
@@ -234,7 +239,7 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
     }
 
     @Test
-    public void adjustOnlyAvbEnabled_audioDeviceVolumeChanged_doesNotSendSetAudioVolumeLevel() {
+    public void adjustOnlyAvbEnabled_audioDeviceVolumeChanged_requestsAndUpdatesAudioStatus() {
         enableAdjustOnlyAbsoluteVolumeBehavior();
 
         mNativeWrapper.clearResultMessages();
@@ -249,7 +254,22 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
         );
         mTestLooper.dispatchAll();
 
-        assertThat(mNativeWrapper.getResultMessages()).isEmpty();
+        // We can't sent <Set Audio Volume Level> when using adjust-only AVB.
+        // Instead, we send <Give Audio Status>, to get the System Audio device's volume level.
+        // This ensures that we end up with a correct audio status in AudioService, even if it
+        // set it incorrectly because it assumed that we could send <Set Audio Volume Level>
+        assertThat(mNativeWrapper.getResultMessages().size()).isEqualTo(1);
+        assertThat(mNativeWrapper.getResultMessages()).contains(
+                HdmiCecMessageBuilder.buildGiveAudioStatus(getLogicalAddress(),
+                        getSystemAudioDeviceLogicalAddress())
+        );
+
+        // When we receive <Report Audio Status>, we notify AudioService of the volume level.
+        receiveReportAudioStatus(50,
+                true);
+        verify(mAudioManager).setStreamVolume(eq(AudioManager.STREAM_MUSIC),
+                eq(50 * STREAM_MUSIC_MAX_VOLUME / AudioStatus.MAX_VOLUME),
+                anyInt());
     }
 
     @Test
@@ -392,18 +412,18 @@ public abstract class BaseTvToAudioSystemAvbTest extends BaseAbsoluteVolumeBehav
                 INITIAL_SYSTEM_AUDIO_DEVICE_STATUS.getMute()));
         mTestLooper.dispatchAll();
 
-        // HdmiControlService calls setStreamVolume to trigger volume UI
-        verify(mAudioManager).setStreamVolume(
+        // HdmiControlService calls adjustStreamVolume to trigger volume UI
+        verify(mAudioManager).adjustStreamVolume(
+                eq(AudioManager.STREAM_MUSIC),
+                eq(AudioManager.ADJUST_UNMUTE),
+                eq(AudioManager.FLAG_ABSOLUTE_VOLUME | AudioManager.FLAG_SHOW_UI));
+        // setStreamVolume is not called because volume didn't change,
+        // and adjustStreamVolume is sufficient to show volume UI
+        verify(mAudioManager, never()).setStreamVolume(
                 eq(AudioManager.STREAM_MUSIC),
                 // Volume level is rescaled to the max volume of STREAM_MUSIC
                 eq(INITIAL_SYSTEM_AUDIO_DEVICE_STATUS.getVolume()
                         * STREAM_MUSIC_MAX_VOLUME / AudioStatus.MAX_VOLUME),
-                eq(AudioManager.FLAG_ABSOLUTE_VOLUME | AudioManager.FLAG_SHOW_UI));
-        // adjustStreamVolume is not called because mute status didn't change,
-        // and setStreamVolume is sufficient to show volume UI
-        verify(mAudioManager, never()).adjustStreamVolume(
-                eq(AudioManager.STREAM_MUSIC),
-                eq(AudioManager.ADJUST_UNMUTE),
                 eq(AudioManager.FLAG_ABSOLUTE_VOLUME | AudioManager.FLAG_SHOW_UI));
     }
 }

@@ -44,12 +44,13 @@ public class BatteryStatsHistoryIterator implements Iterator<BatteryStats.Histor
     private BatteryStats.HistoryItem mHistoryItem = new BatteryStats.HistoryItem();
     private boolean mNextItemReady;
     private boolean mTimeInitialized;
+    private boolean mClosed;
 
     public BatteryStatsHistoryIterator(@NonNull BatteryStatsHistory history, long startTimeMs,
             long endTimeMs) {
         mBatteryStatsHistory = history;
         mStartTimeMs = startTimeMs;
-        mEndTimeMs = (endTimeMs != 0) ? endTimeMs : Long.MAX_VALUE;
+        mEndTimeMs = (endTimeMs != MonotonicClock.UNDEFINED) ? endTimeMs : Long.MAX_VALUE;
         mHistoryItem.clear();
     }
 
@@ -258,7 +259,9 @@ public class BatteryStatsHistoryIterator implements Iterator<BatteryStats.Histor
             final int extensionFlags = src.readInt();
             if ((extensionFlags & BatteryStatsHistory.EXTENSION_POWER_STATS_DESCRIPTOR_FLAG) != 0) {
                 PowerStats.Descriptor descriptor = PowerStats.Descriptor.readSummaryFromParcel(src);
-                mDescriptorRegistry.register(descriptor);
+                if (descriptor != null) {
+                    mDescriptorRegistry.register(descriptor);
+                }
             }
             if ((extensionFlags & BatteryStatsHistory.EXTENSION_POWER_STATS_FLAG) != 0) {
                 cur.powerStats = PowerStats.readFromParcel(src, mDescriptorRegistry);
@@ -309,7 +312,12 @@ public class BatteryStatsHistoryIterator implements Iterator<BatteryStats.Histor
     private static void readBatteryLevelInt(int batteryLevelInt, BatteryStats.HistoryItem out) {
         out.batteryLevel = (byte) ((batteryLevelInt & 0xfe000000) >>> 25);
         out.batteryTemperature = (short) ((batteryLevelInt & 0x01ff8000) >>> 15);
-        out.batteryVoltage = (char) ((batteryLevelInt & 0x00007ffe) >>> 1);
+        int voltage = ((batteryLevelInt & 0x00007ffe) >>> 1);
+        if (voltage == 0x3FFF) {
+            voltage = -1;
+        }
+
+        out.batteryVoltage = (short) voltage;
     }
 
     /**
@@ -317,6 +325,9 @@ public class BatteryStatsHistoryIterator implements Iterator<BatteryStats.Histor
      */
     @Override
     public void close() {
-        mBatteryStatsHistory.iteratorFinished();
+        if (!mClosed) {
+            mClosed = true;
+            mBatteryStatsHistory.iteratorFinished();
+        }
     }
 }

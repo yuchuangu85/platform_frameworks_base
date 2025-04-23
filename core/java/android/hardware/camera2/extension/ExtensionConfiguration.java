@@ -20,7 +20,10 @@ import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SystemApi;
+import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.params.ColorSpaceProfiles;
+import android.os.IBinder;
 
 import com.android.internal.camera.flags.Flags;
 
@@ -28,26 +31,60 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
+ * Helper class used to guide the camera framework when
+ * initializing the internal camera capture session.
+ * It contains all required internal outputs, parameters,
+ * modes and settings.
+ *
+ * <p>Extension must decide the final set of output surfaces
+ * and pass an instance of ExtensionConfiguration as part
+ * of the result during calls to {@link SessionProcessor#initSession}.</p>
+ *
  * @hide
  */
 @SystemApi
-@FlaggedApi(Flags.FLAG_CONCERT_MODE)
 public class ExtensionConfiguration {
     private final int mSessionType;
     private final int mSessionTemplateId;
     private final List<ExtensionOutputConfiguration> mOutputs;
     private final CaptureRequest mSessionParameters;
+    private int mColorSpace;
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
-    public ExtensionConfiguration(int sessionType, int sessionTemplateId, @NonNull
-            List<ExtensionOutputConfiguration> outputs, @Nullable CaptureRequest sessionParams) {
+    /**
+     * Initialize an extension configuration instance
+     *
+     * @param sessionType       The type of camera capture session
+     *                          operating mode to be used
+     * @param sessionTemplateId The request template id to be used
+     *                          for generating the session parameter
+     *                          capture request
+     * @param outputs           List of {@link ExtensionOutputConfiguration}
+     *                          camera outputs to be configured
+     *                          as part of the capture session
+     * @param sessionParams     An optional set of camera capture
+     *                          session parameter values
+     */
+    public ExtensionConfiguration(@CameraDevice.SessionOperatingMode int sessionType,
+            @CameraDevice.RequestTemplate int sessionTemplateId,
+            @NonNull List<ExtensionOutputConfiguration> outputs,
+            @Nullable CaptureRequest sessionParams) {
         mSessionType = sessionType;
         mSessionTemplateId = sessionTemplateId;
         mOutputs = outputs;
         mSessionParameters = sessionParams;
+        mColorSpace = ColorSpaceProfiles.UNSPECIFIED;
     }
 
-    @FlaggedApi(Flags.FLAG_CONCERT_MODE)
+    /**
+     * Set the color space using the ordinal value of a
+     * {@link android.graphics.ColorSpace.Named}.
+     * The default will be -1, indicating an unspecified ColorSpace,
+     * unless explicitly set using this method.
+     */
+    public void setColorSpace(int colorSpace) {
+        mColorSpace = colorSpace;
+    }
+
     CameraSessionConfig getCameraSessionConfig() {
         if (mOutputs.isEmpty()) {
             return null;
@@ -57,6 +94,7 @@ public class ExtensionConfiguration {
         ret.sessionTemplateId = mSessionTemplateId;
         ret.sessionType = mSessionType;
         ret.outputConfigs = new ArrayList<>(mOutputs.size());
+        ret.colorSpace = mColorSpace;
         for (ExtensionOutputConfiguration outputConfig : mOutputs) {
             ret.outputConfigs.add(outputConfig.getOutputConfig());
         }

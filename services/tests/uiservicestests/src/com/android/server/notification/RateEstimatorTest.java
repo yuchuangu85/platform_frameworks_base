@@ -19,8 +19,9 @@ import static com.google.common.truth.Truth.assertThat;
 
 import static java.util.concurrent.TimeUnit.HOURS;
 
-import android.test.suitebuilder.annotation.SmallTest;
+import android.service.notification.RateEstimator;
 
+import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.server.UiServiceTestCase;

@@ -33,8 +33,8 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Iyashaja"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Ishaja kaningi"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Ishaja kancane"</string>
-    <string name="keyguard_plugged_in_charging_limited" msgid="1053130519456324630">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Ukushaja kuthuthukisiwe ukuze kuvikelwe ibhethri"</string>
-    <string name="keyguard_plugged_in_incompatible_charger" msgid="3687961801947819076">"<xliff:g id="PERCENTAGE">%s</xliff:g> • • Inkinga ngesisekeli sokushaja"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="5369697538556777542">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Ukushaja kumisiwe ukuze kuvikelwe ibhethri"</string>
+    <string name="keyguard_plugged_in_incompatible_charger" msgid="6384203333154532125">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Hlola insiza yokushaja"</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"Inethiwekhi ivaliwe"</string>
     <string name="keyguard_missing_sim_message_short" msgid="685029586173458728">"Ayikho i-SIM"</string>
     <string name="keyguard_permanent_disabled_sim_message_short" msgid="3955052454216046100">"I-SIM engasebenziseki."</string>
@@ -111,6 +111,9 @@
     <string name="kg_prompt_reason_timeout_pattern" msgid="5514969660010197363">"Ukuze uthole ukuvikeleka okwengeziwe, sebenzisa iphetheni esikhundleni salokho"</string>
     <string name="kg_prompt_reason_timeout_pin" msgid="4227962059353859376">"Ukuze uthole ukuvikeleka okwengeziwe, sebenzisa i-PIN esikhundleni salokho"</string>
     <string name="kg_prompt_reason_timeout_password" msgid="8810879144143933690">"Ukuze uthole ukuvikeleka okwengeziwe, sebenzisa iphasiwedi esikhundleni salokho"</string>
+    <string name="kg_prompt_added_security_pin" msgid="5487992065995475528">"Kudingeka iphinikhodi ngokuvikeleka okwengeziwe"</string>
+    <string name="kg_prompt_added_security_pattern" msgid="1017068086102168544">"Kudingeka iphethini ngokuvikeleka okwengeziwe"</string>
+    <string name="kg_prompt_added_security_password" msgid="6053156069765029006">"Iphasiwedi idingelwa ukuvikeleka okwengeziwe"</string>
     <string name="kg_prompt_reason_device_admin" msgid="6961159596224055685">"Idivayisi ikhiywe ngumlawuli"</string>
     <string name="kg_prompt_reason_user_request" msgid="6015774877733717904">"Idivayisi ikhiywe ngokwenza"</string>
     <string name="kg_face_not_recognized" msgid="7903950626744419160">"Akwaziwa"</string>

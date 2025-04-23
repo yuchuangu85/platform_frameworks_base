@@ -22,22 +22,27 @@ import com.android.systemui.common.ui.configurationState
 import com.android.systemui.kosmos.Kosmos
 import com.android.systemui.kosmos.Kosmos.Fixture
 import com.android.systemui.kosmos.testDispatcher
-import com.android.systemui.statusbar.notification.icon.ui.viewbinder.shelfNotificationIconViewStore
-import com.android.systemui.statusbar.notification.icon.ui.viewbinder.statusBarIconViewBindingFailureTracker
+import com.android.systemui.statusbar.notification.collection.render.silentHeaderController
+import com.android.systemui.statusbar.notification.icon.ui.viewbinder.notificationIconContainerShelfViewBinder
+import com.android.systemui.statusbar.notification.notificationActivityStarter
+import com.android.systemui.statusbar.notification.stack.displaySwitchNotificationsHiderTracker
+import com.android.systemui.statusbar.notification.stack.ui.view.notificationStatsLogger
 import com.android.systemui.statusbar.notification.stack.ui.viewmodel.notificationListViewModel
-import com.android.systemui.statusbar.phone.notificationIconAreaController
-import com.android.systemui.statusbar.ui.systemBarUtilsState
+import com.android.systemui.statusbar.notification.ui.viewbinder.headsUpNotificationViewBinder
+import java.util.Optional
 
 val Kosmos.notificationListViewBinder by Fixture {
     NotificationListViewBinder(
-        viewModel = notificationListViewModel,
         backgroundDispatcher = testDispatcher,
+        hiderTracker = displaySwitchNotificationsHiderTracker,
         configuration = configurationState,
         falsingManager = falsingManager,
-        iconAreaController = notificationIconAreaController,
-        iconViewBindingFailureTracker = statusBarIconViewBindingFailureTracker,
+        hunBinder = headsUpNotificationViewBinder,
+        loggerOptional = Optional.of(notificationStatsLogger),
         metricsLogger = metricsLogger,
-        shelfIconViewStore = shelfNotificationIconViewStore,
-        systemBarUtilsState = systemBarUtilsState,
+        nicBinder = notificationIconContainerShelfViewBinder,
+        notificationActivityStarter = { notificationActivityStarter },
+        silentHeaderController = silentHeaderController,
+        viewModel = notificationListViewModel,
     )
 }

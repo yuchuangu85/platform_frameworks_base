@@ -19,6 +19,7 @@
 #include <EGL/eglext.h>
 #include <GLES/gl.h>
 #include <cutils/properties.h>
+#include <graphicsenv/GpuStatsInfo.h>
 #include <log/log.h>
 #include <sync/sync.h>
 #include <utils/Trace.h>
@@ -36,6 +37,9 @@
 
 // Android-specific addition that is used to show when frames began in systrace
 EGLAPI void EGLAPIENTRY eglBeginFrame(EGLDisplay dpy, EGLSurface surface);
+
+static constexpr auto P3_XRB = static_cast<android_dataspace>(
+        ADATASPACE_STANDARD_DCI_P3 | ADATASPACE_TRANSFER_SRGB | ADATASPACE_RANGE_EXTENDED);
 
 namespace android {
 namespace uirenderer {
@@ -363,6 +367,10 @@ void EglManager::createContext() {
         contextAttributes.push_back(EGL_CONTEXT_PRIORITY_LEVEL_IMG);
         contextAttributes.push_back(Properties::contextPriority);
     }
+    if (Properties::skipTelemetry) {
+        contextAttributes.push_back(EGL_TELEMETRY_HINT_ANDROID);
+        contextAttributes.push_back(android::GpuStatsInfo::SKIP_TELEMETRY);
+    }
     contextAttributes.push_back(EGL_NONE);
     mEglContext = eglCreateContext(
             mEglDisplay, EglExtensions.noConfigContext ? ((EGLConfig) nullptr) : mEglConfig,
@@ -438,22 +446,35 @@ Result<EGLSurface, EGLint> EglManager::createSurface(EGLNativeWindowType window,
             colorMode = ColorMode::Default;
         }
 
-        if (DeviceInfo::get()->getWideColorType() == kRGBA_F16_SkColorType) {
-            if (mEglConfigF16 == EGL_NO_CONFIG_KHR) {
-                colorMode = ColorMode::Default;
-            } else {
-                config = mEglConfigF16;
+        // TODO: maybe we want to get rid of the WCG check if overlay properties just works?
+        bool canUseFp16 = DeviceInfo::get()->isSupportFp16ForHdr() ||
+                DeviceInfo::get()->getWideColorType() == kRGBA_F16_SkColorType;
+
+        if (colorMode == ColorMode::Hdr) {
+            if (canUseFp16 && !DeviceInfo::get()->isSupportRgba10101010ForHdr()) {
+                if (mEglConfigF16 == EGL_NO_CONFIG_KHR) {
+                    // If the driver doesn't support fp16 then fallback to 8-bit
+                    canUseFp16 = false;
+                } else {
+                    config = mEglConfigF16;
+                }
             }
         }
+
         if (EglExtensions.glColorSpace) {
             attribs[0] = EGL_GL_COLORSPACE_KHR;
             switch (colorMode) {
                 case ColorMode::Default:
                     attribs[1] = EGL_GL_COLORSPACE_LINEAR_KHR;
                     break;
+                case ColorMode::Hdr:
+                    if (canUseFp16) {
+                        attribs[1] = EGL_GL_COLORSPACE_SCRGB_EXT;
+                        break;
+                        // No fp16 support so fallthrough to HDR10
+                    }
                 // We don't have an EGL colorspace for extended range P3 that's used for HDR
                 // So override it after configuring the EGL context
-                case ColorMode::Hdr:
                 case ColorMode::Hdr10:
                     overrideWindowDataSpaceForHdr = true;
                     attribs[1] = EGL_GL_COLORSPACE_DISPLAY_P3_PASSTHROUGH_EXT;
@@ -497,9 +518,7 @@ Result<EGLSurface, EGLint> EglManager::createSurface(EGLNativeWindowType window,
         // This relies on knowing that EGL will not re-set the dataspace after the call to
         // eglCreateWindowSurface. Since the handling of the colorspace extension is largely
         // implemented in libEGL in the platform, we can safely assume this is the case
-        int32_t err = ANativeWindow_setBuffersDataSpace(
-                window,
-                static_cast<android_dataspace>(STANDARD_DCI_P3 | TRANSFER_SRGB | RANGE_EXTENDED));
+        int32_t err = ANativeWindow_setBuffersDataSpace(window, P3_XRB);
         LOG_ALWAYS_FATAL_IF(err, "Failed to ANativeWindow_setBuffersDataSpace %d", err);
     }
 

@@ -47,6 +47,7 @@ import java.io.PrintWriter;
  * (new) system for storing the brightness. It has methods to convert between the two and also
  * observes for when one of the settings is changed and syncs this with the other.
  */
+@android.ravenwood.annotation.RavenwoodKeepPartialClass
 public class BrightnessSynchronizer {
     private static final String TAG = "BrightnessSynchronizer";
 
@@ -77,9 +78,9 @@ public class BrightnessSynchronizer {
     // Feature flag that will eventually be removed
     private final boolean mIntRangeUserPerceptionEnabled;
 
-    public BrightnessSynchronizer(Context context, boolean intRangeUserPerceptionEnabled) {
-        this(context, Looper.getMainLooper(), SystemClock::uptimeMillis,
-                intRangeUserPerceptionEnabled);
+    public BrightnessSynchronizer(Context context, Looper looper,
+            boolean intRangeUserPerceptionEnabled) {
+        this(context, looper, SystemClock::uptimeMillis, intRangeUserPerceptionEnabled);
     }
 
     @VisibleForTesting
@@ -133,7 +134,8 @@ public class BrightnessSynchronizer {
      * Prints data on dumpsys.
      */
     public void dump(PrintWriter pw) {
-        pw.println("BrightnessSynchronizer");
+        pw.println("BrightnessSynchronizer:");
+        pw.println("-----------------------");
         pw.println("  mLatestIntBrightness=" + mLatestIntBrightness);
         pw.println("  mLatestFloatBrightness=" + mLatestFloatBrightness);
         pw.println("  mCurrentUpdate=" + mCurrentUpdate);
@@ -282,6 +284,7 @@ public class BrightnessSynchronizer {
      * @param b second float to compare
      * @return whether the two values are within a small enough tolerance value
      */
+    @android.ravenwood.annotation.RavenwoodKeep
     public static boolean floatEquals(float a, float b) {
         if (a == b) {
             return true;
@@ -597,8 +600,8 @@ public class BrightnessSynchronizer {
             final ContentResolver cr = mContext.getContentResolver();
             cr.registerContentObserver(BRIGHTNESS_URI, false,
                     createBrightnessContentObserver(handler), UserHandle.USER_ALL);
-            mDisplayManager.registerDisplayListener(mListener, handler,
-                    DisplayManager.EVENT_FLAG_DISPLAY_BRIGHTNESS);
+            mDisplayManager.registerDisplayListener(mListener, handler, /* eventFlags */ 0,
+                    DisplayManager.PRIVATE_EVENT_FLAG_DISPLAY_BRIGHTNESS);
             mIsObserving = true;
         }
     }

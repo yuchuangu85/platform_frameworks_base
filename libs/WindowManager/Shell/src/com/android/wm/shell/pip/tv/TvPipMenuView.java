@@ -50,7 +50,7 @@ import android.widget.ImageView;
 
 import androidx.annotation.NonNull;
 
-import com.android.internal.protolog.common.ProtoLog;
+import com.android.internal.protolog.ProtoLog;
 import com.android.internal.widget.LinearLayoutManager;
 import com.android.internal.widget.RecyclerView;
 import com.android.wm.shell.R;
@@ -88,6 +88,8 @@ public class TvPipMenuView extends FrameLayout implements TvPipActionsProvider.L
 
     private final int mPipMenuOuterSpace;
     private final int mPipMenuBorderWidth;
+
+    private final int mButtonStartEndOffset;
 
     private final int mPipMenuFadeAnimationDuration;
     private final int mResizeAnimationDuration;
@@ -147,6 +149,7 @@ public class TvPipMenuView extends FrameLayout implements TvPipActionsProvider.L
         mPipMenuOuterSpace = res.getDimensionPixelSize(R.dimen.pip_menu_outer_space);
         mPipMenuBorderWidth = res.getDimensionPixelSize(R.dimen.pip_menu_border_width);
         mArrowElevation = res.getDimensionPixelSize(R.dimen.pip_menu_arrow_elevation);
+        mButtonStartEndOffset = res.getDimensionPixelSize(R.dimen.pip_menu_button_start_end_offset);
 
         initMoveArrows();
 
@@ -204,6 +207,16 @@ public class TvPipMenuView extends FrameLayout implements TvPipActionsProvider.L
         v.setElevation(mArrowElevation);
     }
 
+    private void setButtonPadding(boolean vertical) {
+        if (vertical) {
+            mActionButtonsRecyclerView.setPadding(
+                    0, mButtonStartEndOffset, 0, mButtonStartEndOffset);
+        } else {
+            mActionButtonsRecyclerView.setPadding(
+                    mButtonStartEndOffset, 0, mButtonStartEndOffset, 0);
+        }
+    }
+
     void onPipTransitionToTargetBoundsStarted(Rect targetBounds) {
         if (targetBounds == null) {
             return;
@@ -244,6 +257,7 @@ public class TvPipMenuView extends FrameLayout implements TvPipActionsProvider.L
         } else {
             mButtonLayoutManager.setOrientation(vertical
                     ? LinearLayoutManager.VERTICAL : LinearLayoutManager.HORIZONTAL);
+            setButtonPadding(vertical);
         }
     }
 
@@ -262,9 +276,10 @@ public class TvPipMenuView extends FrameLayout implements TvPipActionsProvider.L
             mEduTextDrawer.init();
         }
 
+        boolean vertical = mCurrentPipBounds.height() > mCurrentPipBounds.width();
         mButtonLayoutManager.setOrientation(
-                    mCurrentPipBounds.height() > mCurrentPipBounds.width()
-                            ? LinearLayoutManager.VERTICAL : LinearLayoutManager.HORIZONTAL);
+                vertical ? LinearLayoutManager.VERTICAL : LinearLayoutManager.HORIZONTAL);
+        setButtonPadding(vertical);
         if (mCurrentMenuMode == MODE_ALL_ACTIONS_MENU
                 && mActionButtonsRecyclerView.getAlpha() != 1f) {
             mActionButtonsRecyclerView.animate()
@@ -468,6 +483,7 @@ public class TvPipMenuView extends FrameLayout implements TvPipActionsProvider.L
 
     @Override
     public void onCloseEduTextAnimationEnd() {
+        mEduTextDrawer.setVisibility(GONE);
         mPipFrameView.setVisibility(GONE);
         mEduTextContainer.setVisibility(GONE);
     }
@@ -475,30 +491,33 @@ public class TvPipMenuView extends FrameLayout implements TvPipActionsProvider.L
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getAction() == ACTION_UP) {
-
             if (event.getKeyCode() == KEYCODE_BACK) {
                 mListener.onExitCurrentMenuMode();
                 return true;
             }
-
-            if (mCurrentMenuMode == MODE_MOVE_MENU && !mA11yManager.isEnabled()) {
-                switch (event.getKeyCode()) {
-                    case KEYCODE_DPAD_UP:
-                    case KEYCODE_DPAD_DOWN:
-                    case KEYCODE_DPAD_LEFT:
-                    case KEYCODE_DPAD_RIGHT:
+            switch (event.getKeyCode()) {
+                case KEYCODE_DPAD_UP:
+                case KEYCODE_DPAD_DOWN:
+                case KEYCODE_DPAD_LEFT:
+                case KEYCODE_DPAD_RIGHT:
+                    mListener.onUserInteracting();
+                    if (mCurrentMenuMode == MODE_MOVE_MENU && !mA11yManager.isEnabled()) {
                         mListener.onPipMovement(event.getKeyCode());
                         return true;
-                    case KEYCODE_ENTER:
-                    case KEYCODE_DPAD_CENTER:
+                    }
+                    break;
+                case KEYCODE_ENTER:
+                case KEYCODE_DPAD_CENTER:
+                    mListener.onUserInteracting();
+                    if (mCurrentMenuMode == MODE_MOVE_MENU && !mA11yManager.isEnabled()) {
                         mListener.onExitCurrentMenuMode();
                         return true;
-                    default:
-                        // Dispatch key event as normal below
-                }
+                    }
+                    break;
+                default:
+                    // Dispatch key event as normal below
             }
         }
-
         return super.dispatchKeyEvent(event);
     }
 
@@ -619,6 +638,11 @@ public class TvPipMenuView extends FrameLayout implements TvPipActionsProvider.L
     }
 
     interface Listener {
+
+        /**
+         * Called when any button (that affects the menu) on current menu mode was pressed.
+         */
+        void onUserInteracting();
 
         /**
          * Called when a button for exiting the current menu mode was pressed.

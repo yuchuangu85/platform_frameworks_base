@@ -13,6 +13,7 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_framework_accessibility",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "frameworks_base_license"
@@ -26,7 +27,7 @@ android_test_helper_app {
     static_libs: ["androidx.appcompat_appcompat"],
 }
 
-genrule {
+java_genrule {
     name: "LargeResourcesUncompressed",
     srcs: [":LargeResourcesCompressed"],
     out: ["LargeResourcesUncompressed.apk"],

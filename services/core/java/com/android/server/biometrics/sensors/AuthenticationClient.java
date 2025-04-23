@@ -35,7 +35,6 @@ import android.util.EventLog;
 import android.util.Slog;
 
 import com.android.server.biometrics.BiometricsProto;
-import com.android.server.biometrics.Flags;
 import com.android.server.biometrics.Utils;
 import com.android.server.biometrics.log.BiometricContext;
 import com.android.server.biometrics.log.BiometricLogger;
@@ -100,7 +99,7 @@ public abstract class AuthenticationClient<T, O extends AuthenticateOptions>
             boolean shouldVibrate, int sensorStrength) {
         super(context, lazyDaemon, token, listener, options.getUserId(),
                 options.getOpPackageName(), cookie, options.getSensorId(), shouldVibrate,
-                biometricLogger, biometricContext);
+                biometricLogger, biometricContext, options.isMandatoryBiometrics());
         mIsStrongBiometric = isStrongBiometric;
         mOperationId = operationId;
         mRequireConfirmation = requireConfirmation;
@@ -116,25 +115,21 @@ public abstract class AuthenticationClient<T, O extends AuthenticateOptions>
     }
 
     @LockoutTracker.LockoutMode
-    public int handleFailedAttempt(int userId) {
-        if (Flags.deHidl()) {
-            if (mLockoutTracker != null) {
-                mLockoutTracker.addFailedAttemptForUser(getTargetUserId());
-            }
-            @LockoutTracker.LockoutMode final int lockoutMode =
-                    getLockoutTracker().getLockoutModeForUser(userId);
-            final PerformanceTracker performanceTracker =
-                    PerformanceTracker.getInstanceForSensorId(getSensorId());
-            if (lockoutMode == LockoutTracker.LOCKOUT_PERMANENT) {
-                performanceTracker.incrementPermanentLockoutForUser(userId);
-            } else if (lockoutMode == LockoutTracker.LOCKOUT_TIMED) {
-                performanceTracker.incrementTimedLockoutForUser(userId);
-            }
-
-            return lockoutMode;
-        } else {
-            return LockoutTracker.LOCKOUT_NONE;
+    private int handleFailedAttempt(int userId) {
+        if (mLockoutTracker != null) {
+            mLockoutTracker.addFailedAttemptForUser(getTargetUserId());
         }
+        @LockoutTracker.LockoutMode final int lockoutMode =
+                getLockoutTracker().getLockoutModeForUser(userId);
+        final PerformanceTracker performanceTracker =
+                PerformanceTracker.getInstanceForSensorId(getSensorId());
+        if (lockoutMode == LockoutTracker.LOCKOUT_PERMANENT) {
+            performanceTracker.incrementPermanentLockoutForUser(userId);
+        } else if (lockoutMode == LockoutTracker.LOCKOUT_TIMED) {
+            performanceTracker.incrementTimedLockoutForUser(userId);
+        }
+
+        return lockoutMode;
     }
 
     protected long getStartTimeMs() {
@@ -247,14 +242,14 @@ public abstract class AuthenticationClient<T, O extends AuthenticateOptions>
                 byteToken[i] = hardwareAuthToken.get(i);
             }
 
-            if (mIsStrongBiometric) {
-                mBiometricManager.resetLockoutTimeBound(getToken(),
-                        getContext().getOpPackageName(),
-                        getSensorId(), getTargetUserId(), byteToken);
-            }
-
             // For BP, BiometricService will add the authToken to Keystore.
-            if (!isBiometricPrompt() && mIsStrongBiometric) {
+            if (!isBiometricPrompt()) {
+                if (mIsStrongBiometric) {
+                    mBiometricManager.resetLockoutTimeBound(getToken(),
+                            getContext().getOpPackageName(),
+                            getSensorId(), getTargetUserId(), byteToken);
+                }
+
                 final int result = KeyStoreAuthorization.getInstance().addAuthToken(byteToken);
                 if (result != 0) {
                     Slog.d(TAG, "Error adding auth token : " + result);
@@ -265,17 +260,13 @@ public abstract class AuthenticationClient<T, O extends AuthenticateOptions>
                 Slog.d(TAG, "Skipping addAuthToken");
             }
             try {
-                if (listener != null) {
-                    if (!mIsRestricted) {
-                        listener.onAuthenticationSucceeded(getSensorId(), identifier, byteToken,
-                                getTargetUserId(), mIsStrongBiometric);
-                    } else {
-                        listener.onAuthenticationSucceeded(getSensorId(), null /* identifier */,
-                                byteToken,
-                                getTargetUserId(), mIsStrongBiometric);
-                    }
+                if (!mIsRestricted) {
+                    listener.onAuthenticationSucceeded(getSensorId(), identifier, byteToken,
+                            getTargetUserId(), mIsStrongBiometric);
                 } else {
-                    Slog.e(TAG, "Received successful auth, but client was not listening");
+                    listener.onAuthenticationSucceeded(getSensorId(), null /* identifier */,
+                            byteToken,
+                            getTargetUserId(), mIsStrongBiometric);
                 }
             } catch (RemoteException e) {
                 Slog.e(TAG, "Unable to notify listener", e);
@@ -301,11 +292,7 @@ public abstract class AuthenticationClient<T, O extends AuthenticateOptions>
                 }
 
                 try {
-                    if (listener != null) {
-                        listener.onAuthenticationFailed(getSensorId());
-                    } else {
-                        Slog.e(TAG, "Received failed auth, but client was not listening");
-                    }
+                    listener.onAuthenticationFailed(getSensorId());
                 } catch (RemoteException e) {
                     Slog.e(TAG, "Unable to notify listener", e);
                     mCallback.onClientFinished(this, false);

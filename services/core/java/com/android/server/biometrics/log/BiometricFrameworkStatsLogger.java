@@ -98,7 +98,8 @@ public class BiometricFrameworkStatsLogger {
                 foldType(operationContext.getFoldState()),
                 operationContext.getOrderAndIncrement(),
                 toProtoWakeReason(operationContext),
-                toProtoWakeReasonDetails(operationContext));
+                toProtoWakeReasonDetails(operationContext),
+                operationContext.getIsMandatoryBiometrics());
     }
 
     /** {@see FrameworkStatsLog.BIOMETRIC_AUTHENTICATED}. */
@@ -113,14 +114,37 @@ public class BiometricFrameworkStatsLogger {
 
     /** {@see FrameworkStatsLog.BIOMETRIC_ENROLLED}. */
     public void enroll(int statsModality, int statsAction, int statsClient,
-            int targetUserId, long latency, boolean enrollSuccessful, float ambientLightLux) {
+            int targetUserId, long latency, boolean enrollSuccessful, float ambientLightLux,
+            int source, int templateId) {
         FrameworkStatsLog.write(FrameworkStatsLog.BIOMETRIC_ENROLLED,
                 statsModality,
                 targetUserId,
                 sanitizeLatency(latency),
                 enrollSuccessful,
                 -1, /* sensorId */
-                ambientLightLux);
+                ambientLightLux,
+                source,
+                templateId);
+    }
+
+    /** {@see FrameworkStatsLog.BIOMETRIC_UNENROLLED} */
+    public void unenrolled(int statsModality, int targetUserId, int reason, int templateId) {
+        FrameworkStatsLog.write(FrameworkStatsLog.BIOMETRIC_UNENROLLED,
+                statsModality,
+                targetUserId,
+                reason,
+                templateId);
+    }
+
+    /** {@see FrameworkStatsLog.BIOMETRIC_ENUMERATED} */
+    public void enumerated(int statsModality, int targetUserId, int result, int[] templateIdsHal,
+            int[] templateIdsFramework) {
+        FrameworkStatsLog.write(FrameworkStatsLog.BIOMETRIC_ENUMERATED,
+                statsModality,
+                targetUserId,
+                result,
+                templateIdsHal,
+                templateIdsFramework);
     }
 
     /** {@see FrameworkStatsLog.BIOMETRIC_ERROR_OCCURRED}. */
@@ -147,7 +171,8 @@ public class BiometricFrameworkStatsLogger {
                 foldType(operationContext.getFoldState()),
                 operationContext.getOrderAndIncrement(),
                 toProtoWakeReason(operationContext),
-                toProtoWakeReasonDetails(operationContext));
+                toProtoWakeReasonDetails(operationContext),
+                operationContext.getIsMandatoryBiometrics());
     }
 
     @VisibleForTesting
@@ -237,6 +262,20 @@ public class BiometricFrameworkStatsLogger {
                 statsModality,
                 BiometricsProtoEnums.ISSUE_UNKNOWN_TEMPLATE_ENROLLED_FRAMEWORK,
                 -1 /* sensorId */);
+    }
+
+    /** {@see FrameworkStatsLog.BIOMETRIC_SYSTEM_HEALTH_ISSUE_DETECTED}. */
+    public void reportFingerprintsLoe(int statsModality) {
+        FrameworkStatsLog.write(FrameworkStatsLog.BIOMETRIC_SYSTEM_HEALTH_ISSUE_DETECTED,
+                statsModality,
+                BiometricsProtoEnums.ISSUE_FINGERPRINTS_LOE,
+                -1 /* sensorId */);
+    }
+
+    /** {@see FrameworkStatsLog.BIOMETRIC_FRR_NOTIFICATION}. */
+    public void logFrameworkNotification(int action, int modality) {
+        FrameworkStatsLog.write(FrameworkStatsLog.BIOMETRIC_FRR_NOTIFICATION,
+                action, modality);
     }
 
     private long sanitizeLatency(long latency) {

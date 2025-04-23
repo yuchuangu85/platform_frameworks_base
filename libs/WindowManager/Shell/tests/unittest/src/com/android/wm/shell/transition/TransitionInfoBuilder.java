@@ -20,7 +20,10 @@ import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 
 import static org.mockito.Mockito.mock;
 
+import android.annotation.Nullable;
 import android.app.ActivityManager;
+import android.content.ComponentName;
+import android.os.IBinder;
 import android.view.SurfaceControl;
 import android.view.WindowManager;
 import android.window.TransitionInfo;
@@ -50,13 +53,24 @@ public class TransitionInfoBuilder {
     }
 
     public TransitionInfoBuilder addChange(@WindowManager.TransitionType int mode,
-            @TransitionInfo.ChangeFlags int flags, ActivityManager.RunningTaskInfo taskInfo) {
+            @TransitionInfo.ChangeFlags int flags,
+            @Nullable ActivityManager.RunningTaskInfo taskInfo,
+            @Nullable ComponentName activityComponent, @Nullable IBinder taskFragmentToken) {
         final TransitionInfo.Change change = new TransitionInfo.Change(
                 taskInfo != null ? taskInfo.token : null, createMockSurface(true /* valid */));
         change.setMode(mode);
         change.setFlags(flags);
         change.setTaskInfo(taskInfo);
+        change.setActivityComponent(activityComponent);
+        change.setTaskFragmentToken(taskFragmentToken);
         return addChange(change);
+    }
+
+    /** Add a change to the TransitionInfo */
+    public TransitionInfoBuilder addChange(@WindowManager.TransitionType int mode,
+            @TransitionInfo.ChangeFlags int flags, ActivityManager.RunningTaskInfo taskInfo) {
+        return addChange(mode, flags, taskInfo, null /* activityComponent */,
+                null /* taskFragmentToken */);
     }
 
     public TransitionInfoBuilder addChange(@WindowManager.TransitionType int mode,
@@ -64,8 +78,22 @@ public class TransitionInfoBuilder {
         return addChange(mode, TransitionInfo.FLAG_NONE, taskInfo);
     }
 
+    /** Add a change to the TransitionInfo */
+    public TransitionInfoBuilder addChange(@WindowManager.TransitionType int mode,
+            ComponentName activityComponent) {
+        return addChange(mode, TransitionInfo.FLAG_NONE, null /* taskinfo */, activityComponent,
+                null /* taskFragmentToken */);
+    }
+
     public TransitionInfoBuilder addChange(@WindowManager.TransitionType int mode) {
         return addChange(mode, TransitionInfo.FLAG_NONE, null /* taskInfo */);
+    }
+
+    /** Add a change with a TaskFragment token to the TransitionInfo */
+    public TransitionInfoBuilder addChange(@WindowManager.TransitionType int mode,
+            @Nullable IBinder taskFragmentToken) {
+        return addChange(mode, TransitionInfo.FLAG_NONE, null /* taskInfo */,
+                null /* activityComponent */, taskFragmentToken);
     }
 
     public TransitionInfoBuilder addChange(TransitionInfo.Change change) {

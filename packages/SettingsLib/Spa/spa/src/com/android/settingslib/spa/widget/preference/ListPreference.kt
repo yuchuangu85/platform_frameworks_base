@@ -22,8 +22,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.RadioButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.IntState
@@ -37,11 +39,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import com.android.settingslib.spa.framework.theme.SettingsDimension
 import com.android.settingslib.spa.widget.dialog.SettingsDialog
+import com.android.settingslib.spa.widget.ui.SettingsBody
 import com.android.settingslib.spa.widget.ui.SettingsDialogItem
 
 data class ListPreferenceOption(
     val id: Int,
     val text: String,
+    val summary: String = String()
 )
 
 /**
@@ -84,7 +88,7 @@ fun ListPreference(model: ListPreferenceModel) {
             title = model.title,
             onDismissRequest = { dialogOpened = false },
         ) {
-            Column(modifier = Modifier.selectableGroup()) {
+            Column(modifier = Modifier.selectableGroup().verticalScroll(rememberScrollState())) {
                 for (option in model.options) {
                     Radio(option, model.selectedId.intValue, model.enabled()) {
                         dialogOpened = false
@@ -129,6 +133,14 @@ private fun Radio(
     ) {
         RadioButton(selected = selected, onClick = null, enabled = enabled)
         Spacer(modifier = Modifier.width(SettingsDimension.itemPaddingEnd))
-        SettingsDialogItem(text = option.text, enabled = enabled)
+        Column {
+            SettingsDialogItem(text = option.text, enabled = enabled)
+            if (option.summary != String()) {
+                SettingsBody(
+                    body = option.summary,
+                    maxLines = 1
+                )
+            }
+        }
     }
 }

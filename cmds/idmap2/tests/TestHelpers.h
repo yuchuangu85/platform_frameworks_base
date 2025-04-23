@@ -17,10 +17,14 @@
 #ifndef IDMAP2_TESTS_TESTHELPERS_H_
 #define IDMAP2_TESTS_TESTHELPERS_H_
 
+#include <stdio.h>
 #include <string>
+#include <string_view>
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+
+#include "android-base/file.h"
 
 namespace android::idmap2 {
 
@@ -30,7 +34,7 @@ const unsigned char kIdmapRawData[] = {
     0x49, 0x44, 0x4d, 0x50,
 
     // 0x4: version
-    0x09, 0x00, 0x00, 0x00,
+    0x0a, 0x00, 0x00, 0x00,
 
     // 0x8: target crc
     0x34, 0x12, 0x00, 0x00,
@@ -91,19 +95,15 @@ const unsigned char kIdmapRawData[] = {
     // TARGET ENTRIES
     // 0x6c: target id (0x7f020000)
     0x00, 0x00, 0x02, 0x7f,
-
-    // 0x70: overlay_id (0x7f020000)
-    0x00, 0x00, 0x02, 0x7f,
-
-    // 0x74: target id (0x7f030000)
+    // 0x70: target id (0x7f030000)
     0x00, 0x00, 0x03, 0x7f,
-
-    // 0x78: overlay_id (0x7f030000)
-    0x00, 0x00, 0x03, 0x7f,
-
-    // 0x7c: target id (0x7f030002)
+    // 0x74: target id (0x7f030002)
     0x02, 0x00, 0x03, 0x7f,
 
+    // 0x78: overlay_id (0x7f020000)
+    0x00, 0x00, 0x02, 0x7f,
+    // 0x7c: overlay_id (0x7f030000)
+    0x00, 0x00, 0x03, 0x7f,
     // 0x80: overlay_id (0x7f030001)
     0x01, 0x00, 0x03, 0x7f,
 
@@ -174,16 +174,20 @@ const unsigned char kIdmapRawData[] = {
     // 0xe1: padding
     0x00, 0x00, 0x00,
 
-
     // OVERLAY ENTRIES
-    // 0xe4: 0x7f020000 -> 0x7f020000
-    0x00, 0x00, 0x02, 0x7f, 0x00, 0x00, 0x02, 0x7f,
+    // 0xe4: 0x7f020000 -> ...
+    0x00, 0x00, 0x02, 0x7f,
+    // 0xe8: 0x7f030000 -> ...
+    0x00, 0x00, 0x03, 0x7f,
+    // 0xec: 0x7f030001 -> ...
+    0x01, 0x00, 0x03, 0x7f,
 
-    // 0xec: 0x7f030000 -> 0x7f030000
-    0x00, 0x00, 0x03, 0x7f, 0x00, 0x00, 0x03, 0x7f,
-
-    // 0xf4: 0x7f030001 -> 0x7f030002
-    0x01, 0x00, 0x03, 0x7f, 0x02, 0x00, 0x03, 0x7f,
+    // 0xf0: ... -> 0x7f020000
+    0x00, 0x00, 0x02, 0x7f,
+    // 0xf4: ... -> 0x7f030000
+    0x00, 0x00, 0x03, 0x7f,
+    // 0xf8: ... -> 0x7f030002
+    0x02, 0x00, 0x03, 0x7f,
 
     // 0xfc: string pool
     // string length,
@@ -197,11 +201,22 @@ const unsigned int kIdmapRawDataOffset = 0x54;
 const unsigned int kIdmapRawDataTargetCrc = 0x1234;
 const unsigned int kIdmapRawOverlayCrc = 0x5678;
 const unsigned int kIdmapRawDataPolicies = 0x11;
-inline const std::string kIdmapRawTargetPath = "targetX.apk";
-inline const std::string kIdmapRawOverlayPath = "overlayX.apk";
-inline const std::string kIdmapRawOverlayName = "OverlayName";
+inline const std::string_view kIdmapRawTargetPath = "targetX.apk";
+inline const std::string_view kIdmapRawOverlayPath = "overlayX.apk";
+inline const std::string_view kIdmapRawOverlayName = "OverlayName";
 
 std::string GetTestDataPath();
+
+class TempFrroFile : public TemporaryFile {
+public:
+  TempFrroFile() {
+    std::string new_path = path;
+    new_path += ".frro";
+    ::rename(path, new_path.c_str());
+    const auto new_len = new_path.copy(path, sizeof(path) - 1);
+    path[new_len] = '\0';
+  }
+};
 
 class Idmap2Tests : public testing::Test {
  protected:

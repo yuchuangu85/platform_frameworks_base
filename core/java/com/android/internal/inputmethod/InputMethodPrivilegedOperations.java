@@ -20,6 +20,9 @@ import android.annotation.AnyThread;
 import android.annotation.DrawableRes;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.graphics.Region;
+import android.inputmethodservice.InputMethodService.BackDispositionMode;
+import android.inputmethodservice.InputMethodService.ImeWindowVisibility;
 import android.net.Uri;
 import android.os.IBinder;
 import android.os.RemoteException;
@@ -106,14 +109,10 @@ public final class InputMethodPrivilegedOperations {
      *
      * @param vis visibility flags
      * @param backDisposition disposition flags
-     * @see android.inputmethodservice.InputMethodService#IME_ACTIVE
-     * @see android.inputmethodservice.InputMethodService#IME_VISIBLE
-     * @see android.inputmethodservice.InputMethodService#IME_INVISIBLE
-     * @see android.inputmethodservice.InputMethodService#BACK_DISPOSITION_DEFAULT
-     * @see android.inputmethodservice.InputMethodService#BACK_DISPOSITION_ADJUST_NOTHING
      */
     @AnyThread
-    public void setImeWindowStatusAsync(int vis, int backDisposition) {
+    public void setImeWindowStatusAsync(@ImeWindowVisibility int vis,
+            @BackDispositionMode int backDisposition) {
         final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
         if (ops == null) {
             return;
@@ -138,6 +137,43 @@ public final class InputMethodPrivilegedOperations {
         }
         try {
             ops.reportStartInputAsync(startInputToken);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Calls {@link IInputMethodPrivilegedOperations#setHandwritingSurfaceNotTouchable(boolean)}.
+     *
+     * @param notTouchable {@code true} to make handwriting surface not-touchable (pass-through).
+     */
+    @AnyThread
+    public void setHandwritingSurfaceNotTouchable(boolean notTouchable) {
+        final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
+        if (ops == null) {
+            return;
+        }
+        try {
+            ops.setHandwritingSurfaceNotTouchable(notTouchable);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+
+    /**
+     * Calls {@link IInputMethodPrivilegedOperations#setHandwritingTouchableRegion(Region)}.
+     *
+     * @param region {@link Region} to set handwritable.
+     */
+    @AnyThread
+    public void setHandwritingTouchableRegion(Region region) {
+        final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
+        if (ops == null) {
+            return;
+        }
+        try {
+            ops.setHandwritingTouchableRegion(region);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -252,20 +288,21 @@ public final class InputMethodPrivilegedOperations {
     }
 
     /**
-     * Calls {@link IInputMethodPrivilegedOperations#hideMySoftInput(int, int, AndroidFuture)}
-     *
-     * @param reason the reason to hide soft input
+     * Calls {@link IInputMethodPrivilegedOperations#hideMySoftInput}
      */
     @AnyThread
-    public void hideMySoftInput(@InputMethodManager.HideFlags int flags,
-            @SoftInputShowHideReason int reason) {
+    public void hideMySoftInput(@NonNull ImeTracker.Token statsToken,
+            @InputMethodManager.HideFlags int flags, @SoftInputShowHideReason int reason) {
         final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
         if (ops == null) {
+            ImeTracker.forLogging().onFailed(statsToken,
+                    ImeTracker.PHASE_IME_PRIVILEGED_OPERATIONS);
             return;
         }
+        ImeTracker.forLogging().onProgress(statsToken, ImeTracker.PHASE_IME_PRIVILEGED_OPERATIONS);
         try {
             final AndroidFuture<Void> future = new AndroidFuture<>();
-            ops.hideMySoftInput(flags, reason, future);
+            ops.hideMySoftInput(statsToken, flags, reason, future);
             CompletableFutureUtil.getResult(future);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
@@ -273,17 +310,21 @@ public final class InputMethodPrivilegedOperations {
     }
 
     /**
-     * Calls {@link IInputMethodPrivilegedOperations#showMySoftInput(int, AndroidFuture)}
+     * Calls {@link IInputMethodPrivilegedOperations#showMySoftInput}
      */
     @AnyThread
-    public void showMySoftInput(@InputMethodManager.ShowFlags int flags) {
+    public void showMySoftInput(@NonNull ImeTracker.Token statsToken,
+            @InputMethodManager.ShowFlags int flags, @SoftInputShowHideReason int reason) {
         final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
         if (ops == null) {
+            ImeTracker.forLogging().onFailed(statsToken,
+                    ImeTracker.PHASE_IME_PRIVILEGED_OPERATIONS);
             return;
         }
+        ImeTracker.forLogging().onProgress(statsToken, ImeTracker.PHASE_IME_PRIVILEGED_OPERATIONS);
         try {
             final AndroidFuture<Void> future = new AndroidFuture<>();
-            ops.showMySoftInput(flags, future);
+            ops.showMySoftInput(statsToken, flags, reason, future);
             CompletableFutureUtil.getResult(future);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
@@ -355,6 +396,22 @@ public final class InputMethodPrivilegedOperations {
     }
 
     /**
+     * Calls {@link IInputMethodPrivilegedOperations#onImeSwitchButtonClickFromClient(int)}
+     */
+    @AnyThread
+    public void onImeSwitchButtonClickFromClient(int displayId) {
+        final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
+        if (ops == null) {
+            return;
+        }
+        try {
+            ops.onImeSwitchButtonClickFromClient(displayId);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Calls {@link IInputMethodPrivilegedOperations#notifyUserActionAsync()}
      */
     @AnyThread
@@ -379,19 +436,19 @@ public final class InputMethodPrivilegedOperations {
      *        {@link android.view.inputmethod.InputMethodManager#hideSoftInputFromWindow(IBinder,
      *        int)}
      * @param setVisible {@code true} to set IME visible, else hidden.
-     * @param statsToken the token tracking the current IME request or {@code null} otherwise.
+     * @param statsToken the token tracking the current IME request.
      */
     @AnyThread
     public void applyImeVisibilityAsync(IBinder showOrHideInputToken, boolean setVisible,
-            @Nullable ImeTracker.Token statsToken) {
+            @NonNull ImeTracker.Token statsToken) {
         final IInputMethodPrivilegedOperations ops = mOps.getAndWarnIfNull();
         if (ops == null) {
             ImeTracker.forLogging().onFailed(statsToken,
-                    ImeTracker.PHASE_IME_APPLY_VISIBILITY_INSETS_CONSUMER);
+                    ImeTracker.PHASE_IME_PRIVILEGED_OPERATIONS);
             return;
         }
         ImeTracker.forLogging().onProgress(statsToken,
-                ImeTracker.PHASE_IME_APPLY_VISIBILITY_INSETS_CONSUMER);
+                ImeTracker.PHASE_IME_PRIVILEGED_OPERATIONS);
         try {
             ops.applyImeVisibilityAsync(showOrHideInputToken, setVisible, statsToken);
         } catch (RemoteException e) {

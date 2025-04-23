@@ -16,6 +16,7 @@
 
 package com.android.internal.inputmethod;
 
+import android.view.inputmethod.ImeTracker;
 import com.android.internal.inputmethod.InputBindResult;
 
 /**
@@ -24,11 +25,13 @@ import com.android.internal.inputmethod.InputBindResult;
  */
 oneway interface IInputMethodClient {
     void onBindMethod(in InputBindResult res);
+    void onStartInputResult(in InputBindResult res, int startInputSeq);
     void onBindAccessibilityService(in InputBindResult res, int id);
     void onUnbindMethod(int sequence, int unbindReason);
     void onUnbindAccessibilityService(int sequence, int id);
     void setActive(boolean active, boolean fullscreen);
     void setInteractive(boolean active, boolean fullscreen);
+    void setImeVisibility(boolean visible, in @nullable ImeTracker.Token statsToken);
     void scheduleStartInputIfNecessary(boolean fullscreen);
     void reportFullscreenMode(boolean fullscreen);
     void setImeTraceEnabled(boolean enabled);

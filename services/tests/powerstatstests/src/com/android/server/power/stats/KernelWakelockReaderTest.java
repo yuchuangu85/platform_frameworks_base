@@ -16,15 +16,26 @@
 
 package com.android.server.power.stats;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+import android.platform.test.ravenwood.RavenwoodRule;
 import android.system.suspend.internal.WakeLockInfo;
 
 import androidx.test.filters.SmallTest;
 
-import junit.framework.TestCase;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
 
 import java.nio.charset.Charset;
 
-public class KernelWakelockReaderTest extends TestCase {
+@android.platform.test.annotations.DisabledOnRavenwood(reason = "Kernel dependency")
+public class KernelWakelockReaderTest {
+    @Rule
+    public final RavenwoodRule mRavenwood = new RavenwoodRule();
+
     /**
      * Helper class that builds the mock Kernel module file /d/wakeup_sources.
      */
@@ -104,14 +115,14 @@ public class KernelWakelockReaderTest extends TestCase {
 
     private KernelWakelockReader mReader;
 
-    @Override
+    @Before
     public void setUp() throws Exception {
-        super.setUp();
         mReader = new KernelWakelockReader();
     }
 
 // ------------------------- Legacy Wakelock Stats Test ------------------------
     @SmallTest
+    @Test
     public void testParseEmptyFile() throws Exception {
         KernelWakelockStats staleStats = mReader.parseProcWakelocks(new byte[0], 0, true,
                 new KernelWakelockStats());
@@ -120,6 +131,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testOnlyHeader() throws Exception {
         byte[] buffer = new ProcFileBuilder().getBytes();
 
@@ -130,6 +142,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testOneWakelock() throws Exception {
         byte[] buffer = new ProcFileBuilder()
                 .addLine("Wakelock", 34, 123, 456) // Milliseconds
@@ -149,6 +162,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testTwoWakelocks() throws Exception {
         byte[] buffer = new ProcFileBuilder()
                 .addLine("Wakelock", 1, 10)
@@ -165,6 +179,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testDuplicateWakelocksAccumulate() throws Exception {
         byte[] buffer = new ProcFileBuilder()
                 .addLine("Wakelock", 1, 10) // Milliseconds
@@ -183,6 +198,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testWakelocksBecomeStale() throws Exception {
         KernelWakelockStats staleStats = new KernelWakelockStats();
 
@@ -208,6 +224,7 @@ public class KernelWakelockReaderTest extends TestCase {
 
 // -------------------- SystemSuspend Wakelock Stats Test -------------------
     @SmallTest
+    @Test
     public void testEmptyWakeLockInfoList() {
         KernelWakelockStats staleStats = mReader.updateWakelockStats(new WakeLockInfo[0],
                 new KernelWakelockStats());
@@ -216,6 +233,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testOneWakeLockInfo() {
         WakeLockInfo[] wlStats = new WakeLockInfo[1];
         wlStats[0] = createWakeLockInfo("WakeLock", 20, 1000, 500);   // Milliseconds
@@ -234,6 +252,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testTwoWakeLockInfos() {
         WakeLockInfo[] wlStats = new WakeLockInfo[2];
         wlStats[0] = createWakeLockInfo("WakeLock1", 10, 1000); // Milliseconds
@@ -257,6 +276,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testWakeLockInfosBecomeStale() {
         WakeLockInfo[] wlStats = new WakeLockInfo[1];
         wlStats[0] = createWakeLockInfo("WakeLock1", 10, 1000); // Milliseconds
@@ -287,6 +307,7 @@ public class KernelWakelockReaderTest extends TestCase {
 
 // -------------------- Aggregate  Wakelock Stats Tests --------------------
     @SmallTest
+    @Test
     public void testAggregateStatsEmpty() throws Exception {
         KernelWakelockStats staleStats = new KernelWakelockStats();
 
@@ -299,6 +320,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testAggregateStatsNoNativeWakelocks() throws Exception {
         KernelWakelockStats staleStats = new KernelWakelockStats();
 
@@ -319,6 +341,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testAggregateStatsNoKernelWakelocks() throws Exception {
         KernelWakelockStats staleStats = new KernelWakelockStats();
 
@@ -338,6 +361,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testAggregateStatsBothKernelAndNativeWakelocks() throws Exception {
         KernelWakelockStats staleStats = new KernelWakelockStats();
 
@@ -363,6 +387,7 @@ public class KernelWakelockReaderTest extends TestCase {
     }
 
     @SmallTest
+    @Test
     public void testAggregateStatsUpdate() throws Exception {
         KernelWakelockStats staleStats = new KernelWakelockStats();
 

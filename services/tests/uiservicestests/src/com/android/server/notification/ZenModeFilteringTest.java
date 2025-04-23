@@ -26,8 +26,6 @@ import static android.app.NotificationManager.Policy.PRIORITY_CATEGORY_CONVERSAT
 import static android.app.NotificationManager.Policy.PRIORITY_CATEGORY_MESSAGES;
 import static android.app.NotificationManager.Policy.PRIORITY_CATEGORY_REPEAT_CALLERS;
 import static android.app.NotificationManager.Policy.PRIORITY_SENDERS_ANY;
-import static android.app.NotificationManager.Policy.SUPPRESSED_EFFECT_STATUS_BAR;
-import static android.provider.Settings.Global.ZEN_MODE_ALARMS;
 import static android.provider.Settings.Global.ZEN_MODE_IMPORTANT_INTERRUPTIONS;
 import static android.provider.Settings.Global.ZEN_MODE_NO_INTERRUPTIONS;
 import static android.provider.Settings.Global.ZEN_MODE_OFF;
@@ -51,12 +49,12 @@ import android.service.notification.StatusBarNotification;
 import android.service.notification.ZenModeConfig;
 import android.service.notification.ZenPolicy;
 import android.telephony.TelephonyManager;
-import android.test.suitebuilder.annotation.SmallTest;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 import android.util.ArraySet;
 
-import com.android.internal.messages.nano.SystemMessageProto.SystemMessage;
+import androidx.test.filters.SmallTest;
+
 import com.android.internal.util.NotificationMessagingUtil;
 import com.android.server.UiServiceTestCase;
 
@@ -184,49 +182,6 @@ public class ZenModeFilteringTest extends UiServiceTestCase {
                 .build());
         NotificationRecord r = getNotificationRecord(c);
         assertFalse(mZenModeFiltering.isAlarm(r));
-    }
-
-    @Test
-    public void testSuppressDNDInfo_yes_VisEffectsAllowed() {
-        NotificationRecord r = getNotificationRecord();
-        when(r.getSbn().getPackageName()).thenReturn("android");
-        when(r.getSbn().getId()).thenReturn(SystemMessage.NOTE_ZEN_UPGRADE);
-        Policy policy = new Policy(0, 0, 0, Policy.getAllSuppressedVisualEffects()
-                - SUPPRESSED_EFFECT_STATUS_BAR, 0);
-
-        assertTrue(mZenModeFiltering.shouldIntercept(ZEN_MODE_IMPORTANT_INTERRUPTIONS, policy, r));
-    }
-
-    @Test
-    public void testSuppressDNDInfo_yes_WrongId() {
-        NotificationRecord r = getNotificationRecord();
-        when(r.getSbn().getPackageName()).thenReturn("android");
-        when(r.getSbn().getId()).thenReturn(SystemMessage.NOTE_ACCOUNT_CREDENTIAL_PERMISSION);
-        Policy policy = new Policy(0, 0, 0, Policy.getAllSuppressedVisualEffects(), 0);
-
-        assertTrue(mZenModeFiltering.shouldIntercept(ZEN_MODE_IMPORTANT_INTERRUPTIONS, policy, r));
-    }
-
-    @Test
-    public void testSuppressDNDInfo_yes_WrongPackage() {
-        NotificationRecord r = getNotificationRecord();
-        when(r.getSbn().getPackageName()).thenReturn("android2");
-        when(r.getSbn().getId()).thenReturn(SystemMessage.NOTE_ZEN_UPGRADE);
-        Policy policy = new Policy(0, 0, 0, Policy.getAllSuppressedVisualEffects(), 0);
-
-        assertTrue(mZenModeFiltering.shouldIntercept(ZEN_MODE_IMPORTANT_INTERRUPTIONS, policy, r));
-    }
-
-    @Test
-    public void testSuppressDNDInfo_no() {
-        NotificationRecord r = getNotificationRecord();
-        when(r.getSbn().getPackageName()).thenReturn("android");
-        when(r.getSbn().getId()).thenReturn(SystemMessage.NOTE_ZEN_UPGRADE);
-        Policy policy = new Policy(0, 0, 0, Policy.getAllSuppressedVisualEffects(), 0);
-
-        assertFalse(mZenModeFiltering.shouldIntercept(ZEN_MODE_IMPORTANT_INTERRUPTIONS, policy, r));
-        assertFalse(mZenModeFiltering.shouldIntercept(ZEN_MODE_ALARMS, policy, r));
-        assertFalse(mZenModeFiltering.shouldIntercept(ZEN_MODE_NO_INTERRUPTIONS, policy, r));
     }
 
     @Test
@@ -546,13 +501,13 @@ public class ZenModeFilteringTest extends UiServiceTestCase {
         // Create a policy to allow channels through, which means shouldIntercept is false
         ZenModeConfig config = new ZenModeConfig();
         Policy policy = config.toNotificationPolicy(new ZenPolicy.Builder()
-                .allowChannels(ZenPolicy.CHANNEL_TYPE_PRIORITY)
+                .allowPriorityChannels(true)
                 .build());
         assertFalse(mZenModeFiltering.shouldIntercept(ZEN_MODE_IMPORTANT_INTERRUPTIONS, policy, r));
 
         // Now create a policy which does not allow priority channels:
         policy = config.toNotificationPolicy(new ZenPolicy.Builder()
-                .allowChannels(ZenPolicy.CHANNEL_TYPE_NONE)
+                .allowPriorityChannels(false)
                 .build());
         assertTrue(mZenModeFiltering.shouldIntercept(ZEN_MODE_IMPORTANT_INTERRUPTIONS, policy, r));
     }

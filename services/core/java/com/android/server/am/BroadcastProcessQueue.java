@@ -44,6 +44,7 @@ import dalvik.annotation.optimization.NeverCompile;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.Objects;
 
@@ -152,6 +153,11 @@ class BroadcastProcessQueue {
     private int mActiveIndex;
 
     /**
+     * True if the broadcast actively being dispatched to this process was re-enqueued previously.
+     */
+    private boolean mActiveReEnqueued;
+
+    /**
      * Count of {@link #mActive} broadcasts that have been dispatched since this
      * queue was last idle.
      */
@@ -174,6 +180,12 @@ class BroadcastProcessQueue {
      * to a package that was in the stopped state.
      */
     private boolean mActiveWasStopped;
+
+    /**
+     * Flag indicating that the currently active broadcast is being dispatched
+     * to a package that was never launched before.
+     */
+    private boolean mActiveFirstLaunch;
 
     /**
      * Number of consecutive urgent broadcasts that have been dispatched
@@ -228,6 +240,11 @@ class BroadcastProcessQueue {
      */
     private long mForcedDelayedDurationMs;
 
+    /**
+     * List of outgoing broadcasts from a freezable process.
+     */
+    private final ArrayList<BroadcastRecord> mOutgoingBroadcasts = new ArrayList<>();
+
     public BroadcastProcessQueue(@NonNull BroadcastConstants constants,
             @NonNull String processName, int uid) {
         this.constants = Objects.requireNonNull(constants);
@@ -243,6 +260,25 @@ class BroadcastProcessQueue {
         } else {
             return mPending;
         }
+    }
+
+    public void enqueueOutgoingBroadcast(@NonNull BroadcastRecord record) {
+        mOutgoingBroadcasts.add(record);
+    }
+
+    public int getOutgoingBroadcastCount() {
+        return mOutgoingBroadcasts.size();
+    }
+
+    public void enqueueOutgoingBroadcasts(@NonNull BroadcastRecordConsumer consumer) {
+        for (int i = 0; i < mOutgoingBroadcasts.size(); ++i) {
+            consumer.accept(mOutgoingBroadcasts.get(i));
+        }
+        mOutgoingBroadcasts.clear();
+    }
+
+    public void clearOutgoingBroadcasts() {
+        mOutgoingBroadcasts.clear();
     }
 
     /**
@@ -317,6 +353,7 @@ class BroadcastProcessQueue {
         final SomeArgs broadcastArgs = SomeArgs.obtain();
         broadcastArgs.arg1 = record;
         broadcastArgs.argi1 = recordIndex;
+        broadcastArgs.argi2 = 1;
         getQueueForBroadcast(record).addFirst(broadcastArgs);
         onBroadcastEnqueued(record, recordIndex);
     }
@@ -358,8 +395,7 @@ class BroadcastProcessQueue {
             // If we come across the record that's being enqueued in the queue, then that means
             // we already enqueued it for a receiver in this process and trying to insert a new
             // one past this could create priority inversion in the queue, so bail out.
-            if (record == testRecord && record.blockedUntilBeyondCount[recordIndex]
-                    > testRecord.blockedUntilBeyondCount[testRecordIndex]) {
+            if (record == testRecord) {
                 break;
             }
             if ((record.callingUid == testRecord.callingUid)
@@ -381,8 +417,8 @@ class BroadcastProcessQueue {
     }
 
     /**
-     * Functional interface that tests a {@link BroadcastRecord} that has been
-     * previously enqueued in {@link BroadcastProcessQueue}.
+     * Functional interface that tests a {@link BroadcastRecord} and an index in the
+     * {@link BroadcastRecord} that has been previously enqueued in {@link BroadcastProcessQueue}.
      */
     @FunctionalInterface
     public interface BroadcastPredicate {
@@ -390,12 +426,21 @@ class BroadcastProcessQueue {
     }
 
     /**
-     * Functional interface that consumes a {@link BroadcastRecord} that has
-     * been previously enqueued in {@link BroadcastProcessQueue}.
+     * Functional interface that consumes a {@link BroadcastRecord} and an index in the
+     * {@link BroadcastRecord} that has been previously enqueued in {@link BroadcastProcessQueue}.
      */
     @FunctionalInterface
     public interface BroadcastConsumer {
         void accept(@NonNull BroadcastRecord r, int index);
+    }
+
+    /**
+     * Functional interface that consumes a {@link BroadcastRecord} that has
+     * been previously enqueued in {@link BroadcastProcessQueue}.
+     */
+    @FunctionalInterface
+    public interface BroadcastRecordConsumer {
+        void accept(@NonNull BroadcastRecord r);
     }
 
     /**
@@ -591,12 +636,20 @@ class BroadcastProcessQueue {
         mActiveWasStopped = activeWasStopped;
     }
 
+    public void setActiveFirstLaunch(boolean activeFirstLaunch) {
+        mActiveFirstLaunch = activeFirstLaunch;
+    }
+
     public boolean getActiveViaColdStart() {
         return mActiveViaColdStart;
     }
 
     public boolean getActiveWasStopped() {
         return mActiveWasStopped;
+    }
+
+    public boolean getActiveFirstLaunch() {
+        return mActiveFirstLaunch;
     }
 
     /**
@@ -615,6 +668,7 @@ class BroadcastProcessQueue {
         final SomeArgs next = removeNextBroadcast();
         mActive = (BroadcastRecord) next.arg1;
         mActiveIndex = next.argi1;
+        mActiveReEnqueued = (next.argi2 == 1);
         mActiveCountSinceIdle++;
         mActiveAssumedDeliveryCountSinceIdle +=
                 (mActive.isAssumedDelivered(mActiveIndex) ? 1 : 0);
@@ -630,10 +684,19 @@ class BroadcastProcessQueue {
     public void makeActiveIdle() {
         mActive = null;
         mActiveIndex = 0;
+        mActiveReEnqueued = false;
         mActiveCountSinceIdle = 0;
         mActiveAssumedDeliveryCountSinceIdle = 0;
         mActiveViaColdStart = false;
         invalidateRunnableAt();
+    }
+
+    public boolean wasActiveBroadcastReEnqueued() {
+        // If the flag is not enabled, treat as if the broadcast was never re-enqueued.
+        if (!Flags.avoidRepeatedBcastReEnqueues()) {
+            return false;
+        }
+        return mActiveReEnqueued;
     }
 
     /**
@@ -757,6 +820,10 @@ class BroadcastProcessQueue {
     public int getActiveIndex() {
         Objects.requireNonNull(mActive);
         return mActiveIndex;
+    }
+
+    public boolean isOutgoingEmpty() {
+        return mOutgoingBroadcasts.isEmpty();
     }
 
     public boolean isEmpty() {
@@ -1428,7 +1495,7 @@ class BroadcastProcessQueue {
 
     @NeverCompile
     public void dumpLocked(@UptimeMillisLong long now, @NonNull IndentingPrintWriter pw) {
-        if ((mActive == null) && isEmpty()) return;
+        if ((mActive == null) && isEmpty() && isOutgoingEmpty()) return;
 
         pw.print(toShortString());
         pw.print(" ");
@@ -1438,6 +1505,12 @@ class BroadcastProcessQueue {
         pw.increaseIndent();
         dumpProcessState(pw);
         dumpBroadcastCounts(pw);
+
+        if (!mOutgoingBroadcasts.isEmpty()) {
+            for (int i = 0; i < mOutgoingBroadcasts.size(); ++i) {
+                dumpOutgoingRecord(now, pw, mOutgoingBroadcasts.get(i));
+            }
+        }
 
         if (mActive != null) {
             dumpRecord("ACTIVE", now, pw, mActive, mActiveIndex);
@@ -1482,6 +1555,9 @@ class BroadcastProcessQueue {
         if (runningOomAdjusted) {
             pw.print("runningOomAdjusted:"); pw.println(runningOomAdjusted);
         }
+        if (mActiveReEnqueued) {
+            pw.print("activeReEnqueued:"); pw.println(mActiveReEnqueued);
+        }
     }
 
     @NeverCompile
@@ -1504,6 +1580,15 @@ class BroadcastProcessQueue {
         pw.print(" ccu:"); pw.print(mActiveCountConsecutiveUrgent);
         pw.print(" ccn:"); pw.print(mActiveCountConsecutiveNormal);
         pw.println();
+    }
+
+    @NeverCompile
+    private void dumpOutgoingRecord(@UptimeMillisLong long now,
+            @NonNull IndentingPrintWriter pw, @NonNull BroadcastRecord record) {
+        pw.print("OUTGOING ");
+        TimeUtils.formatDuration(record.enqueueTime, now, pw);
+        pw.print(' ');
+        pw.println(record.toShortString());
     }
 
     @NeverCompile

@@ -29,6 +29,7 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.provider.Telephony;
 import android.provider.Telephony.Carriers;
+import android.provider.Telephony.Carriers.EditStatus;
 import android.telephony.Annotation.NetworkType;
 import android.telephony.ServiceState;
 import android.telephony.TelephonyManager;
@@ -37,6 +38,7 @@ import android.util.ArrayMap;
 import android.util.Log;
 
 import com.android.internal.telephony.flags.Flags;
+import com.android.internal.telephony.util.TelephonyUtils;
 import com.android.telephony.Rlog;
 
 import java.lang.annotation.Retention;
@@ -126,6 +128,12 @@ public class ApnSetting implements Parcelable {
     /** APN type for RCS (Rich Communication Services). */
     @FlaggedApi(Flags.FLAG_CARRIER_ENABLED_SATELLITE_FLAG)
     public static final int TYPE_RCS = ApnTypes.RCS;
+    /** APN type for OEM_PAID networks (Automotive PANS) */
+    @FlaggedApi(Flags.FLAG_OEM_PAID_PRIVATE)
+    public static final int TYPE_OEM_PAID = 1 << 16; // TODO(b/366194627): ApnTypes.OEM_PAID;
+    /** APN type for OEM_PRIVATE networks (Automotive PANS) */
+    @FlaggedApi(Flags.FLAG_OEM_PAID_PRIVATE)
+    public static final int TYPE_OEM_PRIVATE = 1 << 17; // TODO(b/366194627): ApnTypes.OEM_PRIVATE;
 
     /** @hide */
     @IntDef(flag = true, prefix = {"TYPE_"}, value = {
@@ -144,7 +152,9 @@ public class ApnSetting implements Parcelable {
             TYPE_BIP,
             TYPE_VSIM,
             TYPE_ENTERPRISE,
-            TYPE_RCS
+            TYPE_RCS,
+            TYPE_OEM_PAID,
+            TYPE_OEM_PRIVATE,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ApnType {
@@ -373,6 +383,27 @@ public class ApnSetting implements Parcelable {
     @SystemApi
     public static final String TYPE_RCS_STRING = "rcs";
 
+    /**
+     * APN type for OEM_PAID networks (Automotive PANS)
+     *
+     * Note: String representations of APN types are intended for system apps to communicate with
+     * modem components or carriers. Non-system apps should use the integer variants instead.
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_OEM_PAID_PRIVATE)
+    @SystemApi
+    public static final String TYPE_OEM_PAID_STRING = "oem_paid";
+
+    /**
+     * APN type for OEM_PRIVATE networks (Automotive PANS)
+     *
+     * Note: String representations of APN types are intended for system apps to communicate with
+     * modem components or carriers. Non-system apps should use the integer variants instead.
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_OEM_PAID_PRIVATE)
+    @SystemApi
+    public static final String TYPE_OEM_PRIVATE_STRING = "oem_private";
 
     /** @hide */
     @IntDef(prefix = { "AUTH_TYPE_" }, value = {
@@ -487,6 +518,8 @@ public class ApnSetting implements Parcelable {
         APN_TYPE_STRING_MAP.put(TYPE_VSIM_STRING, TYPE_VSIM);
         APN_TYPE_STRING_MAP.put(TYPE_BIP_STRING, TYPE_BIP);
         APN_TYPE_STRING_MAP.put(TYPE_RCS_STRING, TYPE_RCS);
+        APN_TYPE_STRING_MAP.put(TYPE_OEM_PAID_STRING, TYPE_OEM_PAID);
+        APN_TYPE_STRING_MAP.put(TYPE_OEM_PRIVATE_STRING, TYPE_OEM_PRIVATE);
 
         APN_TYPE_INT_MAP = new ArrayMap<>();
         APN_TYPE_INT_MAP.put(TYPE_DEFAULT, TYPE_DEFAULT_STRING);
@@ -505,6 +538,8 @@ public class ApnSetting implements Parcelable {
         APN_TYPE_INT_MAP.put(TYPE_VSIM, TYPE_VSIM_STRING);
         APN_TYPE_INT_MAP.put(TYPE_BIP, TYPE_BIP_STRING);
         APN_TYPE_INT_MAP.put(TYPE_RCS, TYPE_RCS_STRING);
+        APN_TYPE_INT_MAP.put(TYPE_OEM_PAID, TYPE_OEM_PAID_STRING);
+        APN_TYPE_INT_MAP.put(TYPE_OEM_PRIVATE, TYPE_OEM_PRIVATE_STRING);
 
         PROTOCOL_STRING_MAP = new ArrayMap<>();
         PROTOCOL_STRING_MAP.put("IP", PROTOCOL_IP);
@@ -569,6 +604,13 @@ public class ApnSetting implements Parcelable {
     private final boolean mAlwaysOn;
     private final @InfrastructureBitmask int mInfrastructureBitmask;
     private final boolean mEsimBootstrapProvisioning;
+
+    /**
+     * The APN edited status.
+     *
+     * Note it is intended not using this field for {@link #equals(Object)} or {@link #hashCode()}.
+     */
+    private final @EditStatus int mEditedStatus;
 
     /**
      * Returns the default MTU (Maximum Transmission Unit) size in bytes of the IPv4 routes brought
@@ -992,6 +1034,22 @@ public class ApnSetting implements Parcelable {
         return mEsimBootstrapProvisioning;
     }
 
+    /**
+     * @return APN edited status. APN could be added/edited/deleted by a user or carrier.
+     *
+     * @see Carriers#UNEDITED
+     * @see Carriers#USER_EDITED
+     * @see Carriers#USER_DELETED
+     * @see Carriers#CARRIER_EDITED
+     * @see Carriers#CARRIER_DELETED
+     *
+     * @hide
+     */
+    @EditStatus
+    public int getEditedStatus() {
+        return mEditedStatus;
+    }
+
     private ApnSetting(Builder builder) {
         this.mEntryName = builder.mEntryName;
         this.mApnName = builder.mApnName;
@@ -1030,6 +1088,7 @@ public class ApnSetting implements Parcelable {
         this.mAlwaysOn = builder.mAlwaysOn;
         this.mInfrastructureBitmask = builder.mInfrastructureBitmask;
         this.mEsimBootstrapProvisioning = builder.mEsimBootstrapProvisioning;
+        this.mEditedStatus = builder.mEditedStatus;
     }
 
     /**
@@ -1113,6 +1172,8 @@ public class ApnSetting implements Parcelable {
                         Telephony.Carriers.INFRASTRUCTURE_BITMASK)))
                 .setEsimBootstrapProvisioning(cursor.getInt(
                         cursor.getColumnIndexOrThrow(Carriers.ESIM_BOOTSTRAP_PROVISIONING)) == 1)
+                .setEditedStatus(cursor.getInt(
+                        cursor.getColumnIndexOrThrow(Carriers.EDITED_STATUS)))
                 .buildWithoutCheck();
     }
 
@@ -1154,6 +1215,7 @@ public class ApnSetting implements Parcelable {
                 .setAlwaysOn(apn.mAlwaysOn)
                 .setInfrastructureBitmask(apn.mInfrastructureBitmask)
                 .setEsimBootstrapProvisioning(apn.mEsimBootstrapProvisioning)
+                .setEditedStatus(apn.mEditedStatus)
                 .buildWithoutCheck();
     }
 
@@ -1202,6 +1264,7 @@ public class ApnSetting implements Parcelable {
         sb.append(", ").append(mInfrastructureBitmask);
         sb.append(", ").append(Objects.hash(mUser, mPassword));
         sb.append(", ").append(mEsimBootstrapProvisioning);
+        sb.append(", ").append(TelephonyUtils.apnEditedStatusToString(mEditedStatus));
         return sb.toString();
     }
 
@@ -1748,6 +1811,7 @@ public class ApnSetting implements Parcelable {
         dest.writeBoolean(mAlwaysOn);
         dest.writeInt(mInfrastructureBitmask);
         dest.writeBoolean(mEsimBootstrapProvisioning);
+        dest.writeInt(mEditedStatus);
     }
 
     private static ApnSetting readFromParcel(Parcel in) {
@@ -1785,6 +1849,7 @@ public class ApnSetting implements Parcelable {
                 .setAlwaysOn(in.readBoolean())
                 .setInfrastructureBitmask(in.readInt())
                 .setEsimBootstrapProvisioning(in.readBoolean())
+                .setEditedStatus(in.readInt())
                 .buildWithoutCheck();
     }
 
@@ -1868,6 +1933,7 @@ public class ApnSetting implements Parcelable {
         private boolean mAlwaysOn;
         private int mInfrastructureBitmask = INFRASTRUCTURE_CELLULAR | INFRASTRUCTURE_SATELLITE;
         private boolean mEsimBootstrapProvisioning;
+        private @EditStatus int mEditedStatus = Carriers.UNEDITED;
 
         /**
          * Default constructor for Builder.
@@ -2310,11 +2376,33 @@ public class ApnSetting implements Parcelable {
          *
          * @param esimBootstrapProvisioning {@code true} if the APN is used for eSIM bootstrap
          * provisioning, {@code false} otherwise.
+         *
+         * @return The builder.
          * @hide
          */
         @NonNull
         public Builder setEsimBootstrapProvisioning(boolean esimBootstrapProvisioning) {
             this.mEsimBootstrapProvisioning = esimBootstrapProvisioning;
+            return this;
+        }
+
+        /**
+         * Set the edited status. APN could be added/edited/deleted by a user or carrier.
+         *
+         * @param editedStatus The APN edited status
+         * @return The builder.
+         *
+         * @see Carriers#UNEDITED
+         * @see Carriers#USER_EDITED
+         * @see Carriers#USER_DELETED
+         * @see Carriers#CARRIER_EDITED
+         * @see Carriers#CARRIER_DELETED
+         *
+         * @hide
+         */
+        @NonNull
+        public Builder setEditedStatus(@EditStatus int editedStatus) {
+            this.mEditedStatus = editedStatus;
             return this;
         }
 
@@ -2328,7 +2416,8 @@ public class ApnSetting implements Parcelable {
         public ApnSetting build() {
             if ((mApnTypeBitmask & (TYPE_DEFAULT | TYPE_MMS | TYPE_SUPL | TYPE_DUN | TYPE_HIPRI
                     | TYPE_FOTA | TYPE_IMS | TYPE_CBS | TYPE_IA | TYPE_EMERGENCY | TYPE_MCX
-                    | TYPE_XCAP | TYPE_VSIM | TYPE_BIP | TYPE_ENTERPRISE | TYPE_RCS)) == 0
+                    | TYPE_XCAP | TYPE_VSIM | TYPE_BIP | TYPE_ENTERPRISE | TYPE_RCS | TYPE_OEM_PAID
+                    | TYPE_OEM_PRIVATE)) == 0
                 || TextUtils.isEmpty(mApnName) || TextUtils.isEmpty(mEntryName)) {
                 return null;
             }

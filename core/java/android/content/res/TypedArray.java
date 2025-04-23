@@ -27,6 +27,8 @@ import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.StrictMode;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodThrow;
 import android.util.AttributeSet;
 import android.util.DisplayMetrics;
 import android.util.TypedValue;
@@ -34,8 +36,6 @@ import android.util.TypedValue;
 import com.android.internal.util.XmlUtils;
 
 import dalvik.system.VMRuntime;
-
-import org.xmlpull.v1.XmlPullParserException;
 
 import java.util.Arrays;
 
@@ -48,6 +48,7 @@ import java.util.Arrays;
  * The indices used to retrieve values from this structure correspond to
  * the positions of the attributes given to obtainStyledAttributes.
  */
+@RavenwoodKeepWholeClass
 public class TypedArray implements AutoCloseable {
 
     static TypedArray obtain(Resources res, int len) {
@@ -309,7 +310,11 @@ public class TypedArray implements AutoCloseable {
         if (type == TypedValue.TYPE_STRING) {
             final int cookie = data[index + STYLE_ASSET_COOKIE];
             if (cookie < 0) {
-                return mXml.getPooledString(data[index + STYLE_DATA]).toString();
+                String value = mXml.getPooledString(data[index + STYLE_DATA]).toString();
+                if (value != null && mXml != null && mXml.mValidator != null) {
+                    mXml.mValidator.validateResStrAttr(mXml, index, value);
+                }
+                return value;
             }
         }
         return null;
@@ -555,6 +560,7 @@ public class TypedArray implements AutoCloseable {
      * @hide
      */
     @Nullable
+    @RavenwoodThrow(blockedBy = ComplexColor.class)
     public ComplexColor getComplexColor(@StyleableRes int index) {
         if (mRecycled) {
             throw new RuntimeException("Cannot make calls to a recycled instance!");
@@ -989,6 +995,7 @@ public class TypedArray implements AutoCloseable {
      *         not a color or drawable resource.
      */
     @Nullable
+    @RavenwoodThrow(blockedBy = Drawable.class)
     public Drawable getDrawable(@StyleableRes int index) {
         return getDrawableForDensity(index, 0);
     }
@@ -998,6 +1005,7 @@ public class TypedArray implements AutoCloseable {
      * @hide
      */
     @Nullable
+    @RavenwoodThrow(blockedBy = Drawable.class)
     public Drawable getDrawableForDensity(@StyleableRes int index, int density) {
         if (mRecycled) {
             throw new RuntimeException("Cannot make calls to a recycled instance!");
@@ -1035,6 +1043,7 @@ public class TypedArray implements AutoCloseable {
      *         not a font resource.
      */
     @Nullable
+    @RavenwoodThrow(blockedBy = Typeface.class)
     public Typeface getFont(@StyleableRes int index) {
         if (mRecycled) {
             throw new RuntimeException("Cannot make calls to a recycled instance!");
@@ -1402,11 +1411,7 @@ public class TypedArray implements AutoCloseable {
             value = mAssets.getPooledStringForCookie(cookie, data[index + STYLE_DATA]);
         }
         if (value != null && mXml != null && mXml.mValidator != null) {
-            try {
-                mXml.mValidator.validateResStrAttr(mXml, index / STYLE_NUM_ENTRIES, value);
-            } catch (XmlPullParserException e) {
-                throw new RuntimeException("Failed to validate resource string: " + e.getMessage());
-            }
+            mXml.mValidator.validateResStrAttr(mXml, index / STYLE_NUM_ENTRIES, value);
         }
         return value;
     }

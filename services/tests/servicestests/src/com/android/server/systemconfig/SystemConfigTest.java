@@ -21,8 +21,13 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.testng.Assert.expectThrows;
 
+import android.content.pm.Signature;
+import android.content.pm.SignedPackage;
 import android.os.Build;
 import android.platform.test.annotations.Presubmit;
+import android.platform.test.annotations.RequiresFlagsEnabled;
+import android.platform.test.flag.junit.CheckFlagsRule;
+import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Log;
@@ -67,6 +72,8 @@ public class SystemConfigTest {
     private File mFooJar;
 
     @Rule public TemporaryFolder mTemporaryFolder = new TemporaryFolder();
+
+    @Rule public CheckFlagsRule mCheckFlagsRule = DeviceFlagsValueProvider.createCheckFlagsRule();
 
     @Before
     public void setUp() throws Exception {
@@ -644,6 +651,78 @@ public class SystemConfigTest {
         readPermissions(folder, /* Grant all permission flags */ ~0);
 
         assertThat(mSysConfig.getSystemAppUpdateOwnerPackageName("com.foo")).isNull();
+    }
+
+    /**
+     * Tests that SystemConfig::getEnhancedConfirmationTrustedInstallers correctly parses a list of
+     * SignedPackage objects.
+     */
+    @Test
+    @RequiresFlagsEnabled(
+            android.permission.flags.Flags.FLAG_ENHANCED_CONFIRMATION_MODE_APIS_ENABLED)
+    public void getEnhancedConfirmationTrustedInstallers_returnsTrustedInstallers()
+            throws IOException {
+        String packageName = "com.example.app";
+        String certificateDigestStr = "E9:7A:BC:2C:D1:CA:8D:58:6A:57:0B:8C:F8:60:AA:D2:"
+                + "8D:13:30:2A:FB:C9:00:2C:5D:53:B2:6C:09:A4:85:A0";
+
+        byte[] certificateDigest = new Signature(certificateDigestStr.replace(":", ""))
+                .toByteArray();
+        String contents = "<config>"
+                + "<" + "enhanced-confirmation-trusted-installer" + " "
+                + "package=\"" + packageName + "\""
+                + " sha256-cert-digest=\"" + certificateDigestStr + "\""
+                + "/>"
+                + "</config>";
+
+        final File folder = createTempSubfolder("folder");
+        createTempFile(folder, "enhanced-confirmation.xml", contents);
+        readPermissions(folder, /* Grant all permission flags */ ~0);
+
+        ArraySet<SignedPackage> actualTrustedInstallers =
+                mSysConfig.getEnhancedConfirmationTrustedInstallers();
+
+        assertThat(actualTrustedInstallers.size()).isEqualTo(1);
+        SignedPackage actual = actualTrustedInstallers.stream().findFirst().orElseThrow();
+        SignedPackage expected = new SignedPackage(packageName, certificateDigest);
+
+        assertThat(actual.getCertificateDigest()).isEqualTo(expected.getCertificateDigest());
+        assertThat(actual.getPackageName()).isEqualTo(expected.getPackageName());
+        assertThat(actual).isEqualTo(expected);
+    }
+
+    /**
+     * Tests that readPermissions works correctly for the tags:
+     * disabled-in-sku, enabled-in-sku-override.
+     * I.e. that disabled-in-sku add package to block list and
+     * enabled-in-sku-override removes package from the list.
+     */
+    @Test
+    public void testDisablePackageInSku() throws Exception {
+        final String disable_in_sku =
+                "<config>\n"
+                        + "    <disabled-in-sku package=\"com.sony.product1.app\"/>\n"
+                        + "    <disabled-in-sku package=\"com.sony.product2.app\"/>\n"
+                        + "</config>\n";
+
+        final String enable_in_sku_override =
+                "<config>\n"
+                        + "    <enabled-in-sku-override package=\"com.sony.product2.app\"/>\n"
+                        + "</config>\n";
+
+        final File folder1 = createTempSubfolder("folder1");
+        createTempFile(folder1, "permissionFile1.xml", disable_in_sku);
+
+        final File folder2 = createTempSubfolder("folder2");
+        createTempFile(folder2, "permissionFile2.xml", enable_in_sku_override);
+
+        readPermissions(folder1, /* Grant all permission flags */ ~0);
+        readPermissions(folder2, /* Grant all permission flags */ ~0);
+
+        final ArraySet<String> blocklist = mSysConfig.getDisabledUntilUsedPreinstalledCarrierApps();
+
+        assertThat(blocklist).contains("com.sony.product1.app");
+        assertThat(blocklist).doesNotContain("com.sony.product2.app");
     }
 
     private void parseSharedLibraries(String contents) throws IOException {

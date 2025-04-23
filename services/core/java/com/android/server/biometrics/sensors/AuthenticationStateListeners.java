@@ -18,6 +18,13 @@ package com.android.server.biometrics.sensors;
 
 import android.annotation.NonNull;
 import android.hardware.biometrics.AuthenticationStateListener;
+import android.hardware.biometrics.events.AuthenticationAcquiredInfo;
+import android.hardware.biometrics.events.AuthenticationErrorInfo;
+import android.hardware.biometrics.events.AuthenticationFailedInfo;
+import android.hardware.biometrics.events.AuthenticationHelpInfo;
+import android.hardware.biometrics.events.AuthenticationStartedInfo;
+import android.hardware.biometrics.events.AuthenticationStoppedInfo;
+import android.hardware.biometrics.events.AuthenticationSucceededInfo;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Slog;
@@ -62,14 +69,73 @@ public class AuthenticationStateListeners implements IBinder.DeathRecipient {
     }
 
     /**
-     * Defines behavior in response to authentication starting
-     * @param requestReason reason from [BiometricRequestConstants.RequestReason] for requesting
-     * authentication starting
+     * Defines behavior in response to biometric authentication being acquired.
+     * @param authInfo information related to the biometric authentication acquired.
      */
-    public void onAuthenticationStarted(int requestReason) {
+    public void onAuthenticationAcquired(AuthenticationAcquiredInfo authInfo) {
         for (AuthenticationStateListener listener: mAuthenticationStateListeners) {
             try {
-                listener.onAuthenticationStarted(requestReason);
+                listener.onAuthenticationAcquired(authInfo);
+            } catch (RemoteException e) {
+                Slog.e(TAG, "Remote exception in notifying listener that authentication "
+                        + "acquired", e);
+            }
+        }
+    }
+
+    /**
+     * Defines behavior in response to an unrecoverable error encountered during authentication.
+     * @param authInfo information related to the unrecoverable auth error encountered
+     */
+    public void onAuthenticationError(AuthenticationErrorInfo authInfo) {
+        for (AuthenticationStateListener listener : mAuthenticationStateListeners) {
+            try {
+                listener.onAuthenticationError(authInfo);
+            } catch (RemoteException e) {
+                Slog.e(TAG, "Remote exception in notifying listener of unrecoverable"
+                        + " authentication error", e);
+            }
+        }
+    }
+
+    /**
+     * Defines behavior in response to a failed authentication
+     * @param authInfo information related to the failed authentication
+     */
+    public void onAuthenticationFailed(AuthenticationFailedInfo authInfo) {
+        for (AuthenticationStateListener listener : mAuthenticationStateListeners) {
+            try {
+                listener.onAuthenticationFailed(authInfo);
+            } catch (RemoteException e) {
+                Slog.e(TAG, "Remote exception in notifying listener that authentication "
+                        + "failed", e);
+            }
+        }
+    }
+
+    /**
+     * Defines behavior in response to a recoverable error encountered during authentication.
+     * @param authInfo information related to the recoverable auth error encountered
+     */
+    public void onAuthenticationHelp(AuthenticationHelpInfo authInfo) {
+        for (AuthenticationStateListener listener : mAuthenticationStateListeners) {
+            try {
+                listener.onAuthenticationHelp(authInfo);
+            } catch (RemoteException e) {
+                Slog.e(TAG, "Remote exception in notifying listener of recoverable"
+                        + " authentication error", e);
+            }
+        }
+    }
+
+    /**
+     * Defines behavior in response to authentication starting
+     * @param authInfo information related to the authentication starting
+     */
+    public void onAuthenticationStarted(AuthenticationStartedInfo authInfo) {
+        for (AuthenticationStateListener listener: mAuthenticationStateListeners) {
+            try {
+                listener.onAuthenticationStarted(authInfo);
             } catch (RemoteException e) {
                 Slog.e(TAG, "Remote exception in notifying listener that authentication "
                         + "started", e);
@@ -79,14 +145,30 @@ public class AuthenticationStateListeners implements IBinder.DeathRecipient {
 
     /**
      * Defines behavior in response to authentication stopping
+     * @param authInfo information related to the authentication stopping
      */
-    public void onAuthenticationStopped() {
+    public void onAuthenticationStopped(AuthenticationStoppedInfo authInfo) {
         for (AuthenticationStateListener listener: mAuthenticationStateListeners) {
             try {
-                listener.onAuthenticationStopped();
+                listener.onAuthenticationStopped(authInfo);
             } catch (RemoteException e) {
                 Slog.e(TAG, "Remote exception in notifying listener that authentication "
                         + "stopped", e);
+            }
+        }
+    }
+
+    /**
+     * Defines behavior in response to a successful authentication
+     * @param authInfo information related to the successful authentication
+     */
+    public void onAuthenticationSucceeded(AuthenticationSucceededInfo authInfo) {
+        for (AuthenticationStateListener listener: mAuthenticationStateListeners) {
+            try {
+                listener.onAuthenticationSucceeded(authInfo);
+            } catch (RemoteException e) {
+                Slog.e(TAG, "Remote exception in notifying listener that authentication "
+                        + "succeeded", e);
             }
         }
     }

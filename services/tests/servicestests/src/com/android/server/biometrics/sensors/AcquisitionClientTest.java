@@ -72,6 +72,7 @@ public class AcquisitionClientTest {
                 mToken, mClientCallback);
         client.start(mSchedulerCallback);
         assertTrue(client.mHalOperationRunning);
+        verify(mClientCallback).getModality();
         verify(mSchedulerCallback).onClientStarted(eq(client));
 
         // Pretend that it got canceled by the user.
@@ -97,7 +98,8 @@ public class AcquisitionClientTest {
                 @NonNull ClientMonitorCallbackConverter callback) {
             super(context, lazyDaemon, token, callback, 0 /* userId */, "Test", 0 /* cookie */,
                     TEST_SENSOR_ID /* sensorId */, true /* shouldVibrate */,
-                    mock(BiometricLogger.class), mock(BiometricContext.class));
+                    mock(BiometricLogger.class), mock(BiometricContext.class),
+                    false /* isMandatoryBiometrics */);
         }
 
         @Override

@@ -14,36 +14,37 @@
  * limitations under the License.
  */
 
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
 package com.android.systemui.biometrics.domain.interactor
 
 import android.hardware.biometrics.AuthenticateOptions
 import android.hardware.biometrics.IBiometricContextListener
 import android.util.Log
-import com.android.systemui.common.coroutine.ChannelExt.trySendWithFailureLogging
-import com.android.systemui.common.coroutine.ConflatedCallbackFlow.conflatedCallbackFlow
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
-import com.android.systemui.keyguard.WakefulnessLifecycle
+import com.android.systemui.deviceentry.domain.interactor.DeviceEntryInteractor
+import com.android.systemui.display.data.repository.DeviceStateRepository
 import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor
 import com.android.systemui.keyguard.shared.model.KeyguardState
-import com.android.systemui.unfold.updates.FOLD_UPDATE_FINISH_CLOSED
-import com.android.systemui.unfold.updates.FOLD_UPDATE_FINISH_FULL_OPEN
-import com.android.systemui.unfold.updates.FOLD_UPDATE_FINISH_HALF_OPEN
-import com.android.systemui.unfold.updates.FoldStateProvider
+import com.android.systemui.keyguard.shared.model.TransitionStep
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
+import dagger.Lazy
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.shareIn
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 
 /**
  * Aggregates UI/device state that is not directly related to biometrics, but is often useful for
@@ -63,6 +64,9 @@ interface LogContextInteractor {
     /** Current display state, defined as [AuthenticateOptions.DisplayState] */
     val displayState: Flow<Int>
 
+    /** If touches on the fingerprint sensor should be ignored by the HAL. */
+    val isHardwareIgnoringTouches: Flow<Boolean>
+
     /**
      * Add a permanent context listener.
      *
@@ -77,30 +81,42 @@ class LogContextInteractorImpl
 @Inject
 constructor(
     @Application private val applicationScope: CoroutineScope,
-    private val foldProvider: FoldStateProvider,
+    deviceStateRepository: DeviceStateRepository,
     keyguardTransitionInteractor: KeyguardTransitionInteractor,
+    udfpsOverlayInteractor: UdfpsOverlayInteractor,
+    deviceEntryInteractor: Lazy<DeviceEntryInteractor>,
 ) : LogContextInteractor {
 
-    init {
-        applicationScope.launch {
-            foldProvider.start()
+    override val displayState: Flow<Int> by lazy {
+        if (SceneContainerFlag.isEnabled) {
+            combine(
+                deviceEntryInteractor.get().isDeviceEntered,
+                keyguardTransitionInteractor.startedKeyguardTransitionStep,
+            ) { isDeviceEntered, transitionStep ->
+                if (isDeviceEntered) {
+                    AuthenticateOptions.DISPLAY_STATE_UNKNOWN
+                } else {
+                    transitionStep.toAuthenticateOptions(
+                        // Here when isDeviceEntered=false which always means that the device is on
+                        // top of the keyguard. Therefore, any KeyguardState that doesn't have a
+                        // more specific mapping as a sub-state of keyguard, maps to LOCKSCREEN
+                        // instead of UNKNOWN, because it _is_ a known display state and that
+                        // display state is undeniably LOCKSCREEN.
+                        default = AuthenticateOptions.DISPLAY_STATE_LOCKSCREEN
+                    )
+                }
+            }
+        } else {
+            keyguardTransitionInteractor.startedKeyguardTransitionStep.map { transitionStep ->
+                transitionStep.toAuthenticateOptions(
+                    default = AuthenticateOptions.DISPLAY_STATE_UNKNOWN
+                )
+            }
         }
     }
 
-    override val displayState =
-        keyguardTransitionInteractor.startedKeyguardTransitionStep.map {
-            when (it.to) {
-                KeyguardState.LOCKSCREEN,
-                KeyguardState.OCCLUDED,
-                KeyguardState.ALTERNATE_BOUNCER,
-                KeyguardState.PRIMARY_BOUNCER -> AuthenticateOptions.DISPLAY_STATE_LOCKSCREEN
-                KeyguardState.AOD -> AuthenticateOptions.DISPLAY_STATE_AOD
-                KeyguardState.OFF,
-                KeyguardState.DOZING -> AuthenticateOptions.DISPLAY_STATE_NO_UI
-                KeyguardState.DREAMING -> AuthenticateOptions.DISPLAY_STATE_SCREENSAVER
-                else -> AuthenticateOptions.DISPLAY_STATE_UNKNOWN
-            }
-        }
+    override val isHardwareIgnoringTouches: Flow<Boolean> =
+        udfpsOverlayInteractor.shouldHandleTouches.map { shouldHandle -> !shouldHandle }
 
     override val isAod =
         displayState.map { it == AuthenticateOptions.DISPLAY_STATE_AOD }.distinctUntilChanged()
@@ -118,32 +134,21 @@ constructor(
             .distinctUntilChanged()
 
     override val foldState: Flow<Int> =
-        conflatedCallbackFlow {
-                val callback =
-                    object : FoldStateProvider.FoldUpdatesListener {
-                        override fun onHingeAngleUpdate(angle: Float) {}
-
-                        override fun onFoldUpdate(@FoldStateProvider.FoldUpdate update: Int) {
-                            val loggedState =
-                                when (update) {
-                                    FOLD_UPDATE_FINISH_HALF_OPEN ->
-                                        IBiometricContextListener.FoldState.HALF_OPENED
-                                    FOLD_UPDATE_FINISH_FULL_OPEN ->
-                                        IBiometricContextListener.FoldState.FULLY_OPENED
-                                    FOLD_UPDATE_FINISH_CLOSED ->
-                                        IBiometricContextListener.FoldState.FULLY_CLOSED
-                                    else -> null
-                                }
-                            if (loggedState != null) {
-                                trySendWithFailureLogging(loggedState, TAG)
-                            }
-                        }
-                    }
-
-                foldProvider.addCallback(callback)
-                trySendWithFailureLogging(IBiometricContextListener.FoldState.UNKNOWN, TAG)
-                awaitClose { foldProvider.removeCallback(callback) }
+        deviceStateRepository.state
+            .map {
+                when (it) {
+                    DeviceStateRepository.DeviceState.UNFOLDED,
+                    DeviceStateRepository.DeviceState.REAR_DISPLAY,
+                    DeviceStateRepository.DeviceState.CONCURRENT_DISPLAY ->
+                        IBiometricContextListener.FoldState.FULLY_OPENED
+                    DeviceStateRepository.DeviceState.FOLDED ->
+                        IBiometricContextListener.FoldState.FULLY_CLOSED
+                    DeviceStateRepository.DeviceState.HALF_FOLDED ->
+                        IBiometricContextListener.FoldState.HALF_OPENED
+                    else -> IBiometricContextListener.FoldState.UNKNOWN
+                }
             }
+            .distinctUntilChanged()
             .shareIn(applicationScope, started = SharingStarted.Eagerly, replay = 1)
 
     override fun addBiometricContextListener(listener: IBiometricContextListener): Job {
@@ -159,7 +164,28 @@ constructor(
                 .catch { t -> Log.w(TAG, "failed to notify new display state", t) }
                 .launchIn(this)
 
+            isHardwareIgnoringTouches
+                .distinctUntilChanged()
+                .onEach { state -> listener.onHardwareIgnoreTouchesChanged(state) }
+                .catch { t -> Log.w(TAG, "failed to notify new set ignore state", t) }
+                .launchIn(this)
+
             listener.asBinder().linkToDeath({ cancel() }, 0)
+        }
+    }
+
+    private fun TransitionStep.toAuthenticateOptions(default: Int): Int {
+        return when (this.to) {
+            KeyguardState.LOCKSCREEN,
+            KeyguardState.OCCLUDED,
+            KeyguardState.ALTERNATE_BOUNCER,
+            KeyguardState.PRIMARY_BOUNCER -> AuthenticateOptions.DISPLAY_STATE_LOCKSCREEN
+            KeyguardState.AOD -> AuthenticateOptions.DISPLAY_STATE_AOD
+            KeyguardState.OFF,
+            KeyguardState.DOZING -> AuthenticateOptions.DISPLAY_STATE_NO_UI
+            KeyguardState.DREAMING -> AuthenticateOptions.DISPLAY_STATE_SCREENSAVER
+            KeyguardState.GONE -> AuthenticateOptions.DISPLAY_STATE_UNKNOWN
+            else -> default
         }
     }
 
@@ -167,6 +193,3 @@ constructor(
         private const val TAG = "ContextRepositoryImpl"
     }
 }
-
-private val WakefulnessLifecycle.isAwake: Boolean
-    get() = wakefulness == WakefulnessLifecycle.WAKEFULNESS_AWAKE

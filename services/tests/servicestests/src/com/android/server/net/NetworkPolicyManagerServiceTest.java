@@ -18,11 +18,13 @@ package com.android.server.net;
 
 import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
 import static android.Manifest.permission.NETWORK_STACK;
+import static android.app.ActivityManager.MAX_PROCESS_STATE;
 import static android.app.ActivityManager.PROCESS_CAPABILITY_ALL;
 import static android.app.ActivityManager.PROCESS_CAPABILITY_NONE;
 import static android.app.ActivityManager.PROCESS_CAPABILITY_POWER_RESTRICTED_NETWORK;
 import static android.app.ActivityManager.PROCESS_CAPABILITY_USER_RESTRICTED_NETWORK;
 import static android.app.ActivityManager.PROCESS_STATE_IMPORTANT_FOREGROUND;
+import static android.app.ActivityManager.PROCESS_STATE_LAST_ACTIVITY;
 import static android.app.ActivityManager.PROCESS_STATE_SERVICE;
 import static android.app.ActivityManager.PROCESS_STATE_TOP;
 import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_DATA_SAVER;
@@ -106,6 +108,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
@@ -163,11 +166,14 @@ import android.os.PowerExemptionManager;
 import android.os.PowerManager;
 import android.os.PowerManagerInternal;
 import android.os.PowerSaveState;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.SimpleClock;
+import android.os.SystemClock;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.platform.test.annotations.Presubmit;
+import android.platform.test.annotations.RequiresFlagsDisabled;
 import android.platform.test.annotations.RequiresFlagsEnabled;
 import android.platform.test.flag.junit.CheckFlagsRule;
 import android.platform.test.flag.junit.DeviceFlagsValueProvider;
@@ -177,7 +183,6 @@ import android.telephony.SubscriptionManager;
 import android.telephony.SubscriptionPlan;
 import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
-import android.test.suitebuilder.annotation.MediumTest;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
@@ -191,8 +196,10 @@ import android.util.SparseIntArray;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.FlakyTest;
+import androidx.test.filters.MediumTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.test.BroadcastInterceptingContext;
 import com.android.internal.util.test.BroadcastInterceptingContext.FutureIntent;
 import com.android.internal.util.test.FsUtil;
@@ -2151,14 +2158,13 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testBackgroundChainEnabled() throws Exception {
         verify(mNetworkManager).setFirewallChainEnabled(FIREWALL_CHAIN_BACKGROUND, true);
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
-    public void testBackgroundChainOnProcStateChange() throws Exception {
+    @RequiresFlagsDisabled(Flags.FLAG_USE_DIFFERENT_DELAYS_FOR_BACKGROUND_CHAIN)
+    public void testBackgroundChainOnProcStateChangeSameDelay() throws Exception {
         // initialization calls setFirewallChainEnabled, so we want to reset the invocations.
         clearInvocations(mNetworkManager);
 
@@ -2186,7 +2192,56 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
+    @RequiresFlagsEnabled(Flags.FLAG_USE_DIFFERENT_DELAYS_FOR_BACKGROUND_CHAIN)
+    public void testBackgroundChainOnProcStateChangeDifferentDelays() throws Exception {
+        // The app will be blocked when there is no prior proc-state.
+        assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+
+        // Tweak delays to avoid waiting too long in tests.
+        mService.mBackgroundRestrictionShortDelayMs = 50;
+        mService.mBackgroundRestrictionLongDelayMs = 1000;
+
+        int procStateSeq = 231; // Any arbitrary starting sequence.
+        for (int ps = BACKGROUND_THRESHOLD_STATE; ps <= MAX_PROCESS_STATE; ps++) {
+            clearInvocations(mNetworkManager);
+
+            // Make sure app is in correct process-state to access network.
+            callAndWaitOnUidStateChanged(UID_A, BACKGROUND_THRESHOLD_STATE - 1, procStateSeq++);
+            verify(mNetworkManager).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND, UID_A,
+                    FIREWALL_RULE_ALLOW);
+            assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+
+            // Now put the app into the background and test that it eventually loses network.
+            callAndWaitOnUidStateChanged(UID_A, ps, procStateSeq++);
+
+            final long uidStateChangeTime = SystemClock.uptimeMillis();
+            if (ps <= PROCESS_STATE_LAST_ACTIVITY) {
+                // Verify that the app is blocked after long delay but not after short delay.
+                waitForDelayedMessageOnHandler(mService.mBackgroundRestrictionShortDelayMs + 1);
+                verify(mNetworkManager, never()).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND,
+                        UID_A, FIREWALL_RULE_DEFAULT);
+                assertFalse(mService.isUidNetworkingBlocked(UID_A, false));
+
+                final long timeUntilLongDelay = uidStateChangeTime
+                        + mService.mBackgroundRestrictionLongDelayMs - SystemClock.uptimeMillis();
+                assertTrue("No time left to verify long delay in background transition",
+                        timeUntilLongDelay >= 0);
+
+                waitForDelayedMessageOnHandler(timeUntilLongDelay + 1);
+                verify(mNetworkManager).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND, UID_A,
+                        FIREWALL_RULE_DEFAULT);
+                assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+            } else {
+                // Verify that the app is blocked after short delay.
+                waitForDelayedMessageOnHandler(mService.mBackgroundRestrictionShortDelayMs + 1);
+                verify(mNetworkManager).setFirewallUidRule(FIREWALL_CHAIN_BACKGROUND, UID_A,
+                        FIREWALL_RULE_DEFAULT);
+                assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
+            }
+        }
+    }
+
+    @Test
     public void testBackgroundChainOnAllowlistChange() throws Exception {
         // initialization calls setFirewallChainEnabled, so we want to reset the invocations.
         clearInvocations(mNetworkManager);
@@ -2224,7 +2279,6 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testBackgroundChainOnTempAllowlistChange() throws Exception {
         // initialization calls setFirewallChainEnabled, so we want to reset the invocations.
         clearInvocations(mNetworkManager);
@@ -2252,6 +2306,70 @@ public class NetworkPolicyManagerServiceTest {
         assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
     }
 
+    @SuppressWarnings("GuardedBy") // For not holding mUidRulesFirstLock
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NEVER_APPLY_RULES_TO_CORE_UIDS)
+    public void testRulesNeverAppliedToCoreUids() throws Exception {
+        clearInvocations(mNetworkManager);
+
+        final int coreAppId = Process.FIRST_APPLICATION_UID - 102;
+        final int coreUid = UserHandle.getUid(USER_ID, coreAppId);
+
+        // Enable all restrictions and add this core uid to all allowlists.
+        mService.mDeviceIdleMode = true;
+        mService.mRestrictPower = true;
+        setRestrictBackground(true);
+        expectHasUseRestrictedNetworksPermission(coreUid, true);
+        enableRestrictedMode(true);
+        final NetworkPolicyManagerInternal internal = LocalServices.getService(
+                NetworkPolicyManagerInternal.class);
+        internal.setLowPowerStandbyActive(true);
+        internal.setLowPowerStandbyAllowlist(new int[]{coreUid});
+        internal.onTempPowerSaveWhitelistChange(coreAppId, true, REASON_OTHER, "testing");
+
+        when(mPowerExemptionManager.getAllowListedAppIds(anyBoolean()))
+                .thenReturn(new int[]{coreAppId});
+        mPowerAllowlistReceiver.onReceive(mServiceContext, null);
+
+        // A normal uid would undergo a rule change from denied to allowed on all chains, but we
+        // should not request any rule change for this core uid.
+        verify(mNetworkManager, never()).setFirewallUidRule(anyInt(), eq(coreUid), anyInt());
+        verify(mNetworkManager, never()).setFirewallUidRules(anyInt(),
+                argThat(ar -> ArrayUtils.contains(ar, coreUid)), any(int[].class));
+    }
+
+    @SuppressWarnings("GuardedBy") // For not holding mUidRulesFirstLock
+    @Test
+    @RequiresFlagsEnabled(Flags.FLAG_NEVER_APPLY_RULES_TO_CORE_UIDS)
+    public void testRulesNeverAppliedToUidsWithoutInternetPermission() throws Exception {
+        clearInvocations(mNetworkManager);
+
+        mService.mInternetPermissionMap.clear();
+        expectHasInternetPermission(UID_A, false);
+
+        // Enable all restrictions and add this uid to all allowlists.
+        mService.mDeviceIdleMode = true;
+        mService.mRestrictPower = true;
+        setRestrictBackground(true);
+        expectHasUseRestrictedNetworksPermission(UID_A, true);
+        enableRestrictedMode(true);
+        final NetworkPolicyManagerInternal internal = LocalServices.getService(
+                NetworkPolicyManagerInternal.class);
+        internal.setLowPowerStandbyActive(true);
+        internal.setLowPowerStandbyAllowlist(new int[]{UID_A});
+        internal.onTempPowerSaveWhitelistChange(APP_ID_A, true, REASON_OTHER, "testing");
+
+        when(mPowerExemptionManager.getAllowListedAppIds(anyBoolean()))
+                .thenReturn(new int[]{APP_ID_A});
+        mPowerAllowlistReceiver.onReceive(mServiceContext, null);
+
+        // A normal uid would undergo a rule change from denied to allowed on all chains, but we
+        // should not request any rule this uid without the INTERNET permission.
+        verify(mNetworkManager, never()).setFirewallUidRule(anyInt(), eq(UID_A), anyInt());
+        verify(mNetworkManager, never()).setFirewallUidRules(anyInt(),
+                argThat(ar -> ArrayUtils.contains(ar, UID_A)), any(int[].class));
+    }
+
     private boolean isUidState(int uid, int procState, int procStateSeq, int capability) {
         final NetworkPolicyManager.UidState uidState = mService.getUidStateForTest(uid);
         if (uidState == null) {
@@ -2262,7 +2380,6 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testUidObserverFiltersProcStateChanges() throws Exception {
         int testProcStateSeq = 0;
         try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
@@ -2325,7 +2442,6 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testUidObserverFiltersStaleChanges() throws Exception {
         final int testProcStateSeq = 51;
         try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
@@ -2345,7 +2461,6 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testUidObserverFiltersCapabilityChanges() throws Exception {
         int testProcStateSeq = 0;
         try (SyncBarrier b = new SyncBarrier(mService.mUidEventHandler)) {
@@ -2434,7 +2549,6 @@ public class NetworkPolicyManagerServiceTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE)
     public void testObsoleteHandleUidChanged() throws Exception {
         callAndWaitOnUidGone(UID_A);
         assertTrue(mService.isUidNetworkingBlocked(UID_A, false));
@@ -2881,6 +2995,11 @@ public class NetworkPolicyManagerServiceTest {
         }
     }
 
+    /**
+     * This posts a blocking message to the service handler with the given delayMs and waits for it
+     * to complete. This ensures that all messages posted before the given delayMs will also
+     * have been executed before this method returns and can be verified in subsequent code.
+     */
     private void waitForDelayedMessageOnHandler(long delayMs) throws InterruptedException {
         final CountDownLatch latch = new CountDownLatch(1);
         mService.getHandlerForTesting().postDelayed(latch::countDown, delayMs);

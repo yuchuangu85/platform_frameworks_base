@@ -29,6 +29,7 @@ public final class StringPolicyValue extends PolicyValue<String> {
 
     public StringPolicyValue(@NonNull String value) {
         super(value);
+        PolicySizeVerifier.enforceMaxStringLength(value, "policyValue");
     }
 
     private StringPolicyValue(Parcel source) {

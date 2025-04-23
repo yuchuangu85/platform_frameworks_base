@@ -20,20 +20,24 @@ import android.graphics.Point
 import android.hardware.biometrics.BiometricSourceType
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.filters.SmallTest
+import com.android.internal.widget.LockPatternUtils
 import com.android.keyguard.KeyguardUpdateMonitor
 import com.android.keyguard.KeyguardUpdateMonitorCallback
 import com.android.systemui.SysuiTestCase
 import com.android.systemui.biometrics.AuthController
-import com.android.systemui.common.shared.model.Position
+import com.android.systemui.biometrics.data.repository.FakeFacePropertyRepository
 import com.android.systemui.coroutines.collectLastValue
 import com.android.systemui.doze.DozeMachine
 import com.android.systemui.doze.DozeTransitionCallback
 import com.android.systemui.doze.DozeTransitionListener
 import com.android.systemui.dreams.DreamOverlayCallbackController
+import com.android.systemui.flags.DisableSceneContainer
+import com.android.systemui.keyguard.shared.model.BiometricUnlockMode
 import com.android.systemui.keyguard.shared.model.BiometricUnlockSource
 import com.android.systemui.keyguard.shared.model.DozeStateModel
 import com.android.systemui.keyguard.shared.model.DozeTransitionModel
 import com.android.systemui.plugins.statusbar.StatusBarStateController
+import com.android.systemui.settings.UserTracker
 import com.android.systemui.statusbar.policy.KeyguardStateController
 import com.android.systemui.util.mockito.any
 import com.android.systemui.util.mockito.argumentCaptor
@@ -51,6 +55,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.ArgumentCaptor
+import org.mockito.Captor
 import org.mockito.Mock
 import org.mockito.Mockito.atLeastOnce
 import org.mockito.Mockito.verify
@@ -59,6 +65,7 @@ import org.mockito.MockitoAnnotations
 @OptIn(ExperimentalCoroutinesApi::class)
 @SmallTest
 @RunWith(AndroidJUnit4::class)
+@android.platform.test.annotations.EnabledOnRavenwood
 class KeyguardRepositoryImplTest : SysuiTestCase() {
 
     @Mock private lateinit var statusBarStateController: StatusBarStateController
@@ -67,10 +74,14 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
     @Mock private lateinit var authController: AuthController
     @Mock private lateinit var keyguardUpdateMonitor: KeyguardUpdateMonitor
     @Mock private lateinit var dreamOverlayCallbackController: DreamOverlayCallbackController
+    @Mock private lateinit var userTracker: UserTracker
+    @Mock private lateinit var lockPatternUtils: LockPatternUtils
+    @Captor private lateinit var updateCallbackCaptor: ArgumentCaptor<KeyguardUpdateMonitorCallback>
     private val mainDispatcher = StandardTestDispatcher()
     private val testDispatcher = StandardTestDispatcher()
     private val testScope = TestScope(testDispatcher)
     private lateinit var systemClock: FakeSystemClock
+    private lateinit var facePropertyRepository: FakeFacePropertyRepository
 
     private lateinit var underTest: KeyguardRepositoryImpl
 
@@ -78,6 +89,7 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
     fun setUp() {
         MockitoAnnotations.initMocks(this)
         systemClock = FakeSystemClock()
+        facePropertyRepository = FakeFacePropertyRepository()
         underTest =
             KeyguardRepositoryImpl(
                 statusBarStateController,
@@ -89,6 +101,9 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
                 mainDispatcher,
                 testScope.backgroundScope,
                 systemClock,
+                facePropertyRepository,
+                userTracker,
+                lockPatternUtils,
             )
     }
 
@@ -129,21 +144,36 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
         }
 
     @Test
-    fun clockPosition() =
+    fun panelAlpha() =
         testScope.runTest {
-            assertThat(underTest.clockPosition.value).isEqualTo(Position(0, 0))
+            assertThat(underTest.panelAlpha.value).isEqualTo(1f)
 
-            underTest.setClockPosition(0, 1)
-            assertThat(underTest.clockPosition.value).isEqualTo(Position(0, 1))
+            underTest.setPanelAlpha(0.1f)
+            assertThat(underTest.panelAlpha.value).isEqualTo(0.1f)
 
-            underTest.setClockPosition(1, 9)
-            assertThat(underTest.clockPosition.value).isEqualTo(Position(1, 9))
+            underTest.setPanelAlpha(0.2f)
+            assertThat(underTest.panelAlpha.value).isEqualTo(0.2f)
 
-            underTest.setClockPosition(1, 0)
-            assertThat(underTest.clockPosition.value).isEqualTo(Position(1, 0))
+            underTest.setPanelAlpha(0.3f)
+            assertThat(underTest.panelAlpha.value).isEqualTo(0.3f)
 
-            underTest.setClockPosition(3, 1)
-            assertThat(underTest.clockPosition.value).isEqualTo(Position(3, 1))
+            underTest.setPanelAlpha(0.5f)
+            assertThat(underTest.panelAlpha.value).isEqualTo(0.5f)
+
+            underTest.setPanelAlpha(1.0f)
+            assertThat(underTest.panelAlpha.value).isEqualTo(1f)
+        }
+
+    @Test
+    fun topClippingBounds() =
+        testScope.runTest {
+            assertThat(underTest.topClippingBounds.value).isNull()
+
+            underTest.topClippingBounds.value = 50
+            assertThat(underTest.topClippingBounds.value).isEqualTo(50)
+
+            underTest.topClippingBounds.value = 500
+            assertThat(underTest.topClippingBounds.value).isEqualTo(500)
         }
 
     @Test
@@ -216,10 +246,10 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
         }
 
     @Test
-    fun isKeyguardUnlocked() =
+    fun isKeyguardDismissible() =
         testScope.runTest {
             whenever(keyguardStateController.isUnlocked).thenReturn(false)
-            val isKeyguardUnlocked by collectLastValue(underTest.isKeyguardUnlocked)
+            val isKeyguardUnlocked by collectLastValue(underTest.isKeyguardDismissible)
 
             runCurrent()
             assertThat(isKeyguardUnlocked).isFalse()
@@ -259,6 +289,7 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
         }
 
     @Test
+    @DisableSceneContainer
     fun dozeAmount() =
         testScope.runTest {
             val values = mutableListOf<Float>()
@@ -283,16 +314,6 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
         }
 
     @Test
-    fun isActiveDreamLockscreenHosted() =
-        testScope.runTest {
-            underTest.setIsActiveDreamLockscreenHosted(true)
-            assertThat(underTest.isActiveDreamLockscreenHosted.value).isEqualTo(true)
-
-            underTest.setIsActiveDreamLockscreenHosted(false)
-            assertThat(underTest.isActiveDreamLockscreenHosted.value).isEqualTo(false)
-        }
-
-    @Test
     fun isUdfpsSupported() =
         testScope.runTest {
             whenever(keyguardUpdateMonitor.isUdfpsSupported).thenReturn(true)
@@ -305,50 +326,27 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
     @Test
     fun isKeyguardGoingAway() =
         testScope.runTest {
-            whenever(keyguardStateController.isKeyguardGoingAway).thenReturn(false)
-            var latest: Boolean? = null
-            val job = underTest.isKeyguardGoingAway.onEach { latest = it }.launchIn(this)
-            runCurrent()
-            assertThat(latest).isFalse()
+            val isGoingAway by collectLastValue(underTest.isKeyguardGoingAway)
+            assertThat(isGoingAway).isFalse()
 
-            val captor = argumentCaptor<KeyguardStateController.Callback>()
-            verify(keyguardStateController, atLeastOnce()).addCallback(captor.capture())
+            underTest.isKeyguardGoingAway.value = true
+            assertThat(isGoingAway).isTrue()
 
-            whenever(keyguardStateController.isKeyguardGoingAway).thenReturn(true)
-            captor.value.onKeyguardGoingAwayChanged()
-            runCurrent()
-            assertThat(latest).isTrue()
-
-            whenever(keyguardStateController.isKeyguardGoingAway).thenReturn(false)
-            captor.value.onKeyguardGoingAwayChanged()
-            runCurrent()
-            assertThat(latest).isFalse()
-
-            job.cancel()
+            underTest.isKeyguardGoingAway.value = false
+            assertThat(isGoingAway).isFalse()
         }
 
     @Test
-    fun isDreamingFromKeyguardUpdateMonitor() =
-        TestScope(mainDispatcher).runTest {
-            whenever(keyguardUpdateMonitor.isDreaming()).thenReturn(false)
-            var latest: Boolean? = null
-            val job = underTest.isDreaming.onEach { latest = it }.launchIn(this)
+    fun isDreaming() =
+        testScope.runTest {
+            val isDreaming by collectLastValue(underTest.isDreaming)
+            assertThat(isDreaming).isFalse()
 
-            runCurrent()
-            assertThat(latest).isFalse()
+            underTest.setDreaming(true)
+            assertThat(isDreaming).isTrue()
 
-            val captor = argumentCaptor<KeyguardUpdateMonitorCallback>()
-            verify(keyguardUpdateMonitor).registerCallback(captor.capture())
-
-            captor.value.onDreamingStateChanged(true)
-            runCurrent()
-            assertThat(latest).isTrue()
-
-            captor.value.onDreamingStateChanged(false)
-            runCurrent()
-            assertThat(latest).isFalse()
-
-            job.cancel()
+            underTest.setDreaming(false)
+            assertThat(isDreaming).isFalse()
         }
 
     @Test
@@ -403,17 +401,17 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
             runCurrent()
             listener.onDozeTransition(
                 DozeMachine.State.DOZE_REQUEST_PULSE,
-                DozeMachine.State.DOZE_PULSING
+                DozeMachine.State.DOZE_PULSING,
             )
             runCurrent()
             listener.onDozeTransition(
                 DozeMachine.State.DOZE_SUSPEND_TRIGGERS,
-                DozeMachine.State.DOZE_PULSE_DONE
+                DozeMachine.State.DOZE_PULSE_DONE,
             )
             runCurrent()
             listener.onDozeTransition(
                 DozeMachine.State.DOZE_AOD_PAUSING,
-                DozeMachine.State.DOZE_AOD_PAUSED
+                DozeMachine.State.DOZE_AOD_PAUSED,
             )
             runCurrent()
 
@@ -423,22 +421,22 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
                         // Initial value will be UNINITIALIZED
                         DozeTransitionModel(
                             DozeStateModel.UNINITIALIZED,
-                            DozeStateModel.UNINITIALIZED
+                            DozeStateModel.UNINITIALIZED,
                         ),
                         DozeTransitionModel(DozeStateModel.INITIALIZED, DozeStateModel.DOZE),
                         DozeTransitionModel(DozeStateModel.DOZE, DozeStateModel.DOZE_AOD),
                         DozeTransitionModel(DozeStateModel.DOZE_AOD_DOCKED, DozeStateModel.FINISH),
                         DozeTransitionModel(
                             DozeStateModel.DOZE_REQUEST_PULSE,
-                            DozeStateModel.DOZE_PULSING
+                            DozeStateModel.DOZE_PULSING,
                         ),
                         DozeTransitionModel(
                             DozeStateModel.DOZE_SUSPEND_TRIGGERS,
-                            DozeStateModel.DOZE_PULSE_DONE
+                            DozeStateModel.DOZE_PULSE_DONE,
                         ),
                         DozeTransitionModel(
                             DozeStateModel.DOZE_AOD_PAUSING,
-                            DozeStateModel.DOZE_AOD_PAUSED
+                            DozeStateModel.DOZE_AOD_PAUSED,
                         ),
                     )
                 )
@@ -482,10 +480,7 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
         testScope.runTest {
             val values = mutableListOf<Point?>()
             val job = underTest.faceSensorLocation.onEach(values::add).launchIn(this)
-
-            val captor = argumentCaptor<AuthController.Callback>()
             runCurrent()
-            verify(authController).addCallback(captor.capture())
 
             // An initial, null value should be initially emitted so that flows combined with this
             // one
@@ -493,15 +488,9 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
             // consuming it should handle that properly.
             assertThat(values).isEqualTo(listOf(null))
 
-            listOf(
-                    Point(500, 500),
-                    Point(0, 0),
-                    null,
-                    Point(250, 250),
-                )
+            listOf(Point(500, 500), Point(0, 0), null, Point(250, 250))
                 .onEach {
-                    whenever(authController.faceSensorLocation).thenReturn(it)
-                    captor.value.onFaceSensorLocationChanged()
+                    facePropertyRepository.setSensorLocation(it)
                     runCurrent()
                 }
                 .also { dispatchedSensorLocations ->
@@ -515,11 +504,9 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
     fun biometricUnlockSource() =
         testScope.runTest {
             val values = mutableListOf<BiometricUnlockSource?>()
-            val job = underTest.biometricUnlockSource.onEach(values::add).launchIn(this)
+            val job = underTest.biometricUnlockState.onEach { values.add(it.source) }.launchIn(this)
 
             runCurrent()
-            val captor = argumentCaptor<KeyguardUpdateMonitorCallback>()
-            verify(keyguardUpdateMonitor).registerCallback(captor.capture())
 
             // An initial, null value should be initially emitted so that flows combined with this
             // one
@@ -535,7 +522,10 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
                     BiometricSourceType.FINGERPRINT,
                 )
                 .onEach { biometricSourceType ->
-                    captor.value.onBiometricAuthenticated(0, biometricSourceType, false)
+                    underTest.setBiometricUnlockState(
+                        BiometricUnlockMode.NONE,
+                        BiometricUnlockSource.Companion.fromBiometricSourceType(biometricSourceType),
+                    )
                     runCurrent()
                 }
 
@@ -552,5 +542,26 @@ class KeyguardRepositoryImplTest : SysuiTestCase() {
                 )
 
             job.cancel()
+        }
+
+    @Test
+    fun isEncryptedOrLockdown() =
+        TestScope(mainDispatcher).runTest {
+            whenever(userTracker.userId).thenReturn(0)
+            whenever(keyguardUpdateMonitor.isEncryptedOrLockdown(0)).thenReturn(true)
+
+            // Default value for isEncryptedOrLockdown is true
+            val isEncryptedOrLockdown by collectLastValue(underTest.isEncryptedOrLockdown)
+            assertThat(isEncryptedOrLockdown).isTrue()
+
+            verify(keyguardUpdateMonitor).registerCallback(updateCallbackCaptor.capture())
+            val updateCallback = updateCallbackCaptor.value
+
+            // Strong auth state updated
+            whenever(keyguardUpdateMonitor.isEncryptedOrLockdown(0)).thenReturn(false)
+            updateCallback.onStrongAuthStateChanged(0)
+
+            // Verify no longer encrypted or lockdown
+            assertThat(isEncryptedOrLockdown).isFalse()
         }
 }

@@ -18,7 +18,8 @@ package android.libcore.regression;
 
 import android.perftests.utils.BenchmarkState;
 import android.perftests.utils.PerfStatusReporter;
-import android.test.suitebuilder.annotation.LargeTest;
+
+import androidx.test.filters.LargeTest;
 
 import junitparams.JUnitParamsRunner;
 import junitparams.Parameters;
@@ -564,7 +565,6 @@ public class ByteBufferPerfTest {
     }
 
     @Test
-    @Parameters(method = "getData")
     public void time_new_byteArray() throws Exception {
         BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
         while (state.keepRunning()) {
@@ -573,7 +573,6 @@ public class ByteBufferPerfTest {
     }
 
     @Test
-    @Parameters(method = "getData")
     public void time_ByteBuffer_allocate() throws Exception {
         BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
         while (state.keepRunning()) {

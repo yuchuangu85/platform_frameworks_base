@@ -52,6 +52,7 @@ import android.app.usage.UsageStatsManagerInternal;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.IIntentSender;
 import android.content.Intent;
@@ -75,6 +76,7 @@ import android.content.pm.SigningDetails;
 import android.content.pm.SigningInfo;
 import android.content.pm.UserInfo;
 import android.content.pm.UserPackage;
+import android.content.pm.UserProperties;
 import android.content.res.Resources;
 import android.content.res.XmlResourceParser;
 import android.graphics.drawable.Icon;
@@ -157,6 +159,7 @@ public abstract class BaseShortcutManagerTest extends InstrumentationTestCase {
                     return mMockDevicePolicyManager;
                 case Context.APP_SEARCH_SERVICE:
                 case Context.ROLE_SERVICE:
+                case Context.APP_OPS_SERVICE:
                     // RoleManager is final and cannot be mocked, so we only override the inject
                     // accessor methods in ShortcutService.
                     return getTestContext().getSystemService(name);
@@ -270,6 +273,11 @@ public abstract class BaseShortcutManagerTest extends InstrumentationTestCase {
         @Override
         public String getPackageName() {
             return SYSTEM_PACKAGE_NAME;
+        }
+
+        @Override
+        public ContentResolver getContentResolver() {
+            return mContentResolver;
         }
     }
 
@@ -663,6 +671,7 @@ public abstract class BaseShortcutManagerTest extends InstrumentationTestCase {
 
     protected ServiceContext mServiceContext;
     protected ClientContext mClientContext;
+    protected ContentResolver mContentResolver;
 
     protected ShortcutServiceTestable mService;
     protected ShortcutManagerTestable mManager;
@@ -775,6 +784,15 @@ public abstract class BaseShortcutManagerTest extends InstrumentationTestCase {
             new UserInfo(USER_P1, "userP1",
                     UserInfo.FLAG_INITIALIZED | UserInfo.FLAG_MANAGED_PROFILE), 0);
 
+    protected static final UserProperties USER_PROPERTIES_0 =
+            new UserProperties.Builder().setItemsRestrictedOnHomeScreen(false).build();
+
+    protected static final UserProperties USER_PROPERTIES_10 =
+            new UserProperties.Builder().setItemsRestrictedOnHomeScreen(false).build();
+
+    protected static final UserProperties USER_PROPERTIES_11 =
+            new UserProperties.Builder().setItemsRestrictedOnHomeScreen(true).build();
+
     protected BiPredicate<String, Integer> mDefaultLauncherChecker =
             (callingPackage, userId) ->
             LAUNCHER_1.equals(callingPackage) || LAUNCHER_2.equals(callingPackage)
@@ -816,6 +834,7 @@ public abstract class BaseShortcutManagerTest extends InstrumentationTestCase {
             = new HashMap<>();
 
     protected final Map<Integer, UserInfo> mUserInfos = new HashMap<>();
+    protected final Map<Integer, UserProperties> mUserProperties = new HashMap<>();
     protected final Map<Integer, Boolean> mRunningUsers = new HashMap<>();
     protected final Map<Integer, Boolean> mUnlockedUsers = new HashMap<>();
 
@@ -849,6 +868,7 @@ public abstract class BaseShortcutManagerTest extends InstrumentationTestCase {
 
         mServiceContext = spy(new ServiceContext());
         mClientContext = new ClientContext();
+        mContentResolver = mock(ContentResolver.class);
 
         mMockPackageManager = mock(PackageManager.class);
         mMockPackageManagerInternal = mock(PackageManagerInternal.class);
@@ -910,6 +930,9 @@ public abstract class BaseShortcutManagerTest extends InstrumentationTestCase {
         mUserInfos.put(USER_11, USER_INFO_11);
         mUserInfos.put(USER_P0, USER_INFO_P0);
         mUserInfos.put(USER_P1, USER_INFO_P1);
+        mUserProperties.put(USER_0, USER_PROPERTIES_0);
+        mUserProperties.put(USER_10, USER_PROPERTIES_10);
+        mUserProperties.put(USER_11, USER_PROPERTIES_11);
 
         when(mMockUserManagerInternal.isUserUnlockingOrUnlocked(anyInt()))
                 .thenAnswer(inv -> {
@@ -958,6 +981,17 @@ public abstract class BaseShortcutManagerTest extends InstrumentationTestCase {
                 inv -> mUserInfos.get((Integer) inv.getArguments()[0])));
         when(mMockActivityManagerInternal.getUidProcessState(anyInt())).thenReturn(
                 ActivityManager.PROCESS_STATE_CACHED_EMPTY);
+        when(mMockUserManagerInternal.getUserProperties(anyInt()))
+                .thenAnswer(inv -> {
+                    final int userId = (Integer) inv.getArguments()[0];
+                    final UserProperties userProperties = mUserProperties.get(userId);
+                    if (userProperties == null) {
+                        return new UserProperties.Builder().build();
+                    }
+                    return userProperties;
+                });
+        when(mMockUserManagerInternal.getUserInfos()).thenReturn(
+                mUserInfos.values().toArray(new UserInfo[0]));
 
         // User 0 and P0 are always running
         mRunningUsers.put(USER_0, true);

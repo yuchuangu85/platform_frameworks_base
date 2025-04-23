@@ -19,6 +19,7 @@ package com.android.credentialmanager.model.get
 import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.drawable.Drawable
+import com.android.credentialmanager.model.BiometricRequestInfo
 import com.android.credentialmanager.model.CredentialType
 import com.android.credentialmanager.model.EntryInfo
 import java.time.Instant
@@ -31,6 +32,11 @@ class CredentialEntryInfo(
     fillInIntent: Intent?,
     /** Type of this credential used for sorting. Not localized so must not be directly displayed. */
     val credentialType: CredentialType,
+    /**
+     * String type value of this credential used for sorting. Not localized so must not be directly
+     * displayed.
+     */
+    val rawCredentialType: String,
     /** Localized type value of this credential used for display purpose. */
     val credentialTypeDisplayName: String,
     val providerDisplayName: String,
@@ -40,6 +46,11 @@ class CredentialEntryInfo(
     val shouldTintIcon: Boolean,
     val lastUsedTimeMillis: Instant?,
     val isAutoSelectable: Boolean,
+    val entryGroupId: String, // Used for deduplication, and displayed as the grouping title
+                              // "For <value-of-entryGroupId>" on the more-option screen.
+    val isDefaultIconPreferredAsSingleProvider: Boolean,
+    val affiliatedDomain: String?,
+    val biometricRequest: BiometricRequestInfo? = null,
 ) : EntryInfo(
     providerId,
     entryKey,

@@ -35,6 +35,7 @@ class NotificationShadeWindowState(
     @JvmField var shadeOrQsExpanded: Boolean = false,
     @JvmField var notificationShadeFocusable: Boolean = false,
     @JvmField var bouncerShowing: Boolean = false,
+    @JvmField var glanceableHubShowing: Boolean = false,
     @JvmField var keyguardFadingAway: Boolean = false,
     @JvmField var keyguardGoingAway: Boolean = false,
     @JvmField var qsExpanded: Boolean = false,
@@ -58,10 +59,15 @@ class NotificationShadeWindowState(
     @JvmField var dreaming: Boolean = false,
     @JvmField var scrimsVisibility: Int = 0,
     @JvmField var backgroundBlurRadius: Int = 0,
+    @JvmField var communalVisible: Boolean = false,
 ) {
 
     fun isKeyguardShowingAndNotOccluded(): Boolean {
         return keyguardShowing && !keyguardOccluded
+    }
+
+    fun isCommunalVisibleAndNotOccluded(): Boolean {
+        return communalVisible && !keyguardOccluded
     }
 
     /** List of [String] to be used as a [Row] with [DumpsysTableLogger]. */
@@ -74,6 +80,7 @@ class NotificationShadeWindowState(
             shadeOrQsExpanded.toString(),
             notificationShadeFocusable.toString(),
             bouncerShowing.toString(),
+            glanceableHubShowing.toString(),
             keyguardFadingAway.toString(),
             keyguardGoingAway.toString(),
             qsExpanded.toString(),
@@ -93,7 +100,8 @@ class NotificationShadeWindowState(
             forcePluginOpen.toString(),
             dozing.toString(),
             scrimsVisibility.toString(),
-            backgroundBlurRadius.toString()
+            backgroundBlurRadius.toString(),
+            communalVisible.toString(),
         )
     }
 
@@ -113,6 +121,7 @@ class NotificationShadeWindowState(
             panelVisible: Boolean,
             panelExpanded: Boolean,
             notificationShadeFocusable: Boolean,
+            glanceableHubShowing: Boolean,
             bouncerShowing: Boolean,
             keyguardFadingAway: Boolean,
             keyguardGoingAway: Boolean,
@@ -134,6 +143,7 @@ class NotificationShadeWindowState(
             dozing: Boolean,
             scrimsVisibility: Int,
             backgroundBlurRadius: Int,
+            communalVisible: Boolean,
         ) {
             buffer.advance().apply {
                 this.keyguardShowing = keyguardShowing
@@ -142,6 +152,7 @@ class NotificationShadeWindowState(
                 this.panelVisible = panelVisible
                 this.shadeOrQsExpanded = panelExpanded
                 this.notificationShadeFocusable = notificationShadeFocusable
+                this.glanceableHubShowing = glanceableHubShowing
                 this.bouncerShowing = bouncerShowing
                 this.keyguardFadingAway = keyguardFadingAway
                 this.keyguardGoingAway = keyguardGoingAway
@@ -165,6 +176,7 @@ class NotificationShadeWindowState(
                 this.dozing = dozing
                 this.scrimsVisibility = scrimsVisibility
                 this.backgroundBlurRadius = backgroundBlurRadius
+                this.communalVisible = communalVisible
             }
         }
 
@@ -189,6 +201,7 @@ class NotificationShadeWindowState(
                 "panelVisible",
                 "panelExpanded",
                 "notificationShadeFocusable",
+                "glanceableHubShowing",
                 "bouncerShowing",
                 "keyguardFadingAway",
                 "keyguardGoingAway",
@@ -209,7 +222,8 @@ class NotificationShadeWindowState(
                 "forcePluginOpen",
                 "dozing",
                 "scrimsVisibility",
-                "backgroundBlurRadius"
+                "backgroundBlurRadius",
+                "communalVisible"
             )
     }
 }

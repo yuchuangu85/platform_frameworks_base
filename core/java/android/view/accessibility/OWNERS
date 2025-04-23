@@ -1,11 +1,13 @@
-# Bug component: 44215
+# Bug component: 1530954
+#
+# The above component is for automated test bugs. If you are a human looking to report
+# a bug in this codebase then please use component 44215.
 
 # Android Accessibility Framework owners
 include /services/accessibility/OWNERS
 
 # Android members outside of Accessibility
 adamp@google.com #{LAST_RESORT_SUGGESTION}
-alanv@google.com #{LAST_RESORT_SUGGESTION}
 aurimas@google.com #{LAST_RESORT_SUGGESTION}
 jjaggi@google.com #{LAST_RESORT_SUGGESTION}
 ogunwale@google.com #{LAST_RESORT_SUGGESTION}

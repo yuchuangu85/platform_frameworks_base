@@ -33,8 +33,8 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"Идет зарядка (<xliff:g id="PERCENTAGE">%s</xliff:g>)"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"Идет быстрая зарядка (<xliff:g id="PERCENTAGE">%s</xliff:g>)"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"Идет медленная зарядка (<xliff:g id="PERCENTAGE">%s</xliff:g>)"</string>
-    <string name="keyguard_plugged_in_charging_limited" msgid="1053130519456324630">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Зарядка оптимизирована для защиты батареи"</string>
-    <string name="keyguard_plugged_in_incompatible_charger" msgid="3687961801947819076">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Проблема с зарядным устройством"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="5369697538556777542">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Зарядка приостановлена для защиты батареи."</string>
+    <string name="keyguard_plugged_in_incompatible_charger" msgid="6384203333154532125">"<xliff:g id="PERCENTAGE">%s</xliff:g> • Проверьте зарядное устройство."</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"Сеть заблокирована"</string>
     <string name="keyguard_missing_sim_message_short" msgid="685029586173458728">"SIM-карта отсутствует"</string>
     <string name="keyguard_permanent_disabled_sim_message_short" msgid="3955052454216046100">"SIM-карту невозможно использовать."</string>
@@ -57,7 +57,7 @@
     <string name="kg_wrong_pin" msgid="4160978845968732624">"Неверный PIN-код"</string>
     <string name="kg_wrong_pin_try_again" msgid="3129729383303430190">"Неверный PIN-код."</string>
     <string name="kg_wrong_input_try_fp_suggestion" msgid="3143861542242024833">"Повторите попытку или используйте отпечаток пальца."</string>
-    <string name="kg_fp_not_recognized" msgid="5183108260932029241">"Отпечаток не распознан."</string>
+    <string name="kg_fp_not_recognized" msgid="5183108260932029241">"Отпечаток не распознан"</string>
     <string name="bouncer_face_not_recognized" msgid="1666128054475597485">"Лицо не распознано."</string>
     <string name="kg_bio_try_again_or_pin" msgid="4752168242723808390">"Повторите попытку или введите PIN-код."</string>
     <string name="kg_bio_try_again_or_password" msgid="1473132729225398039">"Повторите попытку или введите пароль."</string>
@@ -81,7 +81,7 @@
     <string name="kg_fp_locked_out" msgid="6228277682396768830">"Превышен лимит попыток разблокировки отпечатком."</string>
     <string name="kg_trust_agent_disabled" msgid="5400691179958727891">"Агент доверия недоступен."</string>
     <string name="kg_primary_auth_locked_out_pin" msgid="5492230176361601475">"Слишком много неудачных попыток ввести PIN-код."</string>
-    <string name="kg_primary_auth_locked_out_pattern" msgid="8266214607346180952">"Слишком много неудачных попыток ввести граф. ключ."</string>
+    <string name="kg_primary_auth_locked_out_pattern" msgid="8266214607346180952">"Слишком много неудачных попыток ввести графический ключ."</string>
     <string name="kg_primary_auth_locked_out_password" msgid="6170245108400198659">"Слишком много неудачных попыток ввести пароль."</string>
     <string name="kg_too_many_failed_attempts_countdown" msgid="2038195171919795529">"{count,plural, =1{Повторите попытку через # секунду.}one{Повторите попытку через # секунду.}few{Повторите попытку через # секунды.}many{Повторите попытку через # секунд.}other{Повторите попытку через # секунды.}}"</string>
     <string name="kg_sim_pin_instructions" msgid="1942424305184242951">"Введите PIN-код SIM-карты."</string>
@@ -111,6 +111,9 @@
     <string name="kg_prompt_reason_timeout_pattern" msgid="5514969660010197363">"В целях дополнительной безопасности используйте графический ключ"</string>
     <string name="kg_prompt_reason_timeout_pin" msgid="4227962059353859376">"В целях дополнительной безопасности используйте PIN-код"</string>
     <string name="kg_prompt_reason_timeout_password" msgid="8810879144143933690">"В целях дополнительной безопасности используйте пароль"</string>
+    <string name="kg_prompt_added_security_pin" msgid="5487992065995475528">"В целях безопасности введите PIN-код."</string>
+    <string name="kg_prompt_added_security_pattern" msgid="1017068086102168544">"В целях безопасности введите графический ключ."</string>
+    <string name="kg_prompt_added_security_password" msgid="6053156069765029006">"В целях безопасности введите пароль."</string>
     <string name="kg_prompt_reason_device_admin" msgid="6961159596224055685">"Устройство заблокировано администратором"</string>
     <string name="kg_prompt_reason_user_request" msgid="6015774877733717904">"Устройство было заблокировано вручную"</string>
     <string name="kg_face_not_recognized" msgid="7903950626744419160">"Не распознано"</string>

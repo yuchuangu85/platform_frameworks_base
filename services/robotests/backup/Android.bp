@@ -66,6 +66,7 @@ android_robolectric_test {
 
     instrumentation_for: "BackupFrameworksServicesLib",
 
-    upstream: true,
+
+    strict_mode: false,
 
 }

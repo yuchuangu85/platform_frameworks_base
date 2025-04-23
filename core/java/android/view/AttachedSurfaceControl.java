@@ -15,17 +15,23 @@
  */
 package android.view;
 
+import android.annotation.CallbackExecutor;
 import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.SuppressLint;
 import android.annotation.UiThread;
+import android.content.Context;
 import android.graphics.Rect;
 import android.graphics.Region;
 import android.hardware.HardwareBuffer;
-import android.os.IBinder;
+import android.os.Looper;
+import android.window.InputTransferToken;
 import android.window.SurfaceSyncGroup;
 
 import com.android.window.flags.Flags;
+
+import java.util.concurrent.Executor;
 
 /**
  * Provides an interface to the root-Surface of a View Hierarchy or Window. This
@@ -179,32 +185,45 @@ public interface AttachedSurfaceControl {
     }
 
     /**
-     * Gets the token used for associating this {@link AttachedSurfaceControl} with
-     * {@link SurfaceControlViewHost} instances.
+     * Gets the token used for associating this {@link AttachedSurfaceControl} with an embedded
+     * {@link SurfaceControlViewHost} or {@link SurfaceControl}
      *
-     * <p>This token should be passed to {@link SurfaceControlViewHost}'s constructor.
+     * <p>This token should be passed to
+     * {@link SurfaceControlViewHost#SurfaceControlViewHost(Context, Display, InputTransferToken)}
+     * or
+     * {@link WindowManager#registerBatchedSurfaceControlInputReceiver(int, InputTransferToken,
+     * SurfaceControl, Choreographer, SurfaceControlInputReceiver)} or
+     * {@link WindowManager#registerUnbatchedSurfaceControlInputReceiver(int, InputTransferToken,
+     * SurfaceControl, Looper, SurfaceControlInputReceiver)}
      *
-     * @return The SurfaceControlViewHost link token.
+     * @return The {@link InputTransferToken} for the {@link AttachedSurfaceControl}
+     * @throws IllegalStateException if the {@link AttachedSurfaceControl} was created with no
+     * registered input
      */
-    @Nullable
-    @FlaggedApi(Flags.FLAG_GET_HOST_TOKEN_API)
-    default IBinder getHostToken() {
-        throw new UnsupportedOperationException("The getHostToken needs to be "
-            + "implemented before making this call.");
+    @NonNull
+    @FlaggedApi(Flags.FLAG_SURFACE_CONTROL_INPUT_RECEIVER)
+    default InputTransferToken getInputTransferToken() {
+        throw new UnsupportedOperationException("The getInputTransferToken needs to be "
+                + "implemented before making this call.");
     }
 
     /**
-     * Transfer the currently in progress touch gesture from the host to the requested
-     * {@link SurfaceControlViewHost.SurfacePackage}. This requires that the
-     * SurfaceControlViewHost was created with the current host's inputToken.
+     * Registers a {@link OnJankDataListener} to receive jank classification data about rendered
+     * frames.
+     * <p>
+     * Use {@link SurfaceControl.OnJankDataListenerRegistration#removeAfter} to unregister the
+     * listener.
      *
-     * @param surfacePackage The SurfacePackage to transfer the gesture to.
-     * @return Whether the touch stream was transferred.
+     * @param executor The executor on which the listener will be invoked.
+     * @param listener The listener to add.
+     * @return The {@link OnJankDataListenerRegistration} for the listener.
      */
-    @FlaggedApi(Flags.FLAG_TRANSFER_GESTURE_TO_EMBEDDED)
-    default boolean transferHostTouchGestureToEmbedded(
-            @NonNull SurfaceControlViewHost.SurfacePackage surfacePackage) {
-        throw new UnsupportedOperationException(
-                "transferHostTouchGestureToEmbedded is unimplemented");
+    @NonNull
+    @FlaggedApi(Flags.FLAG_JANK_API)
+    @SuppressLint("PairedRegistration")
+    default SurfaceControl.OnJankDataListenerRegistration registerOnJankDataListener(
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull SurfaceControl.OnJankDataListener listener) {
+        return SurfaceControl.OnJankDataListenerRegistration.NONE;
     }
 }

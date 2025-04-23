@@ -16,6 +16,7 @@
 
 package android.app;
 
+import android.graphics.Point;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.os.Bundle;
@@ -23,8 +24,12 @@ import android.os.ParcelFileDescriptor;
 import android.app.IWallpaperManagerCallback;
 import android.app.ILocalWallpaperColorConsumer;
 import android.app.WallpaperInfo;
+import android.app.wallpaper.WallpaperDescription;
+import android.app.wallpaper.WallpaperInstance;
 import android.content.ComponentName;
 import android.app.WallpaperColors;
+
+import java.util.List;
 
 /** @hide */
 interface IWallpaperManager {
@@ -39,21 +44,27 @@ interface IWallpaperManager {
      *   FLAG_SET_SYSTEM
      *   FLAG_SET_LOCK
      *
-     * A 'null' cropHint rectangle is explicitly permitted as a sentinel for "whatever
-     * the source image's bounding rect is."
+     * 'screenOrientations' and 'crops' define how the wallpaper will be positioned for
+     * different screen orientations. If some screen orientations are missing, crops for these
+     * orientations will be added by the system.
+     *
+     * If 'screenOrientations' is null, 'crops' can be null or a singleton list. The system will
+     * fit the provided crop (or the whole image, if 'crops' is 'null') for the current device
+     * orientation, and add crops for the missing orientations.
      *
      * The completion callback's "onWallpaperChanged()" method is invoked when the
      * new wallpaper content is ready to display.
      */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.SET_WALLPAPER)")
     ParcelFileDescriptor setWallpaper(String name, in String callingPackage,
-            in Rect cropHint, boolean allowBackup, out Bundle extras, int which,
-            IWallpaperManagerCallback completion, int userId);
+            in int[] screenOrientations, in List<Rect> crops, boolean allowBackup,
+            out Bundle extras, int which, IWallpaperManagerCallback completion, int userId);
 
     /**
      * Set the live wallpaper.
      */
-    void setWallpaperComponentChecked(in ComponentName name, in String callingPackage, int which,
-            int userId);
+    void setWallpaperComponentChecked(in WallpaperDescription description, in String callingPackage,
+            int which, int userId);
 
     /**
      * Set the live wallpaper. This only affects the system wallpaper.
@@ -78,6 +89,40 @@ interface IWallpaperManager {
             boolean getCropped);
 
     /**
+     * For a given user and a list of display sizes, get a list of Rect representing the
+     * area of the current wallpaper that is displayed for each display size.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.READ_WALLPAPER_INTERNAL)")
+    @SuppressWarnings(value={"untyped-collection"})
+    List getBitmapCrops(in List<Point> displaySizes, int which, boolean originalBitmap, int userId);
+
+    /**
+     * For a given user, if the wallpaper of the specified which is an ImageWallpaper, return
+     * a bundle which is a Map<Integer, Rect> containing the custom cropHints that were sent to
+     * setBitmapWithCrops or setStreamWithCrops. These crops are relative to the original bitmap.
+     * If the wallpaper isn't an ImageWallpaper, return null.
+     */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.READ_WALLPAPER_INTERNAL)")
+    @SuppressWarnings(value={"untyped-collection"})
+    Bundle getCurrentBitmapCrops(int which, int userId);
+
+    /**
+     * Return how a bitmap of a given size would be cropped for a given list of display sizes when
+     * set with the given suggested crops.
+     * @hide
+     */
+    @SuppressWarnings(value={"untyped-collection"})
+    List getFutureBitmapCrops(in Point bitmapSize, in List<Point> displaySizes,
+            in int[] screenOrientations, in List<Rect> crops);
+
+    /**
+     * Return how a bitmap of a given size would be cropped when set with the given suggested crops.
+     * @hide
+     */
+    @SuppressWarnings(value={"untyped-collection"})
+    Rect getBitmapCrop(in Point bitmapSize, in int[] screenOrientations, in List<Rect> crops);
+
+    /**
      * Retrieve the given user's current wallpaper ID of the given kind.
      */
     int getWallpaperIdForUser(int which, int userId);
@@ -95,6 +140,13 @@ interface IWallpaperManager {
      * information about that wallpaper.  Otherwise, if it is a static image, simply return null.
      */
     WallpaperInfo getWallpaperInfoWithFlags(int which, int userId);
+
+   /**
+    * Return the instance information about the wallpaper described by `which`, or null if lock
+    * screen is requested and it is the same as home.
+    */
+    @JavaPassthrough(annotation="@android.annotation.RequiresPermission(android.Manifest.permission.READ_WALLPAPER_INTERNAL)")
+    WallpaperInstance getWallpaperInstance(int which, int userId);
 
     /**
      * Return a file descriptor for the file that contains metadata about the given user's
@@ -245,11 +297,4 @@ interface IWallpaperManager {
      * @hide
      */
     boolean isStaticWallpaper(int which);
-
-    /**
-     * Temporary method for project b/270726737.
-     * Return true if the wallpaper supports different crops for different display dimensions.
-     * @hide
-     */
-     boolean isMultiCropEnabled();
 }

@@ -70,6 +70,8 @@ public:
             : mType(Type::RRect), mOp(op), mMatrix(m), mRRect(rrect) {}
     Clip(const SkPath& path, SkClipOp op, const SkMatrix& m)
             : mType(Type::Path), mOp(op), mMatrix(m), mPath(std::in_place, path) {}
+    Clip(const sk_sp<SkShader> shader, SkClipOp op, const SkMatrix& m)
+            : mType(Type::Shader), mOp(op), mMatrix(m), mShader(shader) {}
 
     void apply(SkCanvas* canvas) const {
         canvas->setMatrix(mMatrix);
@@ -86,6 +88,8 @@ public:
                 // Ensure path clips are anti-aliased
                 canvas->clipPath(mPath.value(), mOp, true);
                 break;
+            case Type::Shader:
+                canvas->clipShader(mShader, mOp);
         }
     }
 
@@ -94,6 +98,7 @@ private:
         Rect,
         RRect,
         Path,
+        Shader,
     };
 
     Type mType;
@@ -103,6 +108,7 @@ private:
     // These are logically a union (tracked separately due to non-POD path).
     std::optional<SkPath> mPath;
     SkRRect mRRect;
+    sk_sp<SkShader> mShader;
 };
 
 Canvas* Canvas::create_canvas(const SkBitmap& bitmap) {
@@ -341,6 +347,10 @@ void SkiaCanvas::concat(const SkMatrix& matrix) {
     mCanvas->concat(matrix);
 }
 
+void SkiaCanvas::concat(const SkM44& matrix) {
+    mCanvas->concat(matrix);
+}
+
 void SkiaCanvas::rotate(float degrees) {
     mCanvas->rotate(degrees);
 }
@@ -407,6 +417,11 @@ bool SkiaCanvas::clipPath(const SkPath* path, SkClipOp op) {
     this->recordClip(*path, op);
     mCanvas->clipPath(*path, op, true);
     return !mCanvas->isClipEmpty();
+}
+
+void SkiaCanvas::clipShader(sk_sp<SkShader> shader, SkClipOp op) {
+    this->recordClip(shader, op);
+    mCanvas->clipShader(shader, op);
 }
 
 bool SkiaCanvas::replaceClipRect_deprecated(float left, float top, float right, float bottom) {
@@ -581,8 +596,8 @@ void SkiaCanvas::drawMesh(const Mesh& mesh, sk_sp<SkBlender> blender, const Pain
     if (recordingContext) {
         context = recordingContext->asDirectContext();
     }
-    mesh.updateSkMesh(context);
-    mCanvas->drawMesh(mesh.getSkMesh(), blender, paint);
+    mesh.refBufferData()->updateBuffers(context);
+    mCanvas->drawMesh(mesh.takeSnapshot().getSkMesh(), blender, paint);
 }
 
 // ----------------------------------------------------------------------------
@@ -604,18 +619,16 @@ bool SkiaCanvas::useGainmapShader(Bitmap& bitmap) {
     // If it's an unknown colortype then it's not a bitmap-backed canvas
     if (info.colorType() == SkColorType::kUnknown_SkColorType) return true;
 
-    skcms_TransferFunction tfn;
-    info.colorSpace()->transferFn(&tfn);
+    auto colorSpace = info.colorSpace();
+    // If we don't have a colorspace, we can't apply a gainmap
+    if (!colorSpace) return false;
 
-    auto transferType = skcms_TransferFunction_getType(&tfn);
-    switch (transferType) {
-        case skcms_TFType_HLGish:
-        case skcms_TFType_HLGinvish:
-        case skcms_TFType_PQish:
-            return true;
-        case skcms_TFType_Invalid:
-        case skcms_TFType_sRGBish:
-            return false;
+    const float targetRatio = uirenderer::getTargetHdrSdrRatio(colorSpace);
+
+    if (bitmap.gainmap()->info.fBaseImageType == SkGainmapInfo::BaseImageType::kHDR) {
+        return targetRatio < bitmap.gainmap()->info.fDisplayRatioHdr;
+    } else {
+        return targetRatio > bitmap.gainmap()->info.fDisplayRatioSdr;
     }
 }
 
@@ -826,9 +839,6 @@ void SkiaCanvas::drawGlyphs(ReadGlyphFunc glyphFunc, int count, const Paint& pai
     sk_sp<SkTextBlob> textBlob(builder.make());
 
     applyLooper(&paintCopy, [&](const SkPaint& p) { mCanvas->drawTextBlob(textBlob, 0, 0, p); });
-    if (!text_feature::fix_double_underline()) {
-        drawTextDecorations(x, y, totalAdvance, paintCopy);
-    }
 }
 
 void SkiaCanvas::drawLayoutOnPath(const minikin::Layout& layout, float hOffset, float vOffset,

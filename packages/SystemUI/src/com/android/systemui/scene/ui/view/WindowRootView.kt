@@ -25,8 +25,9 @@ import android.view.View
 import android.view.WindowInsets
 import android.widget.FrameLayout
 import androidx.core.view.updateMargins
+import com.android.systemui.Flags
+import com.android.systemui.compose.ComposeInitializer
 import com.android.systemui.res.R
-import com.android.systemui.compose.ComposeFacade
 
 /** A view that can serve as the root of the main SysUI window. */
 open class WindowRootView(
@@ -45,16 +46,16 @@ open class WindowRootView(
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
 
-        if (ComposeFacade.isComposeAvailable() && isRoot()) {
-            ComposeFacade.composeInitializer().onAttachedToWindow(this)
+        if (isRoot()) {
+            ComposeInitializer.onAttachedToWindow(this)
         }
     }
 
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
 
-        if (ComposeFacade.isComposeAvailable() && isRoot()) {
-            ComposeFacade.composeInitializer().onDetachedFromWindow(this)
+        if (isRoot()) {
+            ComposeInitializer.onDetachedFromWindow(this)
         }
     }
 
@@ -103,6 +104,8 @@ open class WindowRootView(
 
     private fun applyMargins() {
         val count = childCount
+        val hasFlagsEnabled = Flags.checkLockscreenGoneTransition()
+        var hasChildMarginUpdated = false
         for (i in 0 until count) {
             val child = getChildAt(i)
             if (child.layoutParams is LayoutParams) {
@@ -113,9 +116,16 @@ open class WindowRootView(
                             layoutParams.leftMargin != leftInset)
                 ) {
                     layoutParams.updateMargins(left = leftInset, right = rightInset)
-                    child.requestLayout()
+                    hasChildMarginUpdated = true
+                    if (!hasFlagsEnabled) {
+                        child.requestLayout()
+                    }
                 }
             }
+        }
+        if (hasFlagsEnabled && hasChildMarginUpdated) {
+            // Request layout at once after all children's margins has updated
+            requestLayout()
         }
     }
 

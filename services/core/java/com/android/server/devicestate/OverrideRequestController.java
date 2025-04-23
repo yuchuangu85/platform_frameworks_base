@@ -18,6 +18,7 @@ package com.android.server.devicestate;
 
 import android.annotation.IntDef;
 import android.annotation.NonNull;
+import android.hardware.devicestate.DeviceState;
 import android.hardware.devicestate.DeviceStateRequest;
 import android.os.IBinder;
 import android.util.Slog;
@@ -204,8 +205,8 @@ final class OverrideRequestController {
         }
 
         if (mRequest != null && mRequest.getPid() == pid) {
-            if (mRequest.getRequestedDeviceState().hasFlag(
-                    DeviceState.FLAG_CANCEL_WHEN_REQUESTER_NOT_ON_TOP)) {
+            if (mRequest.getRequestedDeviceState().hasProperty(
+                    DeviceState.PROPERTY_POLICY_CANCEL_WHEN_REQUESTER_NOT_ON_TOP)) {
                 cancelCurrentRequestLocked();
                 return;
             }

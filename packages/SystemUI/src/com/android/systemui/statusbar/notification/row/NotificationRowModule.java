@@ -17,34 +17,37 @@
 package com.android.systemui.statusbar.notification.row;
 
 import com.android.systemui.dagger.SysUISingleton;
-import com.android.systemui.flags.FeatureFlags;
-import com.android.systemui.flags.Flags;
+import com.android.systemui.statusbar.notification.row.icon.AppIconProviderModule;
+import com.android.systemui.statusbar.notification.row.icon.NotificationIconStyleProviderModule;
+import com.android.systemui.statusbar.notification.row.shared.NotificationRowContentBinderRefactor;
 
 import dagger.Binds;
 import dagger.Module;
 import dagger.Provides;
-import dagger.multibindings.ElementsIntoSet;
 
-import java.util.HashSet;
-import java.util.Set;
-
-import javax.inject.Named;
+import javax.inject.Provider;
 
 /**
  * Dagger Module containing notification row and view inflation implementations.
  */
-@Module
+@Module(includes = {AppIconProviderModule.class, NotificationIconStyleProviderModule.class})
 public abstract class NotificationRowModule {
-    public static final String NOTIF_REMOTEVIEWS_FACTORIES =
-            "notif_remoteviews_factories";
 
     /**
      * Provides notification row content binder instance.
      */
-    @Binds
+    @Provides
     @SysUISingleton
-    public abstract NotificationRowContentBinder provideNotificationRowContentBinder(
-            NotificationContentInflater contentBinderImpl);
+    public static NotificationRowContentBinder provideNotificationRowContentBinder(
+            Provider<NotificationContentInflater> legacyImpl,
+            Provider<NotificationRowContentBinderImpl> refactoredImpl
+    ) {
+        if (NotificationRowContentBinderRefactor.isEnabled()) {
+            return refactoredImpl.get();
+        } else {
+            return legacyImpl.get();
+        }
+    }
 
     /**
      * Provides notification remote view cache instance.
@@ -54,26 +57,19 @@ public abstract class NotificationRowModule {
     public abstract NotifRemoteViewCache provideNotifRemoteViewCache(
             NotifRemoteViewCacheImpl cacheImpl);
 
-    /** Provides view factories to be inflated in notification content. */
-    @Provides
-    @ElementsIntoSet
-    @Named(NOTIF_REMOTEVIEWS_FACTORIES)
-    static Set<NotifRemoteViewsFactory> provideNotifRemoteViewsFactories(
-            FeatureFlags featureFlags,
-            PrecomputedTextViewFactory precomputedTextViewFactory,
-            BigPictureLayoutInflaterFactory bigPictureLayoutInflaterFactory,
-            CallLayoutSetDataAsyncFactory callLayoutSetDataAsyncFactory
-    ) {
-        final Set<NotifRemoteViewsFactory> replacementFactories = new HashSet<>();
-        if (featureFlags.isEnabled(Flags.PRECOMPUTED_TEXT)) {
-            replacementFactories.add(precomputedTextViewFactory);
-        }
-        if (featureFlags.isEnabled(Flags.BIGPICTURE_NOTIFICATION_LAZY_LOADING)) {
-            replacementFactories.add(bigPictureLayoutInflaterFactory);
-        }
-        if (featureFlags.isEnabled(Flags.CALL_LAYOUT_ASYNC_SET_DATA)) {
-            replacementFactories.add(callLayoutSetDataAsyncFactory);
-        }
-        return replacementFactories;
-    }
+    /**
+     * Provides notification remote view factory container
+     */
+    @Binds
+    @SysUISingleton
+    public abstract NotifRemoteViewsFactoryContainer provideNotifRemoteViewsFactoryContainer(
+            NotifRemoteViewsFactoryContainerImpl containerImpl);
+
+    /**
+     * Provides heads up style manager
+     */
+    @Binds
+    @SysUISingleton
+    public abstract HeadsUpStyleProvider provideHeadsUpStyleManager(
+            HeadsUpStyleProviderImpl headsUpStyleManagerImpl);
 }

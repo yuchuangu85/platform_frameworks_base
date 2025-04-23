@@ -22,21 +22,20 @@ import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.window.WindowOnBackInvokedDispatcher
 import com.android.systemui.CoreStartable
+import com.android.systemui.Flags.predictiveBackAnimateShade
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
-import com.android.systemui.flags.FeatureFlags
-import com.android.systemui.flags.Flags
 import com.android.systemui.plugins.statusbar.StatusBarStateController
 import com.android.systemui.scene.domain.interactor.WindowRootViewVisibilityInteractor
 import com.android.systemui.shade.QuickSettingsController
 import com.android.systemui.shade.ShadeController
-import com.android.systemui.shade.ShadeViewController
+import com.android.systemui.shade.domain.interactor.ShadeBackActionInteractor
 import com.android.systemui.statusbar.NotificationShadeWindowController
 import com.android.systemui.statusbar.StatusBarState
 import com.android.systemui.statusbar.phone.StatusBarKeyguardViewManager
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 
 /** Handles requests to go back either from a button or gesture. */
 @SysUISingleton
@@ -49,13 +48,14 @@ constructor(
     private val shadeController: ShadeController,
     private val notificationShadeWindowController: NotificationShadeWindowController,
     private val windowRootViewVisibilityInteractor: WindowRootViewVisibilityInteractor,
-    featureFlags: FeatureFlags,
+    private val shadeBackActionInteractor: ShadeBackActionInteractor,
+    private val qsController: QuickSettingsController,
 ) : CoreStartable {
 
     private var isCallbackRegistered = false
 
     private val callback =
-        if (featureFlags.isEnabled(Flags.WM_SHADE_ANIMATE_BACK_GESTURE)) {
+        if (predictiveBackAnimateShade()) {
             /**
              * New callback that handles back gesture invoked, cancel, progress and provides
              * feedback via Shade animation.
@@ -66,8 +66,8 @@ constructor(
                 }
 
                 override fun onBackProgressed(backEvent: BackEvent) {
-                    if (shouldBackBeHandled() && shadeViewController.canBeCollapsed()) {
-                        shadeViewController.onBackProgressed(backEvent.progress)
+                    if (shouldBackBeHandled() && shadeBackActionInteractor.canBeCollapsed()) {
+                        shadeBackActionInteractor.onBackProgressed(backEvent.progress)
                     }
                 }
             }
@@ -78,14 +78,6 @@ constructor(
     private val onBackInvokedDispatcher: WindowOnBackInvokedDispatcher?
         get() =
             notificationShadeWindowController.windowRootView?.viewRootImpl?.onBackInvokedDispatcher
-
-    private lateinit var shadeViewController: ShadeViewController
-    private lateinit var qsController: QuickSettingsController
-
-    fun setup(qsController: QuickSettingsController, svController: ShadeViewController) {
-        this.qsController = qsController
-        this.shadeViewController = svController
-    }
 
     override fun start() {
         scope.launch {
@@ -116,16 +108,16 @@ constructor(
             return true
         }
         if (qsController.expanded) {
-            shadeViewController.animateCollapseQs(false)
+            shadeBackActionInteractor.animateCollapseQs(false)
             return true
         }
-        if (shadeViewController.closeUserSwitcherIfOpen()) {
+        if (shadeBackActionInteractor.closeUserSwitcherIfOpen()) {
             return true
         }
         if (shouldBackBeHandled()) {
-            if (shadeViewController.canBeCollapsed()) {
+            if (shadeBackActionInteractor.canBeCollapsed()) {
                 // this is the Shade dismiss animation, so make sure QQS closes when it ends.
-                shadeViewController.onBackPressed()
+                shadeBackActionInteractor.onBackPressed()
                 shadeController.animateCollapseShade()
             }
             return true

@@ -25,7 +25,6 @@ import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.RootMatchers.isDialog;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withClassName;
-import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static com.google.common.truth.Truth.assertThat;
@@ -42,8 +41,8 @@ import static org.mockito.Mockito.when;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.AlertDialog;
+import android.app.Dialog;
 import android.app.KeyguardManager;
-import android.app.UiAutomation;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
@@ -52,11 +51,8 @@ import android.content.pm.PackageManager;
 import android.content.pm.ParceledListSlice;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
-import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.Handler;
-import android.platform.test.annotations.RequiresFlagsDisabled;
-import android.platform.test.annotations.RequiresFlagsEnabled;
 import android.platform.test.flag.junit.CheckFlagsRule;
 import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.support.test.uiautomator.By;
@@ -66,14 +62,13 @@ import android.support.test.uiautomator.Until;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityManager;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.view.accessibility.Flags;
 import android.view.accessibility.IAccessibilityManager;
+import android.widget.Button;
 
 import androidx.lifecycle.Lifecycle;
 import androidx.test.core.app.ActivityScenario;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.R;
 import com.android.internal.accessibility.dialog.AccessibilityShortcutChooserActivity;
@@ -108,7 +103,6 @@ public class AccessibilityShortcutChooserActivityTest {
     private static final ComponentName TEST_COMPONENT_NAME = new ComponentName(TEST_PACKAGE,
             "class");
     private static final long UI_TIMEOUT_MS = 1000;
-    private UiAutomation mUiAutomation;
     private UiDevice mDevice;
     private ActivityScenario<TestAccessibilityShortcutChooserActivity> mScenario;
     private TestAccessibilityShortcutChooserActivity mActivity;
@@ -142,7 +136,6 @@ public class AccessibilityShortcutChooserActivityTest {
         assumeFalse("AccessibilityShortcutChooserActivity not supported on watch",
                 pm.hasSystemFeature(PackageManager.FEATURE_WATCH));
 
-        mUiAutomation = InstrumentationRegistry.getInstrumentation().getUiAutomation();
         mDevice = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         mDevice.wakeUp();
         when(mAccessibilityServiceInfo.getResolveInfo()).thenReturn(mResolveInfo);
@@ -170,68 +163,50 @@ public class AccessibilityShortcutChooserActivityTest {
         if (mScenario != null) {
             mScenario.close();
         }
+        if (mActivity != null) {
+            Dialog permissionDialog = mActivity.getPermissionDialog();
+            if (permissionDialog != null && permissionDialog.isShowing()) {
+                permissionDialog.dismiss();
+            }
+        }
     }
 
     @Test
-    @RequiresFlagsDisabled(Flags.FLAG_CLEANUP_ACCESSIBILITY_WARNING_DIALOG)
-    public void selectTestService_oldPermissionDialog_deny_dialogIsHidden() {
-        launchActivity();
-        openShortcutsList();
-
-        mDevice.findObject(By.text(TEST_LABEL)).clickAndWait(Until.newWindow(), UI_TIMEOUT_MS);
-        onView(withText(DENY_LABEL)).perform(scrollTo(), click());
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
-
-        onView(withId(R.id.accessibility_permissionDialog_title)).inRoot(isDialog()).check(
-                doesNotExist());
-    }
-
-    @Test
-    @RequiresFlagsEnabled(Flags.FLAG_CLEANUP_ACCESSIBILITY_WARNING_DIALOG)
     public void selectTestService_permissionDialog_allow_rowChecked() {
         launchActivity();
         openShortcutsList();
 
         mDevice.findObject(By.text(TEST_LABEL)).clickAndWait(Until.newWindow(), UI_TIMEOUT_MS);
-        clickSystemDialogButton(ALLOW_LABEL);
+        clickPermissionDialogButton(R.id.accessibility_permission_enable_allow_button);
 
-        assertThat(mDevice.wait(Until.hasObject(By.textStartsWith(LIST_TITLE_LABEL)),
-                UI_TIMEOUT_MS)).isTrue();
         assertThat(mDevice.wait(Until.hasObject(By.checked(true)), UI_TIMEOUT_MS)).isTrue();
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_CLEANUP_ACCESSIBILITY_WARNING_DIALOG)
     public void selectTestService_permissionDialog_deny_rowNotChecked() {
         launchActivity();
         openShortcutsList();
 
         mDevice.findObject(By.text(TEST_LABEL)).clickAndWait(Until.newWindow(), UI_TIMEOUT_MS);
-        clickSystemDialogButton(DENY_LABEL);
+        clickPermissionDialogButton(R.id.accessibility_permission_enable_deny_button);
 
-        assertThat(mDevice.wait(Until.hasObject(By.textStartsWith(LIST_TITLE_LABEL)),
-                UI_TIMEOUT_MS)).isTrue();
         assertThat(mDevice.wait(Until.hasObject(By.checked(true)), UI_TIMEOUT_MS)).isFalse();
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_CLEANUP_ACCESSIBILITY_WARNING_DIALOG)
     public void selectTestService_permissionDialog_uninstall_callsUninstaller_rowRemoved() {
         launchActivity();
         openShortcutsList();
 
         mDevice.findObject(By.text(TEST_LABEL)).clickAndWait(Until.newWindow(), UI_TIMEOUT_MS);
-        clickSystemDialogButton(UNINSTALL_LABEL);
+        clickPermissionDialogButton(R.id.accessibility_permission_enable_uninstall_button);
 
         verify(mPackageInstaller).uninstall(eq(TEST_PACKAGE), any());
-        assertThat(mDevice.wait(Until.hasObject(By.textStartsWith(LIST_TITLE_LABEL)),
-                UI_TIMEOUT_MS)).isTrue();
         assertThat(mDevice.wait(Until.hasObject(By.textStartsWith(TEST_LABEL)),
                 UI_TIMEOUT_MS)).isFalse();
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_CLEANUP_ACCESSIBILITY_WARNING_DIALOG)
     public void selectTestService_permissionDialog_notShownWhenNotRequired() throws Exception {
         when(mAccessibilityManagerService.isAccessibilityServiceWarningRequired(any()))
                 .thenReturn(false);
@@ -246,7 +221,6 @@ public class AccessibilityShortcutChooserActivityTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_CLEANUP_ACCESSIBILITY_WARNING_DIALOG)
     public void selectTestService_notPermittedByAdmin_blockedEvenIfNoWarningRequired()
             throws Exception {
         when(mAccessibilityManagerService.isAccessibilityServiceWarningRequired(any()))
@@ -322,7 +296,6 @@ public class AccessibilityShortcutChooserActivityTest {
     }
 
     @Test
-    @RequiresFlagsEnabled(Flags.FLAG_ALLOW_SHORTCUT_CHOOSER_ON_LOCKSCREEN)
     public void createDialog_onLockscreen_hasExpectedContent() {
         when(mKeyguardManager.isKeyguardLocked()).thenReturn(true);
         launchActivity();
@@ -353,16 +326,13 @@ public class AccessibilityShortcutChooserActivityTest {
         mDevice.wait(Until.hasObject(By.textStartsWith(LIST_TITLE_LABEL)), UI_TIMEOUT_MS);
     }
 
-    private void clickSystemDialogButton(String dialogButtonText) {
-        // Use UiAutomation to find the button because UiDevice struggles to find
-        // a UI element in a system dialog.
-        final AccessibilityNodeInfo button =
-                mUiAutomation.getRootInActiveWindow()
-                        .findAccessibilityNodeInfosByText(dialogButtonText).stream()
-                        .filter(AccessibilityNodeInfo::isClickable).findFirst().get();
-        final Rect bounds = new Rect();
-        button.getBoundsInScreen(bounds);
-        mDevice.click(bounds.centerX(), bounds.centerY());
+    private void clickPermissionDialogButton(int buttonId) {
+        Button button = mActivity.getPermissionDialog().findViewById(buttonId);
+        mActivity.runOnUiThread(button::performClick);
+        // Wait for the dialog to go away by waiting for the shortcut chooser
+        // to become visible again.
+        assertThat(mDevice.wait(Until.hasObject(By.textStartsWith(LIST_TITLE_LABEL)),
+                UI_TIMEOUT_MS)).isTrue();
     }
 
     /**
@@ -386,11 +356,9 @@ public class AccessibilityShortcutChooserActivityTest {
         @Override
         public void onCreate(Bundle savedInstanceState) {
             super.onCreate(savedInstanceState);
-            if (Flags.cleanupAccessibilityWarningDialog()) {
-                // Setting the Theme is necessary here for the dialog to use the proper style
-                // resources as designated in its layout XML.
-                setTheme(R.style.Theme_DeviceDefault_DayNight);
-            }
+            // Setting the Theme is necessary here for the dialog to use the proper style
+            // resources as designated in its layout XML.
+            setTheme(R.style.Theme_DeviceDefault_DayNight);
         }
 
         @Override
@@ -402,6 +370,10 @@ public class AccessibilityShortcutChooserActivityTest {
         public Object getSystemService(String name) {
             if (Context.ACCESSIBILITY_SERVICE.equals(name)
                     && sAccessibilityManagerService != null) {
+                // Warning: This new AccessibilityManager complicates UI inspection
+                // because it breaks the expected "singleton per process" quality of
+                // AccessibilityManager. Debug here if observing unexpected issues
+                // with UI inspection or interaction.
                 return new AccessibilityManager(this, new Handler(getMainLooper()),
                         sAccessibilityManagerService, /* userId= */ 0, /* serviceConnect= */ true);
             }

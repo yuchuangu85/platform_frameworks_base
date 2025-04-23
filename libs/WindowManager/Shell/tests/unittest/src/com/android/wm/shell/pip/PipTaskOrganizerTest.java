@@ -36,7 +36,8 @@ import android.content.ComponentName;
 import android.content.pm.ActivityInfo;
 import android.graphics.Rect;
 import android.os.RemoteException;
-import android.test.suitebuilder.annotation.SmallTest;
+import android.platform.test.annotations.DisableFlags;
+import android.platform.test.flag.junit.SetFlagsRule;
 import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
 import android.util.Rational;
@@ -45,7 +46,11 @@ import android.view.DisplayInfo;
 import android.view.SurfaceControl;
 import android.window.WindowContainerToken;
 
+import androidx.test.filters.SmallTest;
+
+import com.android.wm.shell.Flags;
 import com.android.wm.shell.MockSurfaceControlHelper;
+import com.android.wm.shell.RootTaskDisplayAreaOrganizer;
 import com.android.wm.shell.ShellTaskOrganizer;
 import com.android.wm.shell.ShellTestCase;
 import com.android.wm.shell.TestShellExecutor;
@@ -60,10 +65,13 @@ import com.android.wm.shell.common.pip.PipKeepClearAlgorithmInterface;
 import com.android.wm.shell.common.pip.PipSnapAlgorithm;
 import com.android.wm.shell.common.pip.PipUiEventLogger;
 import com.android.wm.shell.common.pip.SizeSpecSource;
+import com.android.wm.shell.desktopmode.DesktopUserRepositories;
 import com.android.wm.shell.pip.phone.PhonePipMenuController;
 import com.android.wm.shell.splitscreen.SplitScreenController;
 
 import org.junit.Before;
+import org.junit.ClassRule;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentMatchers;
@@ -78,7 +86,13 @@ import java.util.Optional;
 @SmallTest
 @RunWith(AndroidTestingRunner.class)
 @TestableLooper.RunWithLooper
+@DisableFlags(Flags.FLAG_ENABLE_PIP2)
 public class PipTaskOrganizerTest extends ShellTestCase {
+    @ClassRule
+    public static final SetFlagsRule.ClassRule mClassRule = new SetFlagsRule.ClassRule();
+    @Rule
+    public final SetFlagsRule mSetFlagsRule = mClassRule.createSetFlagsRule();
+
     private PipTaskOrganizer mPipTaskOrganizer;
 
     @Mock private DisplayController mMockDisplayController;
@@ -89,6 +103,8 @@ public class PipTaskOrganizerTest extends ShellTestCase {
     @Mock private PipSurfaceTransactionHelper mMockPipSurfaceTransactionHelper;
     @Mock private PipUiEventLogger mMockPipUiEventLogger;
     @Mock private Optional<SplitScreenController> mMockOptionalSplitScreen;
+    @Mock private Optional<DesktopUserRepositories> mMockOptionalDesktopUserRepositories;
+    @Mock private RootTaskDisplayAreaOrganizer mRootTaskDisplayAreaOrganizer;
     @Mock private ShellTaskOrganizer mMockShellTaskOrganizer;
     @Mock private PipParamsChangedForwarder mMockPipParamsChangedForwarder;
     private TestShellExecutor mMainExecutor;
@@ -118,8 +134,11 @@ public class PipTaskOrganizerTest extends ShellTestCase {
                 mPipTransitionState, mPipBoundsState, mPipDisplayLayoutState,
                 mPipBoundsAlgorithm, mMockPhonePipMenuController, mMockPipAnimationController,
                 mMockPipSurfaceTransactionHelper, mMockPipTransitionController,
-                mMockPipParamsChangedForwarder, mMockOptionalSplitScreen, mMockDisplayController,
-                mMockPipUiEventLogger, mMockShellTaskOrganizer, mMainExecutor);
+                mMockPipParamsChangedForwarder, mMockOptionalSplitScreen,
+                Optional.empty() /* pipPerfHintControllerOptional */,
+                mMockOptionalDesktopUserRepositories, mRootTaskDisplayAreaOrganizer,
+                mMockDisplayController, mMockPipUiEventLogger, mMockShellTaskOrganizer,
+                mMainExecutor);
         mMainExecutor.flushAll();
         preparePipTaskOrg();
         preparePipSurfaceTransactionHelper();
@@ -278,7 +297,7 @@ public class PipTaskOrganizerTest extends ShellTestCase {
 
     private void preparePipSurfaceTransactionHelper() {
         doReturn(mMockPipSurfaceTransactionHelper).when(mMockPipSurfaceTransactionHelper)
-                .crop(any(), any(), any());
+                .cropAndPosition(any(), any(), any());
         doReturn(mMockPipSurfaceTransactionHelper).when(mMockPipSurfaceTransactionHelper)
                 .resetScale(any(), any(), any());
         doReturn(mMockPipSurfaceTransactionHelper).when(mMockPipSurfaceTransactionHelper)

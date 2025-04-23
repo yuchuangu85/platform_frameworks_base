@@ -32,6 +32,8 @@ import java.util.Iterator;
 /**
  * @hide
  */
+// Exported to Mainline modules; cannot use annotations
+// @android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class LocalLog {
 
     private final Deque<String> mLog;
@@ -108,6 +110,11 @@ public final class LocalLog {
         while (itr.hasNext()) {
             pw.println(itr.next());
         }
+    }
+
+    // @VisibleForTesting(otherwise = VisibleForTesting.NONE)
+    public synchronized void clear() {
+        mLog.clear();
     }
 
     public static class ReadOnlyLocalLog {

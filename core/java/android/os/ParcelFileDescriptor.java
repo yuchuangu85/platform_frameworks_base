@@ -40,14 +40,16 @@ import android.content.ContentProvider;
 import android.content.ContentResolver;
 import android.net.Uri;
 import android.os.MessageQueue.OnFileDescriptorEventListener;
+import android.ravenwood.annotation.RavenwoodKeepWholeClass;
+import android.ravenwood.annotation.RavenwoodThrow;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
 import android.system.StructStat;
+import android.util.CloseGuard;
 import android.util.Log;
 import android.util.Slog;
 
-import dalvik.system.CloseGuard;
 import dalvik.system.VMRuntime;
 
 import libcore.io.IoUtils;
@@ -70,6 +72,7 @@ import java.nio.ByteOrder;
  * The FileDescriptor returned by {@link Parcel#readFileDescriptor}, allowing
  * you to close it when done with it.
  */
+@RavenwoodKeepWholeClass
 public class ParcelFileDescriptor implements Parcelable, Closeable {
     private static final String TAG = "ParcelFileDescriptor";
 
@@ -284,6 +287,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      */
     // We can't accept a generic Executor here, since we need to use
     // MessageQueue.addOnFileDescriptorEventListener()
+    @RavenwoodThrow(blockedBy = MessageQueue.class)
     @SuppressLint("ExecutorRegistration")
     public static @NonNull ParcelFileDescriptor wrap(@NonNull ParcelFileDescriptor pfd,
             @NonNull Handler handler, @NonNull OnCloseListener listener) throws IOException {
@@ -293,6 +297,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     }
 
     /** {@hide} */
+    @RavenwoodThrow(blockedBy = MessageQueue.class)
     public static ParcelFileDescriptor fromFd(FileDescriptor fd, Handler handler,
             final OnCloseListener listener) throws IOException {
         if (handler == null) {
@@ -318,7 +323,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
                 }
                 if (status != null) {
                     queue.removeOnFileDescriptorEventListener(fd);
-                    IoUtils.closeQuietly(fd);
+                    closeInternal(fd);
                     listener.onClose(status.asIOException());
                     return 0;
                 }
@@ -350,6 +355,10 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
         } catch (ErrnoException e) {
             throw new FileNotFoundException(e.getMessage());
         }
+    }
+
+    private static void closeInternal(FileDescriptor fd) {
+        IoUtils.closeQuietly(fd);
     }
 
     /**
@@ -452,6 +461,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      *
      * @throws UncheckedIOException if {@link #dup(FileDescriptor)} throws IOException.
      */
+    @RavenwoodThrow(reason = "Socket.getFileDescriptor$()")
     public static ParcelFileDescriptor fromSocket(Socket socket) {
         FileDescriptor fd = socket.getFileDescriptor$();
         try {
@@ -485,6 +495,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      *
      * @throws UncheckedIOException if {@link #dup(FileDescriptor)} throws IOException.
      */
+    @RavenwoodThrow(reason = "DatagramSocket.getFileDescriptor$()")
     public static ParcelFileDescriptor fromDatagramSocket(DatagramSocket datagramSocket) {
         FileDescriptor fd = datagramSocket.getFileDescriptor$();
         try {
@@ -536,6 +547,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      * Create two ParcelFileDescriptors structured as a pair of sockets
      * connected to each other. The two sockets are indistinguishable.
      */
+    @RavenwoodThrow(reason = "Os.socketpair()")
     public static ParcelFileDescriptor[] createSocketPair() throws IOException {
         return createSocketPair(SOCK_STREAM);
     }
@@ -543,6 +555,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     /**
      * @hide
      */
+    @RavenwoodThrow(reason = "Os.socketpair()")
     public static ParcelFileDescriptor[] createSocketPair(int type) throws IOException {
         try {
             final FileDescriptor fd0 = new FileDescriptor();
@@ -565,6 +578,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      * calling {@link #checkError()}, usually after detecting an EOF.
      * This can also be used to detect remote crashes.
      */
+    @RavenwoodThrow(reason = "Os.socketpair()")
     public static ParcelFileDescriptor[] createReliableSocketPair() throws IOException {
         return createReliableSocketPair(SOCK_STREAM);
     }
@@ -572,6 +586,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
     /**
      * @hide
      */
+    @RavenwoodThrow(reason = "Os.socketpair()")
     public static ParcelFileDescriptor[] createReliableSocketPair(int type) throws IOException {
         try {
             final FileDescriptor[] comm = createCommSocketPair();
@@ -586,6 +601,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
         }
     }
 
+    @RavenwoodThrow(reason = "Os.socketpair()")
     private static FileDescriptor[] createCommSocketPair() throws IOException {
         try {
             // Use SOCK_SEQPACKET so that we have a guarantee that the status
@@ -614,6 +630,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      */
     @UnsupportedAppUsage
     @Deprecated
+    @RavenwoodThrow(blockedBy = MemoryFile.class)
     public static ParcelFileDescriptor fromData(byte[] data, String name) throws IOException {
         if (data == null) return null;
         MemoryFile file = new MemoryFile(name, data.length);
@@ -669,6 +686,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      * @hide
      */
     @TestApi
+    @RavenwoodThrow(reason = "Os.readlink() and Os.stat()")
     public static File getFile(FileDescriptor fd) throws IOException {
         try {
             final String path = Os.readlink("/proc/self/fd/" + fd.getInt$());
@@ -832,7 +850,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
         }
         // Status MUST be sent before closing actual descriptor
         writeCommStatusAndClose(status, msg);
-        IoUtils.closeQuietly(mFd);
+        closeInternal(mFd);
         releaseResources();
     }
 
@@ -899,7 +917,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
             }
 
         } finally {
-            IoUtils.closeQuietly(mCommFd);
+            closeInternal(mCommFd);
             mCommFd = null;
         }
     }
@@ -1042,6 +1060,7 @@ public class ParcelFileDescriptor implements Parcelable, Closeable {
      * take care of calling {@link ParcelFileDescriptor#close
      * ParcelFileDescriptor.close()} for you when the stream is closed.
      */
+    @RavenwoodKeepWholeClass
     public static class AutoCloseOutputStream extends FileOutputStream {
         private final ParcelFileDescriptor mPfd;
 

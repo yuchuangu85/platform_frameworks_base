@@ -18,6 +18,7 @@ package com.android.systemui.qs.pipeline.domain.startable
 
 import com.android.systemui.CoreStartable
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.qs.pipeline.domain.interactor.AccessibilityTilesInteractor
 import com.android.systemui.qs.pipeline.domain.interactor.AutoAddInteractor
 import com.android.systemui.qs.pipeline.domain.interactor.CurrentTilesInteractor
 import com.android.systemui.qs.pipeline.domain.interactor.RestoreReconciliationInteractor
@@ -29,15 +30,15 @@ class QSPipelineCoreStartable
 @Inject
 constructor(
     private val currentTilesInteractor: CurrentTilesInteractor,
+    private val accessibilityTilesInteractor: AccessibilityTilesInteractor,
     private val autoAddInteractor: AutoAddInteractor,
     private val featureFlags: QSPipelineFlagsRepository,
     private val restoreReconciliationInteractor: RestoreReconciliationInteractor,
 ) : CoreStartable {
 
     override fun start() {
-        if (featureFlags.pipelineEnabled) {
-            autoAddInteractor.init(currentTilesInteractor)
-            restoreReconciliationInteractor.start()
-        }
+        accessibilityTilesInteractor.init(currentTilesInteractor)
+        autoAddInteractor.init(currentTilesInteractor)
+        restoreReconciliationInteractor.start()
     }
 }

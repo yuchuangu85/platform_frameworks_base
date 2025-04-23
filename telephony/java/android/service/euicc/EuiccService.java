@@ -19,6 +19,7 @@ import static android.telephony.euicc.EuiccCardManager.ResetOption;
 
 import android.Manifest;
 import android.annotation.CallSuper;
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -37,6 +38,8 @@ import android.telephony.euicc.EuiccManager;
 import android.telephony.euicc.EuiccManager.OtaStatus;
 import android.text.TextUtils;
 import android.util.Log;
+
+import com.android.internal.telephony.flags.Flags;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -262,6 +265,17 @@ public abstract class EuiccService extends Service {
      */
     public static final String EXTRA_RESOLUTION_CONFIRMATION_CODE_RETRIED =
             "android.service.euicc.extra.RESOLUTION_CONFIRMATION_CODE_RETRIED";
+
+    /**
+     * Bundle key for the {@code resolvedBundle} passed to {@link #onDownloadSubscription(
+     * int, int, DownloadableSubscription, boolean, boolean, Bundle)}. The value is a
+     * {@link String} for the package name of the app calling the
+     * {@link EuiccManager#downloadSubscription(int, DownloadableSubscription, PendingIntent)} API.
+     * This is to be used by LPA to determine the app that is requesting the download.
+     *
+     * @hide
+     */
+    public static final String EXTRA_PACKAGE_NAME = "android.service.euicc.extra.PACKAGE_NAME";
 
     /**
      * Intent extra set for resolution requests containing an int indicating the current card Id.
@@ -759,6 +773,20 @@ public abstract class EuiccService extends Service {
     public abstract int onRetainSubscriptionsForFactoryReset(int slotId);
 
     /**
+     * Return the available memory in bytes of the eUICC.
+     *
+     * @param slotId ID of the SIM slot being queried.
+     * @return the available memory in bytes.
+     * @see android.telephony.euicc.EuiccManager#getAvailableMemoryInBytes
+     */
+    @FlaggedApi(Flags.FLAG_ESIM_AVAILABLE_MEMORY)
+    public long onGetAvailableMemoryInBytes(int slotId) {
+        // stub implementation, LPA needs to implement this
+        throw new UnsupportedOperationException("The connected LPA does not implement"
+                + "EuiccService#onGetAvailableMemoryInBytes(int)");
+    }
+
+    /**
      * Dump to a provided printWriter.
      */
     public void dump(@NonNull PrintWriter printWriter) {
@@ -831,6 +859,34 @@ public abstract class EuiccService extends Service {
                     }
                 }
             });
+        }
+
+        @Override
+        @FlaggedApi(Flags.FLAG_ESIM_AVAILABLE_MEMORY)
+        public void getAvailableMemoryInBytes(
+                int slotId, IGetAvailableMemoryInBytesCallback callback) {
+            mExecutor.execute(
+                    () -> {
+                        long availableMemoryInBytes = EuiccManager.EUICC_MEMORY_FIELD_UNAVAILABLE;
+                        String unsupportedOperationMessage = "";
+                        try {
+                            availableMemoryInBytes =
+                                    EuiccService.this.onGetAvailableMemoryInBytes(slotId);
+                        } catch (UnsupportedOperationException e) {
+                            unsupportedOperationMessage = e.getMessage();
+                        }
+
+                        try {
+                            if (!unsupportedOperationMessage.isEmpty()) {
+                                callback.onUnsupportedOperationException(
+                                        unsupportedOperationMessage);
+                            } else {
+                                callback.onSuccess(availableMemoryInBytes);
+                            }
+                        } catch (RemoteException e) {
+                            // Can't communicate with the phone process; ignore.
+                        }
+                    });
         }
 
         @Override

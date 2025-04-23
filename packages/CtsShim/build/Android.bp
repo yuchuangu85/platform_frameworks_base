@@ -55,7 +55,7 @@ android_app {
     ],
 }
 
-genrule {
+java_genrule {
     name: "generate_priv_manifest",
     srcs: [
         "shim_priv/AndroidManifest.xml",
@@ -93,7 +93,6 @@ android_app {
         "com.android.apex.cts.shim.v1",
         "com.android.apex.cts.shim.v2",
         "com.android.apex.cts.shim.v2_apk_in_apex_upgrades",
-        "com.android.apex.cts.shim.v2_no_hashtree",
         "com.android.apex.cts.shim.v2_legacy",
         "com.android.apex.cts.shim.v2_sdk_target_p",
         "com.android.apex.cts.shim.v2_unsigned_payload",
@@ -170,7 +169,7 @@ android_app {
     min_sdk_version: "24",
 }
 
-genrule {
+java_genrule {
     name: "generate_shim_manifest",
     srcs: [
         "shim/AndroidManifest.xml",
@@ -200,7 +199,6 @@ android_app {
         "com.android.apex.cts.shim.v1",
         "com.android.apex.cts.shim.v2",
         "com.android.apex.cts.shim.v2_apk_in_apex_upgrades",
-        "com.android.apex.cts.shim.v2_no_hashtree",
         "com.android.apex.cts.shim.v2_legacy",
         "com.android.apex.cts.shim.v2_sdk_target_p",
         "com.android.apex.cts.shim.v2_unsigned_payload",

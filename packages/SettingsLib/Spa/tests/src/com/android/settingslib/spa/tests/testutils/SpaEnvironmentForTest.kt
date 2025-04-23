@@ -17,15 +17,14 @@
 package com.android.settingslib.spa.tests.testutils
 
 import android.app.Activity
-import android.content.BroadcastReceiver
 import android.content.Context
-import android.content.Intent
 import android.os.Bundle
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
 import com.android.settingslib.spa.framework.BrowseActivity
 import com.android.settingslib.spa.framework.common.EntrySearchData
-import com.android.settingslib.spa.framework.common.EntrySliceData
 import com.android.settingslib.spa.framework.common.EntryStatusData
 import com.android.settingslib.spa.framework.common.LogCategory
 import com.android.settingslib.spa.framework.common.LogEvent
@@ -73,9 +72,6 @@ class SpaLoggerForTest : SpaLogger {
 }
 
 class BlankActivity : BrowseActivity()
-class BlankSliceBroadcastReceiver : BroadcastReceiver() {
-    override fun onReceive(p0: Context?, p1: Intent?) {}
-}
 
 object SppHome : SettingsPageProvider {
     override val name = "SppHome"
@@ -88,6 +84,7 @@ object SppHome : SettingsPageProvider {
         val owner = this.createSettingsPage()
         return listOf(
             SppLayer1.buildInject().setLink(fromPage = owner).build(),
+            SppDialog.buildInject().setLink(fromPage = owner).build(),
         )
     }
 }
@@ -146,18 +143,25 @@ object SppLayer2 : SettingsPageProvider {
     override fun buildEntry(arguments: Bundle?): List<SettingsEntry> {
         val owner = this.createSettingsPage()
         return listOf(
-            SettingsEntryBuilder.create(owner, "Layer2Entry1")
-                .setSliceDataFn { _, _ ->
-                    return@setSliceDataFn object : EntrySliceData() {
-                        init {
-                            postValue(null)
-                        }
-                    }
-                }
-                .build(),
+            SettingsEntryBuilder.create(owner, "Layer2Entry1").build(),
             SettingsEntryBuilder.create(owner, "Layer2Entry2").build(),
         )
     }
+}
+
+object SppDialog : SettingsPageProvider {
+    override val name = "SppDialog"
+    override val navType = SettingsPageProvider.NavType.Dialog
+
+    const val CONTENT = "SppDialog Content"
+
+    @Composable
+    override fun Page(arguments: Bundle?) {
+        Text(CONTENT)
+    }
+
+    fun buildInject() = SettingsEntryBuilder.createInject(this.createSettingsPage())
+        .setMacro { SimplePreferenceMacro(title = name, clickRoute = name) }
 }
 
 object SppForSearch : SettingsPageProvider {
@@ -198,8 +202,6 @@ class SpaEnvironmentForTest(
     context: Context,
     rootPages: List<SettingsPage> = emptyList(),
     override val browseActivityClass: Class<out Activity>? = BlankActivity::class.java,
-    override val sliceBroadcastReceiverClass: Class<out BroadcastReceiver>? =
-        BlankSliceBroadcastReceiver::class.java,
     override val logger: SpaLogger = object : SpaLogger {}
 ) : SpaEnvironment(context) {
 
@@ -223,6 +225,7 @@ class SpaEnvironmentForTest(
                         navArgument("rt_param") { type = NavType.StringType },
                     )
                 },
+                SppDialog,
             ),
             rootPages
         )

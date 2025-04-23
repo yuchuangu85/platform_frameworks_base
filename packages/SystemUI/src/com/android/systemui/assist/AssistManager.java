@@ -21,15 +21,18 @@ import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserHandle;
 import android.provider.Settings;
+import android.service.voice.VisualQueryAttentionResult;
 import android.service.voice.VoiceInteractionSession;
 import android.util.Log;
 
+import com.android.app.viewcapture.ViewCaptureAwareWindowManager;
 import com.android.internal.app.AssistUtils;
 import com.android.internal.app.IVisualQueryDetectionAttentionListener;
 import com.android.internal.app.IVisualQueryRecognitionStatusListener;
 import com.android.internal.app.IVoiceInteractionSessionListener;
 import com.android.internal.logging.MetricsLogger;
 import com.android.internal.logging.nano.MetricsProto.MetricsEvent;
+import com.android.systemui.assist.domain.interactor.AssistInteractor;
 import com.android.systemui.assist.ui.DefaultUiController;
 import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dagger.qualifiers.Main;
@@ -148,6 +151,7 @@ public class AssistManager {
     private final SecureSettings mSecureSettings;
     private final SelectedUserInteractor mSelectedUserInteractor;
     private final ActivityManager mActivityManager;
+    private final AssistInteractor mInteractor;
 
     private final DeviceProvisionedController mDeviceProvisionedController;
 
@@ -157,12 +161,14 @@ public class AssistManager {
     private final IVisualQueryDetectionAttentionListener mVisualQueryDetectionAttentionListener =
             new IVisualQueryDetectionAttentionListener.Stub() {
                 @Override
-                public void onAttentionGained() {
+                public void onAttentionGained(VisualQueryAttentionResult attentionResult) {
+                    // TODO (b/319132184): Implemented this with different types.
                     handleVisualAttentionChanged(true);
                 }
 
                 @Override
-                public void onAttentionLost() {
+                public void onAttentionLost(int interactionIntention) {
+                    //TODO (b/319132184): Implemented this with different types.
                     handleVisualAttentionChanged(false);
                 }
             };
@@ -189,12 +195,14 @@ public class AssistManager {
             DisplayTracker displayTracker,
             SecureSettings secureSettings,
             SelectedUserInteractor selectedUserInteractor,
-            ActivityManager activityManager) {
+            ActivityManager activityManager,
+            AssistInteractor interactor,
+            ViewCaptureAwareWindowManager viewCaptureAwareWindowManager) {
         mContext = context;
         mDeviceProvisionedController = controller;
         mCommandQueue = commandQueue;
         mAssistUtils = assistUtils;
-        mAssistDisclosure = new AssistDisclosure(context, uiHandler);
+        mAssistDisclosure = new AssistDisclosure(context, uiHandler, viewCaptureAwareWindowManager);
         mOverviewProxyService = overviewProxyService;
         mPhoneStateMonitor = phoneStateMonitor;
         mAssistLogger = assistLogger;
@@ -203,6 +211,7 @@ public class AssistManager {
         mSecureSettings = secureSettings;
         mSelectedUserInteractor = selectedUserInteractor;
         mActivityManager = activityManager;
+        mInteractor = interactor;
 
         registerVoiceInteractionSessionListener();
         registerVisualQueryRecognitionStatusListener();
@@ -311,6 +320,7 @@ public class AssistManager {
                 assistComponent,
                 legacyDeviceState);
         logStartAssistLegacy(legacyInvocationType, legacyDeviceState);
+        mInteractor.onAssistantStarted(legacyInvocationType);
         startAssistInternal(args, assistComponent, isService);
     }
 
@@ -472,6 +482,7 @@ public class AssistManager {
                 });
     }
 
+    // TODO (b/319132184): Implemented this with different types.
     private void handleVisualAttentionChanged(boolean attentionGained) {
         final StatusBarManager statusBarManager = mContext.getSystemService(StatusBarManager.class);
         if (statusBarManager != null) {
@@ -506,7 +517,7 @@ public class AssistManager {
     }
 
     @Nullable
-    private ComponentName getAssistInfo() {
+    public ComponentName getAssistInfo() {
         return getAssistInfoForUser(mSelectedUserInteractor.getSelectedUserId());
     }
 

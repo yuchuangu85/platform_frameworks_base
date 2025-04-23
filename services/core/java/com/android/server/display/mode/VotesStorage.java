@@ -18,7 +18,7 @@ package com.android.server.display.mode;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.os.Trace;
+import android.util.IntArray;
 import android.util.Slog;
 import android.util.SparseArray;
 
@@ -38,6 +38,9 @@ class VotesStorage {
 
     private final Listener mListener;
 
+    @Nullable
+    private final VotesStatsReporter mVotesStatsReporter;
+
     private final Object mStorageLock = new Object();
     // A map from the display ID to the collection of votes and their priority. The latter takes
     // the form of another map from the priority to the vote itself so that each priority is
@@ -45,8 +48,9 @@ class VotesStorage {
     @GuardedBy("mStorageLock")
     private final SparseArray<SparseArray<Vote>> mVotesByDisplay = new SparseArray<>();
 
-    VotesStorage(@NonNull Listener listener) {
+    VotesStorage(@NonNull Listener listener, @Nullable VotesStatsReporter votesStatsReporter) {
         mListener = listener;
+        mVotesStatsReporter = votesStatsReporter;
     }
     /** sets logging enabled/disabled for this class */
     void setLoggingEnabled(boolean loggingEnabled) {
@@ -75,12 +79,12 @@ class VotesStorage {
     }
 
     /** updates vote storage for all displays */
-    void updateGlobalVote(int priority, @Nullable Vote vote) {
+    void updateGlobalVote(@Vote.Priority int priority, @Nullable Vote vote) {
         updateVote(GLOBAL_ID, priority, vote);
     }
 
     /** updates vote storage */
-    void updateVote(int displayId, int priority, @Nullable Vote vote) {
+    void updateVote(int displayId, @Vote.Priority int priority, @Nullable Vote vote) {
         if (mLoggingEnabled) {
             Slog.i(TAG, "updateVoteLocked(displayId=" + displayId
                     + ", priority=" + Vote.priorityToString(priority)
@@ -110,13 +114,51 @@ class VotesStorage {
                 changed = true;
             }
         }
-        Trace.traceCounter(Trace.TRACE_TAG_POWER,
-                TAG + "." + displayId + ":" + Vote.priorityToString(priority),
-                getMaxPhysicalRefreshRate(vote));
         if (mLoggingEnabled) {
             Slog.i(TAG, "Updated votes for display=" + displayId + " votes=" + votes);
         }
         if (changed) {
+            if (mVotesStatsReporter != null) {
+                mVotesStatsReporter.reportVoteChanged(displayId, priority, vote);
+            }
+            mListener.onChanged();
+        }
+    }
+
+    /** removes all votes with certain priority from vote storage */
+    void removeAllVotesForPriority(@Vote.Priority int priority) {
+        if (mLoggingEnabled) {
+            Slog.i(TAG, "removeAllVotesForPriority(priority="
+                    + Vote.priorityToString(priority) + ")");
+        }
+        if (priority < Vote.MIN_PRIORITY || priority > Vote.MAX_PRIORITY) {
+            Slog.w(TAG, "Received an invalid priority, ignoring:"
+                    + " priority=" + Vote.priorityToString(priority));
+            return;
+        }
+        IntArray removedVotesDisplayIds = new IntArray();
+        synchronized (mStorageLock) {
+            int size = mVotesByDisplay.size();
+            for (int i = 0; i < size; i++) {
+                SparseArray<Vote> votes = mVotesByDisplay.valueAt(i);
+                if (votes.get(priority) != null) {
+                    votes.remove(priority);
+                    removedVotesDisplayIds.add(mVotesByDisplay.keyAt(i));
+                }
+            }
+        }
+        if (mLoggingEnabled) {
+            Slog.i(TAG, "Removed votes with priority=" + priority
+                    + " for displays=" + removedVotesDisplayIds);
+        }
+        int removedVotesSize = removedVotesDisplayIds.size();
+        if (removedVotesSize > 0) {
+            if (mVotesStatsReporter != null) {
+                for (int i = 0; i < removedVotesSize; i++) {
+                    mVotesStatsReporter.reportVoteChanged(
+                            removedVotesDisplayIds.get(i), priority, null);
+                }
+            }
             mListener.onChanged();
         }
     }
@@ -155,21 +197,6 @@ class VotesStorage {
                 mVotesByDisplay.put(votesByDisplay.keyAt(i), votesByDisplay.valueAt(i));
             }
         }
-    }
-
-    private static int getMaxPhysicalRefreshRate(@Nullable Vote vote) {
-        if (vote == null) {
-            return -1;
-        } else if (vote instanceof RefreshRateVote.PhysicalVote physicalVote) {
-            return (int) physicalVote.mMaxRefreshRate;
-        } else if (vote instanceof CombinedVote combinedVote) {
-            return combinedVote.mVotes.stream()
-                    .filter(v -> v instanceof RefreshRateVote.PhysicalVote)
-                    .map(pv -> (int) (((RefreshRateVote.PhysicalVote) pv).mMaxRefreshRate))
-                    .min(Integer::compare)
-                    .orElse(1000); // for visualisation
-        }
-        return 1000; // for visualisation, otherwise e.g. -1 -> 60 will be unnoticeable
     }
 
     interface Listener {

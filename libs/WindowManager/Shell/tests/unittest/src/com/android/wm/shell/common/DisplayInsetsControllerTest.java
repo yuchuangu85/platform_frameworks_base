@@ -18,6 +18,7 @@ package com.android.wm.shell.common;
 
 import static android.view.Display.DEFAULT_DISPLAY;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -50,6 +51,12 @@ import org.mockito.MockitoAnnotations;
 
 import java.util.List;
 
+/**
+ * Tests for the display insets controller.
+ *
+ * <p> Build/Install/Run:
+ *  atest WMShellUnitTests:DisplayInsetsControllerTest
+ */
 @SmallTest
 public class DisplayInsetsControllerTest extends ShellTestCase {
 
@@ -114,9 +121,9 @@ public class DisplayInsetsControllerTest extends ShellTestCase {
         mInsetsControllersByDisplayId.get(DEFAULT_DISPLAY).insetsChanged(null);
         mInsetsControllersByDisplayId.get(DEFAULT_DISPLAY).insetsControlChanged(null, null);
         mInsetsControllersByDisplayId.get(DEFAULT_DISPLAY).showInsets(0, false,
-                null /* statsToken */);
+                ImeTracker.Token.empty());
         mInsetsControllersByDisplayId.get(DEFAULT_DISPLAY).hideInsets(0, false,
-                null /* statsToken */);
+                ImeTracker.Token.empty());
         mExecutor.flushAll();
 
         assertTrue(defaultListener.topFocusedWindowChangedCount == 1);
@@ -136,9 +143,9 @@ public class DisplayInsetsControllerTest extends ShellTestCase {
         mInsetsControllersByDisplayId.get(SECOND_DISPLAY).insetsChanged(null);
         mInsetsControllersByDisplayId.get(SECOND_DISPLAY).insetsControlChanged(null, null);
         mInsetsControllersByDisplayId.get(SECOND_DISPLAY).showInsets(0, false,
-                null /* statsToken */);
+                ImeTracker.Token.empty());
         mInsetsControllersByDisplayId.get(SECOND_DISPLAY).hideInsets(0, false,
-                null /* statsToken */);
+                ImeTracker.Token.empty());
         mExecutor.flushAll();
 
         assertTrue(defaultListener.topFocusedWindowChangedCount == 1);
@@ -152,6 +159,19 @@ public class DisplayInsetsControllerTest extends ShellTestCase {
         assertTrue(secondListener.insetsControlChangedCount == 1);
         assertTrue(secondListener.showInsetsCount == 1);
         assertTrue(secondListener.hideInsetsCount == 1);
+    }
+
+    @Test
+    public void testGlobalListenerCallback() throws RemoteException {
+        TrackedListener globalListener = new TrackedListener();
+        addDisplay(SECOND_DISPLAY);
+        mController.addGlobalInsetsChangedListener(globalListener);
+
+        mInsetsControllersByDisplayId.get(DEFAULT_DISPLAY).insetsChanged(null);
+        mInsetsControllersByDisplayId.get(SECOND_DISPLAY).insetsChanged(null);
+        mExecutor.flushAll();
+
+        assertEquals(2, globalListener.insetsChangedCount);
     }
 
     private void addDisplay(int displayId) throws RemoteException {

@@ -26,6 +26,7 @@ import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.TestApi;
+import android.app.compat.CompatChanges;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.content.pm.PackageManager.NameNotFoundException;
@@ -375,6 +376,19 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
     /**
      * Value for {@link #flags}: true if this application's package is in
      * the stopped state.
+     *
+     * <p>Stopped is the initial state after an app is installed, before it is launched
+     * or otherwise directly interacted with by the user. The system tries not to
+     * start it unless initiated by a user interaction (typically launching its icon
+     * from the launcher, could also include user actions like adding it as an app widget,
+     * selecting it as a live wallpaper, selecting it as a keyboard, etc). Stopped
+     * applications will not receive implicit broadcasts unless the sender specifies
+     * {@link android.content.Intent#FLAG_INCLUDE_STOPPED_PACKAGES}.
+     *
+     * <p>Applications should avoid launching activities, binding to or starting services, or
+     * otherwise causing a stopped application to run unless initiated by the user.
+     *
+     * <p>An app can also return to the stopped state by a "force stop".
      */
     public static final int FLAG_STOPPED = 1<<21;
 
@@ -835,6 +849,12 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
      */
     public static final int PRIVATE_FLAG_EXT_CPU_OVERRIDE = 1 << 5;
 
+    /**
+     * Whether the app has been previously not launched
+     * @hide
+     */
+    public static final int PRIVATE_FLAG_EXT_NOT_LAUNCHED = 1 << 6;
+
     /** @hide */
     @IntDef(flag = true, prefix = { "PRIVATE_FLAG_EXT_" }, value = {
             PRIVATE_FLAG_EXT_PROFILEABLE,
@@ -843,6 +863,7 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
             PRIVATE_FLAG_EXT_ENABLE_ON_BACK_INVOKED_CALLBACK,
             PRIVATE_FLAG_EXT_ALLOWLISTED_FOR_HIDDEN_APIS,
             PRIVATE_FLAG_EXT_CPU_OVERRIDE,
+            PRIVATE_FLAG_EXT_NOT_LAUNCHED,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ApplicationInfoPrivateFlagsExt {}
@@ -1428,6 +1449,97 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
         }
     }
 
+    /**
+     * Use this to report any errors during alignment checks
+     *
+     * @hide
+     */
+    public static final int PAGE_SIZE_APP_COMPAT_FLAG_ERROR = -1;
+
+    /**
+     * Initial value for mPageSizeAppCompatFlags
+     *
+     * @hide
+     */
+    public static final int PAGE_SIZE_APP_COMPAT_FLAG_UNDEFINED = 0;
+
+    /**
+     * if set, extract libs forcefully for 16 KB device and show warning dialog.
+     *
+     * @hide
+     */
+    public static final int PAGE_SIZE_APP_COMPAT_FLAG_UNCOMPRESSED_LIBS_NOT_ALIGNED = 1 << 1;
+
+    /**
+     * if set, load 4 KB aligned ELFs on 16 KB device in compat mode and show warning dialog.
+     *
+     * @hide
+     */
+    public static final int PAGE_SIZE_APP_COMPAT_FLAG_ELF_NOT_ALIGNED = 1 << 2;
+
+    /**
+     * Run in 16 KB app compat mode. This flag will be set explicitly through settings. If set, 16
+     * KB app compat warning dialogs will still show up.
+     *
+     * @hide
+     */
+    public static final int PAGE_SIZE_APP_COMPAT_FLAG_SETTINGS_OVERRIDE_ENABLED = 1 << 3;
+
+    /**
+     * Disable 16 KB app compat mode through settings. It should only affect ELF loading as app is
+     * already installed.
+     *
+     * @hide
+     */
+    public static final int PAGE_SIZE_APP_COMPAT_FLAG_SETTINGS_OVERRIDE_DISABLED = 1 << 4;
+
+    /**
+     * Run in 16 KB app compat mode. This flag will be set explicitly through manifest. If set, hide
+     * the 16 KB app compat warning dialogs. This has the highest priority to enable compat mode.
+     *
+     * @hide
+     */
+    public static final int PAGE_SIZE_APP_COMPAT_FLAG_MANIFEST_OVERRIDE_ENABLED = 1 << 5;
+
+    /**
+     * Disable 16 KB app compat mode. This has the highest priority to disable compat mode.
+     *
+     * @hide
+     */
+    public static final int PAGE_SIZE_APP_COMPAT_FLAG_MANIFEST_OVERRIDE_DISABLED = 1 << 6;
+
+    /**
+     * Max value for page size app compat
+     *
+     * @hide
+     */
+    public static final int PAGE_SIZE_APP_COMPAT_FLAG_MAX = 1 << 7;
+
+    /**
+     * 16 KB app compat status for the app. App can have native shared libs which are not page
+     * aligned, LOAD segments inside the shared libs have to be page aligned. Apps can specify the
+     * override in manifest file as well.
+     */
+    private @PageSizeAppCompatFlags int mPageSizeAppCompatFlags =
+            ApplicationInfo.PAGE_SIZE_APP_COMPAT_FLAG_UNDEFINED;
+
+    /** {@hide} */
+    @IntDef(
+            prefix = {"PAGE_SIZE_APP_COMPAT_FLAG_"},
+            value = {
+                PAGE_SIZE_APP_COMPAT_FLAG_ERROR,
+                PAGE_SIZE_APP_COMPAT_FLAG_UNDEFINED,
+                PAGE_SIZE_APP_COMPAT_FLAG_UNCOMPRESSED_LIBS_NOT_ALIGNED,
+                PAGE_SIZE_APP_COMPAT_FLAG_ELF_NOT_ALIGNED,
+                PAGE_SIZE_APP_COMPAT_FLAG_MANIFEST_OVERRIDE_ENABLED,
+                PAGE_SIZE_APP_COMPAT_FLAG_MANIFEST_OVERRIDE_DISABLED,
+                PAGE_SIZE_APP_COMPAT_FLAG_SETTINGS_OVERRIDE_ENABLED,
+                PAGE_SIZE_APP_COMPAT_FLAG_SETTINGS_OVERRIDE_DISABLED,
+                PAGE_SIZE_APP_COMPAT_FLAG_MAX,
+            })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface PageSizeAppCompatFlags {}
+
     /** @hide */
     public String classLoaderName;
 
@@ -1549,6 +1661,14 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
      */
     @Nullable
     private Boolean requestRawExternalStorageAccess;
+
+    /**
+     * If {@code false}, this app does not allow its activities to be replaced by another app.
+     * Is set from application manifest application tag's allowCrossUidActivitySwitchFromBelow
+     * attribute.
+     * @hide
+     */
+    public boolean allowCrossUidActivitySwitchFromBelow = true;
 
     /**
      * Represents the default policy. The actual policy used will depend on other properties of
@@ -1746,6 +1866,9 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
                         + Integer.toHexString(localeConfigRes));
             }
             pw.println(prefix + "enableOnBackInvokedCallback=" + isOnBackInvokedCallbackEnabled());
+            pw.println(prefix + "allowCrossUidActivitySwitchFromBelow="
+                    + allowCrossUidActivitySwitchFromBelow);
+            pw.println(prefix + "mPageSizeAppCompatFlags=" + mPageSizeAppCompatFlags);
         }
         pw.println(prefix + "createTimestamp=" + createTimestamp);
         if (mKnownActivityEmbeddingCerts != null) {
@@ -1863,6 +1986,12 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
                 proto.write(ApplicationInfoProto.Detail.NATIVE_HEAP_ZERO_INIT,
                         nativeHeapZeroInitialized);
             }
+            proto.write(ApplicationInfoProto.Detail.ALLOW_CROSS_UID_ACTIVITY_SWITCH_FROM_BELOW,
+                    allowCrossUidActivitySwitchFromBelow);
+
+            proto.write(ApplicationInfoProto.Detail.ENABLE_PAGE_SIZE_APP_COMPAT,
+                        mPageSizeAppCompatFlags);
+
             proto.end(detailToken);
         }
         if (!ArrayUtils.isEmpty(mKnownActivityEmbeddingCerts)) {
@@ -1988,7 +2117,9 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
         nativeHeapZeroInitialized = orig.nativeHeapZeroInitialized;
         requestRawExternalStorageAccess = orig.requestRawExternalStorageAccess;
         localeConfigRes = orig.localeConfigRes;
+        allowCrossUidActivitySwitchFromBelow = orig.allowCrossUidActivitySwitchFromBelow;
         createTimestamp = SystemClock.uptimeMillis();
+        mPageSizeAppCompatFlags = orig.mPageSizeAppCompatFlags;
     }
 
     public String toString() {
@@ -2092,6 +2223,9 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
             }
         }
         dest.writeInt(localeConfigRes);
+        dest.writeInt(allowCrossUidActivitySwitchFromBelow ? 1 : 0);
+        dest.writeInt(mPageSizeAppCompatFlags);
+
         sForStringSet.parcel(mKnownActivityEmbeddingCerts, dest, flags);
     }
 
@@ -2190,6 +2324,9 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
             }
         }
         localeConfigRes = source.readInt();
+        allowCrossUidActivitySwitchFromBelow = source.readInt() != 0;
+        mPageSizeAppCompatFlags = source.readInt();
+
         mKnownActivityEmbeddingCerts = sForStringSet.unparcel(source);
         if (mKnownActivityEmbeddingCerts.isEmpty()) {
             mKnownActivityEmbeddingCerts = null;
@@ -2295,9 +2432,8 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
      * Whether an app allows its playback audio to be captured by other apps.
      *
      * @return {@code true} if the app indicates that its audio can be captured by other apps.
-     *
-     * @hide
      */
+    @FlaggedApi(Flags.FLAG_AUDIO_PLAYBACK_CAPTURE_ALLOWANCE)
     public boolean isAudioPlaybackCaptureAllowed() {
         return (privateFlags & PRIVATE_FLAG_ALLOW_AUDIO_PLAYBACK_CAPTURE) != 0;
     }
@@ -2632,6 +2768,33 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
     }
 
     /**
+     * Returns whether the app in the STOPPED state.
+     * @hide
+     */
+    public boolean isStopped() {
+        return (flags & ApplicationInfo.FLAG_STOPPED) != 0;
+    }
+
+    /**
+     * Returns whether the app was never launched (any process started) before.
+     * @hide
+     */
+    public boolean isNotLaunched() {
+        return (privateFlagsExt & ApplicationInfo.PRIVATE_FLAG_EXT_NOT_LAUNCHED) != 0;
+    }
+
+    /**
+     * Checks if a changeId is enabled for the current user
+     * @param changeId The changeId to verify
+     * @return True of the changeId is enabled
+     * @hide
+     */
+    public boolean isChangeEnabled(long changeId) {
+        return CompatChanges.isChangeEnabled(changeId, packageName,
+                UserHandle.getUserHandleForUid(uid));
+    }
+
+    /**
      * @return whether the app has requested exemption from the foreground service restrictions.
      * This does not take any affect for now.
      * @hide
@@ -2657,7 +2820,7 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
     /**
      * @hide
      */
-    @Override protected ApplicationInfo getApplicationInfo() {
+    @Override public ApplicationInfo getApplicationInfo() {
         return this;
     }
 
@@ -2698,6 +2861,11 @@ public class ApplicationInfo extends PackageItemInfo implements Parcelable {
     /** {@hide} */
     public void setRequestRawExternalStorageAccess(@Nullable Boolean value) {
         requestRawExternalStorageAccess = value;
+    }
+
+    /** {@hide} */
+    public void setPageSizeAppCompatFlags(@PageSizeAppCompatFlags int value) {
+        mPageSizeAppCompatFlags |= value;
     }
 
     /**

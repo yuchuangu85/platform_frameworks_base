@@ -17,7 +17,7 @@
 package com.android.systemui.keyguard;
 
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
-import static android.view.RemoteAnimationTarget.MODE_CLOSING;
+import static android.service.dreams.Flags.dismissDreamOnKeyguardDismiss;
 import static android.view.RemoteAnimationTarget.MODE_OPENING;
 import static android.view.WindowManager.TRANSIT_FLAG_KEYGUARD_APPEARING;
 import static android.view.WindowManager.TRANSIT_FLAG_KEYGUARD_GOING_AWAY;
@@ -34,8 +34,6 @@ import static android.view.WindowManager.TRANSIT_TO_BACK;
 import static android.view.WindowManager.TransitionFlags;
 import static android.view.WindowManager.TransitionOldType;
 import static android.view.WindowManager.TransitionType;
-
-import static com.android.systemui.Flags.refactorGetCurrentUser;
 
 import android.annotation.NonNull;
 import android.app.ActivityManager;
@@ -61,13 +59,14 @@ import android.view.RemoteAnimationAdapter;
 import android.view.RemoteAnimationDefinition;
 import android.view.RemoteAnimationTarget;
 import android.view.SurfaceControl;
-import android.view.WindowManager;
 import android.view.WindowManagerPolicyConstants;
 import android.window.IRemoteTransition;
 import android.window.IRemoteTransitionFinishedCallback;
+import android.window.RemoteTransitionStub;
 import android.window.TransitionInfo;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.foldables.FoldGracePeriodProvider;
 import com.android.internal.policy.IKeyguardDismissCallback;
 import com.android.internal.policy.IKeyguardDrawnCallback;
 import com.android.internal.policy.IKeyguardExitCallback;
@@ -76,8 +75,15 @@ import com.android.internal.policy.IKeyguardStateCallback;
 import com.android.keyguard.mediator.ScreenOnCoordinator;
 import com.android.systemui.SystemUIApplication;
 import com.android.systemui.dagger.qualifiers.Application;
+import com.android.systemui.dagger.qualifiers.Main;
+import com.android.systemui.deviceentry.domain.interactor.DeviceEntryInteractor;
 import com.android.systemui.flags.FeatureFlags;
-import com.android.systemui.flags.Flags;
+import com.android.systemui.keyguard.domain.interactor.KeyguardDismissInteractor;
+import com.android.systemui.keyguard.domain.interactor.KeyguardEnabledInteractor;
+import com.android.systemui.keyguard.domain.interactor.KeyguardInteractor;
+import com.android.systemui.keyguard.domain.interactor.KeyguardServiceLockNowInteractor;
+import com.android.systemui.keyguard.domain.interactor.KeyguardStateCallbackInteractor;
+import com.android.systemui.keyguard.domain.interactor.KeyguardWakeDirectlyToGoneInteractor;
 import com.android.systemui.keyguard.ui.binder.KeyguardSurfaceBehindParamsApplier;
 import com.android.systemui.keyguard.ui.binder.KeyguardSurfaceBehindViewBinder;
 import com.android.systemui.keyguard.ui.binder.WindowManagerLockscreenVisibilityViewBinder;
@@ -85,19 +91,26 @@ import com.android.systemui.keyguard.ui.viewmodel.KeyguardSurfaceBehindViewModel
 import com.android.systemui.keyguard.ui.viewmodel.WindowManagerLockscreenVisibilityViewModel;
 import com.android.systemui.power.domain.interactor.PowerInteractor;
 import com.android.systemui.power.shared.model.ScreenPowerState;
+import com.android.systemui.scene.domain.interactor.SceneInteractor;
+import com.android.systemui.scene.domain.startable.KeyguardStateCallbackStartable;
+import com.android.systemui.scene.shared.flag.SceneContainerFlag;
+import com.android.systemui.scene.shared.model.Scenes;
 import com.android.systemui.settings.DisplayTracker;
-import com.android.wm.shell.transition.ShellTransitions;
+import com.android.wm.shell.shared.CounterRotator;
+import com.android.wm.shell.shared.ShellTransitions;
+import com.android.wm.shell.shared.TransitionUtil;
 import com.android.wm.shell.transition.Transitions;
-import com.android.wm.shell.util.CounterRotator;
-import com.android.wm.shell.util.TransitionUtil;
+
+import dagger.Lazy;
+
+import kotlinx.coroutines.CoroutineScope;
 
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.concurrent.Executor;
 
 import javax.inject.Inject;
-
-import kotlinx.coroutines.CoroutineScope;
 
 public class KeyguardService extends Service {
     static final String TAG = "KeyguardService";
@@ -109,20 +122,13 @@ public class KeyguardService extends Service {
     private final ScreenOnCoordinator mScreenOnCoordinator;
     private final ShellTransitions mShellTransitions;
     private final DisplayTracker mDisplayTracker;
-    private PowerInteractor mPowerInteractor;
-
-    private static int newModeToLegacyMode(int newMode) {
-        switch (newMode) {
-            case WindowManager.TRANSIT_OPEN:
-            case WindowManager.TRANSIT_TO_FRONT:
-                return MODE_OPENING;
-            case WindowManager.TRANSIT_CLOSE:
-            case WindowManager.TRANSIT_TO_BACK:
-                return MODE_CLOSING;
-            default:
-                return 2; // MODE_CHANGING
-        }
-    }
+    private final PowerInteractor mPowerInteractor;
+    private final KeyguardInteractor mKeyguardInteractor;
+    private final Lazy<SceneInteractor> mSceneInteractorLazy;
+    private final Lazy<DeviceEntryInteractor> mDeviceEntryInteractorLazy;
+    private final Executor mMainExecutor;
+    private final Lazy<KeyguardStateCallbackStartable> mKeyguardStateCallbackStartableLazy;
+    private final KeyguardStateCallbackInteractor mKeyguardStateCallbackInteractor;
 
     private static RemoteAnimationTarget[] wrap(TransitionInfo info, boolean wallpapers,
             SurfaceControl.Transaction t, ArrayMap<SurfaceControl, SurfaceControl> leashMap,
@@ -203,7 +209,7 @@ public class KeyguardService extends Service {
     // Note: Also used for wrapping occlude by Dream animation. It works (with some redundancy).
     public static IRemoteTransition wrap(final KeyguardViewMediator keyguardViewMediator,
             final IRemoteAnimationRunner runner) {
-        return new IRemoteTransition.Stub() {
+        return new RemoteTransitionStub() {
 
             @GuardedBy("mLeashMap")
             private final ArrayMap<SurfaceControl, SurfaceControl> mLeashMap = new ArrayMap<>();
@@ -238,6 +244,20 @@ public class KeyguardService extends Service {
                 initAlphaForAnimationTargets(t, apps);
                 initAlphaForAnimationTargets(t, wallpapers);
 
+                // If the keyguard is going away, hide the dream if one exists.
+                if (dismissDreamOnKeyguardDismiss()
+                        && (info.getFlags() & TRANSIT_FLAG_KEYGUARD_GOING_AWAY) != 0) {
+                    for (RemoteAnimationTarget app : apps) {
+                        final boolean isDream = app.taskInfo != null
+                                && app.taskInfo.getActivityType()
+                                == WindowConfiguration.ACTIVITY_TYPE_DREAM;
+                        if (isDream && app.mode == RemoteAnimationTarget.MODE_CLOSING) {
+                            t.hide(app.leash);
+                            break;
+                        }
+                    }
+                }
+
                 t.apply();
 
                 runner.onAnimationStart(
@@ -254,8 +274,7 @@ public class KeyguardService extends Service {
 
             public void mergeAnimation(IBinder candidateTransition, TransitionInfo candidateInfo,
                     SurfaceControl.Transaction candidateT, IBinder currentTransition,
-                    IRemoteTransitionFinishedCallback candidateFinishCallback)
-                    throws RemoteException {
+                    IRemoteTransitionFinishedCallback candidateFinishCallback) {
                 if ((candidateInfo.getFlags() & TRANSIT_FLAG_KEYGUARD_APPEARING) != 0) {
                     keyguardViewMediator.setPendingLock(true);
                     keyguardViewMediator.cancelKeyguardExitAnimation();
@@ -266,13 +285,8 @@ public class KeyguardService extends Service {
                     runner.onAnimationCancelled();
                     finish(currentTransition);
                 } catch (RemoteException e) {
-                    // nothing, we'll just let it finish on its own I guess.
+                    // Ignore.
                 }
-            }
-
-            @Override
-            public void onTransitionConsumed(IBinder transition, boolean aborted)
-                    throws RemoteException {
             }
 
             private static void initAlphaForAnimationTargets(@NonNull SurfaceControl.Transaction t,
@@ -284,7 +298,7 @@ public class KeyguardService extends Service {
             }
 
             private void finish(IBinder transition) throws RemoteException {
-                IRemoteTransitionFinishedCallback finishCallback = null;
+                final IRemoteTransitionFinishedCallback finishCallback;
                 SurfaceControl.Transaction finishTransaction = null;
 
                 synchronized (mLeashMap) {
@@ -306,6 +320,18 @@ public class KeyguardService extends Service {
         };
     }
 
+    private final WindowManagerOcclusionManager mWmOcclusionManager;
+    private final KeyguardEnabledInteractor mKeyguardEnabledInteractor;
+    private final KeyguardWakeDirectlyToGoneInteractor mKeyguardWakeDirectlyToGoneInteractor;
+    private final KeyguardDismissInteractor mKeyguardDismissInteractor;
+    private final Lazy<FoldGracePeriodProvider> mFoldGracePeriodProvider = new Lazy<>() {
+        @Override
+        public FoldGracePeriodProvider get() {
+            return new FoldGracePeriodProvider();
+        }
+    };
+    private final KeyguardServiceLockNowInteractor mKeyguardServiceLockNowInteractor;
+
     @Inject
     public KeyguardService(
             KeyguardViewMediator keyguardViewMediator,
@@ -319,7 +345,18 @@ public class KeyguardService extends Service {
             KeyguardSurfaceBehindParamsApplier keyguardSurfaceBehindAnimator,
             @Application CoroutineScope scope,
             FeatureFlags featureFlags,
-            PowerInteractor powerInteractor) {
+            PowerInteractor powerInteractor,
+            WindowManagerOcclusionManager windowManagerOcclusionManager,
+            Lazy<SceneInteractor> sceneInteractorLazy,
+            @Main Executor mainExecutor,
+            KeyguardInteractor keyguardInteractor,
+            KeyguardEnabledInteractor keyguardEnabledInteractor,
+            Lazy<KeyguardStateCallbackStartable> keyguardStateCallbackStartableLazy,
+            KeyguardWakeDirectlyToGoneInteractor keyguardWakeDirectlyToGoneInteractor,
+            KeyguardDismissInteractor keyguardDismissInteractor,
+            Lazy<DeviceEntryInteractor> deviceEntryInteractorLazy,
+            KeyguardStateCallbackInteractor keyguardStateCallbackInteractor,
+            KeyguardServiceLockNowInteractor keyguardServiceLockNowInteractor) {
         super();
         mKeyguardViewMediator = keyguardViewMediator;
         mKeyguardLifecyclesDispatcher = keyguardLifecyclesDispatcher;
@@ -328,8 +365,14 @@ public class KeyguardService extends Service {
         mDisplayTracker = displayTracker;
         mFlags = featureFlags;
         mPowerInteractor = powerInteractor;
+        mKeyguardInteractor = keyguardInteractor;
+        mSceneInteractorLazy = sceneInteractorLazy;
+        mMainExecutor = mainExecutor;
+        mKeyguardStateCallbackStartableLazy = keyguardStateCallbackStartableLazy;
+        mKeyguardStateCallbackInteractor = keyguardStateCallbackInteractor;
+        mDeviceEntryInteractorLazy = deviceEntryInteractorLazy;
 
-        if (mFlags.isEnabled(Flags.KEYGUARD_WM_STATE_REFACTOR)) {
+        if (KeyguardWmStateRefactor.isEnabled()) {
             WindowManagerLockscreenVisibilityViewBinder.bind(
                     wmLockscreenVisibilityViewModel,
                     wmLockscreenVisibilityManager,
@@ -340,11 +383,17 @@ public class KeyguardService extends Service {
                     keyguardSurfaceBehindAnimator,
                     scope);
         }
+
+        mWmOcclusionManager = windowManagerOcclusionManager;
+        mKeyguardEnabledInteractor = keyguardEnabledInteractor;
+        mKeyguardWakeDirectlyToGoneInteractor = keyguardWakeDirectlyToGoneInteractor;
+        mKeyguardDismissInteractor = keyguardDismissInteractor;
+        mKeyguardServiceLockNowInteractor = keyguardServiceLockNowInteractor;
     }
 
     @Override
     public void onCreate() {
-        ((SystemUIApplication) getApplication()).startServicesIfNeeded();
+        ((SystemUIApplication) getApplication()).startSystemUserServicesIfNeeded();
 
         if (mShellTransitions == null || !Transitions.ENABLE_SHELL_TRANSITIONS) {
             RemoteAnimationDefinition definition = new RemoteAnimationDefinition();
@@ -412,7 +461,13 @@ public class KeyguardService extends Service {
         public void addStateMonitorCallback(IKeyguardStateCallback callback) {
             trace("addStateMonitorCallback");
             checkPermission();
-            mKeyguardViewMediator.addStateMonitorCallback(callback);
+            if (SceneContainerFlag.isEnabled()) {
+                mKeyguardStateCallbackStartableLazy.get().addCallback(callback);
+            } else if (KeyguardWmStateRefactor.isEnabled()) {
+                mKeyguardStateCallbackInteractor.addCallback(callback);
+            } else {
+                mKeyguardViewMediator.addStateMonitorCallback(callback);
+            }
         }
 
         @Override // Binder interface
@@ -431,7 +486,11 @@ public class KeyguardService extends Service {
 
             Trace.beginSection("KeyguardService.mBinder#setOccluded");
             checkPermission();
-            mKeyguardViewMediator.setOccluded(isOccluded, animate);
+            if (!KeyguardWmStateRefactor.isEnabled()) {
+                mKeyguardViewMediator.setOccluded(isOccluded, animate);
+            } else {
+                mWmOcclusionManager.onKeyguardServiceSetOccluded(isOccluded);
+            }
             Trace.endSection();
         }
 
@@ -439,13 +498,21 @@ public class KeyguardService extends Service {
         public void dismiss(IKeyguardDismissCallback callback, CharSequence message) {
             trace("dismiss message=" + message);
             checkPermission();
-            mKeyguardViewMediator.dismiss(callback, message);
+            if (SceneContainerFlag.isEnabled()) {
+                mDeviceEntryInteractorLazy.get().attemptDeviceEntry(callback);
+            } else if (KeyguardWmStateRefactor.isEnabled()) {
+                mKeyguardDismissInteractor.dismissKeyguardWithCallback(callback);
+            } else {
+                mKeyguardViewMediator.dismiss(callback, message);
+            }
         }
 
         @Override // Binder interface
         public void onDreamingStarted() {
             trace("onDreamingStarted");
             checkPermission();
+            mKeyguardWakeDirectlyToGoneInteractor.onDreamingStarted();
+            mKeyguardInteractor.setDreaming(true);
             mKeyguardViewMediator.onDreamingStarted();
         }
 
@@ -453,6 +520,8 @@ public class KeyguardService extends Service {
         public void onDreamingStopped() {
             trace("onDreamingStopped");
             checkPermission();
+            mKeyguardWakeDirectlyToGoneInteractor.onDreamingStopped();
+            mKeyguardInteractor.setDreaming(false);
             mKeyguardViewMediator.onDreamingStopped();
         }
 
@@ -574,6 +643,7 @@ public class KeyguardService extends Service {
         public void setKeyguardEnabled(boolean enabled) {
             trace("setKeyguardEnabled enabled" + enabled);
             checkPermission();
+            mKeyguardEnabledInteractor.notifyKeyguardEnabled(enabled);
             mKeyguardViewMediator.setKeyguardEnabled(enabled);
         }
 
@@ -590,7 +660,29 @@ public class KeyguardService extends Service {
         public void doKeyguardTimeout(Bundle options) {
             trace("doKeyguardTimeout");
             checkPermission();
+
+            if (SceneContainerFlag.isEnabled()) {
+                mDeviceEntryInteractorLazy.get().lockNow();
+            } else if (KeyguardWmStateRefactor.isEnabled()) {
+                mKeyguardServiceLockNowInteractor.onKeyguardServiceDoKeyguardTimeout(options);
+            }
+
             mKeyguardViewMediator.doKeyguardTimeout(options);
+        }
+
+        // Binder interface
+        public void showDismissibleKeyguard() {
+            trace("showDismissibleKeyguard");
+            checkPermission();
+            if (mFoldGracePeriodProvider.get().isEnabled()) {
+                mKeyguardInteractor.showDismissibleKeyguard();
+            }
+            mKeyguardViewMediator.showDismissibleKeyguard();
+
+            if (SceneContainerFlag.isEnabled() && mFoldGracePeriodProvider.get().isEnabled()) {
+                mMainExecutor.execute(() -> mSceneInteractorLazy.get().changeScene(
+                        Scenes.Lockscreen, "KeyguardService.showDismissibleKeyguard"));
+            }
         }
 
         @Override // Binder interface
@@ -609,9 +701,6 @@ public class KeyguardService extends Service {
         public void setCurrentUser(int userId) {
             trace("Deprecated/NOT USED: setCurrentUser userId=" + userId);
             checkPermission();
-            if (!refactorGetCurrentUser()) {
-                mKeyguardViewMediator.setCurrentUser(userId);
-            }
         }
 
         @Override // Binder interface

@@ -1,12 +1,14 @@
 #include <assert.h>
+#include <cutils/ashmem.h>
+#include <hwui/Canvas.h>
+#include <log/log.h>
+#include <nativehelper/JNIHelp.h>
 #include <unistd.h>
 
-#include "jni.h"
-#include <nativehelper/JNIHelp.h>
 #include "GraphicsJNI.h"
-
 #include "SkBitmap.h"
 #include "SkCanvas.h"
+#include "SkColor.h"
 #include "SkColorSpace.h"
 #include "SkFontMetrics.h"
 #include "SkImageInfo.h"
@@ -14,10 +16,9 @@
 #include "SkPoint.h"
 #include "SkRect.h"
 #include "SkRegion.h"
+#include "SkSamplingOptions.h"
 #include "SkTypes.h"
-#include <cutils/ashmem.h>
-#include <hwui/Canvas.h>
-#include <log/log.h>
+#include "jni.h"
 
 using namespace android;
 
@@ -211,11 +212,7 @@ static jclass   gRegion_class;
 static jfieldID gRegion_nativeInstanceID;
 static jmethodID gRegion_constructorMethodID;
 
-static jclass    gByte_class;
-static jobject   gVMRuntime;
-static jclass    gVMRuntime_class;
-static jmethodID gVMRuntime_newNonMovableArray;
-static jmethodID gVMRuntime_addressOf;
+static jclass gByte_class;
 
 static jclass gColorSpace_class;
 static jmethodID gColorSpace_getMethodID;
@@ -246,6 +243,9 @@ static jfieldID gFontMetricsInt_ascent;
 static jfieldID gFontMetricsInt_descent;
 static jfieldID gFontMetricsInt_bottom;
 static jfieldID gFontMetricsInt_leading;
+
+static jclass gRunInfo_class;
+static jfieldID gRunInfo_clusterCount;
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -511,6 +511,10 @@ int GraphicsJNI::set_metrics_int(JNIEnv* env, jobject metrics, const SkFontMetri
     return descent - ascent + leading;
 }
 
+void GraphicsJNI::set_cluster_count_to_run_info(JNIEnv* env, jobject runInfo, jint clusterCount) {
+    env->SetIntField(runInfo, gRunInfo_clusterCount, clusterCount);
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////
 
 jobject GraphicsJNI::createBitmapRegionDecoder(JNIEnv* env, BitmapRegionDecoderWrapper* bitmap) {
@@ -580,6 +584,16 @@ jobject GraphicsJNI::getColorSpace(JNIEnv* env, SkColorSpace* decodeColorSpace,
                             transferParams.a, transferParams.b, transferParams.c, transferParams.d,
                             transferParams.e, transferParams.f, transferParams.g);
 
+    // Some transfer functions that are considered valid by Skia are not
+    // accepted by android.graphics.
+    if (hasException(env)) {
+        // Callers (e.g. Bitmap#getColorSpace) are not expected to throw an
+        // Exception, so clear it and return null, which is a documented
+        // possibility.
+        env->ExceptionClear();
+        return nullptr;
+    }
+
     jfloatArray xyzArray = env->NewFloatArray(9);
     jfloat xyz[9] = {
             xyzMatrix.vals[0][0],
@@ -617,13 +631,15 @@ bool HeapAllocator::allocPixelRef(SkBitmap* bitmap) {
 
 ////////////////////////////////////////////////////////////////////////////////
 
-RecyclingClippingPixelAllocator::RecyclingClippingPixelAllocator(android::Bitmap* recycledBitmap,
-                                                                 bool mustMatchColorType)
+RecyclingClippingPixelAllocator::RecyclingClippingPixelAllocator(
+        android::Bitmap* recycledBitmap, bool mustMatchColorType,
+        std::optional<SkRect> desiredSubset)
         : mRecycledBitmap(recycledBitmap)
         , mRecycledBytes(recycledBitmap ? recycledBitmap->getAllocationByteCount() : 0)
         , mSkiaBitmap(nullptr)
         , mNeedsCopy(false)
-        , mMustMatchColorType(mustMatchColorType) {}
+        , mMustMatchColorType(mustMatchColorType)
+        , mDesiredSubset(getSourceBoundsForUpsample(desiredSubset)) {}
 
 RecyclingClippingPixelAllocator::~RecyclingClippingPixelAllocator() {}
 
@@ -655,7 +671,8 @@ bool RecyclingClippingPixelAllocator::allocPixelRef(SkBitmap* bitmap) {
     const SkImageInfo maxInfo = bitmap->info().makeWH(maxWidth, maxHeight);
     const size_t rowBytes = maxInfo.minRowBytes();
     const size_t bytesNeeded = maxInfo.computeByteSize(rowBytes);
-    if (bytesNeeded <= mRecycledBytes) {
+
+    if (!mDesiredSubset && bytesNeeded <= mRecycledBytes) {
         // Here we take advantage of reconfigure() to reset the rowBytes
         // of mRecycledBitmap.  It is very important that we pass in
         // mRecycledBitmap->info() for the SkImageInfo.  According to the
@@ -699,25 +716,50 @@ void RecyclingClippingPixelAllocator::copyIfNecessary() {
     if (mNeedsCopy) {
         mRecycledBitmap->ref();
         android::Bitmap* recycledPixels = mRecycledBitmap;
-        void* dst = recycledPixels->pixels();
-        const size_t dstRowBytes = mRecycledBitmap->rowBytes();
-        const size_t bytesToCopy = std::min(mRecycledBitmap->info().minRowBytes(),
-                mSkiaBitmap->info().minRowBytes());
-        const int rowsToCopy = std::min(mRecycledBitmap->info().height(),
-                mSkiaBitmap->info().height());
-        for (int y = 0; y < rowsToCopy; y++) {
-            memcpy(dst, mSkiaBitmap->getAddr(0, y), bytesToCopy);
-            // Cast to bytes in order to apply the dstRowBytes offset correctly.
-            dst = reinterpret_cast<void*>(
-                    reinterpret_cast<uint8_t*>(dst) + dstRowBytes);
+        if (mDesiredSubset) {
+            recycledPixels->setAlphaType(mSkiaBitmap->alphaType());
+            recycledPixels->setColorSpace(mSkiaBitmap->refColorSpace());
+
+            auto canvas = SkCanvas(recycledPixels->getSkBitmap());
+            SkRect destination = SkRect::Make(recycledPixels->info().bounds());
+            destination.intersect(SkRect::Make(mSkiaBitmap->info().bounds()));
+            canvas.drawImageRect(mSkiaBitmap->asImage(), *mDesiredSubset, destination,
+                                 SkSamplingOptions(SkFilterMode::kLinear), nullptr,
+                                 SkCanvas::kFast_SrcRectConstraint);
+        } else {
+            void* dst = recycledPixels->pixels();
+            const size_t dstRowBytes = mRecycledBitmap->rowBytes();
+            const size_t bytesToCopy = std::min(mRecycledBitmap->info().minRowBytes(),
+                                                mSkiaBitmap->info().minRowBytes());
+            const int rowsToCopy =
+                    std::min(mRecycledBitmap->info().height(), mSkiaBitmap->info().height());
+            for (int y = 0; y < rowsToCopy; y++) {
+                memcpy(dst, mSkiaBitmap->getAddr(0, y), bytesToCopy);
+                // Cast to bytes in order to apply the dstRowBytes offset correctly.
+                dst = reinterpret_cast<void*>(reinterpret_cast<uint8_t*>(dst) + dstRowBytes);
+            }
+            recycledPixels->setAlphaType(mSkiaBitmap->alphaType());
+            recycledPixels->setColorSpace(mSkiaBitmap->refColorSpace());
         }
-        recycledPixels->setAlphaType(mSkiaBitmap->alphaType());
-        recycledPixels->setColorSpace(mSkiaBitmap->refColorSpace());
         recycledPixels->notifyPixelsChanged();
         recycledPixels->unref();
     }
     mRecycledBitmap = nullptr;
     mSkiaBitmap = nullptr;
+}
+
+std::optional<SkRect> RecyclingClippingPixelAllocator::getSourceBoundsForUpsample(
+        std::optional<SkRect> subset) {
+    if (!uirenderer::Properties::resampleGainmapRegions() || !subset || subset->isEmpty()) {
+        return std::nullopt;
+    }
+
+    if (subset->left() == floor(subset->left()) && subset->top() == floor(subset->top()) &&
+        subset->right() == floor(subset->right()) && subset->bottom() == floor(subset->bottom())) {
+        return std::nullopt;
+    }
+
+    return subset;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -782,13 +824,6 @@ int register_android_graphics_Graphics(JNIEnv* env)
     gByte_class = (jclass) env->NewGlobalRef(
         env->GetStaticObjectField(c, env->GetStaticFieldID(c, "TYPE", "Ljava/lang/Class;")));
 
-    gVMRuntime_class = MakeGlobalRefOrDie(env, FindClassOrDie(env, "dalvik/system/VMRuntime"));
-    m = env->GetStaticMethodID(gVMRuntime_class, "getRuntime", "()Ldalvik/system/VMRuntime;");
-    gVMRuntime = env->NewGlobalRef(env->CallStaticObjectMethod(gVMRuntime_class, m));
-    gVMRuntime_newNonMovableArray = GetMethodIDOrDie(env, gVMRuntime_class, "newNonMovableArray",
-                                                     "(Ljava/lang/Class;I)Ljava/lang/Object;");
-    gVMRuntime_addressOf = GetMethodIDOrDie(env, gVMRuntime_class, "addressOf", "(Ljava/lang/Object;)J");
-
     gColorSpace_class = MakeGlobalRefOrDie(env, FindClassOrDie(env, "android/graphics/ColorSpace"));
     gColorSpace_getMethodID = GetStaticMethodIDOrDie(env, gColorSpace_class,
             "get", "(Landroid/graphics/ColorSpace$Named;)Landroid/graphics/ColorSpace;");
@@ -833,6 +868,11 @@ int register_android_graphics_Graphics(JNIEnv* env)
     gFontMetricsInt_descent = GetFieldIDOrDie(env, gFontMetricsInt_class, "descent", "I");
     gFontMetricsInt_bottom = GetFieldIDOrDie(env, gFontMetricsInt_class, "bottom", "I");
     gFontMetricsInt_leading = GetFieldIDOrDie(env, gFontMetricsInt_class, "leading", "I");
+
+    gRunInfo_class = FindClassOrDie(env, "android/graphics/Paint$RunInfo");
+    gRunInfo_class = MakeGlobalRefOrDie(env, gRunInfo_class);
+
+    gRunInfo_clusterCount = GetFieldIDOrDie(env, gRunInfo_class, "mClusterCount", "I");
 
     return 0;
 }

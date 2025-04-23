@@ -16,7 +16,6 @@
 
 package com.android.server.pm;
 
-import static android.content.pm.Flags.improveInstallFreeze;
 import static android.content.pm.PackageInstaller.SessionParams.USER_ACTION_UNSPECIFIED;
 import static android.content.pm.PackageManager.INSTALL_REASON_UNKNOWN;
 import static android.content.pm.PackageManager.INSTALL_SCENARIO_DEFAULT;
@@ -41,6 +40,7 @@ import android.content.pm.PackageManager;
 import android.content.pm.SharedLibraryInfo;
 import android.content.pm.SigningDetails;
 import android.content.pm.parsing.PackageLite;
+import android.content.pm.verify.domain.DomainSet;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Process;
@@ -48,6 +48,7 @@ import android.os.UserHandle;
 import android.util.ArrayMap;
 import android.util.ExceptionUtils;
 import android.util.Slog;
+import android.util.SparseArray;
 
 import com.android.internal.pm.parsing.pkg.ParsedPackage;
 import com.android.internal.pm.pkg.parsing.ParsingPackageUtils;
@@ -56,6 +57,7 @@ import com.android.server.art.model.DexoptResult;
 import com.android.server.pm.pkg.AndroidPackage;
 import com.android.server.pm.pkg.PackageState;
 import com.android.server.pm.pkg.PackageStateInternal;
+import com.android.server.pm.pkg.PackageUserStateInternal;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -129,6 +131,12 @@ final class InstallRequest {
     @Nullable
     private String mApexModuleName;
 
+    /**
+     * The title of the responsible installer for the archive behavior used
+     */
+    @Nullable
+    private SparseArray<String> mResponsibleInstallerTitles;
+
     @Nullable
     private ScanResult mScanResult;
 
@@ -154,28 +162,39 @@ final class InstallRequest {
     @NonNull
     private final ArrayList<String> mWarnings = new ArrayList<>();
 
+    @Nullable
+    private DomainSet mPreVerifiedDomains;
+
+    private int mInstallerUidForInstallExisting = INVALID_UID;
+
+    private final boolean mHasAppMetadataFileFromInstaller;
+
+    private boolean mKeepArtProfile = false;
+
     // New install
     InstallRequest(InstallingSession params) {
         mUserId = params.getUser().getIdentifier();
         mInstallArgs = new InstallArgs(params.mOriginInfo, params.mMoveInfo, params.mObserver,
                 params.mInstallFlags, params.mDevelopmentInstallFlags, params.mInstallSource,
-                params.mVolumeUuid,  params.getUser(), null /*instructionSets*/,
+                params.mVolumeUuid, params.getUser(), null /*instructionSets*/,
                 params.mPackageAbiOverride, params.mPermissionStates,
                 params.mAllowlistedRestrictedPermissions, params.mAutoRevokePermissionsMode,
                 params.mTraceMethod, params.mTraceCookie, params.mSigningDetails,
                 params.mInstallReason, params.mInstallScenario, params.mForceQueryableOverride,
                 params.mDataLoaderType, params.mPackageSource,
-                params.mApplicationEnabledSettingPersistent);
+                params.mApplicationEnabledSettingPersistent, params.mDexoptCompilerFilter);
         mPackageLite = params.mPackageLite;
         mPackageMetrics = new PackageMetrics(this);
         mIsInstallInherit = params.mIsInherit;
         mSessionId = params.mSessionId;
         mRequireUserAction = params.mRequireUserAction;
+        mPreVerifiedDomains = params.mPreVerifiedDomains;
+        mHasAppMetadataFileFromInstaller = params.mHasAppMetadataFile;
     }
 
     // Install existing package as user
     InstallRequest(int userId, int returnCode, AndroidPackage pkg, int[] newUsers,
-            Runnable runnable) {
+            Runnable runnable, int appId, int installerUid, boolean isSystem) {
         mUserId = userId;
         mInstallArgs = null;
         mReturnCode = returnCode;
@@ -186,6 +205,10 @@ final class InstallRequest {
         mIsInstallForUsers = true;
         mSessionId = -1;
         mRequireUserAction = USER_ACTION_UNSPECIFIED;
+        mAppId = appId;
+        mInstallerUidForInstallExisting = installerUid;
+        mSystem = isSystem;
+        mHasAppMetadataFileFromInstaller = false;
     }
 
     // addForInit
@@ -207,6 +230,7 @@ final class InstallRequest {
         mSessionId = -1;
         mRequireUserAction = USER_ACTION_UNSPECIFIED;
         mDisabledPs = disabledPs;
+        mHasAppMetadataFileFromInstaller = false;
     }
 
     @Nullable
@@ -293,13 +317,13 @@ final class InstallRequest {
     @Nullable
     public File getOldCodeFile() {
         return (mRemovedInfo != null && mRemovedInfo.mArgs != null)
-                ? mRemovedInfo.mArgs.mCodeFile : null;
+                ? mRemovedInfo.mArgs.getCodeFile() : null;
     }
 
     @Nullable
     public String[] getOldInstructionSet() {
         return (mRemovedInfo != null && mRemovedInfo.mArgs != null)
-                ? mRemovedInfo.mArgs.mInstructionSets : null;
+                ? mRemovedInfo.mArgs.getInstructionSets() : null;
     }
 
     public UserHandle getUser() {
@@ -354,6 +378,10 @@ final class InstallRequest {
         return PackageInstallerSession.isArchivedInstallation(getInstallFlags());
     }
 
+    public boolean hasAppMetadataFile() {
+        return mHasAppMetadataFileFromInstaller;
+    }
+
     @Nullable
     public String getRemovedPackage() {
         return mRemovedInfo != null ? mRemovedInfo.mRemovedPackage : null;
@@ -376,7 +404,8 @@ final class InstallRequest {
 
     public int getInstallerPackageUid() {
         return (mInstallArgs != null && mInstallArgs.mInstallSource != null)
-                ? mInstallArgs.mInstallSource.mInstallerPackageUid : INVALID_UID;
+                ? mInstallArgs.mInstallSource.mInstallerPackageUid
+                : mInstallerUidForInstallExisting;
     }
 
     public int getDataLoaderType() {
@@ -407,6 +436,12 @@ final class InstallRequest {
     public String getApexModuleName() {
         return mApexModuleName;
     }
+
+    @Nullable
+    public SparseArray<String> getResponsibleInstallerTitles() {
+        return mResponsibleInstallerTitles;
+    }
+
     public boolean isRollback() {
         return mInstallArgs != null
                 && mInstallArgs.mInstallReason == PackageManager.INSTALL_REASON_ROLLBACK;
@@ -581,6 +616,20 @@ final class InstallRequest {
         return mScanResult.mDynamicSharedLibraryInfos;
     }
 
+    public void updateAllCodePaths(List<String> paths) {
+        if (mScanResult.mSdkSharedLibraryInfo != null) {
+            mScanResult.mSdkSharedLibraryInfo.setAllCodePaths(paths);
+        }
+        if (mScanResult.mStaticSharedLibraryInfo != null) {
+            mScanResult.mStaticSharedLibraryInfo.setAllCodePaths(paths);
+        }
+        if (mScanResult.mDynamicSharedLibraryInfos != null) {
+            for (SharedLibraryInfo info : mScanResult.mDynamicSharedLibraryInfos) {
+                info.setAllCodePaths(paths);
+            }
+        }
+    }
+
     @Nullable
     public PackageSetting getScannedPackageSetting() {
         assertScanResultExists();
@@ -676,6 +725,11 @@ final class InstallRequest {
         return mWarnings;
     }
 
+    @Nullable
+    public String getDexoptCompilerFilter() {
+        return mInstallArgs != null ? mInstallArgs.mDexoptCompilerFilter : null;
+    }
+
     public void setScanFlags(int scanFlags) {
         mScanFlags = scanFlags;
     }
@@ -684,6 +738,14 @@ final class InstallRequest {
         if (mFreezer != null) {
             mFreezer.close();
         }
+    }
+
+    public void setPostInstallRunnable(Runnable runnable) {
+        mPostInstallRunnable = runnable;
+    }
+
+    public boolean hasPostInstallRunnable() {
+        return mPostInstallRunnable != null;
     }
 
     public void runPostInstallRunnable() {
@@ -737,6 +799,11 @@ final class InstallRequest {
         mApexModuleName = apexModuleName;
     }
 
+    public void setResponsibleInstallerTitles(
+            @NonNull SparseArray<String> responsibleInstallerTitles) {
+        mResponsibleInstallerTitles = responsibleInstallerTitles;
+    }
+
     public void setPkg(AndroidPackage pkg) {
         mPkg = pkg;
     }
@@ -747,6 +814,7 @@ final class InstallRequest {
 
     public void setNewUsers(int[] newUsers) {
         mNewUsers = newUsers;
+        populateBroadcastUsers();
     }
 
     public void setOriginPackage(String originPackage) {
@@ -815,6 +883,14 @@ final class InstallRequest {
         mScanResult.mPkgSetting.setLastUpdateTime(lastUpdateTim);
     }
 
+    public void setScannedPackageSettingFirstInstallTime(long firstInstallTime) {
+        assertScanResultExists();
+        PackageUserStateInternal userState = mScanResult.mPkgSetting.getUserStates().get(mUserId);
+        if (userState != null && userState.getFirstInstallTimeMillis() == 0) {
+            mScanResult.mPkgSetting.setFirstInstallTime(firstInstallTime, mUserId);
+        }
+    }
+
     public void setRemovedAppId(int appId) {
         if (mRemovedInfo != null) {
             mRemovedInfo.mUid = appId;
@@ -823,10 +899,11 @@ final class InstallRequest {
     }
 
     /**
-     *  Determine the set of users who are adding this package for the first time vs. those who are
-     *  seeing an update.
+     *  Determine the set of users who are adding this package for the first time (aka "new" users)
+     *  vs. those who are seeing an update (aka "update" users). The lists can be calculated as soon
+     *  as the "new" users are set.
      */
-    public void populateBroadcastUsers() {
+    private void populateBroadcastUsers() {
         assertScanResultExists();
         mFirstTimeBroadcastUserIds = EMPTY_INT_ARRAY;
         mFirstTimeBroadcastInstantUserIds = EMPTY_INT_ARRAY;
@@ -872,6 +949,11 @@ final class InstallRequest {
                 }
             }
         }
+    }
+
+    @Nullable
+    public DomainSet getPreVerifiedDomains() {
+        return mPreVerifiedDomains;
     }
 
     public void addWarning(@NonNull String warning) {
@@ -969,14 +1051,22 @@ final class InstallRequest {
     }
 
     public void onFreezeStarted() {
-        if (mPackageMetrics != null && improveInstallFreeze()) {
+        if (mPackageMetrics != null) {
             mPackageMetrics.onStepStarted(PackageMetrics.STEP_FREEZE_INSTALL);
         }
     }
 
     public void onFreezeCompleted() {
-        if (mPackageMetrics != null && improveInstallFreeze()) {
+        if (mPackageMetrics != null) {
             mPackageMetrics.onStepFinished(PackageMetrics.STEP_FREEZE_INSTALL);
         }
+    }
+
+    void setKeepArtProfile(boolean keepArtProfile) {
+        mKeepArtProfile = keepArtProfile;
+    }
+
+    boolean isKeepArtProfile() {
+        return mKeepArtProfile;
     }
 }

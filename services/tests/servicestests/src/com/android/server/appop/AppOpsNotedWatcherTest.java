@@ -25,13 +25,17 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 import android.app.AppOpsManager;
 import android.app.AppOpsManager.OnOpNotedListener;
+import android.companion.virtual.VirtualDeviceManager;
+import android.content.AttributionSource;
 import android.content.Context;
 import android.os.Process;
+import android.virtualdevice.cts.common.VirtualDeviceRule;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.InOrder;
@@ -42,7 +46,8 @@ import org.mockito.InOrder;
 @SmallTest
 @RunWith(AndroidJUnit4.class)
 public class AppOpsNotedWatcherTest {
-
+    @Rule
+    public VirtualDeviceRule mVirtualDeviceRule = VirtualDeviceRule.createDefault();
     private static final long NOTIFICATION_TIMEOUT_MILLIS = 5000;
 
     @Test
@@ -66,12 +71,14 @@ public class AppOpsNotedWatcherTest {
         inOrder.verify(listener, timeout(NOTIFICATION_TIMEOUT_MILLIS)
                 .times(1)).onOpNoted(eq(AppOpsManager.OPSTR_FINE_LOCATION),
                 eq(Process.myUid()), eq(getContext().getPackageName()),
-                eq(getContext().getAttributionTag()), eq(AppOpsManager.OP_FLAG_SELF),
+                eq(getContext().getAttributionTag()), eq(Context.DEVICE_ID_DEFAULT),
+                eq(AppOpsManager.OP_FLAG_SELF),
                 eq(AppOpsManager.MODE_ALLOWED));
         inOrder.verify(listener, timeout(NOTIFICATION_TIMEOUT_MILLIS)
                 .times(1)).onOpNoted(eq(AppOpsManager.OPSTR_CAMERA),
                 eq(Process.myUid()), eq(getContext().getPackageName()),
-                eq(getContext().getAttributionTag()), eq(AppOpsManager.OP_FLAG_SELF),
+                eq(getContext().getAttributionTag()), eq(Context.DEVICE_ID_DEFAULT),
+                eq(AppOpsManager.OP_FLAG_SELF),
                 eq(AppOpsManager.MODE_ALLOWED));
 
         // Stop watching
@@ -96,11 +103,45 @@ public class AppOpsNotedWatcherTest {
         verify(listener, timeout(NOTIFICATION_TIMEOUT_MILLIS)
                 .times(2)).onOpNoted(eq(AppOpsManager.OPSTR_FINE_LOCATION),
                 eq(Process.myUid()), eq(getContext().getPackageName()),
-                eq(getContext().getAttributionTag()), eq(AppOpsManager.OP_FLAG_SELF),
+                eq(getContext().getAttributionTag()), eq(Context.DEVICE_ID_DEFAULT),
+                eq(AppOpsManager.OP_FLAG_SELF),
                 eq(AppOpsManager.MODE_ALLOWED));
 
         // Finish up
         appOpsManager.stopWatchingNoted(listener);
+    }
+
+    @Test
+    public void testWatchNotedOpsForExternalDevice() {
+        final AppOpsManager.OnOpNotedListener listener = mock(
+                AppOpsManager.OnOpNotedListener.class);
+        final VirtualDeviceManager.VirtualDevice virtualDevice =
+                mVirtualDeviceRule.createManagedVirtualDevice();
+        final int virtualDeviceId = virtualDevice.getDeviceId();
+        AttributionSource attributionSource = new AttributionSource(Process.myUid(),
+                getContext().getOpPackageName(), getContext().getAttributionTag(),
+                virtualDeviceId);
+
+        final AppOpsManager appOpsManager = getContext().getSystemService(AppOpsManager.class);
+        appOpsManager.startWatchingNoted(new int[]{AppOpsManager.OP_FINE_LOCATION,
+                AppOpsManager.OP_CAMERA}, listener);
+
+        appOpsManager.noteOpNoThrow(AppOpsManager.OP_FINE_LOCATION, attributionSource, "message");
+
+        verify(listener, timeout(NOTIFICATION_TIMEOUT_MILLIS)
+                .times(1)).onOpNoted(eq(AppOpsManager.OPSTR_FINE_LOCATION),
+                eq(Process.myUid()), eq(getContext().getOpPackageName()),
+                eq(getContext().getAttributionTag()), eq(virtualDeviceId),
+                eq(AppOpsManager.OP_FLAG_SELF), eq(AppOpsManager.MODE_ALLOWED));
+
+        appOpsManager.finishOp(getContext().getAttributionSource().getToken(),
+                AppOpsManager.OP_FINE_LOCATION, attributionSource);
+
+        verifyNoMoreInteractions(listener);
+
+        appOpsManager.stopWatchingNoted(listener);
+
+        verifyNoMoreInteractions(listener);
     }
 
     private static Context getContext() {

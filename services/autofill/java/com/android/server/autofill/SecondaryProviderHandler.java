@@ -21,12 +21,11 @@ import android.annotation.Nullable;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.IntentSender;
+import android.os.IBinder;
+import android.service.autofill.ConvertCredentialResponse;
 import android.service.autofill.FillRequest;
 import android.service.autofill.FillResponse;
 import android.util.Slog;
-
-import java.util.Objects;
-
 
 /**
  * Requests autofill response from a Remote Autofill Service. This autofill service can be
@@ -51,14 +50,15 @@ final class SecondaryProviderHandler implements RemoteFillService.FillServiceCal
 
     private final RemoteFillService mRemoteFillService;
     private final SecondaryProviderCallback mCallback;
-    private FillRequest mLastFillRequest;
+
     private int mLastFlag;
 
     SecondaryProviderHandler(
             @NonNull Context context, int userId, boolean bindInstantServiceAllowed,
-            SecondaryProviderCallback callback, ComponentName componentName) {
+            SecondaryProviderCallback callback, ComponentName componentName,
+            @Nullable ComponentName credentialAutofillService) {
         mRemoteFillService = new RemoteFillService(context, componentName, userId, this,
-                bindInstantServiceAllowed);
+                bindInstantServiceAllowed, credentialAutofillService);
         mCallback = callback;
         Slog.v(TAG, "Creating a secondary provider handler with component name, " + componentName);
     }
@@ -75,12 +75,7 @@ final class SecondaryProviderHandler implements RemoteFillService.FillServiceCal
     }
 
     @Override
-    public void onFillRequestFailure(int requestId, @Nullable CharSequence message) {
-
-    }
-
-    @Override
-    public void onFillRequestTimeout(int requestId) {
+    public void onFillRequestFailure(int requestId, Throwable t) {
 
     }
 
@@ -96,19 +91,24 @@ final class SecondaryProviderHandler implements RemoteFillService.FillServiceCal
 
     }
 
+    @Override
+    public void  onConvertCredentialRequestSuccess(@NonNull ConvertCredentialResponse
+            convertCredentialResponse) {
+
+    }
+
     /**
-     * Requests a new fill response. If the fill request is same as the last requested fill request,
-     * then the request is duped.
+     * Requests a new fill response.
      */
-    public void onFillRequest(FillRequest pendingFillRequest, int flag) {
-        if (Objects.equals(pendingFillRequest, mLastFillRequest)) {
-            Slog.v(TAG, "Deduping fill request to secondary provider.");
-            return;
-        }
+    public void onFillRequest(FillRequest pendingFillRequest, int flag, IBinder client) {
         Slog.v(TAG, "Requesting fill response to secondary provider.");
         mLastFlag = flag;
-        mLastFillRequest = pendingFillRequest;
-        mRemoteFillService.onFillRequest(pendingFillRequest);
+        if (mRemoteFillService != null && mRemoteFillService.isCredentialAutofillService()) {
+            Slog.v(TAG, "About to call CredAutofill service as secondary provider");
+            mRemoteFillService.onFillCredentialRequest(pendingFillRequest, client);
+        } else {
+            mRemoteFillService.onFillRequest(pendingFillRequest);
+        }
     }
 
     public void destroy() {

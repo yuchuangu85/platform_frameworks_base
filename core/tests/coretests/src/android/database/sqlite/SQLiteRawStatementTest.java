@@ -19,6 +19,7 @@ package android.database.sqlite;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -26,12 +27,11 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.DatabaseUtils;
 import android.os.SystemClock;
-import android.test.AndroidTestCase;
 import android.util.Log;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.After;
 import org.junit.Before;
@@ -104,7 +104,9 @@ public class SQLiteRawStatementTest {
     private void createComplexDatabase() {
         mDatabase.beginTransaction();
         try {
-            mDatabase.execSQL("CREATE TABLE t1 (i int, d double, t text);");
+            // Column "l" is used to test the long variants.  The underlying sqlite type is int,
+            // which is the same as a java long.
+            mDatabase.execSQL("CREATE TABLE t1 (i int, d double, t text, l int);");
             mDatabase.setTransactionSuccessful();
         } finally {
             mDatabase.endTransaction();
@@ -115,7 +117,7 @@ public class SQLiteRawStatementTest {
      * A three-value insert for the complex database.
      */
     private String createComplexInsert() {
-        return "INSERT INTO t1 (i, d, t) VALUES (?1, ?2, ?3)";
+        return "INSERT INTO t1 (i, d, t, l) VALUES (?1, ?2, ?3, ?4)";
     }
 
     /**
@@ -209,22 +211,25 @@ public class SQLiteRawStatementTest {
         mDatabase.beginTransaction();
         try {
             try (SQLiteRawStatement s = mDatabase.createRawStatement(createComplexInsert())) {
-                for (int i = 0; i < 9; i++) {
-                    int vi = i * 3;
-                    double vd = i * 2.5;
-                    String vt = String.format("text%02dvalue", i);
+                for (int row = 0; row < 9; row++) {
+                    int vi = row * 3;
+                    double vd = row * 2.5;
+                    String vt = String.format("text%02dvalue", row);
+                    long vl = Long.MAX_VALUE - row;
                     s.bindInt(1, vi);
                     s.bindDouble(2, vd);
                     s.bindText(3, vt);
+                    s.bindLong(4, vl);
                     boolean r = s.step();
                     // No row is returned by this query.
                     assertFalse(r);
                     s.reset();
                 }
-                // The last row has a null double and a null text.
+                // The last row has a null double, null text, and null long.
                 s.bindInt(1, 20);
                 s.bindNull(2);
                 s.bindNull(3);
+                s.bindNull(4);
                 assertFalse(s.step());
                 s.reset();
             }
@@ -248,19 +253,31 @@ public class SQLiteRawStatementTest {
             mDatabase.endTransaction();
         }
 
-        // Verify that the element created with i == 3 is correct.
+        // Verify that the element created with row == 3 is correct.
         mDatabase.beginTransactionReadOnly();
         try {
-            final String query = "SELECT i, d, t FROM t1 WHERE t = 'text03value'";
+            final String query = "SELECT i, d, t, l FROM t1 WHERE t = 'text03value'";
             try (SQLiteRawStatement s = mDatabase.createRawStatement(query)) {
                 assertTrue(s.step());
-                assertEquals(3, s.getResultColumnCount());
+                assertEquals(4, s.getResultColumnCount());
                 int vi = s.getColumnInt(0);
                 double vd = s.getColumnDouble(1);
                 String vt = s.getColumnText(2);
-                assertEquals(3 * 3, vi);
-                assertEquals(2.5 * 3, vd, 0.1);
+                long vl = s.getColumnLong(3);
+                // The query extracted the third generated row.
+                final int row = 3;
+                assertEquals(3 * row, vi);
+                assertEquals(2.5 * row, vd, 0.1);
                 assertEquals("text03value", vt);
+                assertEquals(Long.MAX_VALUE - row, vl);
+
+                // Verify the column types.  Remember that sqlite integers are the same as Java
+                // long, so the integer and long columns have type INTEGER.
+                assertEquals(SQLiteRawStatement.SQLITE_DATA_TYPE_INTEGER, s.getColumnType(0));
+                assertEquals(SQLiteRawStatement.SQLITE_DATA_TYPE_FLOAT, s.getColumnType(1));
+                assertEquals(SQLiteRawStatement.SQLITE_DATA_TYPE_TEXT, s.getColumnType(2));
+                assertEquals(SQLiteRawStatement.SQLITE_DATA_TYPE_INTEGER, s.getColumnType(3));
+
                 // No more rows.
                 assertFalse(s.step());
             }
@@ -268,15 +285,24 @@ public class SQLiteRawStatementTest {
             mDatabase.endTransaction();
         }
 
+        // Verify that null columns are returned properly.
         mDatabase.beginTransactionReadOnly();
         try {
-            final String query = "SELECT i, d, t FROM t1 WHERE i == 20";
+            final String query = "SELECT i, d, t, l FROM t1 WHERE i == 20";
             try (SQLiteRawStatement s = mDatabase.createRawStatement(query)) {
                 assertTrue(s.step());
-                assertEquals(3, s.getResultColumnCount());
+                assertEquals(4, s.getResultColumnCount());
                 assertEquals(20, s.getColumnInt(0));
                 assertEquals(0.0, s.getColumnDouble(1), 0.01);
                 assertEquals(null, s.getColumnText(2));
+                assertEquals(0, s.getColumnLong(3));
+
+                // Verify the column types.
+                assertEquals(SQLiteRawStatement.SQLITE_DATA_TYPE_INTEGER, s.getColumnType(0));
+                assertEquals(SQLiteRawStatement.SQLITE_DATA_TYPE_NULL, s.getColumnType(1));
+                assertEquals(SQLiteRawStatement.SQLITE_DATA_TYPE_NULL, s.getColumnType(2));
+                assertEquals(SQLiteRawStatement.SQLITE_DATA_TYPE_NULL, s.getColumnType(3));
+
                 // No more rows.
                 assertFalse(s.step());
             }
@@ -481,6 +507,12 @@ public class SQLiteRawStatementTest {
                 s.bindInt(1, 3);
                 s.step();
                 s.reset();
+                // Bind a zero-length blob
+                s.clearBindings();
+                s.bindInt(1, 4);
+                s.bindBlob(2, new byte[0]);
+                s.step();
+                s.reset();
             }
             mDatabase.setTransactionSuccessful();
         } finally {
@@ -495,6 +527,8 @@ public class SQLiteRawStatementTest {
                 // Fetch the entire reference array.
                 s.bindInt(1, 1);
                 assertTrue(s.step());
+                assertEquals(SQLiteRawStatement.SQLITE_DATA_TYPE_BLOB, s.getColumnType(0));
+
                 byte[] a = s.getColumnBlob(0);
                 assertTrue(Arrays.equals(src, a));
                 s.reset();
@@ -517,6 +551,17 @@ public class SQLiteRawStatementTest {
                 for (int i = 0; i < c.length; i++) c[i] = 0;
                 s.bindInt(1, 3);
                 assertTrue(s.step());
+                assertNull(s.getColumnBlob(0));
+                assertEquals(0, s.readColumnBlob(0, c, 0, c.length, 0));
+                for (int i = 0; i < c.length; i++) assertEquals(0, c[i]);
+                s.reset();
+
+                // Fetch the zero-length blob
+                s.bindInt(1, 4);
+                assertTrue(s.step());
+                byte[] r = s.getColumnBlob(0);
+                assertNotNull(r);
+                assertEquals(0, r.length);
                 assertEquals(0, s.readColumnBlob(0, c, 0, c.length, 0));
                 for (int i = 0; i < c.length; i++) assertEquals(0, c[i]);
                 s.reset();
@@ -538,6 +583,83 @@ public class SQLiteRawStatementTest {
         } catch (AssertionError e) {
             // Pass on the fail from the try-block before the generic catch below can see it.
             throw e;
+        } finally {
+            mDatabase.endTransaction();
+        }
+    }
+
+    @Test
+    public void testText() {
+        mDatabase.beginTransaction();
+        try {
+            final String query = "CREATE TABLE t1 (i int, b text)";
+            try (SQLiteRawStatement s = mDatabase.createRawStatement(query)) {
+                assertFalse(s.step());
+            }
+            mDatabase.setTransactionSuccessful();
+        } finally {
+            mDatabase.endTransaction();
+        }
+
+        // Insert data into the table.
+        mDatabase.beginTransaction();
+        try {
+            final String query = "INSERT INTO t1 (i, b) VALUES (?1, ?2)";
+            try (SQLiteRawStatement s = mDatabase.createRawStatement(query)) {
+                // Bind a string
+                s.bindInt(1, 1);
+                s.bindText(2, "text");
+                s.step();
+                s.reset();
+                s.clearBindings();
+
+                // Bind a zero-length string
+                s.bindInt(1, 2);
+                s.bindText(2, "");
+                s.step();
+                s.reset();
+                s.clearBindings();
+
+                // Bind a null string
+                s.clearBindings();
+                s.bindInt(1, 3);
+                s.step();
+                s.reset();
+                s.clearBindings();
+            }
+            mDatabase.setTransactionSuccessful();
+        } finally {
+            mDatabase.endTransaction();
+        }
+
+        // Read back data and verify it against the reference copy.
+        mDatabase.beginTransactionReadOnly();
+        try {
+            final String query = "SELECT (b) FROM t1 WHERE i = ?1";
+            try (SQLiteRawStatement s = mDatabase.createRawStatement(query)) {
+                // Fetch the entire reference array.
+                s.bindInt(1, 1);
+                assertTrue(s.step());
+                assertEquals(SQLiteRawStatement.SQLITE_DATA_TYPE_TEXT, s.getColumnType(0));
+
+                String a = s.getColumnText(0);
+                assertNotNull(a);
+                assertEquals(a, "text");
+                s.reset();
+
+                s.bindInt(1, 2);
+                assertTrue(s.step());
+                String b = s.getColumnText(0);
+                assertNotNull(b);
+                assertEquals(b, "");
+                s.reset();
+
+                s.bindInt(1, 3);
+                assertTrue(s.step());
+                String c = s.getColumnText(0);
+                assertNull(c);
+                s.reset();
+            }
         } finally {
             mDatabase.endTransaction();
         }
@@ -873,6 +995,56 @@ public class SQLiteRawStatementTest {
             assertTrue(s.step());
             assertEquals(2, s.getColumnInt(0));
             assertEquals(cat, s.getColumnName(0));
+        } finally {
+            mDatabase.endTransaction();
+        }
+    }
+
+    /**
+     * This test verifies that the JNI exception thrown because of a bad column is actually thrown
+     * and does not crash the VM.
+     */
+    @Test
+    public void testJniExceptions() {
+        // Create the t1 table.
+        mDatabase.beginTransaction();
+        try {
+            mDatabase.execSQL("CREATE TABLE t1 (i int, j int);");
+            mDatabase.execSQL("INSERT INTO t1 (i, j) VALUES (2, 20)");
+            mDatabase.setTransactionSuccessful();
+        } finally {
+            mDatabase.endTransaction();
+        }
+
+        mDatabase.beginTransactionReadOnly();
+        try (SQLiteRawStatement s = mDatabase.createRawStatement("SELECT * from t1")) {
+            assertTrue(s.step());
+            s.getColumnText(5); // out-of-range column: the range is [0,2).
+            fail("JNI exception not thrown");
+        } catch (SQLiteBindOrColumnIndexOutOfRangeException e) {
+            // Passing case.
+        } finally {
+            mDatabase.endTransaction();
+        }
+
+        mDatabase.beginTransactionReadOnly();
+        try (SQLiteRawStatement s = mDatabase.createRawStatement("SELECT * from t1")) {
+            // Do not step the statement.  The column count will be zero.
+            s.getColumnText(5); // out-of-range column: never stepped.
+            fail("JNI exception not thrown");
+        } catch (SQLiteMisuseException e) {
+            // Passing case.
+        } finally {
+            mDatabase.endTransaction();
+        }
+
+        mDatabase.beginTransactionReadOnly();
+        try (SQLiteRawStatement s = mDatabase.createRawStatement("SELECT * from t1")) {
+            // Do not step the statement.  The column count will be zero.
+            s.getColumnText(0); // out-of-range column: never stepped.
+            fail("JNI exception not thrown");
+        } catch (SQLiteMisuseException e) {
+            // Passing case.
         } finally {
             mDatabase.endTransaction();
         }

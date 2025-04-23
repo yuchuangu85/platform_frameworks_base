@@ -16,22 +16,24 @@ package com.android.systemui.statusbar.policy;
 
 import android.content.res.Configuration;
 
+import com.android.systemui.statusbar.phone.ConfigurationForwarder;
 import com.android.systemui.statusbar.policy.ConfigurationController.ConfigurationListener;
 
 /**
  * Common listener for configuration or subsets of configuration changes (like density or
  * font scaling), providing easy static dependence on these events.
  */
-public interface ConfigurationController extends CallbackController<ConfigurationListener> {
-
-    /** Alert controller of a change in the configuration. */
-    void onConfigurationChanged(Configuration newConfiguration);
+public interface ConfigurationController extends CallbackController<ConfigurationListener>,
+        ConfigurationForwarder {
 
     /** Alert controller of a change in between light and dark themes. */
     void notifyThemeChanged();
 
     /** Query the current configuration's layout direction */
     boolean isLayoutRtl();
+
+    /** Logging only; Query the current configuration's night mode name */
+    String getNightModeName();
 
     interface ConfigurationListener {
         default void onConfigChanged(Configuration newConfig) {}

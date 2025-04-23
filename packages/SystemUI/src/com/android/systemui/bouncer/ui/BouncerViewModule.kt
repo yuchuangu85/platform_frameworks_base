@@ -16,17 +16,30 @@
 
 package com.android.systemui.bouncer.ui
 
-import com.android.systemui.bouncer.ui.viewmodel.BouncerViewModelModule
+import android.app.AlertDialog
+import android.content.Context
+import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.dagger.qualifiers.Application
+import com.android.systemui.statusbar.phone.SystemUIDialog
 import dagger.Binds
 import dagger.Module
+import dagger.Provides
 
-@Module(
-    includes =
-        [
-            BouncerViewModelModule::class,
-        ],
-)
+@Module
 interface BouncerViewModule {
     /** Binds BouncerView to BouncerViewImpl and makes it injectable. */
     @Binds fun bindBouncerView(bouncerViewImpl: BouncerViewImpl): BouncerView
+
+    companion object {
+
+        @Provides
+        @SysUISingleton
+        fun bouncerDialogFactory(@Application context: Context): BouncerDialogFactory {
+            return object : BouncerDialogFactory {
+                override fun invoke(): AlertDialog {
+                    return SystemUIDialog(context)
+                }
+            }
+        }
+    }
 }

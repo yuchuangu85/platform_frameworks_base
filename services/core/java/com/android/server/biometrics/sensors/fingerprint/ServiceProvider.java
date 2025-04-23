@@ -24,10 +24,10 @@ import android.hardware.biometrics.ITestSessionCallback;
 import android.hardware.biometrics.fingerprint.PointerContext;
 import android.hardware.fingerprint.Fingerprint;
 import android.hardware.fingerprint.FingerprintAuthenticateOptions;
+import android.hardware.fingerprint.FingerprintEnrollOptions;
 import android.hardware.fingerprint.FingerprintManager;
 import android.hardware.fingerprint.FingerprintSensorPropertiesInternal;
 import android.hardware.fingerprint.IFingerprintServiceReceiver;
-import android.hardware.fingerprint.ISidefpsController;
 import android.hardware.fingerprint.IUdfpsOverlayController;
 import android.os.IBinder;
 
@@ -74,7 +74,8 @@ public interface ServiceProvider extends
      */
     long scheduleEnroll(int sensorId, @NonNull IBinder token, @NonNull byte[] hardwareAuthToken,
             int userId, @NonNull IFingerprintServiceReceiver receiver,
-            @NonNull String opPackageName, @FingerprintManager.EnrollReason int enrollReason);
+            @NonNull String opPackageName, @FingerprintManager.EnrollReason int enrollReason,
+            @NonNull FingerprintEnrollOptions options);
 
     void cancelEnrollment(int sensorId, @NonNull IBinder token, long requestId);
 
@@ -133,14 +134,9 @@ public interface ServiceProvider extends
 
     void setUdfpsOverlayController(@NonNull IUdfpsOverlayController controller);
 
-    void onPowerPressed();
+    void setIgnoreDisplayTouches(long requestId, int sensorId, boolean ignoreTouches);
 
-    // TODO(b/288175061): remove with Flags.FLAG_SIDEFPS_CONTROLLER_REFACTOR
-    /**
-     * Sets side-fps controller
-     * @param controller side-fps controller
-     */
-    void setSidefpsController(@NonNull ISidefpsController controller);
+    void onPowerPressed();
 
     @NonNull
     ITestSession createTestSession(int sensorId, @NonNull ITestSessionCallback callback,

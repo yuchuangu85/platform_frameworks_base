@@ -16,12 +16,10 @@
 
 package com.android.server.wm;
 
-import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
-import static android.app.WindowConfiguration.ROTATION_UNDEFINED;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
 import static android.app.WindowConfiguration.WINDOWING_MODE_MULTI_WINDOW;
-import static android.app.WindowConfiguration.WINDOWING_MODE_PINNED;
+import static android.content.pm.ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_LARGE_VALUE;
 import static android.content.pm.ActivityInfo.RESIZE_MODE_RESIZEABLE;
 import static android.content.pm.ActivityInfo.RESIZE_MODE_UNRESIZEABLE;
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
@@ -46,6 +44,7 @@ import static android.view.WindowInsets.Type.statusBars;
 import static android.view.WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER;
 import static android.view.WindowManager.LayoutParams.TYPE_APPLICATION_STARTING;
 import static android.view.WindowManager.LayoutParams.TYPE_BASE_APPLICATION;
+import static android.view.WindowManager.LayoutParams.TYPE_NAVIGATION_BAR;
 import static android.view.WindowManager.LayoutParams.TYPE_STATUS_BAR;
 
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doNothing;
@@ -60,13 +59,13 @@ import static com.android.internal.util.FrameworkStatsLog.APP_COMPAT_STATE_CHANG
 import static com.android.internal.util.FrameworkStatsLog.APP_COMPAT_STATE_CHANGED__STATE__LETTERBOXED_FOR_SIZE_COMPAT_MODE;
 import static com.android.internal.util.FrameworkStatsLog.APP_COMPAT_STATE_CHANGED__STATE__NOT_LETTERBOXED;
 import static com.android.internal.util.FrameworkStatsLog.APP_COMPAT_STATE_CHANGED__STATE__NOT_VISIBLE;
-import static com.android.server.wm.ActivityRecord.State.DESTROYED;
 import static com.android.server.wm.ActivityRecord.State.PAUSED;
 import static com.android.server.wm.ActivityRecord.State.RESTARTING_PROCESS;
 import static com.android.server.wm.ActivityRecord.State.RESUMED;
 import static com.android.server.wm.ActivityRecord.State.STOPPED;
+import static com.android.server.wm.AppCompatConfiguration.LETTERBOX_POSITION_MULTIPLIER_CENTER;
+import static com.android.server.wm.AppCompatUtils.computeAspectRatio;
 import static com.android.server.wm.DisplayContent.IME_TARGET_LAYERING;
-import static com.android.server.wm.LetterboxConfiguration.LETTERBOX_POSITION_MULTIPLIER_CENTER;
 import static com.android.server.wm.WindowContainer.POSITION_TOP;
 
 import static com.google.common.truth.Truth.assertThat;
@@ -75,7 +74,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -89,6 +87,7 @@ import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.times;
 
+import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.ActivityManager;
 import android.app.ActivityManagerInternal;
@@ -97,13 +96,14 @@ import android.compat.testing.PlatformCompatChangeRule;
 import android.content.ComponentName;
 import android.content.pm.ActivityInfo;
 import android.content.pm.ActivityInfo.ScreenOrientation;
-import android.content.pm.IPackageManager;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.graphics.Insets;
 import android.graphics.Rect;
 import android.os.Binder;
-import android.os.RemoteException;
 import android.os.UserHandle;
+import android.platform.test.annotations.DisableFlags;
+import android.platform.test.annotations.EnableFlags;
 import android.platform.test.annotations.Presubmit;
 import android.provider.DeviceConfig;
 import android.provider.DeviceConfig.Properties;
@@ -120,6 +120,7 @@ import com.android.internal.policy.SystemBarUtils;
 import com.android.internal.statusbar.LetterboxDetails;
 import com.android.server.statusbar.StatusBarManagerInternal;
 import com.android.server.wm.DeviceStateController.DeviceState;
+import com.android.window.flags.Flags;
 
 import libcore.junit.util.compat.CoreCompatChangeRule.DisableCompatChanges;
 import libcore.junit.util.compat.CoreCompatChangeRule.EnableCompatChanges;
@@ -153,6 +154,8 @@ public class SizeCompatTests extends WindowTestsBase {
     private static final String CONFIG_NEVER_CONSTRAIN_DISPLAY_APIS_ALL_PACKAGES =
             "never_constrain_display_apis_all_packages";
 
+    private static final float DELTA_ASPECT_RATIO_TOLERANCE = 0.005f;
+
     @Rule
     public TestRule compatChangeRule = new PlatformCompatChangeRule();
 
@@ -179,136 +182,90 @@ public class SizeCompatTests extends WindowTestsBase {
         DeviceConfig.setProperties(mInitialConstrainDisplayApisFlags);
     }
 
-    private void setUpApp(DisplayContent display) {
-        mTask = new TaskBuilder(mSupervisor).setDisplay(display).setCreateActivity(true).build();
-        mActivity = mTask.getTopNonFinishingActivity();
+    private ActivityRecord setUpApp(DisplayContent display) {
+        return setUpApp(display, null /* appBuilder */);
     }
 
-    private void setUpDisplaySizeWithApp(int dw, int dh) {
-        final TestDisplayContent.Builder builder = new TestDisplayContent.Builder(mAtm, dw, dh);
-        setUpApp(builder.build());
-    }
-
-    @Test
-    public void testCleanLetterboxConfigListenerWhenTranslucentIsDestroyed() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2000, 1000);
-        prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        // Translucent Activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
+    private ActivityRecord setUpApp(DisplayContent display, ActivityBuilder appBuilder) {
+        // Use the real package name (com.android.frameworks.wmtests) so that
+        // EnableCompatChanges/DisableCompatChanges can take effect.
+        // Otherwise the fake WindowTestsBase.DEFAULT_COMPONENT_PACKAGE_NAME will make
+        // PlatformCompat#isChangeEnabledByPackageName always return default value.
+        final ComponentName componentName = ComponentName.createRelative(
+                mContext, SizeCompatTests.class.getName());
+        mTask = new TaskBuilder(mSupervisor).setDisplay(display).setComponent(componentName)
                 .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
+        final ActivityBuilder builder = appBuilder != null ? appBuilder : new ActivityBuilder(mAtm);
+        mActivity = builder.setTask(mTask).setComponent(componentName).build();
+        doReturn(false).when(mActivity).isImmersiveMode(any());
+        return mActivity;
+    }
 
-        translucentActivity.setState(DESTROYED, "testing");
-        translucentActivity.removeImmediately();
+    private ActivityRecord setUpDisplaySizeWithApp(int dw, int dh) {
+        return setUpDisplaySizeWithApp(dw, dh, null /* appBuilder */);
+    }
 
-        assertFalse(translucentActivity.mLetterboxUiController.hasInheritedLetterboxBehavior());
+    private ActivityRecord setUpDisplaySizeWithApp(int dw, int dh, ActivityBuilder appBuilder) {
+        final TestDisplayContent.Builder builder = new TestDisplayContent.Builder(mAtm, dw, dh);
+        return setUpApp(builder.build(), appBuilder);
     }
 
     @Test
     public void testHorizontalReachabilityEnabledForTranslucentActivities() {
-        setUpDisplaySizeWithApp(2500, 1000);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        final LetterboxConfiguration config = mWm.mLetterboxConfiguration;
-        config.setTranslucentLetterboxingOverrideEnabled(true);
-        config.setLetterboxHorizontalPositionMultiplier(0.5f);
-        config.setIsHorizontalReachabilityEnabled(true);
+        testReachabilityEnabledForTranslucentActivity(/* dw */ 2500,  /* dh */1000,
+                SCREEN_ORIENTATION_PORTRAIT, /* minAspectRatio */ 0f,
+                /* horizontalReachability */ true);
+    }
 
-        // Opaque activity
-        prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
-        addWindowToActivity(mActivity);
-        mActivity.mRootWindowContainer.performSurfacePlacement();
-
-        // Translucent Activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
-
-        spyOn(translucentActivity.mLetterboxUiController);
-        doReturn(true).when(translucentActivity.mLetterboxUiController)
-                .shouldShowLetterboxUi(any());
-
-        addWindowToActivity(translucentActivity);
-        translucentActivity.mRootWindowContainer.performSurfacePlacement();
-
-        final Function<ActivityRecord, Rect> innerBoundsOf =
-                (ActivityRecord a) -> {
-                    final Rect bounds = new Rect();
-                    a.mLetterboxUiController.getLetterboxInnerBounds(bounds);
-                    return bounds;
-                };
-        final Runnable checkLetterboxPositions = () -> assertEquals(innerBoundsOf.apply(mActivity),
-                innerBoundsOf.apply(translucentActivity));
-        final Runnable checkIsLeft = () -> assertThat(
-                innerBoundsOf.apply(translucentActivity).left).isEqualTo(0);
-        final Runnable checkIsRight = () -> assertThat(
-                innerBoundsOf.apply(translucentActivity).right).isEqualTo(2500);
-        final Runnable checkIsCentered = () -> assertThat(
-                innerBoundsOf.apply(translucentActivity).left > 0
-                        && innerBoundsOf.apply(translucentActivity).right < 2500).isTrue();
-
-        final Consumer<Integer> doubleClick =
-                (Integer x) -> {
-                    mActivity.mLetterboxUiController.handleHorizontalDoubleTap(x);
-                    mActivity.mRootWindowContainer.performSurfacePlacement();
-                };
-
-        // Initial state
-        checkIsCentered.run();
-
-        // Double-click left
-        doubleClick.accept(/* x */ 10);
-        checkLetterboxPositions.run();
-        checkIsLeft.run();
-
-        // Double-click right
-        doubleClick.accept(/* x */ 1990);
-        checkLetterboxPositions.run();
-        checkIsCentered.run();
-
-        // Double-click right
-        doubleClick.accept(/* x */ 1990);
-        checkLetterboxPositions.run();
-        checkIsRight.run();
-
-        // Double-click left
-        doubleClick.accept(/* x */ 10);
-        checkLetterboxPositions.run();
-        checkIsCentered.run();
+    @Test
+    public void testHorizontalReachabilityEnabled_TranslucentPortraitActivities_portraitDisplay() {
+        testReachabilityEnabledForTranslucentActivity(/* dw */ 1400,  /* dh */1600,
+                SCREEN_ORIENTATION_PORTRAIT, OVERRIDE_MIN_ASPECT_RATIO_LARGE_VALUE,
+                /* horizontalReachability */ true);
     }
 
     @Test
     public void testVerticalReachabilityEnabledForTranslucentActivities() {
-        setUpDisplaySizeWithApp(1000, 2500);
+        testReachabilityEnabledForTranslucentActivity(/* dw */ 1000,  /* dh */2500,
+                SCREEN_ORIENTATION_LANDSCAPE, /* minAspectRatio */ 0f,
+                /* horizontalReachability */ false);
+    }
+
+    @Test
+    public void testVerticalReachabilityEnabled_TranslucentLandscapeActivities_landscapeDisplay() {
+        testReachabilityEnabledForTranslucentActivity(/* dw */ 1600,  /* dh */1400,
+                SCREEN_ORIENTATION_LANDSCAPE, OVERRIDE_MIN_ASPECT_RATIO_LARGE_VALUE,
+                /* horizontalReachability */ false);
+    }
+
+    private void testReachabilityEnabledForTranslucentActivity(int displayWidth, int displayHeight,
+            @ScreenOrientation int screenOrientation, float minAspectRatio,
+            boolean horizontalReachability) {
+        setUpDisplaySizeWithApp(displayWidth, displayHeight);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        final LetterboxConfiguration config = mWm.mLetterboxConfiguration;
+        final AppCompatConfiguration config = mWm.mAppCompatConfiguration;
         config.setTranslucentLetterboxingOverrideEnabled(true);
         config.setLetterboxVerticalPositionMultiplier(0.5f);
         config.setIsVerticalReachabilityEnabled(true);
+        config.setLetterboxHorizontalPositionMultiplier(0.5f);
+        config.setIsHorizontalReachabilityEnabled(true);
 
         // Opaque activity
-        prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
+        prepareMinAspectRatio(mActivity, minAspectRatio, screenOrientation);
         addWindowToActivity(mActivity);
         mActivity.mRootWindowContainer.performSurfacePlacement();
 
         // Translucent Activity
         final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
+                .setActivityTheme(android.R.style.Theme_Translucent)
                 .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_LANDSCAPE)
+                .setScreenOrientation(screenOrientation)
                 .build();
-        doReturn(false).when(translucentActivity).fillsParent();
         mTask.addChild(translucentActivity);
 
-        spyOn(translucentActivity.mLetterboxUiController);
-        doReturn(true).when(translucentActivity.mLetterboxUiController)
-                .shouldShowLetterboxUi(any());
+        spyOn(translucentActivity.mAppCompatController.getAppCompatLetterboxPolicy());
+        doReturn(true).when(translucentActivity.mAppCompatController
+                .getAppCompatLetterboxPolicy()).shouldShowLetterboxUi(any());
 
         addWindowToActivity(translucentActivity);
         translucentActivity.mRootWindowContainer.performSurfacePlacement();
@@ -316,7 +273,7 @@ public class SizeCompatTests extends WindowTestsBase {
         final Function<ActivityRecord, Rect> innerBoundsOf =
                 (ActivityRecord a) -> {
                     final Rect bounds = new Rect();
-                    a.mLetterboxUiController.getLetterboxInnerBounds(bounds);
+                    a.getLetterboxInnerBounds(bounds);
                     return bounds;
                 };
         final Runnable checkLetterboxPositions = () -> assertEquals(innerBoundsOf.apply(mActivity),
@@ -324,350 +281,131 @@ public class SizeCompatTests extends WindowTestsBase {
         final Runnable checkIsTop = () -> assertThat(
                 innerBoundsOf.apply(translucentActivity).top).isEqualTo(0);
         final Runnable checkIsBottom = () -> assertThat(
-                innerBoundsOf.apply(translucentActivity).bottom).isEqualTo(2500);
-        final Runnable checkIsCentered = () -> assertThat(
+                innerBoundsOf.apply(translucentActivity).bottom).isEqualTo(displayHeight);
+        final Runnable checkIsLeft = () -> assertThat(
+                innerBoundsOf.apply(translucentActivity).left).isEqualTo(0);
+        final Runnable checkIsRight = () -> assertThat(
+                innerBoundsOf.apply(translucentActivity).right).isEqualTo(displayWidth);
+        final Runnable checkIsHorizontallyCentered = () -> assertThat(
+                innerBoundsOf.apply(translucentActivity).left > 0
+                        && innerBoundsOf.apply(translucentActivity).right < displayWidth).isTrue();
+        final Runnable checkIsVerticallyCentered = () -> assertThat(
                 innerBoundsOf.apply(translucentActivity).top > 0
-                        && innerBoundsOf.apply(translucentActivity).bottom < 2500).isTrue();
+                        && innerBoundsOf.apply(translucentActivity).bottom < displayHeight)
+                .isTrue();
+
+        if (horizontalReachability) {
+            final Consumer<Integer> doubleClick =
+                    (Integer x) -> {
+                        mActivity.mAppCompatController.getAppCompatReachabilityPolicy()
+                                .handleDoubleTap(x, displayHeight / 2);
+                        mActivity.mRootWindowContainer.performSurfacePlacement();
+                    };
+
+            // Initial state
+            checkIsHorizontallyCentered.run();
+
+            // Double-click left
+            doubleClick.accept(/* x */ 10);
+            checkLetterboxPositions.run();
+            checkIsLeft.run();
+
+            // Double-click right
+            doubleClick.accept(/* x */ displayWidth - 100);
+            checkLetterboxPositions.run();
+            checkIsHorizontallyCentered.run();
+
+            // Double-click right
+            doubleClick.accept(/* x */ displayWidth - 100);
+            checkLetterboxPositions.run();
+            checkIsRight.run();
+
+            // Double-click left
+            doubleClick.accept(/* x */ 10);
+            checkLetterboxPositions.run();
+            checkIsHorizontallyCentered.run();
+        } else {
+            final Consumer<Integer> doubleClick =
+                    (Integer y) -> {
+                        mActivity.mAppCompatController.getAppCompatReachabilityPolicy()
+                                .handleDoubleTap(displayWidth / 2, y);
+                        mActivity.mRootWindowContainer.performSurfacePlacement();
+                    };
+
+            // Initial state
+            checkIsVerticallyCentered.run();
+
+            // Double-click top
+            doubleClick.accept(/* y */ 10);
+            checkLetterboxPositions.run();
+            checkIsTop.run();
+
+            // Double-click bottom
+            doubleClick.accept(/* y */ displayHeight - 100);
+            checkLetterboxPositions.run();
+            checkIsVerticallyCentered.run();
+
+            // Double-click bottom
+            doubleClick.accept(/* y */ displayHeight - 100);
+            checkLetterboxPositions.run();
+            checkIsBottom.run();
+
+            // Double-click top
+            doubleClick.accept(/* y */ 10);
+            checkLetterboxPositions.run();
+            checkIsVerticallyCentered.run();
+        }
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_IMMERSIVE_APP_REPOSITIONING)
+    @DisableCompatChanges({ActivityInfo.INSETS_DECOUPLED_CONFIGURATION_ENFORCED})
+    public void testRepositionLandscapeImmersiveAppWithDisplayCutout() {
+        final int dw = 2100;
+        final int dh = 2000;
+        final int cutoutHeight = 150;
+        final TestDisplayContent display = new TestDisplayContent.Builder(mAtm, dw, dh)
+                .setCanRotate(false)
+                .setNotch(cutoutHeight)
+                .build();
+        display.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mWm.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(0.5f);
+        mWm.mAppCompatConfiguration.setIsVerticalReachabilityEnabled(true);
+
+        final ActivityRecord activity = setUpApp(display, new ActivityBuilder(mAtm)
+                .setScreenOrientation(SCREEN_ORIENTATION_LANDSCAPE)
+                .setMinAspectRatio(OVERRIDE_MIN_ASPECT_RATIO_LARGE_VALUE));
+
+        doReturn(true).when(activity).isImmersiveMode(any());
+        addWindowToActivity(activity);
+        activity.mRootWindowContainer.performSurfacePlacement();
+
+        final Function<ActivityRecord, Rect> innerBoundsOf =
+                (ActivityRecord a) -> {
+                    final Rect bounds = new Rect();
+                    a.getLetterboxInnerBounds(bounds);
+                    return bounds;
+                };
 
         final Consumer<Integer> doubleClick =
                 (Integer y) -> {
-                    mActivity.mLetterboxUiController.handleVerticalDoubleTap(y);
-                    mActivity.mRootWindowContainer.performSurfacePlacement();
+                    activity.mAppCompatController.getAppCompatReachabilityPolicy()
+                            .handleDoubleTap(dw / 2, y);
+                    activity.mRootWindowContainer.performSurfacePlacement();
                 };
 
-        // Initial state
-        checkIsCentered.run();
+        final Rect bounds = activity.getBounds();
+        assertTrue(bounds.top > cutoutHeight && bounds.bottom < dh);
+        assertEquals(dw, bounds.width());
 
-        // Double-click top
-        doubleClick.accept(/* y */ 10);
-        checkLetterboxPositions.run();
-        checkIsTop.run();
+        // Double click bottom.
+        doubleClick.accept(dh - 10);
+        assertEquals(dh, innerBoundsOf.apply(activity).bottom);
 
-        // Double-click bottom
-        doubleClick.accept(/* y */ 1990);
-        checkLetterboxPositions.run();
-        checkIsCentered.run();
-
-        // Double-click bottom
-        doubleClick.accept(/* y */ 1990);
-        checkLetterboxPositions.run();
-        checkIsBottom.run();
-
-        // Double-click top
-        doubleClick.accept(/* y */ 10);
-        checkLetterboxPositions.run();
-        checkIsCentered.run();
-    }
-
-    @Test
-    public void testApplyStrategyAgainWhenOpaqueIsDestroyed() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2000, 1000);
-        prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        // Launch another opaque activity
-        final ActivityRecord opaqueActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
-                .build();
-        mTask.addChild(opaqueActivity);
-        // Transparent activity strategy not applied
-        assertFalse(opaqueActivity.mLetterboxUiController.hasInheritedLetterboxBehavior());
-
-        // Launch translucent Activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
-        // Transparent strategy applied
-        assertTrue(translucentActivity.mLetterboxUiController.hasInheritedLetterboxBehavior());
-
-        spyOn(translucentActivity.mLetterboxUiController);
-        clearInvocations(translucentActivity.mLetterboxUiController);
-
-        // We destroy the first opaque activity
-        opaqueActivity.setState(DESTROYED, "testing");
-        opaqueActivity.removeImmediately();
-
-        // Check that updateInheritedLetterbox() is invoked again
-        verify(translucentActivity.mLetterboxUiController).updateInheritedLetterbox();
-    }
-
-    @Test
-    public void testResetOpaqueReferenceWhenOpaqueIsDestroyed() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2000, 1000);
-        prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-
-        // Launch translucent Activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
-        // Transparent strategy applied
-        assertTrue(translucentActivity.mLetterboxUiController.hasInheritedLetterboxBehavior());
-        assertNotNull(translucentActivity.mLetterboxUiController.mFirstOpaqueActivityBeneath);
-
-        spyOn(translucentActivity.mLetterboxUiController);
-        clearInvocations(translucentActivity.mLetterboxUiController);
-
-        // We destroy the first opaque activity
-        mActivity.removeImmediately();
-
-        // Check that updateInheritedLetterbox() is invoked again
-        verify(translucentActivity.mLetterboxUiController).updateInheritedLetterbox();
-        assertNull(translucentActivity.mLetterboxUiController.mFirstOpaqueActivityBeneath);
-    }
-
-    @Test
-    public void testNotApplyStrategyAgainWhenOpaqueIsNotDestroyed() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2000, 1000);
-        prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        // Launch another opaque activity
-        final ActivityRecord opaqueActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
-                .build();
-        mTask.addChild(opaqueActivity);
-        // Transparent activity strategy not applied
-        assertFalse(opaqueActivity.mLetterboxUiController.hasInheritedLetterboxBehavior());
-
-        // Launch translucent Activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
-        // Transparent strategy applied
-        assertTrue(translucentActivity.mLetterboxUiController.hasInheritedLetterboxBehavior());
-
-        spyOn(translucentActivity.mLetterboxUiController);
-        clearInvocations(translucentActivity.mLetterboxUiController);
-
-        // Check that updateInheritedLetterbox() is invoked again
-        verify(translucentActivity.mLetterboxUiController, never()).updateInheritedLetterbox();
-    }
-
-    @Test
-    public void testApplyStrategyToTranslucentActivities() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2000, 1000);
-        prepareUnresizable(mActivity, 1.5f /* maxAspect */, SCREEN_ORIENTATION_PORTRAIT);
-        mActivity.info.setMinAspectRatio(1.2f);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        // Translucent Activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_LANDSCAPE)
-                .setMinAspectRatio(1.1f)
-                .setMaxAspectRatio(3f)
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
-        // We check bounds
-        final Rect opaqueBounds = mActivity.getConfiguration().windowConfiguration.getBounds();
-        final Rect translucentRequestedBounds = translucentActivity.getRequestedOverrideBounds();
-        assertEquals(opaqueBounds, translucentRequestedBounds);
-        // We check orientation
-        final int translucentOrientation =
-                translucentActivity.getRequestedConfigurationOrientation();
-        assertEquals(ORIENTATION_PORTRAIT, translucentOrientation);
-        // We check aspect ratios
-        assertEquals(1.2f, translucentActivity.getMinAspectRatio(), 0.00001f);
-        assertEquals(1.5f, translucentActivity.getMaxAspectRatio(), 0.00001f);
-    }
-
-    @Test
-    public void testApplyStrategyToTranslucentActivitiesRetainsWindowConfigurationProperties() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2000, 1000);
-        prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        // Translucent Activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        final Configuration requestedConfig =
-                translucentActivity.getRequestedOverrideConfiguration();
-        final WindowConfiguration translucentWinConf = requestedConfig.windowConfiguration;
-        translucentWinConf.setActivityType(ACTIVITY_TYPE_STANDARD);
-        translucentWinConf.setWindowingMode(WINDOWING_MODE_MULTI_WINDOW);
-        translucentWinConf.setDisplayWindowingMode(WINDOWING_MODE_MULTI_WINDOW);
-        translucentWinConf.setAlwaysOnTop(true);
-        translucentActivity.onRequestedOverrideConfigurationChanged(requestedConfig);
-
-        mTask.addChild(translucentActivity);
-
-        // The original override of WindowConfiguration should keep.
-        assertEquals(ACTIVITY_TYPE_STANDARD, translucentActivity.getActivityType());
-        assertEquals(WINDOWING_MODE_MULTI_WINDOW, translucentWinConf.getWindowingMode());
-        assertEquals(WINDOWING_MODE_MULTI_WINDOW, translucentWinConf.getDisplayWindowingMode());
-        assertTrue(translucentWinConf.isAlwaysOnTop());
-        // Unless display is going to be rotated, it should always inherit from parent.
-        assertEquals(ROTATION_UNDEFINED, translucentWinConf.getDisplayRotation());
-    }
-
-    @Test
-    public void testApplyStrategyToMultipleTranslucentActivities() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2000, 1000);
-        prepareUnresizable(mActivity, 1.5f /* maxAspect */, SCREEN_ORIENTATION_PORTRAIT);
-        mActivity.info.setMinAspectRatio(1.2f);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        // Translucent Activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_LANDSCAPE)
-                .setMinAspectRatio(1.1f)
-                .setMaxAspectRatio(3f)
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
-        // We check bounds
-        final Rect opaqueBounds = mActivity.getConfiguration().windowConfiguration.getBounds();
-        final Rect translucentRequestedBounds = translucentActivity.getRequestedOverrideBounds();
-        assertEquals(opaqueBounds, translucentRequestedBounds);
-        // Launch another translucent activity
-        final ActivityRecord translucentActivity2 = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_LANDSCAPE)
-                .build();
-        doReturn(false).when(translucentActivity2).fillsParent();
-        mTask.addChild(translucentActivity2);
-        // We check bounds
-        final Rect translucent2RequestedBounds = translucentActivity2.getRequestedOverrideBounds();
-        assertEquals(opaqueBounds, translucent2RequestedBounds);
-    }
-
-    @Test
-    public void testNotApplyStrategyToTranslucentActivitiesOverEmbeddedActivities() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2000, 1000);
-        mActivity.info.screenOrientation = SCREEN_ORIENTATION_PORTRAIT;
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        // Mock the activity as embedded without additional TaskFragment layer in the task for
-        // simplicity.
-        doReturn(true).when(mActivity).isEmbedded();
-        // Translucent Activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm).build();
-        doReturn(false).when(translucentActivity).matchParentBounds();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
-        // Check the strategy has not being applied
-        assertFalse(translucentActivity.mLetterboxUiController.hasInheritedLetterboxBehavior());
-    }
-
-    @Test
-    public void testTranslucentActivitiesDontGoInSizeCompatMode() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2800, 1400);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        prepareUnresizable(mActivity, -1f /* maxAspect */, SCREEN_ORIENTATION_PORTRAIT);
-        // Rotate to put activity in size compat mode.
-        rotateDisplay(mActivity.mDisplayContent, ROTATION_90);
-        assertTrue(mActivity.inSizeCompatMode());
-        // Rotate back
-        rotateDisplay(mActivity.mDisplayContent, ROTATION_0);
-        assertFalse(mActivity.inSizeCompatMode());
-        // We launch a transparent activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
-        // It should not be in SCM
-        assertFalse(translucentActivity.inSizeCompatMode());
-        // We rotate again
-        rotateDisplay(translucentActivity.mDisplayContent, ROTATION_90);
-        assertFalse(translucentActivity.inSizeCompatMode());
-    }
-
-    @Test
-    public void testCheckOpaqueIsLetterboxedWhenStrategyIsApplied() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2000, 1000);
-        prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        // Translucent Activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        spyOn(mActivity);
-        mTask.addChild(translucentActivity);
-        verify(mActivity).isFinishing();
-    }
-
-    @Test
-    public void testTranslucentActivitiesWhenUnfolding() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2800, 1400);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(
-                true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setLetterboxHorizontalPositionMultiplier(
-                1.0f /*letterboxVerticalPositionMultiplier*/);
-        prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
-        // We launch a transparent activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
-        assertEquals(translucentActivity.getBounds(), mActivity.getBounds());
-
-        mTask.setWindowingMode(WINDOWING_MODE_FULLSCREEN);
-        spyOn(mActivity);
-
-        // Halffold
-        setFoldablePosture(translucentActivity, true /* isHalfFolded */,
-                false /* isTabletop */);
-        verify(mActivity).recomputeConfiguration();
-        assertEquals(translucentActivity.getBounds(), mActivity.getBounds());
-        clearInvocations(mActivity);
-
-        // Unfold
-        setFoldablePosture(translucentActivity, false /* isHalfFolded */,
-                false /* isTabletop */);
-        verify(mActivity).recomputeConfiguration();
-        assertEquals(translucentActivity.getBounds(), mActivity.getBounds());
-    }
-
-    @Test
-    public void testTranslucentActivity_clearSizeCompatMode_inheritedCompatDisplayInsetsCleared() {
-        mWm.mLetterboxConfiguration.setTranslucentLetterboxingOverrideEnabled(true);
-        setUpDisplaySizeWithApp(2800, 1400);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        prepareUnresizable(mActivity, -1f /* maxAspect */, SCREEN_ORIENTATION_PORTRAIT);
-        // Rotate to put activity in size compat mode.
-        rotateDisplay(mActivity.mDisplayContent, ROTATION_90);
-        assertTrue(mActivity.inSizeCompatMode());
-
-        // We launch a transparent activity
-        final ActivityRecord translucentActivity = new ActivityBuilder(mAtm)
-                .setLaunchedFromUid(mActivity.getUid())
-                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
-                .build();
-        doReturn(false).when(translucentActivity).fillsParent();
-        mTask.addChild(translucentActivity);
-
-        // The transparent activity inherits the compat display insets of the opaque activity
-        // beneath it
-        assertNotNull(translucentActivity.getCompatDisplayInsets());
-
-        // Clearing SCM should also clear the inherited compat display insets
-        translucentActivity.clearSizeCompatMode();
-        assertNull(translucentActivity.getCompatDisplayInsets());
+        // Double click top.
+        doubleClick.accept(10);
+        doubleClick.accept(10);
+        assertEquals(cutoutHeight, innerBoundsOf.apply(activity).top);
     }
 
     @Test
@@ -698,21 +436,24 @@ public class SizeCompatTests extends WindowTestsBase {
     }
 
     @Test
+    @DisableCompatChanges({ActivityInfo.INSETS_DECOUPLED_CONFIGURATION_ENFORCED})
     public void testFixedAspectRatioBoundsWithDecorInSquareDisplay() {
-        final int notchHeight = 100;
-        setUpApp(new TestDisplayContent.Builder(mAtm, 600, 800).setNotch(notchHeight).build());
-
-        final Rect displayBounds = mActivity.mDisplayContent.getWindowConfiguration().getBounds();
         final float aspectRatio = 1.2f;
-        mActivity.info.setMaxAspectRatio(aspectRatio);
-        mActivity.info.setMinAspectRatio(aspectRatio);
-        prepareUnresizable(mActivity, -1f, SCREEN_ORIENTATION_UNSPECIFIED);
-        final Rect appBounds = mActivity.getWindowConfiguration().getAppBounds();
+        final ActivityBuilder activityBuilder = new ActivityBuilder(mAtm)
+                .setScreenOrientation(SCREEN_ORIENTATION_UNSPECIFIED)
+                .setMinAspectRatio(aspectRatio)
+                .setMaxAspectRatio(aspectRatio)
+                .setResizeMode(RESIZE_MODE_UNRESIZEABLE);
+        final int notchHeight = 100;
+        final ActivityRecord activity = setUpApp(new TestDisplayContent.Builder(mAtm, 600, 800)
+                .setNotch(notchHeight).build(), activityBuilder);
+        final Rect displayBounds = activity.mDisplayContent.getWindowConfiguration().getBounds();
+        final Rect appBounds = activity.getWindowConfiguration().getAppBounds();
 
         // The parent configuration doesn't change since the first resolved configuration, so the
         // activity should fit in the parent naturally (size=583x700, appBounds=[9, 100 - 592, 800],
         // horizontal offset = round((600 - 583) / 2) = 9)).
-        assertFitted();
+        assertFitted(activity);
         final int offsetX = (int) ((1f + displayBounds.width() - appBounds.width()) / 2);
         // The bounds must be horizontal centered.
         assertEquals(offsetX, appBounds.left);
@@ -720,30 +461,30 @@ public class SizeCompatTests extends WindowTestsBase {
         // Ensure the app bounds keep the declared aspect ratio.
         assertEquals(appBounds.height(), appBounds.width() * aspectRatio, 0.5f /* delta */);
         // The decor height should be a part of the effective bounds.
-        assertEquals(mActivity.getBounds().height(), appBounds.height() + notchHeight);
+        assertEquals(activity.getBounds().height(), appBounds.height() + notchHeight);
         // Activity max bounds should be sandboxed; activity is letterboxed due to aspect ratio.
-        assertActivityMaxBoundsSandboxed();
+        assertActivityMaxBoundsSandboxed(activity);
         // Activity max bounds ignore notch, since an app can be shown past the notch (although app
         // is currently limited by the notch).
-        assertThat(mActivity.getWindowConfiguration().getMaxBounds().height())
+        assertThat(activity.getWindowConfiguration().getMaxBounds().height())
                 .isEqualTo(displayBounds.height());
 
-        mActivity.setRequestedOrientation(SCREEN_ORIENTATION_LANDSCAPE);
-        assertFitted();
+        activity.setRequestedOrientation(SCREEN_ORIENTATION_LANDSCAPE);
+        assertFitted(activity);
 
         // After the orientation of activity is changed, the display is rotated, the aspect
         // ratio should be the same (bounds=[0, 0 - 800, 583], appBounds=[100, 0 - 800, 583]).
         assertEquals(appBounds.width(), appBounds.height() * aspectRatio, 0.5f /* delta */);
         // Activity max bounds are sandboxed.
-        assertActivityMaxBoundsSandboxed();
+        assertActivityMaxBoundsSandboxed(activity);
 
-        mActivity.setRequestedOrientation(SCREEN_ORIENTATION_PORTRAIT);
-        assertFitted();
+        activity.setRequestedOrientation(SCREEN_ORIENTATION_PORTRAIT);
+        assertFitted(activity);
         // Activity max bounds should be sandboxed; activity is letterboxed due to aspect ratio.
-        assertActivityMaxBoundsSandboxed();
+        assertActivityMaxBoundsSandboxed(activity);
         // Activity max bounds ignore notch, since an app can be shown past the notch (although app
         // is currently limited by the notch).
-        assertThat(mActivity.getWindowConfiguration().getMaxBounds().height())
+        assertThat(activity.getWindowConfiguration().getMaxBounds().height())
                 .isEqualTo(displayBounds.height());
     }
 
@@ -770,7 +511,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Activity is sandboxed; it is in size compat mode since it is not resizable and has a
         // max aspect ratio.
         assertActivityMaxBoundsSandboxed();
-        assertScaled();
+        assertDownScaled();
     }
 
     @Test
@@ -790,7 +531,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // The bounds should be [100, 0 - 1100, 2500].
         assertEquals(origBounds.width(), currentBounds.width());
         assertEquals(origBounds.height(), currentBounds.height());
-        assertScaled();
+        assertDownScaled();
 
         // The scale is 2000/2500=0.8. The horizontal centered offset is (1000-(1000*0.8))/2=100.
         final float scale = (float) display.mBaseDisplayHeight / currentBounds.height();
@@ -830,7 +571,7 @@ public class SizeCompatTests extends WindowTestsBase {
         assertEquals(origBounds.width(), currentBounds.width());
         assertEquals(origBounds.height(), currentBounds.height());
         assertEquals(offsetX, mActivity.getBounds().left);
-        assertScaled();
+        assertDownScaled();
         // Activity is sandboxed due to size compat mode.
         assertActivityMaxBoundsSandboxed();
 
@@ -838,6 +579,30 @@ public class SizeCompatTests extends WindowTestsBase {
         assertTrue(mActivity.hasSizeCompatBounds());
         assertEquals("App window must use size compat bounds for layout in screen space",
                 mActivity.getBounds(), appWindow.getBounds());
+    }
+
+    @Test
+    public void testLetterboxDisplayedForWindowBelow() {
+        setUpDisplaySizeWithApp(1000, 2500);
+        prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
+        // Prepare two windows, one base app window below the splash screen
+        final WindowState appWindow = addWindowToActivity(mActivity);
+        final WindowState startWindow = addWindowToActivity(mActivity, TYPE_APPLICATION_STARTING);
+        spyOn(appWindow);
+        // Base app window is letterboxed for display cutout and splash screen is fullscreen
+        doReturn(true).when(appWindow).isLetterboxedForDisplayCutout();
+
+        mActivity.mRootWindowContainer.performSurfacePlacement();
+
+        assertEquals(2, mActivity.mChildren.size());
+        // Splash screen is still the activity's main window
+        assertEquals(startWindow, mActivity.findMainWindow());
+        assertFalse(startWindow.isLetterboxedForDisplayCutout());
+
+        final Rect letterboxInnerBounds = new Rect();
+        mActivity.getLetterboxInnerBounds(letterboxInnerBounds);
+        // Letterboxed is still displayed for app window below splash screen
+        assertFalse(letterboxInnerBounds.isEmpty());
     }
 
     @Test
@@ -861,7 +626,7 @@ public class SizeCompatTests extends WindowTestsBase {
         assertFalse(mActivity.mDisplayContent.shouldImeAttachedToApp());
 
         // Recompute the natural configuration without resolving size compat configuration.
-        mActivity.clearSizeCompatMode();
+        mActivity.mAppCompatController.getAppCompatSizeCompatModePolicy().clearSizeCompatMode();
         mActivity.onConfigurationChanged(mTask.getConfiguration());
         // It should keep non-attachable because the resolved bounds will be computed according to
         // the aspect ratio that won't match its parent bounds.
@@ -880,19 +645,26 @@ public class SizeCompatTests extends WindowTestsBase {
 
         assertEquals(window, mActivity.findMainWindow());
 
-        spyOn(mActivity.mLetterboxUiController);
-        doReturn(true).when(mActivity.mLetterboxUiController)
-                .isSurfaceReadyToShow(any());
-        doReturn(true).when(mActivity.mLetterboxUiController)
-                .isSurfaceVisible(any());
+        doReturn(true).when(mActivity).isVisibleRequested();
 
-        assertTrue(mActivity.mLetterboxUiController.shouldShowLetterboxUi(
-                mActivity.findMainWindow()));
+        assertTrue(mActivity.mAppCompatController.getAppCompatLetterboxPolicy()
+                .shouldShowLetterboxUi(mActivity.findMainWindow()));
 
         window.mAttrs.flags |= FLAG_SHOW_WALLPAPER;
 
-        assertFalse(mActivity.mLetterboxUiController.shouldShowLetterboxUi(
-                mActivity.findMainWindow()));
+        assertFalse(mActivity.mAppCompatController.getAppCompatLetterboxPolicy()
+                .shouldShowLetterboxUi(mActivity.findMainWindow()));
+    }
+
+    @Test
+    public void testIsLetterboxed_activityFromBubble_returnsFalse() {
+        setUpDisplaySizeWithApp(1000, 2500);
+        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        spyOn(mActivity);
+        doReturn(true).when(mActivity).getLaunchedFromBubble();
+        prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
+
+        assertFalse(mActivity.areBoundsLetterboxed());
     }
 
     @Test
@@ -919,6 +691,7 @@ public class SizeCompatTests extends WindowTestsBase {
     @Test
     public void testMoveToDifferentOrientationDisplay() {
         setUpDisplaySizeWithApp(1000, 2500);
+        mActivity.mResolveConfigHint.mUseOverrideInsetsForConfig = true;
         prepareUnresizable(mActivity, -1.f /* maxAspect */, SCREEN_ORIENTATION_PORTRAIT);
         assertFitted();
 
@@ -935,7 +708,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // The configuration bounds [820, 0 - 1820, 2500] should keep the same.
         assertEquals(originalBounds.width(), currentBounds.width());
         assertEquals(originalBounds.height(), currentBounds.height());
-        assertScaled();
+        assertDownScaled();
         // Activity max bounds are sandboxed due to size compat mode on the new display.
         assertActivityMaxBoundsSandboxed();
 
@@ -946,8 +719,8 @@ public class SizeCompatTests extends WindowTestsBase {
                         / originalBounds.width()));
 
         // Recompute the natural configuration in the new display.
-        mActivity.clearSizeCompatMode();
-        mActivity.ensureActivityConfiguration(0 /* globalChanges */, false /* preserveWindow */);
+        mActivity.mAppCompatController.getAppCompatSizeCompatModePolicy().clearSizeCompatMode();
+        mActivity.ensureActivityConfiguration();
         // Because the display cannot rotate, the portrait activity will fit the short side of
         // display with keeping portrait bounds [200, 0 - 700, 1000] in center.
         assertEquals(newDisplayBounds.height(), currentBounds.height());
@@ -970,6 +743,7 @@ public class SizeCompatTests extends WindowTestsBase {
         final int width = 1000;
         setUpApp(new TestDisplayContent.Builder(mAtm, width, 2500)
                 .setNotch(notchHeight).build());
+        mActivity.mResolveConfigHint.mUseOverrideInsetsForConfig = true;
         // Bounds=[0, 0 - 1000, 1400], AppBounds=[0, 60 - 1000, 1460].
         final float maxAspect = 1.4f;
         prepareUnresizable(mActivity, 1.4f /* maxAspect */, SCREEN_ORIENTATION_PORTRAIT);
@@ -993,7 +767,7 @@ public class SizeCompatTests extends WindowTestsBase {
         assertEquals(origAppBounds.width(), appBounds.width());
         assertEquals(origAppBounds.height(), appBounds.height());
         // The activity is 1000x1400 and the display is 2500x1000.
-        assertScaled();
+        assertDownScaled();
         final float scale = mActivity.getCompatScale();
         // The position in configuration should be in app coordinates.
         final Rect screenBounds = mActivity.getBounds();
@@ -1020,8 +794,17 @@ public class SizeCompatTests extends WindowTestsBase {
         // Activity is sandboxed due to fixed aspect ratio.
         assertActivityMaxBoundsSandboxed();
 
+        // Prepare the states for verifying relaunching after changing orientation.
+        mActivity.finishRelaunching();
+        mActivity.setState(RESUMED, "testFixedAspectRatioOrientationChangeOrientation");
+        mActivity.setLastReportedConfiguration(mAtm.getGlobalConfiguration(),
+                mActivity.getConfiguration());
+
         // Change the fixed orientation.
         mActivity.setRequestedOrientation(SCREEN_ORIENTATION_LANDSCAPE);
+        assertTrue(mActivity.isRelaunching());
+        assertTrue(mActivity.mAppCompatController.getAppCompatOrientationOverrides()
+                .getIsRelaunchingAfterRequestedOrientationChanged());
 
         assertFitted();
         assertEquals(originalBounds.width(), mActivity.getBounds().height());
@@ -1081,7 +864,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Size compatibility mode is able to handle orientation change so the process shouldn't be
         // restarted and the override configuration won't be cleared.
         verify(mActivity, never()).restartProcessIfVisible();
-        assertScaled();
+        assertDownScaled();
         // Activity max bounds are sandboxed due to size compat mode, even if is not visible.
         assertActivityMaxBoundsSandboxed();
 
@@ -1118,7 +901,7 @@ public class SizeCompatTests extends WindowTestsBase {
         verify(mTask).onSizeCompatActivityChanged();
         ActivityManager.RunningTaskInfo taskInfo = mTask.getTaskInfo();
 
-        assertTrue(taskInfo.appCompatTaskInfo.topActivityInSizeCompat);
+        assertTrue(taskInfo.appCompatTaskInfo.isTopActivityInSizeCompat());
 
         // Make the activity resizable again by restarting it
         clearInvocations(mTask);
@@ -1133,7 +916,7 @@ public class SizeCompatTests extends WindowTestsBase {
         verify(mTask).onSizeCompatActivityChanged();
         taskInfo = mTask.getTaskInfo();
 
-        assertFalse(taskInfo.appCompatTaskInfo.topActivityInSizeCompat);
+        assertFalse(taskInfo.appCompatTaskInfo.isTopActivityInSizeCompat());
     }
 
     @Test
@@ -1151,7 +934,7 @@ public class SizeCompatTests extends WindowTestsBase {
         verify(mTask).onSizeCompatActivityChanged();
         ActivityManager.RunningTaskInfo taskInfo = mTask.getTaskInfo();
 
-        assertTrue(taskInfo.appCompatTaskInfo.topActivityInSizeCompat);
+        assertTrue(taskInfo.appCompatTaskInfo.isTopActivityInSizeCompat());
 
         // Create another Task to hold another size compat activity.
         clearInvocations(mTask);
@@ -1171,7 +954,7 @@ public class SizeCompatTests extends WindowTestsBase {
         verify(mTask, never()).onSizeCompatActivityChanged();
         taskInfo = secondTask.getTaskInfo();
 
-        assertTrue(taskInfo.appCompatTaskInfo.topActivityInSizeCompat);
+        assertTrue(taskInfo.appCompatTaskInfo.isTopActivityInSizeCompat());
     }
 
     @Test
@@ -1187,12 +970,12 @@ public class SizeCompatTests extends WindowTestsBase {
                 .setResizeMode(ActivityInfo.RESIZE_MODE_UNRESIZEABLE)
                 .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
                 .build();
-        assertTrue(activity.shouldCreateCompatDisplayInsets());
+        assertTrue(activity.shouldCreateAppCompatDisplayInsets());
 
         // The non-resizable activity should not be size compat because it is on a resizable task
         // in multi-window mode.
         mTask.setWindowingMode(WindowConfiguration.WINDOWING_MODE_FREEFORM);
-        assertFalse(activity.shouldCreateCompatDisplayInsets());
+        assertFalse(activity.shouldCreateAppCompatDisplayInsets());
         // Activity should not be sandboxed.
         assertMaxBoundsInheritDisplayAreaBounds();
 
@@ -1201,7 +984,7 @@ public class SizeCompatTests extends WindowTestsBase {
         mTask.mDisplayContent.getDefaultTaskDisplayArea()
                 .setWindowingMode(WindowConfiguration.WINDOWING_MODE_FREEFORM);
         mTask.setWindowingMode(WindowConfiguration.WINDOWING_MODE_FULLSCREEN);
-        assertFalse(activity.shouldCreateCompatDisplayInsets());
+        assertFalse(activity.shouldCreateAppCompatDisplayInsets());
         // Activity should not be sandboxed.
         assertMaxBoundsInheritDisplayAreaBounds();
     }
@@ -1216,7 +999,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Create an activity on the same task.
         final ActivityRecord activity = buildActivityRecord(/* supportsSizeChanges= */true,
                 RESIZE_MODE_UNRESIZEABLE, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        assertFalse(activity.shouldCreateCompatDisplayInsets());
+        assertFalse(activity.shouldCreateAppCompatDisplayInsets());
     }
 
     @Test
@@ -1229,7 +1012,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Create an activity on the same task.
         final ActivityRecord activity = buildActivityRecord(/* supportsSizeChanges= */false,
                 RESIZE_MODE_UNRESIZEABLE, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        assertTrue(activity.shouldCreateCompatDisplayInsets());
+        assertTrue(activity.shouldCreateAppCompatDisplayInsets());
     }
 
     @Test
@@ -1242,7 +1025,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Create an activity on the same task.
         final ActivityRecord activity = buildActivityRecord(/* supportsSizeChanges= */false,
                 RESIZE_MODE_RESIZEABLE, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        assertFalse(activity.shouldCreateCompatDisplayInsets());
+        assertFalse(activity.shouldCreateAppCompatDisplayInsets());
     }
 
     @Test
@@ -1256,7 +1039,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Create an activity on the same task.
         final ActivityRecord activity = buildActivityRecord(/* supportsSizeChanges= */false,
                 RESIZE_MODE_UNRESIZEABLE, ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-        assertFalse(activity.shouldCreateCompatDisplayInsets());
+        assertFalse(activity.shouldCreateAppCompatDisplayInsets());
     }
 
     @Test
@@ -1270,7 +1053,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Create an activity on the same task.
         final ActivityRecord activity = buildActivityRecord(/* supportsSizeChanges= */false,
                 RESIZE_MODE_UNRESIZEABLE, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        assertFalse(activity.shouldCreateCompatDisplayInsets());
+        assertFalse(activity.shouldCreateAppCompatDisplayInsets());
     }
 
     @Test
@@ -1284,7 +1067,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Create an activity on the same task.
         final ActivityRecord activity = buildActivityRecord(/* supportsSizeChanges= */true,
                 RESIZE_MODE_RESIZEABLE, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        assertTrue(activity.shouldCreateCompatDisplayInsets());
+        assertTrue(activity.shouldCreateAppCompatDisplayInsets());
     }
 
     @Test
@@ -1298,7 +1081,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Create an activity on the same task.
         final ActivityRecord activity = buildActivityRecord(/* supportsSizeChanges= */true,
                 RESIZE_MODE_RESIZEABLE, ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-        assertTrue(activity.shouldCreateCompatDisplayInsets());
+        assertTrue(activity.shouldCreateAppCompatDisplayInsets());
     }
 
     @Test
@@ -1313,13 +1096,34 @@ public class SizeCompatTests extends WindowTestsBase {
                 RESIZE_MODE_UNRESIZEABLE, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
 
         // Simulate the user selecting the fullscreen user aspect ratio override
-        spyOn(activity.mWmService.mLetterboxConfiguration);
-        spyOn(activity.mLetterboxUiController);
-        doReturn(true).when(activity.mWmService.mLetterboxConfiguration)
+        spyOn(activity.mWmService.mAppCompatConfiguration);
+        spyOn(activity.mAppCompatController.getAppCompatAspectRatioOverrides());
+        doReturn(true).when(activity.mWmService.mAppCompatConfiguration)
                 .isUserAppAspectRatioFullscreenEnabled();
-        doReturn(USER_MIN_ASPECT_RATIO_FULLSCREEN).when(activity.mLetterboxUiController)
+        doReturn(USER_MIN_ASPECT_RATIO_FULLSCREEN)
+                .when(activity.mAppCompatController.getAppCompatAspectRatioOverrides())
                 .getUserMinAspectRatioOverrideCode();
-        assertFalse(activity.shouldCreateCompatDisplayInsets());
+        assertFalse(activity.shouldCreateAppCompatDisplayInsets());
+    }
+
+    @Test
+    @EnableCompatChanges({ActivityInfo.OVERRIDE_ANY_ORIENTATION_TO_USER})
+    public void testShouldNotCreateCompatDisplays_systemFullscreenOverride() {
+        setUpDisplaySizeWithApp(1000, 2500);
+
+        // Make the task root resizable.
+        mActivity.info.resizeMode = RESIZE_MODE_RESIZEABLE;
+
+        // Create an activity on the same task.
+        final ActivityRecord activity = buildActivityRecord(/* supportsSizeChanges= */false,
+                RESIZE_MODE_UNRESIZEABLE, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+
+        // Simulate the user selecting the fullscreen user aspect ratio override
+        spyOn(activity.mAppCompatController.getAppCompatAspectRatioOverrides());
+        doReturn(true).when(
+                activity.mAppCompatController.getAppCompatAspectRatioOverrides())
+                    .isSystemOverrideToFullscreenEnabled();
+        assertFalse(activity.shouldCreateAppCompatDisplayInsets());
     }
 
     @Test
@@ -1337,7 +1141,8 @@ public class SizeCompatTests extends WindowTestsBase {
         prepareUnresizable(activity, /* maxAspect=*/ 1.5f, SCREEN_ORIENTATION_LANDSCAPE);
 
         // Activity max bounds should not be sandboxed, even though it is letterboxed.
-        assertTrue(activity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(activity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertThat(activity.getConfiguration().windowConfiguration.getMaxBounds())
                 .isEqualTo(activity.getDisplayArea().getBounds());
     }
@@ -1378,7 +1183,8 @@ public class SizeCompatTests extends WindowTestsBase {
         prepareUnresizable(activity, /* maxAspect=*/ 1.5f, SCREEN_ORIENTATION_LANDSCAPE);
 
         // Activity max bounds should not be sandboxed, even though it is letterboxed.
-        assertTrue(activity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(activity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertThat(activity.getConfiguration().windowConfiguration.getMaxBounds())
                 .isEqualTo(activity.getDisplayArea().getBounds());
     }
@@ -1401,7 +1207,8 @@ public class SizeCompatTests extends WindowTestsBase {
         prepareUnresizable(activity, /* maxAspect=*/ 1.5f, SCREEN_ORIENTATION_LANDSCAPE);
 
         // Activity max bounds should not be sandboxed, even though it is letterboxed.
-        assertTrue(activity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(activity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertThat(activity.getConfiguration().windowConfiguration.getMaxBounds())
                 .isEqualTo(activity.getDisplayArea().getBounds());
     }
@@ -1529,18 +1336,43 @@ public class SizeCompatTests extends WindowTestsBase {
 
     @Test
     @EnableCompatChanges({ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO,
+            ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_SMALL})
+    public void testOverrideMinAspectRatioSmall_overridden() {
+        final int dh = 1200;
+        final int dw = 1000;
+        final ActivityRecord activity = setUpDisplaySizeWithApp(dw, dh, new ActivityBuilder(mAtm)
+                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT));
+
+        final Rect bounds = activity.getBounds();
+        assertEquals(dh, bounds.height());
+        assertEquals(dh / ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_SMALL_VALUE,
+                bounds.width(), 0.5f);
+    }
+
+    @Test
+    @EnableCompatChanges({ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO,
+            ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_SMALL})
+    public void testOverrideMinAspectRatioSmall_notOverridden() {
+        final int dh = 1200;
+        final int dw = 1000;
+        final ActivityRecord activity = setUpDisplaySizeWithApp(dw, dh, new ActivityBuilder(mAtm)
+                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
+                .setMinAspectRatio(OVERRIDE_MIN_ASPECT_RATIO_LARGE_VALUE));
+
+        // Activity's requested aspect ratio is larger than OVERRIDE_MIN_ASPECT_RATIO_SMALL,
+        // so OVERRIDE_MIN_ASPECT_RATIO_SMALL is ignored.
+        final Rect bounds = activity.getBounds();
+        assertEquals(dh, bounds.height());
+        assertEquals(dh / OVERRIDE_MIN_ASPECT_RATIO_LARGE_VALUE,
+                bounds.width(), 0.5f);
+    }
+
+    @Test
+    @EnableCompatChanges({ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO,
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_MEDIUM})
     public void testOverrideMinAspectRatioMedium() {
-        setUpDisplaySizeWithApp(1000, 1200);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(1000, 1200,
+                new ActivityBuilder(mAtm).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT));
 
         // The per-package override forces the activity into a 3:2 aspect ratio
         assertEquals(1200, activity.getBounds().height());
@@ -1551,20 +1383,14 @@ public class SizeCompatTests extends WindowTestsBase {
     @Test
     @EnableCompatChanges({ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO,
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_MEDIUM})
+    @DisableCompatChanges({ActivityInfo.INSETS_DECOUPLED_CONFIGURATION_ENFORCED})
     public void testOverrideMinAspectRatioLowerThanManifest() {
-        final DisplayContent display = new TestDisplayContent.Builder(mAtm, 1400, 1800)
-                .setNotch(200).setSystemDecorations(true).build();
-        mTask = new TaskBuilder(mSupervisor).setDisplay(display).build();
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setMinAspectRatio(2f)
-                .setUid(android.os.Process.myUid())
-                .build();
+        final int dh = 1800;
+        final int notchHeight = 200;
+        final DisplayContent display = new TestDisplayContent.Builder(mAtm, 1400, dh)
+                .setNotch(notchHeight).setSystemDecorations(true).build();
+        final ActivityRecord activity = setUpApp(display, new ActivityBuilder(mAtm)
+                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT).setMinAspectRatio(2f));
 
         // The per-package override should have no effect, because the manifest aspect ratio is
         // larger (2:1)
@@ -1572,7 +1398,7 @@ public class SizeCompatTests extends WindowTestsBase {
         assertEquals("App bounds must have min aspect ratio", 2f,
                 (float) appBounds.height() / appBounds.width(), 0.0001f /* delta */);
         assertEquals("Long side must fit task",
-                mTask.getWindowConfiguration().getAppBounds().height(), appBounds.height());
+                dh - notchHeight, appBounds.height());
         assertEquals("Bounds can include insets", mTask.getBounds().height(),
                 activity.getBounds().height());
     }
@@ -1581,17 +1407,9 @@ public class SizeCompatTests extends WindowTestsBase {
     @EnableCompatChanges({ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO,
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_LARGE})
     public void testOverrideMinAspectRatioLargerThanManifest() {
-        setUpDisplaySizeWithApp(1400, 1600);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setMinAspectRatio(1.1f)
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(1400, 1600,
+                new ActivityBuilder(mAtm).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
+                        .setMinAspectRatio(1.1f));
 
         // The per-package override should have no effect, because the manifest aspect ratio is
         // larger (2:1)
@@ -1604,16 +1422,8 @@ public class SizeCompatTests extends WindowTestsBase {
     @EnableCompatChanges({ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO,
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_LARGE})
     public void testOverrideMinAspectRatioLarge() {
-        setUpDisplaySizeWithApp(1500, 1600);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(1500, 1600,
+                new ActivityBuilder(mAtm).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT));
 
         // The per-package override forces the activity into a 16:9 aspect ratio
         assertEquals(1600, activity.getBounds().height());
@@ -1627,17 +1437,8 @@ public class SizeCompatTests extends WindowTestsBase {
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_LARGE})
     public void testOverrideMinAspectRatio_Both() {
         // If multiple override aspect ratios are set, we should use the largest one
-
-        setUpDisplaySizeWithApp(1400, 1600);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(1400, 1600,
+                new ActivityBuilder(mAtm).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT));
 
         // The per-package override forces the activity into a 16:9 aspect ratio
         assertEquals(1600, activity.getBounds().height());
@@ -1652,16 +1453,7 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testOverrideMinAspectRatioScreenOrientationNotSetThenChangedToPortrait() {
         // In this test, the activity's orientation isn't fixed to portrait, therefore the override
         // isn't applied.
-
-        setUpDisplaySizeWithApp(1000, 1200);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(1000, 1200);
 
         // The per-package override should have no effect
         assertEquals(1200, activity.getBounds().height());
@@ -1669,7 +1461,7 @@ public class SizeCompatTests extends WindowTestsBase {
 
         // After changing the orientation to portrait the override should be applied.
         activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        activity.clearSizeCompatMode();
+        activity.mAppCompatController.getAppCompatSizeCompatModePolicy().clearSizeCompatMode();
 
         // The per-package override forces the activity into a 3:2 aspect ratio
         assertEquals(1200, activity.getBounds().height());
@@ -1684,17 +1476,8 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testOverrideMinAspectRatioScreenOrientationLandscapeThenChangedToPortrait() {
         // In this test, the activity's orientation isn't fixed to portrait, therefore the override
         // isn't applied.
-
-        setUpDisplaySizeWithApp(1000, 1200);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(1000, 1200,
+                new ActivityBuilder(mAtm).setScreenOrientation(SCREEN_ORIENTATION_LANDSCAPE));
 
         // The per-package override should have no effect
         assertEquals(1200, activity.getBounds().height());
@@ -1702,7 +1485,7 @@ public class SizeCompatTests extends WindowTestsBase {
 
         // After changing the orientation to portrait the override should be applied.
         activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
-        activity.clearSizeCompatMode();
+        activity.mAppCompatController.getAppCompatSizeCompatModePolicy().clearSizeCompatMode();
 
         // The per-package override forces the activity into a 3:2 aspect ratio
         assertEquals(1200, activity.getBounds().height());
@@ -1715,16 +1498,8 @@ public class SizeCompatTests extends WindowTestsBase {
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_PORTRAIT_ONLY,
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_MEDIUM})
     public void testOverrideMinAspectRatioScreenOrientationPortraitThenChangedToUnspecified() {
-        setUpDisplaySizeWithApp(1000, 1200);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(1000, 1200,
+                new ActivityBuilder(mAtm).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT));
 
         // The per-package override forces the activity into a 3:2 aspect ratio
         assertEquals(1200, activity.getBounds().height());
@@ -1733,7 +1508,7 @@ public class SizeCompatTests extends WindowTestsBase {
 
         // After changing the orientation to landscape the override shouldn't be applied.
         activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
-        activity.clearSizeCompatMode();
+        activity.mAppCompatController.getAppCompatSizeCompatModePolicy().clearSizeCompatMode();
 
         // The per-package override should have no effect
         assertEquals(1200, activity.getBounds().height());
@@ -1745,15 +1520,7 @@ public class SizeCompatTests extends WindowTestsBase {
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_MEDIUM})
     @DisableCompatChanges({ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_PORTRAIT_ONLY})
     public void testOverrideMinAspectRatioPortraitOnlyDisabledScreenOrientationNotSet() {
-        setUpDisplaySizeWithApp(1000, 1200);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(1000, 1200);
 
         // The per-package override forces the activity into a 3:2 aspect ratio
         assertEquals(1200, activity.getBounds().height());
@@ -1768,17 +1535,8 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testOverrideMinAspectRatioPortraitOnlyDisabledScreenOrientationLandscape() {
         // In this test, the activity's orientation isn't fixed to portrait, therefore the override
         // isn't applied.
-
-        setUpDisplaySizeWithApp(1000, 1200);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(1000, 1200,
+                new ActivityBuilder(mAtm).setScreenOrientation(SCREEN_ORIENTATION_LANDSCAPE));
 
         // The per-package override forces the activity into a 3:2 aspect ratio
         assertEquals(1000 / ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_MEDIUM_VALUE,
@@ -1792,16 +1550,8 @@ public class SizeCompatTests extends WindowTestsBase {
         // In this test, only OVERRIDE_MIN_ASPECT_RATIO_1_5 is set, which has no effect without
         // OVERRIDE_MIN_ASPECT_RATIO being also set.
 
-        setUpDisplaySizeWithApp(1000, 1200);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(1000, 1200,
+                new ActivityBuilder(mAtm).setScreenOrientation(SCREEN_ORIENTATION_LANDSCAPE));
 
         // The per-package override should have no effect
         assertEquals(1200, activity.getBounds().height());
@@ -1812,22 +1562,14 @@ public class SizeCompatTests extends WindowTestsBase {
     @EnableCompatChanges({ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO,
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_LARGE})
     public void testOverrideMinAspectRatioLargeForResizableAppInSplitScreen() {
-        setUpDisplaySizeWithApp(/* dw= */ 1000, /* dh= */ 2800);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setScreenOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(/* dw= */ 1000, /* dh= */ 2800,
+                new ActivityBuilder(mAtm).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT));
 
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, activity.getDisplayContent());
 
         // Move activity to split screen which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, 1000, 1400);
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, activity.getWindowingMode());
@@ -1836,6 +1578,117 @@ public class SizeCompatTests extends WindowTestsBase {
         assertEquals(1400, activity.getBounds().height());
         assertEquals(1400 / ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_LARGE_VALUE,
                 activity.getBounds().width(), 0.5);
+    }
+
+
+    /**
+     * Test that a freeform unresizeable activity can be down-scaled to fill its smaller parent
+     * bounds.
+     */
+    @Test
+    public void testCompatScaling_freeformUnresizeableApp_largerThanParent_downScaled() {
+        final int dw = 600;
+        final int dh = 800;
+        final DisplayContent display = new TestDisplayContent.Builder(mAtm, dw, dh)
+                .setWindowingMode(WINDOWING_MODE_FREEFORM)
+                .build();
+        setUpApp(display);
+        prepareUnresizable(mActivity, /* maxAspect */ 0f, SCREEN_ORIENTATION_PORTRAIT);
+        mTask.getWindowConfiguration().setWindowingMode(WINDOWING_MODE_FREEFORM);
+        assertFalse(mActivity.inSizeCompatMode());
+
+        // Resize app to make original app bounds larger than parent bounds.
+        mTask.getWindowConfiguration().setAppBounds(
+                new Rect(0, 0, dw - 300, dh - 400));
+        mActivity.onConfigurationChanged(mTask.getConfiguration());
+        // App should enter size compat mode and be down-scaled to fill new parent bounds.
+        assertDownScaled();
+    }
+
+    /**
+     * Test that when desktop mode is enabled, a freeform unresizeable activity can be up-scaled to
+     * fill its larger parent bounds.
+     */
+    @Test
+    @EnableFlags(Flags.FLAG_ENABLE_DESKTOP_WINDOWING_MODE)
+    public void testCompatScaling_freeformUnresizeableApp_smallerThanParent_upScaled() {
+        doReturn(true).when(() ->
+                DesktopModeHelper.canEnterDesktopMode(any()));
+        final int dw = 600;
+        final int dh = 800;
+        final DisplayContent display = new TestDisplayContent.Builder(mAtm, dw, dh)
+                .setWindowingMode(WINDOWING_MODE_FREEFORM)
+                .build();
+        setUpApp(display);
+        prepareUnresizable(mActivity, /* maxAspect */ 0f, SCREEN_ORIENTATION_PORTRAIT);
+        mTask.getWindowConfiguration().setWindowingMode(WINDOWING_MODE_FREEFORM);
+        assertFalse(mActivity.inSizeCompatMode());
+
+        // Resize app to make original app bounds smaller than parent bounds.
+        mTask.getWindowConfiguration().setAppBounds(
+                new Rect(0, 0, dw + 300, dh + 400));
+        mActivity.onConfigurationChanged(mTask.getConfiguration());
+        // App should enter size compat mode and be up-scaled to fill parent bounds.
+        assertUpScaled();
+    }
+
+    /**
+     * Test that when desktop mode is disabled, a freeform unresizeable activity cannot be up-scaled
+     * despite its larger parent bounds.
+     */
+    @Test
+    @DisableFlags(Flags.FLAG_ENABLE_DESKTOP_WINDOWING_MODE)
+    public void testSizeCompatScaling_freeformUnresizeableApp_smallerThanParent_notScaled() {
+        final int dw = 600;
+        final int dh = 800;
+        final DisplayContent display = new TestDisplayContent.Builder(mAtm, dw, dh)
+                .setWindowingMode(WINDOWING_MODE_FREEFORM)
+                .build();
+        setUpApp(display);
+        prepareUnresizable(mActivity, /* maxAspect */ 0f, SCREEN_ORIENTATION_PORTRAIT);
+        mTask.getWindowConfiguration().setWindowingMode(WINDOWING_MODE_FREEFORM);
+        assertFalse(mActivity.inSizeCompatMode());
+        final Rect originalAppBounds = mActivity.getBounds();
+
+        // Resize app to make original app bounds smaller than parent bounds.
+        mTask.getWindowConfiguration().setAppBounds(
+                new Rect(0, 0, dw + 300, dh + 400));
+        mActivity.onConfigurationChanged(mTask.getConfiguration());
+        // App should enter size compat mode but remain its original size.
+        assertTrue(mActivity.inSizeCompatMode());
+        assertEquals(originalAppBounds, mActivity.getBounds());
+    }
+
+    /**
+     * Test that when desktop mode is enabled, a freeform unresizeable activity is not up-scaled
+     * when exiting freeform despite its larger parent bounds.
+     */
+    @Test
+    @EnableFlags(Flags.FLAG_ENABLE_DESKTOP_WINDOWING_MODE)
+    public void testCompatScaling_freeformUnresizeableApp_exitFreeform_notScaled() {
+        doReturn(true).when(() ->
+                DesktopModeHelper.canEnterDesktopMode(any()));
+        final int dw = 600;
+        final int dh = 800;
+        final DisplayContent display = new TestDisplayContent.Builder(mAtm, dw, dh)
+                .setWindowingMode(WINDOWING_MODE_FREEFORM)
+                .build();
+        setUpApp(display);
+        prepareUnresizable(mActivity, /* maxAspect */ 0f, SCREEN_ORIENTATION_PORTRAIT);
+        mTask.getWindowConfiguration().setWindowingMode(WINDOWING_MODE_FREEFORM);
+        final Rect originalAppBounds = mActivity.getBounds();
+
+        assertFalse(mActivity.inSizeCompatMode());
+
+        // Resize app to make original app bounds smaller than parent bounds.
+        mTask.getWindowConfiguration().setAppBounds(
+                new Rect(0, 0, dw + 300, dh + 400));
+        // Change windowing mode from freeform to fullscreen
+        mTask.getWindowConfiguration().setWindowingMode(WINDOWING_MODE_FULLSCREEN);
+        mActivity.onConfigurationChanged(mTask.getConfiguration());
+        // App should enter size compat mode but remain its original size.
+        assertTrue(mActivity.inSizeCompatMode());
+        assertEquals(originalAppBounds, mActivity.getBounds());
     }
 
     @Test
@@ -1856,7 +1709,8 @@ public class SizeCompatTests extends WindowTestsBase {
         addWindowToActivity(mActivity);
 
         // App should launch in fullscreen.
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
 
         // Activity inherits max bounds from TaskDisplayArea.
@@ -1870,13 +1724,13 @@ public class SizeCompatTests extends WindowTestsBase {
         assertTrue(rotatedDisplayBounds.width() < rotatedDisplayBounds.height());
 
         // App should be in size compat.
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
-        assertScaled();
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
+        assertDownScaled();
         assertThat(mActivity.inSizeCompatMode()).isTrue();
         assertActivityMaxBoundsSandboxed();
 
-
-	final int scale = dh / dw;
+        final int scale = dh / dw;
 
         // App bounds should be dh / scale x dw / scale
         assertEquals(dw, rotatedDisplayBounds.width());
@@ -1888,7 +1742,8 @@ public class SizeCompatTests extends WindowTestsBase {
         // Compute the frames of the window and invoke {@link ActivityRecord#layoutLetterbox}.
         mActivity.mRootWindowContainer.performSurfacePlacement();
 
-        LetterboxDetails letterboxDetails = mActivity.mLetterboxUiController.getLetterboxDetails();
+        LetterboxDetails letterboxDetails = mActivity.mAppCompatController
+                .getAppCompatLetterboxPolicy().getLetterboxDetails();
 
         assertEquals(dh / scale, letterboxDetails.getLetterboxInnerBounds().width());
         assertEquals(dw / scale, letterboxDetails.getLetterboxInnerBounds().height());
@@ -1903,6 +1758,7 @@ public class SizeCompatTests extends WindowTestsBase {
         final int dh = 2500;
         final int notchHeight = 200;
         setUpApp(new TestDisplayContent.Builder(mAtm, dw, dh).setNotch(notchHeight).build());
+        mActivity.mResolveConfigHint.mUseOverrideInsetsForConfig = true;
         // The test assumes the notch will be at left side when the orientation is landscape.
         if (mContext.getResources().getBoolean(
                 com.android.internal.R.bool.config_reverseDefaultRotation)) {
@@ -1982,7 +1838,8 @@ public class SizeCompatTests extends WindowTestsBase {
         assertTrue(displayBounds.width() > displayBounds.height());
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
         assertActivityMaxBoundsSandboxed();
 
@@ -2000,7 +1857,7 @@ public class SizeCompatTests extends WindowTestsBase {
 
         // Portrait fixed app with min aspect ratio higher that aspect ratio override for fixed
         // orientation letterbox.
-        mActivity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.1f);
+        mActivity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.1f);
         mActivity.info.setMinAspectRatio(3);
         prepareUnresizable(mActivity, /* maxAspect= */ 0, SCREEN_ORIENTATION_PORTRAIT);
 
@@ -2013,7 +1870,8 @@ public class SizeCompatTests extends WindowTestsBase {
         assertTrue(displayBounds.width() > displayBounds.height());
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
 
         // Activity bounds should respect minimum aspect ratio for activity.
@@ -2031,7 +1889,7 @@ public class SizeCompatTests extends WindowTestsBase {
 
         // Portrait fixed app with max aspect ratio lower that aspect ratio override for fixed
         // orientation letterbox.
-        mActivity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(3);
+        mActivity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(3);
         prepareUnresizable(mActivity, /* maxAspect= */ 2, SCREEN_ORIENTATION_PORTRAIT);
 
         final Rect displayBounds = new Rect(mActivity.mDisplayContent.getBounds());
@@ -2043,7 +1901,8 @@ public class SizeCompatTests extends WindowTestsBase {
         assertTrue(displayBounds.width() > displayBounds.height());
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
 
         // Activity bounds should respect maximum aspect ratio for activity.
@@ -2060,7 +1919,7 @@ public class SizeCompatTests extends WindowTestsBase {
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
 
         final float fixedOrientationLetterboxAspectRatio = 1.1f;
-        mActivity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(
+        mActivity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(
                 fixedOrientationLetterboxAspectRatio);
         prepareLimitedBounds(mActivity, SCREEN_ORIENTATION_PORTRAIT, /* isUnresizable= */ false);
 
@@ -2073,7 +1932,8 @@ public class SizeCompatTests extends WindowTestsBase {
         assertTrue(displayBounds.width() > displayBounds.height());
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
 
         // Activity bounds should respect aspect ratio override for fixed orientation letterbox.
@@ -2096,7 +1956,7 @@ public class SizeCompatTests extends WindowTestsBase {
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, mActivity.getDisplayContent());
         // Move activity to multi-window which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, screenWidth, getExpectedSplitSize(screenHeight));
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
@@ -2107,8 +1967,8 @@ public class SizeCompatTests extends WindowTestsBase {
         // Activity should be letterboxed with an aspect ratio of 1.01.
         final Rect afterBounds = mActivity.getBounds();
         final float actualAspectRatio = 1f * afterBounds.height() / afterBounds.width();
-        assertEquals(LetterboxConfiguration.DEFAULT_LETTERBOX_ASPECT_RATIO_FOR_MULTI_WINDOW,
-                actualAspectRatio, 0.001f);
+        assertEquals(AppCompatConfiguration.DEFAULT_LETTERBOX_ASPECT_RATIO_FOR_MULTI_WINDOW,
+                actualAspectRatio, DELTA_ASPECT_RATIO_TOLERANCE);
         assertTrue(mActivity.areBoundsLetterboxed());
     }
 
@@ -2132,7 +1992,7 @@ public class SizeCompatTests extends WindowTestsBase {
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, mActivity.getDisplayContent());
         // Move activity to multi-window which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, screenWidth, getExpectedSplitSize(screenHeight));
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
@@ -2144,7 +2004,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // default letterbox aspect ratio for multi-window.
         final Rect afterBounds = mActivity.getBounds();
         final float actualAspectRatio = 1f * afterBounds.height() / afterBounds.width();
-        assertEquals(minAspectRatio, actualAspectRatio, 0.001f);
+        assertEquals(minAspectRatio, actualAspectRatio, DELTA_ASPECT_RATIO_TOLERANCE);
         assertTrue(mActivity.areBoundsLetterboxed());
     }
 
@@ -2155,9 +2015,9 @@ public class SizeCompatTests extends WindowTestsBase {
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
 
         final float fixedOrientationLetterboxAspectRatio = 1.1f;
-        mActivity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(
+        mActivity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(
                 fixedOrientationLetterboxAspectRatio);
-        mActivity.mWmService.mLetterboxConfiguration.setDefaultMinAspectRatioForUnresizableApps(
+        mActivity.mWmService.mAppCompatConfiguration.setDefaultMinAspectRatioForUnresizableApps(
                 1.5f);
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
@@ -2170,13 +2030,14 @@ public class SizeCompatTests extends WindowTestsBase {
         assertTrue(displayBounds.width() > displayBounds.height());
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
 
         // Letterbox logic should use config_letterboxDefaultMinAspectRatioForUnresizableApps over
         // config_fixedOrientationLetterboxAspectRatio.
         assertEquals(displayBounds.height(), activityBounds.height());
-        final float defaultAspectRatio = mActivity.mWmService.mLetterboxConfiguration
+        final float defaultAspectRatio = mActivity.mWmService.mAppCompatConfiguration
                 .getDefaultMinAspectRatioForUnresizableApps();
         assertEquals(displayBounds.height() / defaultAspectRatio, activityBounds.width(), 0.5);
     }
@@ -2196,7 +2057,8 @@ public class SizeCompatTests extends WindowTestsBase {
 
         // App should launch in fixed orientation letterbox.
         // Activity bounds should be 700x1400 with the ratio as the display.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFitted();
         assertEquals(originalScreenWidthDp, mActivity.getConfiguration().smallestScreenWidthDp);
         assertTrue(originalScreenWidthDp < originalScreenHeighthDp);
@@ -2206,7 +2068,7 @@ public class SizeCompatTests extends WindowTestsBase {
 
         // After we rotate, the activity should go in the size-compat mode and report the same
         // configuration values.
-        assertScaled();
+        assertDownScaled();
         assertEquals(originalScreenWidthDp, mActivity.getConfiguration().smallestScreenWidthDp);
         assertEquals(originalScreenWidthDp, mActivity.getConfiguration().screenWidthDp);
         assertEquals(originalScreenHeighthDp, mActivity.getConfiguration().screenHeightDp);
@@ -2238,7 +2100,8 @@ public class SizeCompatTests extends WindowTestsBase {
 
         // App should launch in fixed orientation letterbox.
         // Activity bounds should be 700x1400 with the ratio as the display.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFitted();
         assertEquals(originalScreenWidthDp, mActivity.getConfiguration().smallestScreenWidthDp);
         assertTrue(originalScreenWidthDp < originalScreenHeighthDp);
@@ -2261,10 +2124,10 @@ public class SizeCompatTests extends WindowTestsBase {
         int screenHeight = 1400;
         setUpDisplaySizeWithApp(screenWidth, screenHeight);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration
-                        .setIsSplitScreenAspectRatioForUnresizableAppsEnabled(true);
+        mActivity.mWmService.mAppCompatConfiguration
+                .setIsSplitScreenAspectRatioForUnresizableAppsEnabled(true);
 
-        mActivity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.1f);
+        mActivity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.1f);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
@@ -2272,7 +2135,8 @@ public class SizeCompatTests extends WindowTestsBase {
         final Rect activityBounds = new Rect(mActivity.getBounds());
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         // Checking that there is no size compat mode.
         assertFitted();
 
@@ -2282,12 +2146,102 @@ public class SizeCompatTests extends WindowTestsBase {
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, mActivity.getDisplayContent());
         // Move activity to split screen which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, getExpectedSplitSize(screenWidth), screenHeight);
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
         // Checking that there is no size compat mode.
         assertFitted();
+    }
+
+    @Test
+    public void testUserOverrideFullscreenForLandscapeDisplay() {
+        final int displayWidth = 1600;
+        final int displayHeight = 1400;
+        setUpDisplaySizeWithApp(displayWidth, displayHeight);
+        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        spyOn(mActivity.mWmService.mAppCompatConfiguration);
+        doReturn(true).when(mActivity.mWmService.mAppCompatConfiguration)
+                .isUserAppAspectRatioFullscreenEnabled();
+
+        // Set user aspect ratio override
+        spyOn(mActivity.mAppCompatController.getAppCompatAspectRatioOverrides());
+        doReturn(USER_MIN_ASPECT_RATIO_FULLSCREEN)
+                .when(mActivity.mAppCompatController.getAppCompatAspectRatioOverrides())
+                    .getUserMinAspectRatioOverrideCode();
+
+        prepareMinAspectRatio(mActivity, 16 / 9f, SCREEN_ORIENTATION_PORTRAIT);
+
+        final Rect bounds = mActivity.getBounds();
+
+        // bounds should be fullscreen
+        assertEquals(displayHeight, bounds.height());
+        assertEquals(displayWidth, bounds.width());
+    }
+
+    @Test
+    public void testUserOverrideFullscreenForPortraitDisplay() {
+        final int displayWidth = 1400;
+        final int displayHeight = 1600;
+        setUpDisplaySizeWithApp(displayWidth, displayHeight);
+        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        spyOn(mActivity.mWmService.mAppCompatConfiguration);
+        doReturn(true).when(mActivity.mWmService.mAppCompatConfiguration)
+                .isUserAppAspectRatioFullscreenEnabled();
+
+        // Set user aspect ratio override
+        spyOn(mActivity.mAppCompatController.getAppCompatAspectRatioOverrides());
+        doReturn(USER_MIN_ASPECT_RATIO_FULLSCREEN)
+                .when(mActivity.mAppCompatController.getAppCompatAspectRatioOverrides())
+                    .getUserMinAspectRatioOverrideCode();
+
+        prepareMinAspectRatio(mActivity, 16 / 9f, SCREEN_ORIENTATION_LANDSCAPE);
+
+        final Rect bounds = mActivity.getBounds();
+
+        // bounds should be fullscreen
+        assertEquals(displayHeight, bounds.height());
+        assertEquals(displayWidth, bounds.width());
+    }
+
+    @Test
+    public void testSystemFullscreenOverrideForLandscapeDisplay() {
+        final int displayWidth = 1600;
+        final int displayHeight = 1400;
+        setUpDisplaySizeWithApp(displayWidth, displayHeight);
+        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        spyOn(mActivity.mAppCompatController.getAppCompatAspectRatioOverrides());
+        doReturn(true).when(
+                mActivity.mAppCompatController.getAppCompatAspectRatioOverrides())
+                    .isSystemOverrideToFullscreenEnabled();
+
+        prepareMinAspectRatio(mActivity, 16 / 9f, SCREEN_ORIENTATION_PORTRAIT);
+
+        final Rect bounds = mActivity.getBounds();
+
+        // bounds should be fullscreen
+        assertEquals(displayHeight, bounds.height());
+        assertEquals(displayWidth, bounds.width());
+    }
+
+    @Test
+    public void testSystemFullscreenOverrideForPortraitDisplay() {
+        final int displayWidth = 1400;
+        final int displayHeight = 1600;
+        setUpDisplaySizeWithApp(displayWidth, displayHeight);
+        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        spyOn(mActivity.mAppCompatController.getAppCompatAspectRatioOverrides());
+        doReturn(true).when(
+                mActivity.mAppCompatController.getAppCompatAspectRatioOverrides())
+                    .isSystemOverrideToFullscreenEnabled();
+
+        prepareMinAspectRatio(mActivity, 16 / 9f, SCREEN_ORIENTATION_LANDSCAPE);
+
+        final Rect bounds = mActivity.getBounds();
+
+        // bounds should be fullscreen
+        assertEquals(displayHeight, bounds.height());
+        assertEquals(displayWidth, bounds.width());
     }
 
     @Test
@@ -2426,23 +2380,22 @@ public class SizeCompatTests extends WindowTestsBase {
     private void testUserOverrideAspectRatio(boolean isUnresizable, int screenOrientation,
             float expectedAspectRatio, @PackageManager.UserMinAspectRatio int aspectRatio,
             boolean enabled) {
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = getActivityBuilderWithoutTask().build();
+        final DesktopAppCompatAspectRatioPolicy desktopAppCompatAspectRatioPolicy =
+                activity.mAppCompatController.getDesktopAppCompatAspectRatioPolicy();
+        spyOn(desktopAppCompatAspectRatioPolicy);
+        doReturn(enabled).when(desktopAppCompatAspectRatioPolicy)
+                .hasMinAspectRatioOverride(any());
+        mTask.addChild(activity);
         activity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        spyOn(activity.mWmService.mLetterboxConfiguration);
-        doReturn(enabled).when(activity.mWmService.mLetterboxConfiguration)
+        spyOn(activity.mWmService.mAppCompatConfiguration);
+        doReturn(enabled).when(activity.mWmService.mAppCompatConfiguration)
                 .isUserAppAspectRatioSettingsEnabled();
-        // Set user aspect ratio override
-        final IPackageManager pm = mAtm.getPackageManager();
-        try {
-            doReturn(aspectRatio).when(pm)
-                    .getUserMinAspectRatio(activity.packageName, activity.mUserId);
-        } catch (RemoteException ignored) {
-        }
+        final AppCompatAspectRatioOverrides aspectRatioOverrides =
+                activity.mAppCompatController.getAppCompatAspectRatioOverrides();
+        spyOn(aspectRatioOverrides);
+        // Set user aspect ratio override.
+        doReturn(aspectRatio).when(aspectRatioOverrides).getUserMinAspectRatioOverrideCode();
 
         prepareLimitedBounds(activity, screenOrientation, isUnresizable);
 
@@ -2452,7 +2405,7 @@ public class SizeCompatTests extends WindowTestsBase {
         final float afterAspectRatio =
                 (float) Math.max(width, height) / (float) Math.min(width, height);
 
-        assertEquals(expectedAspectRatio, afterAspectRatio, 0.001f);
+        assertEquals(expectedAspectRatio, afterAspectRatio, DELTA_ASPECT_RATIO_TOLERANCE);
     }
 
     @Test
@@ -2461,23 +2414,17 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testOverrideSplitScreenAspectRatioForUnresizablePortraitApps() {
         final int displayWidth = 1400;
         final int displayHeight = 1600;
-        setUpDisplaySizeWithApp(displayWidth, displayHeight);
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setMinAspectRatio(1.1f)
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(displayWidth, displayHeight,
+                new ActivityBuilder(mAtm).setMinAspectRatio(1.1f));
         // Setup Letterbox Configuration
         activity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        activity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.5f);
+        activity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.5f);
         // Non-resizable portrait activity
         prepareUnresizable(activity, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         float expectedAspectRatio = 1f * displayWidth / getExpectedSplitSize(displayHeight);
         final Rect afterBounds = activity.getBounds();
         final float afterAspectRatio = (float) (afterBounds.height()) / afterBounds.width();
-        assertEquals(expectedAspectRatio, afterAspectRatio, 0.001f);
+        assertEquals(expectedAspectRatio, afterAspectRatio, DELTA_ASPECT_RATIO_TOLERANCE);
     }
 
     @Test
@@ -2486,23 +2433,17 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testOverrideSplitScreenAspectRatioForUnresizablePortraitAppsFromLandscape() {
         final int displayWidth = 1600;
         final int displayHeight = 1400;
-        setUpDisplaySizeWithApp(displayWidth, displayHeight);
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setMinAspectRatio(1.1f)
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(displayWidth, displayHeight,
+                new ActivityBuilder(mAtm).setMinAspectRatio(1.1f));
         // Setup Letterbox Configuration
         activity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        activity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.5f);
+        activity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.5f);
         // Non-resizable portrait activity
         prepareUnresizable(activity, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         float expectedAspectRatio = 1f * displayHeight / getExpectedSplitSize(displayWidth);
         final Rect afterBounds = activity.getBounds();
         final float afterAspectRatio = (float) (afterBounds.height()) / afterBounds.width();
-        assertEquals(expectedAspectRatio, afterAspectRatio, 0.001f);
+        assertEquals(expectedAspectRatio, afterAspectRatio, DELTA_ASPECT_RATIO_TOLERANCE);
     }
 
     @Test
@@ -2512,23 +2453,17 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testOverrideSplitScreenAspectRatioForUnresizableLandscapeApps() {
         final int displayWidth = 1400;
         final int displayHeight = 1600;
-        setUpDisplaySizeWithApp(displayWidth, displayHeight);
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setMinAspectRatio(1.1f)
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(displayWidth, displayHeight,
+                new ActivityBuilder(mAtm).setMinAspectRatio(1.1f));
         // Setup Letterbox Configuration
         activity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        activity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.5f);
+        activity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.5f);
         // Non-resizable portrait activity
         prepareUnresizable(activity, ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         float expectedAspectRatio = 1f * displayWidth / getExpectedSplitSize(displayHeight);
         final Rect afterBounds = activity.getBounds();
         final float afterAspectRatio = (float) (afterBounds.width()) / afterBounds.height();
-        assertEquals(expectedAspectRatio, afterAspectRatio, 0.001f);
+        assertEquals(expectedAspectRatio, afterAspectRatio, DELTA_ASPECT_RATIO_TOLERANCE);
     }
 
     @Test
@@ -2538,23 +2473,17 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testOverrideSplitScreenAspectRatioForUnresizableLandscapeAppsFromLandscape() {
         final int displayWidth = 1600;
         final int displayHeight = 1400;
-        setUpDisplaySizeWithApp(displayWidth, displayHeight);
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setMinAspectRatio(1.1f)
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(displayWidth, displayHeight,
+                new ActivityBuilder(mAtm).setMinAspectRatio(1.1f));
         // Setup Letterbox Configuration
         activity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        activity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.5f);
+        activity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.5f);
         // Non-resizable portrait activity
         prepareUnresizable(activity, ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         float expectedAspectRatio = 1f * displayHeight / getExpectedSplitSize(displayWidth);
         final Rect afterBounds = activity.getBounds();
         final float afterAspectRatio = (float) (afterBounds.width()) / afterBounds.height();
-        assertEquals(expectedAspectRatio, afterAspectRatio, 0.001f);
+        assertEquals(expectedAspectRatio, afterAspectRatio, DELTA_ASPECT_RATIO_TOLERANCE);
     }
 
     @Test
@@ -2564,13 +2493,7 @@ public class SizeCompatTests extends WindowTestsBase {
         mAtm.mDevEnableNonResizableMultiWindow = true;
         final int screenWidth = 1800;
         final int screenHeight = 1000;
-        setUpDisplaySizeWithApp(screenWidth, screenHeight);
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(screenWidth, screenHeight);
 
         activity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
         // Simulate real display with top insets.
@@ -2581,7 +2504,7 @@ public class SizeCompatTests extends WindowTestsBase {
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, activity.getDisplayContent());
         // Move activity to split screen which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, getExpectedSplitSize(screenWidth), screenHeight);
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, activity.getWindowingMode());
@@ -2594,7 +2517,7 @@ public class SizeCompatTests extends WindowTestsBase {
         float expectedAspectRatio = 1f * screenHeight / getExpectedSplitSize(screenWidth);
         final Rect afterBounds = activity.getBounds();
         final float afterAspectRatio = (float) (afterBounds.height()) / afterBounds.width();
-        assertEquals(expectedAspectRatio, afterAspectRatio, 0.001f);
+        assertEquals(expectedAspectRatio, afterAspectRatio, DELTA_ASPECT_RATIO_TOLERANCE);
         assertFalse(activity.areBoundsLetterboxed());
     }
 
@@ -2605,13 +2528,7 @@ public class SizeCompatTests extends WindowTestsBase {
         mAtm.mDevEnableNonResizableMultiWindow = true;
         final int screenWidth = 1000;
         final int screenHeight = 1800;
-        setUpDisplaySizeWithApp(screenWidth, screenHeight);
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpDisplaySizeWithApp(screenWidth, screenHeight);
 
         activity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
         // Simulate real display with top insets.
@@ -2622,7 +2539,7 @@ public class SizeCompatTests extends WindowTestsBase {
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, activity.getDisplayContent());
         // Move activity to split screen which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, screenWidth, getExpectedSplitSize(screenHeight));
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, activity.getWindowingMode());
@@ -2635,29 +2552,24 @@ public class SizeCompatTests extends WindowTestsBase {
         float expectedAspectRatio = 1f * screenWidth / getExpectedSplitSize(screenHeight);
         final Rect afterBounds = activity.getBounds();
         final float afterAspectRatio = (float) (afterBounds.width()) / afterBounds.height();
-        assertEquals(expectedAspectRatio, afterAspectRatio, 0.001f);
+        assertEquals(expectedAspectRatio, afterAspectRatio, DELTA_ASPECT_RATIO_TOLERANCE);
         assertFalse(activity.areBoundsLetterboxed());
     }
 
     @Test
     @EnableCompatChanges({ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO,
+            ActivityInfo.OVERRIDE_ENABLE_INSETS_DECOUPLED_CONFIGURATION,
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_LARGE,
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_EXCLUDE_PORTRAIT_FULLSCREEN})
     public void testOverrideMinAspectRatioExcludePortraitFullscreen() {
-        setUpDisplaySizeWithApp(2600, 1600);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.33f);
-
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        resizeDisplay(mDisplayContent, 2600, 1600);
+        mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mWm.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.33f);
 
         // Non-resizable portrait activity
-        prepareUnresizable(activity, 0f, ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
+        final ActivityRecord activity = setUpApp(mDisplayContent, new ActivityBuilder(mAtm)
+                .setResizeMode(RESIZE_MODE_UNRESIZEABLE)
+                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT));
 
         // At first, OVERRIDE_MIN_ASPECT_RATIO_PORTRAIT_FULLSCREEN does not apply, because the
         // display is in landscape
@@ -2675,21 +2587,16 @@ public class SizeCompatTests extends WindowTestsBase {
 
     @Test
     @EnableCompatChanges({ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO,
+            ActivityInfo.OVERRIDE_ENABLE_INSETS_DECOUPLED_CONFIGURATION,
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_LARGE,
             ActivityInfo.OVERRIDE_MIN_ASPECT_RATIO_EXCLUDE_PORTRAIT_FULLSCREEN})
     public void testOverrideMinAspectRatioExcludePortraitFullscreenNotApplied() {
         // In this test, the activity is not in fullscreen, so the override is not applied
-        setUpDisplaySizeWithApp(2600, 1600);
-        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.33f);
+        resizeDisplay(mDisplayContent, 2600, 1600);
+        mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mWm.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.33f);
 
-        // Create a size compat activity on the same task.
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setTask(mTask)
-                .setComponent(ComponentName.createRelative(mContext,
-                        SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+        final ActivityRecord activity = setUpApp(mDisplayContent);
 
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, activity.getDisplayContent());
@@ -2752,10 +2659,10 @@ public class SizeCompatTests extends WindowTestsBase {
         int screenHeight = 1600;
         setUpDisplaySizeWithApp(screenWidth, screenHeight);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration
-                        .setIsSplitScreenAspectRatioForUnresizableAppsEnabled(true);
+        mActivity.mWmService.mAppCompatConfiguration
+                .setIsSplitScreenAspectRatioForUnresizableAppsEnabled(true);
 
-        mActivity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.1f);
+        mActivity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.1f);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
 
@@ -2763,7 +2670,8 @@ public class SizeCompatTests extends WindowTestsBase {
         final Rect activityBounds = new Rect(mActivity.getBounds());
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         // Checking that there is no size compat mode.
         assertFitted();
 
@@ -2773,7 +2681,7 @@ public class SizeCompatTests extends WindowTestsBase {
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, mActivity.getDisplayContent());
         // Move activity to split screen which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, screenWidth, getExpectedSplitSize(screenHeight));
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
@@ -2788,11 +2696,11 @@ public class SizeCompatTests extends WindowTestsBase {
         int displayHeight = 1600;
         setUpDisplaySizeWithApp(displayWidth, displayHeight);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(2f);
+        mWm.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(2f);
 
         // Enable display aspect ratio to take precedence before
         // fixedOrientationLetterboxAspectRatio
-        mWm.mLetterboxConfiguration
+        mWm.mAppCompatConfiguration
                 .setIsDisplayAspectRatioEnabledForFixedOrientationLetterbox(true);
 
         // Set up resizable app in portrait
@@ -2801,20 +2709,20 @@ public class SizeCompatTests extends WindowTestsBase {
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, mActivity.getDisplayContent());
         // Move activity to split screen which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, displayWidth, getExpectedSplitSize(displayHeight));
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         // Checking that there is no size compat mode.
         assertFitted();
         // Check that the display aspect ratio is used by the app.
         final float targetMinAspectRatio = 1f * displayHeight / displayWidth;
-        final float delta = 0.01f;
-        assertEquals(targetMinAspectRatio, ActivityRecord
-                .computeAspectRatio(mActivity.getBounds()), delta);
+        assertEquals(targetMinAspectRatio, computeAspectRatio(mActivity.getBounds()),
+                DELTA_ASPECT_RATIO_TOLERANCE);
     }
 
     @Test
@@ -2824,11 +2732,11 @@ public class SizeCompatTests extends WindowTestsBase {
         int displayHeight = 1400;
         setUpDisplaySizeWithApp(displayWidth, displayHeight);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(2f);
+        mWm.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(2f);
 
         // Enable display aspect ratio to take precedence before
         // fixedOrientationLetterboxAspectRatio
-        mWm.mLetterboxConfiguration
+        mWm.mAppCompatConfiguration
                 .setIsDisplayAspectRatioEnabledForFixedOrientationLetterbox(true);
 
         // Set up resizable app in landscape
@@ -2837,20 +2745,20 @@ public class SizeCompatTests extends WindowTestsBase {
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, mActivity.getDisplayContent());
         // Move activity to split screen which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, getExpectedSplitSize(displayWidth), displayHeight);
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         // Checking that there is no size compat mode.
         assertFitted();
         // Check that the display aspect ratio is used by the app.
         final float targetMinAspectRatio = 1f * displayWidth / displayHeight;
-        final float delta = 0.01f;
-        assertEquals(targetMinAspectRatio, ActivityRecord
-                .computeAspectRatio(mActivity.getBounds()), delta);
+        assertEquals(targetMinAspectRatio, computeAspectRatio(mActivity.getBounds()),
+                DELTA_ASPECT_RATIO_TOLERANCE);
     }
 
     @Test
@@ -2861,23 +2769,23 @@ public class SizeCompatTests extends WindowTestsBase {
         setUpDisplaySizeWithApp(displayWidth, displayHeight);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
 
-        mActivity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.1f);
+        mActivity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.1f);
         // Enable display aspect ratio to take precedence before
         // fixedOrientationLetterboxAspectRatio
-        mWm.mLetterboxConfiguration
+        mWm.mAppCompatConfiguration
                 .setIsDisplayAspectRatioEnabledForFixedOrientationLetterbox(true);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         // Checking that there is no size compat mode.
         assertFitted();
         // Check that the display aspect ratio is used by the app.
         final float targetMinAspectRatio = 1f * displayHeight / displayWidth;
-        final float delta = 0.01f;
-        assertEquals(targetMinAspectRatio, ActivityRecord
-                .computeAspectRatio(mActivity.getBounds()), delta);
+        assertEquals(targetMinAspectRatio, computeAspectRatio(mActivity.getBounds()),
+                DELTA_ASPECT_RATIO_TOLERANCE);
     }
 
     @Test
@@ -2888,23 +2796,23 @@ public class SizeCompatTests extends WindowTestsBase {
         setUpDisplaySizeWithApp(displayWidth, displayHeight);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
 
-        mActivity.mWmService.mLetterboxConfiguration.setFixedOrientationLetterboxAspectRatio(1.1f);
+        mActivity.mWmService.mAppCompatConfiguration.setFixedOrientationLetterboxAspectRatio(1.1f);
         // Enable display aspect ratio to take precedence before
         // fixedOrientationLetterboxAspectRatio
-        mWm.mLetterboxConfiguration
+        mWm.mAppCompatConfiguration
                 .setIsDisplayAspectRatioEnabledForFixedOrientationLetterbox(true);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
         // App should launch in fixed orientation letterbox.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         // Checking that there is no size compat mode.
         assertFitted();
         // Check that the display aspect ratio is used by the app.
         final float targetMinAspectRatio = 1f * displayWidth / displayHeight;
-        final float delta = 0.01f;
-        assertEquals(targetMinAspectRatio, ActivityRecord
-                .computeAspectRatio(mActivity.getBounds()), delta);
+        assertEquals(targetMinAspectRatio, computeAspectRatio(mActivity.getBounds()),
+                DELTA_ASPECT_RATIO_TOLERANCE);
     }
 
     @Test
@@ -2927,8 +2835,9 @@ public class SizeCompatTests extends WindowTestsBase {
         assertTrue(displayBounds.width() < displayBounds.height());
 
         // App should be in size compat.
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
-        assertScaled();
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
+        assertDownScaled();
         assertEquals(activityBounds.width(), newActivityBounds.width());
         assertEquals(activityBounds.height(), newActivityBounds.height());
         assertActivityMaxBoundsSandboxed();
@@ -2944,7 +2853,8 @@ public class SizeCompatTests extends WindowTestsBase {
         prepareUnresizable(mActivity, 0, SCREEN_ORIENTATION_PORTRAIT);
 
         // App should launch in fullscreen.
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
         // Activity inherits max bounds from TaskDisplayArea.
         assertMaxBoundsInheritDisplayAreaBounds();
@@ -2957,15 +2867,16 @@ public class SizeCompatTests extends WindowTestsBase {
         assertTrue(rotatedDisplayBounds.width() > rotatedDisplayBounds.height());
 
         // App should be in size compat.
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
-        assertScaled();
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
+        assertDownScaled();
         assertThat(mActivity.inSizeCompatMode()).isTrue();
         assertActivityMaxBoundsSandboxed();
 
         // App bounds should be 700x1400 with the ratio as the display.
         assertEquals(rotatedDisplayBounds.height(), rotatedActivityBounds.height());
         assertEquals(rotatedDisplayBounds.height() * rotatedDisplayBounds.height()
-                        / rotatedDisplayBounds.width(), rotatedActivityBounds.width());
+                / rotatedDisplayBounds.width(), rotatedActivityBounds.width());
     }
 
     @Test
@@ -2978,13 +2889,14 @@ public class SizeCompatTests extends WindowTestsBase {
         // Portrait fixed app without max aspect.
         prepareUnresizable(mActivity, 0, SCREEN_ORIENTATION_PORTRAIT);
 
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
 
         // Launch another portrait fixed app.
         spyOn(mTask);
         setBooted(display.mWmService.mAtmService);
-        final ActivityRecord newActivity = new ActivityBuilder(display.mWmService.mAtmService)
+        final ActivityRecord newActivity = getActivityBuilderWithoutTask()
                 .setResizeMode(RESIZE_MODE_UNRESIZEABLE)
                 .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
                 .setTask(mTask)
@@ -3000,7 +2912,8 @@ public class SizeCompatTests extends WindowTestsBase {
 
         // Task and display bounds should be equal while activity should be letterboxed and
         // has 700x1400 bounds with the ratio as the display.
-        assertTrue(newActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(newActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(newActivity.inSizeCompatMode());
         // Activity max bounds are sandboxed due to size compat mode.
         assertThat(newActivity.getConfiguration().windowConfiguration.getMaxBounds())
@@ -3012,6 +2925,7 @@ public class SizeCompatTests extends WindowTestsBase {
     }
 
     @Test
+    @EnableCompatChanges({ActivityInfo.OVERRIDE_ENABLE_INSETS_DECOUPLED_CONFIGURATION})
     public void testDisplayIgnoreOrientationRequest_orientationChangedToUnspecified() {
         // Set up a display in landscape and ignoring orientation request.
         setUpDisplaySizeWithApp(2800, 1400);
@@ -3021,7 +2935,8 @@ public class SizeCompatTests extends WindowTestsBase {
         // Portrait fixed app without max aspect.
         prepareUnresizable(mActivity, 0, SCREEN_ORIENTATION_PORTRAIT);
 
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
 
         mActivity.setRequestedOrientation(SCREEN_ORIENTATION_UNSPECIFIED);
@@ -3042,13 +2957,14 @@ public class SizeCompatTests extends WindowTestsBase {
         // Portrait fixed app without max aspect.
         prepareUnresizable(mActivity, 0, SCREEN_ORIENTATION_PORTRAIT);
 
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
 
         // Launch another portrait fixed app with max aspect ratio as 1.3.
         spyOn(mTask);
         setBooted(display.mWmService.mAtmService);
-        final ActivityRecord newActivity = new ActivityBuilder(display.mWmService.mAtmService)
+        final ActivityRecord newActivity = getActivityBuilderWithoutTask()
                 .setResizeMode(RESIZE_MODE_UNRESIZEABLE)
                 .setMaxAspectRatio(1.3f)
                 .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
@@ -3072,7 +2988,8 @@ public class SizeCompatTests extends WindowTestsBase {
         assertActivityMaxBoundsSandboxed();
 
         // Activity bounds should be (1400 / 1.3 = 1076)x1400 with the app requested ratio.
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(newActivity.inSizeCompatMode());
         assertEquals(displayBounds.height(), newActivityBounds.height());
         assertEquals((long) Math.rint(newActivityBounds.height()
@@ -3081,6 +2998,7 @@ public class SizeCompatTests extends WindowTestsBase {
     }
 
     @Test
+    @SuppressWarnings("GuardedBy")
     public void testDisplayIgnoreOrientationRequest_pausedAppNotLostSizeCompat() {
         // Set up a display in landscape and ignoring orientation request.
         setUpDisplaySizeWithApp(2800, 1400);
@@ -3091,26 +3009,33 @@ public class SizeCompatTests extends WindowTestsBase {
         prepareUnresizable(mActivity, 0, SCREEN_ORIENTATION_PORTRAIT);
         clearInvocations(mActivity);
 
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
 
         // Rotate display to portrait.
         rotateDisplay(mActivity.mDisplayContent, ROTATION_90);
 
         // App should be in size compat.
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
-        assertScaled();
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
+        assertDownScaled();
         assertThat(mActivity.inSizeCompatMode()).isTrue();
         // Activity max bounds are sandboxed due to size compat mode.
         assertActivityMaxBoundsSandboxed();
 
         final Rect activityBounds = new Rect(mActivity.getBounds());
-        mTask.resumeTopActivityUncheckedLocked(null /* prev */, null /* options */);
+        mTask.resumeTopActivityUncheckedLocked(null /* prev */, null /* options */,
+                false /* deferPause */);
 
         // App still in size compat, and the bounds don't change.
-        verify(mActivity, never()).clearSizeCompatMode();
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
-        assertScaled();
+        final AppCompatSizeCompatModePolicy scmPolicy = mActivity.mAppCompatController
+                .getAppCompatSizeCompatModePolicy();
+        spyOn(scmPolicy);
+        verify(scmPolicy, never()).clearSizeCompatMode();
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
+        assertDownScaled();
         assertEquals(activityBounds, mActivity.getBounds());
         // Activity max bounds are sandboxed due to size compat.
         assertActivityMaxBoundsSandboxed();
@@ -3127,7 +3052,8 @@ public class SizeCompatTests extends WindowTestsBase {
         prepareUnresizable(mActivity, 0, SCREEN_ORIENTATION_PORTRAIT);
 
         // In fixed orientation letterbox
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
         assertActivityMaxBoundsSandboxed();
 
@@ -3135,15 +3061,17 @@ public class SizeCompatTests extends WindowTestsBase {
         rotateDisplay(display, ROTATION_90);
 
         // App should be in size compat.
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
-        assertScaled();
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
+        assertDownScaled();
         assertActivityMaxBoundsSandboxed();
 
         // Rotate display to landscape.
         rotateDisplay(display, ROTATION_180);
 
         // In activity letterbox
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
         assertActivityMaxBoundsSandboxed();
     }
@@ -3161,7 +3089,8 @@ public class SizeCompatTests extends WindowTestsBase {
         prepareUnresizable(mActivity, 0, SCREEN_ORIENTATION_LANDSCAPE);
 
         // In fixed orientation letterbox
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
         assertActivityMaxBoundsSandboxed();
 
@@ -3169,15 +3098,17 @@ public class SizeCompatTests extends WindowTestsBase {
         rotateDisplay(display, ROTATION_90);
 
         // App should be in size compat.
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
-        assertScaled();
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
+        assertDownScaled();
         assertActivityMaxBoundsSandboxed();
 
         // Rotate display to portrait.
         rotateDisplay(display, ROTATION_180);
 
         // In fixed orientation letterbox
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
         assertActivityMaxBoundsSandboxed();
     }
@@ -3191,14 +3122,14 @@ public class SizeCompatTests extends WindowTestsBase {
                 RESIZE_MODE_UNRESIZEABLE, SCREEN_ORIENTATION_PORTRAIT);
         activity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
 
-        spyOn(activity.mWmService.mLetterboxConfiguration);
-        doReturn(true).when(activity.mWmService.mLetterboxConfiguration)
+        spyOn(activity.mWmService.mAppCompatConfiguration);
+        doReturn(true).when(activity.mWmService.mAppCompatConfiguration)
                 .isIgnoreOrientationRequestAllowed();
 
         // Display should not be rotated.
         assertEquals(SCREEN_ORIENTATION_UNSPECIFIED, activity.mDisplayContent.getOrientation());
 
-        doReturn(false).when(activity.mWmService.mLetterboxConfiguration)
+        doReturn(false).when(activity.mWmService.mAppCompatConfiguration)
                 .isIgnoreOrientationRequestAllowed();
 
         // Display should be rotated.
@@ -3303,7 +3234,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Activity max bounds are sandboxed since app may enter size compat mode.
         assertActivityMaxBoundsSandboxed();
         assertFalse(mActivity.inSizeCompatMode());
-        assertTrue(mActivity.shouldCreateCompatDisplayInsets());
+        assertTrue(mActivity.shouldCreateAppCompatDisplayInsets());
 
         // Resize display to half the width.
         resizeDisplay(mActivity.getDisplayContent(), 500, 1000);
@@ -3361,7 +3292,7 @@ public class SizeCompatTests extends WindowTestsBase {
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
 
         // Non-resizable activity in size compat mode
-        assertScaled();
+        assertDownScaled();
         final Rect newBounds = new Rect(mActivity.getWindowConfiguration().getBounds());
         assertEquals(originalBounds.width(), newBounds.width());
         assertEquals(originalBounds.height(), newBounds.height());
@@ -3374,7 +3305,8 @@ public class SizeCompatTests extends WindowTestsBase {
         assertEquals(ORIENTATION_PORTRAIT, mTask.getConfiguration().orientation);
         assertEquals(ORIENTATION_LANDSCAPE, mActivity.getConfiguration().orientation);
         assertFitted();
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertActivityMaxBoundsSandboxed();
 
         // Letterbox should fill the gap between the split screen and the letterboxed activity.
@@ -3393,14 +3325,15 @@ public class SizeCompatTests extends WindowTestsBase {
         final Rect originalBounds = new Rect(mActivity.getBounds());
 
         // Move activity to split screen which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, 1000, 1400);
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
 
         // Resizable activity is not in size compat mode but in the letterbox for fixed orientation.
         assertFitted();
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
     }
 
     @Test
@@ -3423,7 +3356,7 @@ public class SizeCompatTests extends WindowTestsBase {
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
 
         // Non-resizable activity in size compat mode
-        assertScaled();
+        assertDownScaled();
         final Rect newBounds = new Rect(mActivity.getWindowConfiguration().getBounds());
         assertEquals(originalBounds.width(), newBounds.width());
         assertEquals(originalBounds.height(), newBounds.height());
@@ -3436,7 +3369,8 @@ public class SizeCompatTests extends WindowTestsBase {
         assertEquals(ORIENTATION_PORTRAIT, mTask.getConfiguration().orientation);
         assertEquals(ORIENTATION_PORTRAIT, mActivity.getConfiguration().orientation);
         assertFitted();
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertActivityMaxBoundsSandboxed();
 
         // Activity bounds fill split screen.
@@ -3446,6 +3380,7 @@ public class SizeCompatTests extends WindowTestsBase {
     }
 
     @Test
+    @EnableCompatChanges({ActivityInfo.OVERRIDE_ENABLE_INSETS_DECOUPLED_CONFIGURATION})
     public void testSupportsNonResizableInSplitScreen_letterboxForAspectRatioRestriction() {
         // Support non resizable in multi window
         mAtm.mDevEnableNonResizableMultiWindow = true;
@@ -3463,7 +3398,7 @@ public class SizeCompatTests extends WindowTestsBase {
         organizer.mPrimary.setBounds(0, 0, 1000, 800);
 
         // Non-resizable activity should be in size compat mode.
-        assertScaled();
+        assertDownScaled();
         assertEquals(mActivity.getBounds(), new Rect(60, 0, 940, 800));
 
         recomputeNaturalConfigurationOfUnresizableActivity();
@@ -3477,11 +3412,28 @@ public class SizeCompatTests extends WindowTestsBase {
     }
 
     @Test
+    public void testIsReachabilityEnabled_thisLetterbox_false() {
+        // Case when the reachability would be enabled otherwise
+        setUpDisplaySizeWithApp(/* dw */ 1000, /* dh */ 2800);
+        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mWm.mAppCompatConfiguration.setIsVerticalReachabilityEnabled(true);
+        prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
+        mActivity.getWindowConfiguration().setBounds(null);
+
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ false);
+        final AppCompatReachabilityOverrides reachabilityOverrides =
+                mActivity.mAppCompatController.getAppCompatReachabilityOverrides();
+        assertFalse(reachabilityOverrides.isVerticalReachabilityEnabled());
+        assertFalse(reachabilityOverrides.isHorizontalReachabilityEnabled());
+    }
+
+    @Test
     public void testIsHorizontalReachabilityEnabled_splitScreen_false() {
         mAtm.mDevEnableNonResizableMultiWindow = true;
         setUpDisplaySizeWithApp(2800, 1000);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setIsHorizontalReachabilityEnabled(true);
+        mWm.mAppCompatConfiguration.setIsHorizontalReachabilityEnabled(true);
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ true);
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, mActivity.getDisplayContent());
 
@@ -3489,13 +3441,14 @@ public class SizeCompatTests extends WindowTestsBase {
         prepareUnresizable(mActivity, 1.1f, SCREEN_ORIENTATION_PORTRAIT);
 
         // Move activity to split screen which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, 1400, 1000);
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
 
         // Horizontal reachability is disabled because the app is in split screen.
-        assertFalse(mActivity.mLetterboxUiController.isHorizontalReachabilityEnabled());
+        assertFalse(mActivity.mAppCompatController.getAppCompatReachabilityOverrides()
+                .isHorizontalReachabilityEnabled());
     }
 
     @Test
@@ -3503,7 +3456,8 @@ public class SizeCompatTests extends WindowTestsBase {
         mAtm.mDevEnableNonResizableMultiWindow = true;
         setUpDisplaySizeWithApp(1000, 2800);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setIsVerticalReachabilityEnabled(true);
+        mWm.mAppCompatConfiguration.setIsVerticalReachabilityEnabled(true);
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ true);
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, mActivity.getDisplayContent());
 
@@ -3511,20 +3465,22 @@ public class SizeCompatTests extends WindowTestsBase {
         prepareUnresizable(mActivity, 1.1f, SCREEN_ORIENTATION_LANDSCAPE);
 
         // Move activity to split screen which takes half of the screen.
-        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false , "test");
+        mTask.reparent(organizer.mPrimary, POSITION_TOP, /* moveParents= */ false, "test");
         organizer.mPrimary.setBounds(0, 0, 1000, 1400);
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mTask.getWindowingMode());
         assertEquals(WINDOWING_MODE_MULTI_WINDOW, mActivity.getWindowingMode());
 
         // Vertical reachability is disabled because the app is in split screen.
-        assertFalse(mActivity.mLetterboxUiController.isVerticalReachabilityEnabled());
+        assertFalse(mActivity.mAppCompatController.getAppCompatReachabilityOverrides()
+                .isVerticalReachabilityEnabled());
     }
 
     @Test
     public void testIsVerticalReachabilityEnabled_doesNotMatchParentWidth_false() {
         setUpDisplaySizeWithApp(1000, 2800);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setIsVerticalReachabilityEnabled(true);
+        mWm.mAppCompatConfiguration.setIsVerticalReachabilityEnabled(true);
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ true);
 
         // Unresizable landscape-only activity.
         prepareUnresizable(mActivity, 1.1f, SCREEN_ORIENTATION_LANDSCAPE);
@@ -3538,14 +3494,16 @@ public class SizeCompatTests extends WindowTestsBase {
         // Vertical reachability is disabled because the app does not match parent width
         assertNotEquals(mActivity.getScreenResolvedBounds().width(),
                 mActivity.mDisplayContent.getBounds().width());
-        assertFalse(mActivity.mLetterboxUiController.isVerticalReachabilityEnabled());
+        assertFalse(mActivity.mAppCompatController.getAppCompatReachabilityOverrides()
+                .isVerticalReachabilityEnabled());
     }
 
     @Test
     public void testIsVerticalReachabilityEnabled_emptyBounds_true() {
         setUpDisplaySizeWithApp(/* dw */ 1000, /* dh */ 2800);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setIsVerticalReachabilityEnabled(true);
+        mWm.mAppCompatConfiguration.setIsVerticalReachabilityEnabled(true);
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ true);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
 
@@ -3554,14 +3512,16 @@ public class SizeCompatTests extends WindowTestsBase {
         assertEquals(new Rect(0, 0, 0, 0), mActivity.getBounds());
 
         // Vertical reachability is still enabled as resolved bounds is not empty
-        assertTrue(mActivity.mLetterboxUiController.isVerticalReachabilityEnabled());
+        assertTrue(mActivity.mAppCompatController.getAppCompatReachabilityOverrides()
+                .isVerticalReachabilityEnabled());
     }
 
     @Test
     public void testIsHorizontalReachabilityEnabled_emptyBounds_true() {
         setUpDisplaySizeWithApp(/* dw */ 2800, /* dh */ 1000);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setIsHorizontalReachabilityEnabled(true);
+        mWm.mAppCompatConfiguration.setIsHorizontalReachabilityEnabled(true);
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ true);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
@@ -3570,14 +3530,46 @@ public class SizeCompatTests extends WindowTestsBase {
         assertEquals(new Rect(0, 0, 0, 0), mActivity.getBounds());
 
         // Horizontal reachability is still enabled as resolved bounds is not empty
-        assertTrue(mActivity.mLetterboxUiController.isHorizontalReachabilityEnabled());
+        assertTrue(mActivity.mAppCompatController.getAppCompatReachabilityOverrides()
+                .isHorizontalReachabilityEnabled());
+    }
+
+    @Test
+    public void testIsHorizontalReachabilityEnabled_portraitDisplayAndApp_true() {
+        // Portrait display
+        setUpDisplaySizeWithApp(1400, 1600);
+        mActivity.mWmService.mAppCompatConfiguration.setIsHorizontalReachabilityEnabled(true);
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ true);
+
+        // 16:9f unresizable portrait app
+        prepareMinAspectRatio(mActivity, OVERRIDE_MIN_ASPECT_RATIO_LARGE_VALUE,
+                SCREEN_ORIENTATION_PORTRAIT);
+
+        assertTrue(mActivity.mAppCompatController.getAppCompatReachabilityOverrides()
+                .isHorizontalReachabilityEnabled());
+    }
+
+    @Test
+    public void testIsVerticalReachabilityEnabled_landscapeDisplayAndApp_true() {
+        // Landscape display
+        setUpDisplaySizeWithApp(1600, 1500);
+        mActivity.mWmService.mAppCompatConfiguration.setIsVerticalReachabilityEnabled(true);
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ true);
+
+        // 16:9f unresizable landscape app
+        prepareMinAspectRatio(mActivity, OVERRIDE_MIN_ASPECT_RATIO_LARGE_VALUE,
+                SCREEN_ORIENTATION_LANDSCAPE);
+
+        assertTrue(mActivity.mAppCompatController.getAppCompatReachabilityOverrides()
+                .isVerticalReachabilityEnabled());
     }
 
     @Test
     public void testIsHorizontalReachabilityEnabled_doesNotMatchParentHeight_false() {
         setUpDisplaySizeWithApp(2800, 1000);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setIsHorizontalReachabilityEnabled(true);
+        mWm.mAppCompatConfiguration.setIsHorizontalReachabilityEnabled(true);
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ true);
 
         // Unresizable portrait-only activity.
         prepareUnresizable(mActivity, 1.1f, SCREEN_ORIENTATION_PORTRAIT);
@@ -3591,14 +3583,16 @@ public class SizeCompatTests extends WindowTestsBase {
         // Horizontal reachability is disabled because the app does not match parent height
         assertNotEquals(mActivity.getScreenResolvedBounds().height(),
                 mActivity.mDisplayContent.getBounds().height());
-        assertFalse(mActivity.mLetterboxUiController.isHorizontalReachabilityEnabled());
+        assertFalse(mActivity.mAppCompatController.getAppCompatReachabilityOverrides()
+                .isHorizontalReachabilityEnabled());
     }
 
     @Test
     public void testIsHorizontalReachabilityEnabled_inSizeCompatMode_matchesParentHeight_true() {
         setUpDisplaySizeWithApp(1800, 2200);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setIsHorizontalReachabilityEnabled(true);
+        mWm.mAppCompatConfiguration.setIsHorizontalReachabilityEnabled(true);
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ true);
 
         // Unresizable portrait-only activity.
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
@@ -3612,14 +3606,16 @@ public class SizeCompatTests extends WindowTestsBase {
         // Horizontal reachability is enabled because the app matches parent height
         assertEquals(mActivity.getScreenResolvedBounds().height(),
                 mActivity.mDisplayContent.getBounds().height());
-        assertTrue(mActivity.mLetterboxUiController.isHorizontalReachabilityEnabled());
+        assertTrue(mActivity.mAppCompatController.getAppCompatReachabilityOverrides()
+                .isHorizontalReachabilityEnabled());
     }
 
     @Test
     public void testIsVerticalReachabilityEnabled_inSizeCompatMode_matchesParentWidth_true() {
         setUpDisplaySizeWithApp(2200, 1800);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setIsVerticalReachabilityEnabled(true);
+        mWm.mAppCompatConfiguration.setIsVerticalReachabilityEnabled(true);
+        setUpAllowThinLetterboxed(/* thinLetterboxAllowed */ true);
 
         // Unresizable landscape-only activity.
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
@@ -3633,7 +3629,8 @@ public class SizeCompatTests extends WindowTestsBase {
         // Vertical reachability is enabled because the app matches parent width
         assertEquals(mActivity.getScreenResolvedBounds().width(),
                 mActivity.mDisplayContent.getBounds().width());
-        assertTrue(mActivity.mLetterboxUiController.isVerticalReachabilityEnabled());
+        assertTrue(mActivity.mAppCompatController.getAppCompatReachabilityOverrides()
+                .isVerticalReachabilityEnabled());
     }
 
     @Test
@@ -3701,11 +3698,12 @@ public class SizeCompatTests extends WindowTestsBase {
     @Test
     public void testLetterboxDetailsForStatusBar_letterboxNotOverlappingStatusBar() {
         // Align to center so that we don't overlap with the status bar
-        mAtm.mWindowManager.mLetterboxConfiguration.setLetterboxVerticalPositionMultiplier(0.5f);
+        mAtm.mWindowManager.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(0.5f);
         final DisplayContent display = new TestDisplayContent.Builder(mAtm, 1000, 2800)
                 .setNotch(100)
                 .build();
         setUpApp(display);
+        mActivity.mResolveConfigHint.mUseOverrideInsetsForConfig = true;
         TestWindowState statusBar = addStatusBar(mActivity.mDisplayContent);
         spyOn(statusBar);
         doReturn(new Rect(0, 0, statusBar.mRequestedWidth, statusBar.mRequestedHeight))
@@ -3717,12 +3715,12 @@ public class SizeCompatTests extends WindowTestsBase {
         // Refresh the letterbox
         mActivity.mRootWindowContainer.performSurfacePlacement();
 
-        Rect mBounds = new Rect(mActivity.getWindowConfiguration().getBounds());
-        assertEquals(mBounds, new Rect(0, 900, 1000, 2000));
+        Rect bounds = new Rect(mActivity.getWindowConfiguration().getBounds());
+        assertEquals(new Rect(0, 900, 1000, 2000), bounds);
 
         DisplayPolicy displayPolicy = mActivity.getDisplayContent().getDisplayPolicy();
         LetterboxDetails[] expectedLetterboxDetails = {new LetterboxDetails(
-                mBounds,
+                bounds,
                 mActivity.getDisplayContent().getBounds(),
                 mActivity.findMainWindow().mAttrs.insetsFlags.appearance
         )};
@@ -3753,7 +3751,7 @@ public class SizeCompatTests extends WindowTestsBase {
         navSource.setFlags(FLAG_INSETS_ROUNDED_CORNER, FLAG_INSETS_ROUNDED_CORNER);
         navSource.setFrame(new Rect(0, screenHeight - taskbarHeight, screenWidth, screenHeight));
 
-        mActivity.mWmService.mLetterboxConfiguration.setLetterboxActivityCornersRadius(15);
+        mActivity.mWmService.mAppCompatConfiguration.setLetterboxActivityCornersRadius(15);
 
         final WindowState w1 = addWindowToActivity(mActivity);
         w1.mAboveInsetsState.addSource(navSource);
@@ -3783,6 +3781,7 @@ public class SizeCompatTests extends WindowTestsBase {
     }
 
     @Test
+    @EnableFlags(Flags.FLAG_IMMERSIVE_APP_REPOSITIONING)
     public void testImmersiveLetterboxAlignedToBottom_OverlappingNavbar() {
         assertLandscapeActivityAlignedToBottomWithNavbar(true /* immersive */);
     }
@@ -3794,7 +3793,7 @@ public class SizeCompatTests extends WindowTestsBase {
         setUpDisplaySizeWithApp(screenWidth, screenHeight);
 
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true);
-        mActivity.mWmService.mLetterboxConfiguration.setLetterboxVerticalPositionMultiplier(1.0f);
+        mActivity.mWmService.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(1.0f);
 
         final InsetsSource navSource = new InsetsSource(
                 InsetsSource.createId(null, 0, navigationBars()), navigationBars());
@@ -3802,19 +3801,19 @@ public class SizeCompatTests extends WindowTestsBase {
         // Immersive activity has transient navbar
         navSource.setVisible(!immersive);
         navSource.setFrame(new Rect(0, screenHeight - taskbarHeight, screenWidth, screenHeight));
-        mActivity.mWmService.mLetterboxConfiguration.setLetterboxActivityCornersRadius(15);
+        mActivity.mWmService.mAppCompatConfiguration.setLetterboxActivityCornersRadius(15);
 
         final WindowState w1 = addWindowToActivity(mActivity);
         w1.mAboveInsetsState.addSource(navSource);
 
         // Prepare unresizable landscape activity
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
-        final DisplayPolicy displayPolicy = mActivity.mDisplayContent.getDisplayPolicy();
-        doReturn(immersive).when(displayPolicy).isImmersiveMode();
+        doReturn(immersive).when(mActivity).isImmersiveMode(any());
 
         mActivity.mRootWindowContainer.performSurfacePlacement();
 
-        LetterboxDetails letterboxDetails = mActivity.mLetterboxUiController.getLetterboxDetails();
+        LetterboxDetails letterboxDetails = mActivity.mAppCompatController
+                .getAppCompatLetterboxPolicy().getLetterboxDetails();
 
         // Letterboxed activity at bottom
         assertEquals(new Rect(0, 2100, 1400, 2800), mActivity.getBounds());
@@ -3876,7 +3875,7 @@ public class SizeCompatTests extends WindowTestsBase {
 
     private void recomputeNaturalConfigurationOfUnresizableActivity() {
         // Recompute the natural configuration of the non-resizable activity and the split screen.
-        mActivity.clearSizeCompatMode();
+        mActivity.mAppCompatController.getAppCompatSizeCompatModePolicy().clearSizeCompatMode();
 
         // Draw letterbox.
         mActivity.setVisible(false);
@@ -3907,11 +3906,11 @@ public class SizeCompatTests extends WindowTestsBase {
         final DisplayPolicy policy = display.getDisplayPolicy();
         DisplayPolicy.DecorInsets.Info decorInfo = policy.getDecorInsetsInfo(ROTATION_90,
                 display.mBaseDisplayHeight, display.mBaseDisplayWidth);
-        decorInfo.mNonDecorInsets.set(130, 0,  60, 0);
+        decorInfo.mNonDecorInsets.set(130, 0, 60, 0);
         spyOn(policy);
         doReturn(decorInfo).when(policy).getDecorInsetsInfo(ROTATION_90,
                 display.mBaseDisplayHeight, display.mBaseDisplayWidth);
-        mWm.mLetterboxConfiguration.setLetterboxVerticalPositionMultiplier(0.5f);
+        mWm.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(0.5f);
 
         setUpApp(display);
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
@@ -3957,31 +3956,6 @@ public class SizeCompatTests extends WindowTestsBase {
     }
 
     @Test
-    public void testUpdateResolvedBoundsHorizontalPosition_invalidMultiplier_defaultToCenter() {
-        // Display configured as (2800, 1400).
-
-        // Below 0.0.
-        assertHorizontalPositionForDifferentDisplayConfigsForPortraitActivity(
-                /* letterboxHorizontalPositionMultiplier */ -1.0f,
-                // At launch.
-                /* fixedOrientationLetterbox */ new Rect(1050, 0, 1750, 1400),
-                // After 90 degree rotation.
-                /* sizeCompatUnscaled */ new Rect(350, 0, 1050, 1400),
-                // After the display is resized to (700, 1400).
-                /* sizeCompatScaled */ new Rect(525, 0, 875, 700));
-
-        // Above 1.0
-        assertHorizontalPositionForDifferentDisplayConfigsForPortraitActivity(
-                /* letterboxHorizontalPositionMultiplier */ 2.0f,
-                // At launch.
-                /* fixedOrientationLetterbox */ new Rect(1050, 0, 1750, 1400),
-                // After 90 degree rotation.
-                /* sizeCompatUnscaled */ new Rect(350, 0, 1050, 1400),
-                // After the display is resized to (700, 1400).
-                /* sizeCompatScaled */ new Rect(525, 0, 875, 700));
-    }
-
-    @Test
     public void testUpdateResolvedBoundsHorizontalPosition_right() {
         // Display configured as (2800, 1400).
         assertHorizontalPositionForDifferentDisplayConfigsForPortraitActivity(
@@ -4001,7 +3975,7 @@ public class SizeCompatTests extends WindowTestsBase {
         setUpDisplaySizeWithApp(2800, 1400);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
 
-        mActivity.mWmService.mLetterboxConfiguration.setLetterboxHorizontalPositionMultiplier(
+        mActivity.mWmService.mAppCompatConfiguration.setLetterboxHorizontalPositionMultiplier(
                 letterboxHorizontalPositionMultiplier);
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
         assertEquals(fixedOrientationLetterbox, mActivity.getBounds());
@@ -4013,8 +3987,107 @@ public class SizeCompatTests extends WindowTestsBase {
         // Force activity to scaled down for size compat mode.
         resizeDisplay(mTask.mDisplayContent, 700, 1400);
         assertTrue(mActivity.inSizeCompatMode());
-        assertScaled();
+        assertDownScaled();
         assertEquals(sizeCompatScaled, mActivity.getBounds());
+    }
+
+    @Test
+    @EnableCompatChanges({ActivityInfo.OVERRIDE_ENABLE_INSETS_DECOUPLED_CONFIGURATION})
+    public void testPortraitCloseToSquareDisplayWithTaskbar_insetsOverridden_notLetterboxed() {
+        final DisplayContent display = mDisplayContent;
+        // Set up portrait close to square display.
+        resizeDisplay(display, 2200, 2280);
+        display.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        // Simulate insets, final app bounds are (0, 0, 2200, 2130) - landscape.
+        final WindowState navbar = createWindow(null, TYPE_NAVIGATION_BAR, mDisplayContent,
+                "navbar");
+        final Binder owner = new Binder();
+        navbar.mAttrs.providedInsets = new InsetsFrameProvider[] {
+                new InsetsFrameProvider(owner, 0, WindowInsets.Type.navigationBars())
+                        .setInsetsSize(Insets.of(0, 0, 0, 150))
+        };
+        display.getDisplayPolicy().addWindowLw(navbar, navbar.mAttrs);
+        if (display.getDisplayPolicy().updateDecorInsetsInfo()) {
+            display.sendNewConfiguration();
+        }
+
+        final ActivityRecord activity = setUpApp(display, new ActivityBuilder(mAtm)
+                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT));
+
+        // Activity should not be letterboxed and should have portrait app bounds even though
+        // orientation is not respected with insets as insets have been decoupled.
+        final Rect appBounds = activity.getWindowConfiguration().getAppBounds();
+        final Rect displayBounds = display.getBounds();
+        assertFalse(activity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
+        assertNotNull(appBounds);
+        assertEquals(displayBounds.width(), appBounds.width());
+        assertEquals(displayBounds.height(), appBounds.height());
+    }
+
+    @Test
+    @DisableCompatChanges({ActivityInfo.INSETS_DECOUPLED_CONFIGURATION_ENFORCED})
+    public void testPortraitCloseToSquareDisplayWithTaskbar_letterboxed() {
+        final DisplayContent display = mDisplayContent;
+        // Set up portrait close to square display
+        resizeDisplay(display, 2200, 2280);
+        display.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        // Simulate taskbar, final app bounds are (0, 0, 2200, 2130) - landscape
+        final WindowState navbar = createWindow(null, TYPE_NAVIGATION_BAR, mDisplayContent,
+                "navbar");
+        final Binder owner = new Binder();
+        navbar.mAttrs.providedInsets = new InsetsFrameProvider[] {
+                new InsetsFrameProvider(owner, 0, WindowInsets.Type.navigationBars())
+                        .setInsetsSize(Insets.of(0, 0, 0, 150))
+        };
+        display.getDisplayPolicy().addWindowLw(navbar, navbar.mAttrs);
+        if (display.getDisplayPolicy().updateDecorInsetsInfo()) {
+            display.sendNewConfiguration();
+        }
+
+        final ActivityRecord activity = setUpApp(display, new ActivityBuilder(mAtm)
+                .setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT));
+
+        final Rect bounds = activity.getBounds();
+        // Activity should be letterboxed and should have portrait app bounds
+        assertTrue(activity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(bounds.height() > bounds.width());
+    }
+
+    @Test
+    @DisableCompatChanges({ActivityInfo.INSETS_DECOUPLED_CONFIGURATION_ENFORCED})
+    public void testFixedAspectRatioAppInPortraitCloseToSquareDisplay_notInSizeCompat() {
+        final DisplayContent dc = mDisplayContent;
+        resizeDisplay(dc, 2200, 2280);
+        dc.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        // Simulate taskbar, final app bounds are (0, 0, 2200, 2130) - landscape
+        final WindowState navbar = createWindow(null, TYPE_NAVIGATION_BAR, mDisplayContent,
+                "navbar");
+        final Binder owner = new Binder();
+        navbar.mAttrs.providedInsets = new InsetsFrameProvider[] {
+                new InsetsFrameProvider(owner, 0, WindowInsets.Type.navigationBars())
+                        .setInsetsSize(Insets.of(0, 0, 0, 150))
+        };
+        dc.getDisplayPolicy().addWindowLw(navbar, navbar.mAttrs);
+        if (dc.getDisplayPolicy().updateDecorInsetsInfo()) {
+            dc.sendNewConfiguration();
+        }
+
+        final ActivityRecord activity = setUpApp(dc, new ActivityBuilder(mAtm)
+                .setResizeMode(RESIZE_MODE_UNRESIZEABLE)
+                .setScreenOrientation(SCREEN_ORIENTATION_LANDSCAPE)
+                .setMinAspectRatio(OVERRIDE_MIN_ASPECT_RATIO_LARGE_VALUE));
+        // To force config to update again but with the same landscape orientation.
+        activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+
+        assertTrue(activity.shouldCreateAppCompatDisplayInsets());
+        assertNotNull(activity.getAppCompatDisplayInsets());
+        // Activity is not letterboxed for fixed orientation because orientation is respected
+        // with insets, and should not be in size compat mode
+        assertFalse(activity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
+        assertFalse(activity.inSizeCompatMode());
     }
 
     @Test
@@ -4026,12 +4099,15 @@ public class SizeCompatTests extends WindowTestsBase {
                 .build();
 
         setUpApp(display);
-        prepareUnresizable(mActivity, 2.1f /* maxAspect */, SCREEN_ORIENTATION_UNSPECIFIED);
+        mActivity.mResolveConfigHint.mUseOverrideInsetsForConfig = true;
+        prepareUnresizable(mActivity, 2.1f, SCREEN_ORIENTATION_UNSPECIFIED);
         // The activity height is 2100 and the display's app bounds height is 2250, so the activity
         // can be aligned inside parentAppBounds
-        assertEquals(mActivity.getBounds(), new Rect(0, 0, 1000, 2200));
+        assertEquals(new Rect(0, 0, 1000, 2200), mActivity.getBounds());
     }
+
     @Test
+    @DisableCompatChanges({ActivityInfo.INSETS_DECOUPLED_CONFIGURATION_ENFORCED})
     public void testApplyAspectRatio_activityCannotAlignWithParentAppVertical() {
         // The display's app bounds will be (0, 100, 1000, 2150)
         final DisplayContent display = new TestDisplayContent.Builder(mAtm, 1000, 2300)
@@ -4039,14 +4115,18 @@ public class SizeCompatTests extends WindowTestsBase {
                 .setCutout(0, 100, 0, 150)
                 .build();
 
-        setUpApp(display);
-        prepareUnresizable(mActivity, 2.1f /* maxAspect */, SCREEN_ORIENTATION_UNSPECIFIED);
+        final ActivityRecord activity = setUpApp(display, new ActivityBuilder(mAtm)
+                .setResizeMode(RESIZE_MODE_UNRESIZEABLE)
+                .setMaxAspectRatio(2.1f)
+                .setScreenOrientation(SCREEN_ORIENTATION_UNSPECIFIED));
+
         // The activity height is 2100 and the display's app bounds height is 2050, so the activity
         // cannot be aligned inside parentAppBounds and it will fill the parentBounds of the display
-        assertEquals(mActivity.getBounds(), display.getBounds());
+        assertEquals(activity.getBounds(), display.getBounds());
     }
 
     @Test
+    @DisableCompatChanges({ActivityInfo.INSETS_DECOUPLED_CONFIGURATION_ENFORCED})
     public void testApplyAspectRatio_activityAlignWithParentAppHorizontal() {
         // The display's app bounds will be (100, 0, 2350, 1000)
         final DisplayContent display = new TestDisplayContent.Builder(mAtm, 2500, 1000)
@@ -4054,13 +4134,17 @@ public class SizeCompatTests extends WindowTestsBase {
                 .setCutout(100, 0, 150, 0)
                 .build();
 
-        setUpApp(display);
-        prepareUnresizable(mActivity, 2.1f /* maxAspect */, SCREEN_ORIENTATION_UNSPECIFIED);
+        final ActivityRecord activity = setUpApp(display, new ActivityBuilder(mAtm)
+                .setResizeMode(RESIZE_MODE_UNRESIZEABLE)
+                .setMaxAspectRatio(2.1f)
+                .setScreenOrientation(SCREEN_ORIENTATION_UNSPECIFIED));
         // The activity width is 2100 and the display's app bounds width is 2250, so the activity
         // can be aligned inside parentAppBounds
-        assertEquals(mActivity.getBounds(), new Rect(175, 0, 2275, 1000));
+        assertEquals(activity.getBounds(), new Rect(175, 0, 2275, 1000));
     }
+
     @Test
+    @DisableCompatChanges({ActivityInfo.INSETS_DECOUPLED_CONFIGURATION_ENFORCED})
     public void testApplyAspectRatio_activityCannotAlignWithParentAppHorizontal() {
         // The display's app bounds will be (100, 0, 2150, 1000)
         final DisplayContent display = new TestDisplayContent.Builder(mAtm, 2300, 1000)
@@ -4068,18 +4152,20 @@ public class SizeCompatTests extends WindowTestsBase {
                 .setCutout(100, 0, 150, 0)
                 .build();
 
-        setUpApp(display);
-        prepareUnresizable(mActivity, 2.1f /* maxAspect */, SCREEN_ORIENTATION_UNSPECIFIED);
+        final ActivityRecord activity = setUpApp(display, new ActivityBuilder(mAtm)
+                .setResizeMode(RESIZE_MODE_UNRESIZEABLE)
+                .setMaxAspectRatio(2.1f)
+                .setScreenOrientation(SCREEN_ORIENTATION_UNSPECIFIED));
         // The activity width is 2100 and the display's app bounds width is 2050, so the activity
         // cannot be aligned inside parentAppBounds and it will fill the parentBounds of the display
-        assertEquals(mActivity.getBounds(), display.getBounds());
+        assertEquals(activity.getBounds(), display.getBounds());
     }
 
     @Test
     public void testApplyAspectRatio_containingRatioAlmostEqualToMaxRatio_boundsUnchanged() {
         setUpDisplaySizeWithApp(1981, 2576);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setLetterboxVerticalPositionMultiplier(0.5f);
+        mWm.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(0.5f);
 
         final Rect originalBounds = new Rect(mActivity.getBounds());
         prepareUnresizable(mActivity, 1.3f, SCREEN_ORIENTATION_UNSPECIFIED);
@@ -4110,11 +4196,11 @@ public class SizeCompatTests extends WindowTestsBase {
         final DisplayPolicy policy = display.getDisplayPolicy();
         DisplayPolicy.DecorInsets.Info decorInfo = policy.getDecorInsetsInfo(ROTATION_90,
                 display.mBaseDisplayHeight, display.mBaseDisplayWidth);
-        decorInfo.mNonDecorInsets.set(0, 130,  0, 60);
+        decorInfo.mNonDecorInsets.set(0, 130, 0, 60);
         spyOn(policy);
         doReturn(decorInfo).when(policy).getDecorInsetsInfo(ROTATION_90,
                 display.mBaseDisplayHeight, display.mBaseDisplayWidth);
-        mWm.mLetterboxConfiguration.setLetterboxVerticalPositionMultiplier(0.5f);
+        mWm.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(0.5f);
 
         setUpApp(display);
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
@@ -4160,31 +4246,6 @@ public class SizeCompatTests extends WindowTestsBase {
     }
 
     @Test
-    public void testUpdateResolvedBoundsVerticalPosition_invalidMultiplier_defaultToCenter() {
-        // Display configured as (1400, 2800).
-
-        // Below 0.0.
-        assertVerticalPositionForDifferentDisplayConfigsForLandscapeActivity(
-                /* letterboxVerticalPositionMultiplier */ -1.0f,
-                // At launch.
-                /* fixedOrientationLetterbox */ new Rect(0, 1050, 1400, 1750),
-                // After 90 degree rotation.
-                /* sizeCompatUnscaled */ new Rect(700, 350, 2100, 1050),
-                // After the display is resized to (1400, 700).
-                /* sizeCompatScaled */ new Rect(0, 525, 700, 875));
-
-        // Above 1.0
-        assertVerticalPositionForDifferentDisplayConfigsForLandscapeActivity(
-                /* letterboxVerticalPositionMultiplier */ 2.0f,
-                // At launch.
-                /* fixedOrientationLetterbox */ new Rect(0, 1050, 1400, 1750),
-                // After 90 degree rotation.
-                /* sizeCompatUnscaled */ new Rect(700, 350, 2100, 1050),
-                // After the display is resized to (1400, 700).
-                /* sizeCompatScaled */ new Rect(0, 525, 700, 875));
-    }
-
-    @Test
     public void testUpdateResolvedBoundsVerticalPosition_bottom() {
         // Display configured as (1400, 2800).
         assertVerticalPositionForDifferentDisplayConfigsForLandscapeActivity(
@@ -4202,7 +4263,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Set up a display in portrait with a fixed-orientation LANDSCAPE app
         setUpDisplaySizeWithApp(1400, 2800);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setLetterboxVerticalPositionMultiplier(
+        mActivity.mWmService.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(
                 1.0f /*letterboxVerticalPositionMultiplier*/);
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
 
@@ -4223,12 +4284,43 @@ public class SizeCompatTests extends WindowTestsBase {
     }
 
     @Test
+    public void testUpdateResolvedBoundsVerticalPosition_unfoldDisplay_notTabletop() {
+        // Set up a display in portrait with a fixed-orientation LANDSCAPE app.
+        setUpDisplaySizeWithApp(1000, 2000);
+        mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
+        mActivity.mWmService.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(
+                1.0f /*letterboxVerticalPositionMultiplier*/);
+        prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
+
+        // Make the activity full-screen.
+        mTask.setWindowingMode(WINDOWING_MODE_FULLSCREEN);
+
+        // Simulate display unfolding.
+        setFoldablePosture(true /* isHalfFolded */, true /* isTabletop */);
+        doReturn(true).when(mActivity.mDisplayContent).inTransition();
+        resizeDisplay(mTask.mDisplayContent, 1400, 2800);
+
+        // Make sure app doesn't jump to top (default tabletop position) when unfolding.
+        assertEquals(1.0f, mActivity.mAppCompatController
+                .getAppCompatReachabilityOverrides().getVerticalPositionMultiplier(mActivity
+                        .getParent().getConfiguration()), 0);
+
+        // Simulate display fully open after unfolding.
+        setFoldablePosture(false /* isHalfFolded */, false /* isTabletop */);
+        doReturn(false).when(mActivity.mDisplayContent).inTransition();
+
+        assertEquals(1.0f, mActivity.mAppCompatController
+                .getAppCompatReachabilityOverrides().getVerticalPositionMultiplier(mActivity
+                        .getParent().getConfiguration()), 0);
+    }
+
+    @Test
     public void testGetFixedOrientationLetterboxAspectRatio_tabletop_centered() {
         // Set up a display in portrait with a fixed-orientation LANDSCAPE app
         setUpDisplaySizeWithApp(1400, 2800);
-        mWm.mLetterboxConfiguration.setLetterboxHorizontalPositionMultiplier(
+        mWm.mAppCompatConfiguration.setLetterboxHorizontalPositionMultiplier(
                 LETTERBOX_POSITION_MULTIPLIER_CENTER);
-        mActivity.mWmService.mLetterboxConfiguration.setLetterboxVerticalPositionMultiplier(
+        mActivity.mWmService.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(
                 1.0f /*letterboxVerticalPositionMultiplier*/);
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
 
@@ -4236,11 +4328,27 @@ public class SizeCompatTests extends WindowTestsBase {
 
         Configuration parentConfig = mActivity.getParent().getConfiguration();
 
-        float actual = mActivity.mLetterboxUiController
-                .getFixedOrientationLetterboxAspectRatio(parentConfig);
-        float expected = mActivity.mLetterboxUiController.getSplitScreenAspectRatio();
+        final AppCompatAspectRatioOverrides aspectRatioOverrides =
+                mActivity.mAppCompatController.getAppCompatAspectRatioOverrides();
+        float actual = aspectRatioOverrides.getFixedOrientationLetterboxAspectRatio(parentConfig);
+        float expected = aspectRatioOverrides.getSplitScreenAspectRatio();
 
-        assertEquals(expected, actual, 0.01);
+        assertEquals(expected, actual, DELTA_ASPECT_RATIO_TOLERANCE);
+    }
+
+    @Test
+    public void testPortraitAppInTabletop_notSplitScreen() {
+        final int dw = 2400;
+        setUpDisplaySizeWithApp(dw, 2000);
+        prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
+
+        final int initialWidth = mActivity.getBounds().width();
+
+        setFoldablePosture(true /* isHalfFolded */, true /* isTabletop */);
+
+        final int finalWidth = mActivity.getBounds().width();
+        assertEquals(initialWidth, finalWidth);
+        assertNotEquals(finalWidth, getExpectedSplitSize(dw));
     }
 
     @Test
@@ -4248,8 +4356,8 @@ public class SizeCompatTests extends WindowTestsBase {
         // Set up a display in landscape with a fixed-orientation PORTRAIT app
         setUpDisplaySizeWithApp(2800, 1400);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setIsAutomaticReachabilityInBookModeEnabled(true);
-        mWm.mLetterboxConfiguration.setLetterboxHorizontalPositionMultiplier(
+        mWm.mAppCompatConfiguration.setIsAutomaticReachabilityInBookModeEnabled(true);
+        mWm.mAppCompatConfiguration.setLetterboxHorizontalPositionMultiplier(
                 1.0f /*letterboxHorizontalPositionMultiplier*/);
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
@@ -4274,8 +4382,8 @@ public class SizeCompatTests extends WindowTestsBase {
         // Set up a display in landscape with a fixed-orientation PORTRAIT app
         setUpDisplaySizeWithApp(2800, 1400);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mWm.mLetterboxConfiguration.setIsAutomaticReachabilityInBookModeEnabled(false);
-        mWm.mLetterboxConfiguration.setLetterboxHorizontalPositionMultiplier(0.5f);
+        mWm.mAppCompatConfiguration.setIsAutomaticReachabilityInBookModeEnabled(false);
+        mWm.mAppCompatConfiguration.setLetterboxHorizontalPositionMultiplier(0.5f);
         prepareUnresizable(mActivity, 1.75f, SCREEN_ORIENTATION_PORTRAIT);
 
         Rect letterboxNoFold = new Rect(1000, 0, 1800, 1400);
@@ -4316,15 +4424,38 @@ public class SizeCompatTests extends WindowTestsBase {
                 .build();
         setUpApp(display);
 
+        mActivity.mResolveConfigHint.mUseOverrideInsetsForConfig = true;
         // Prepare unresizable activity with max aspect ratio
-        prepareUnresizable(mActivity, /* maxAspect */ 1.1f, SCREEN_ORIENTATION_UNSPECIFIED);
+        prepareUnresizable(mActivity, 1.1f, SCREEN_ORIENTATION_UNSPECIFIED);
 
-        Rect mBounds = new Rect(mActivity.getWindowConfiguration().getBounds());
+        Rect bounds = new Rect(mActivity.getWindowConfiguration().getBounds());
         Rect appBounds = new Rect(mActivity.getWindowConfiguration().getAppBounds());
         // The insets should be cut for aspect ratio and then added back because the appBounds
         // are aligned to the top of the parentAppBounds
-        assertEquals(mBounds, new Rect(0, 0, 1000, 1200));
-        assertEquals(appBounds, new Rect(0, notchHeight, 1000, 1200));
+        assertEquals(new Rect(0, notchHeight, 1000, 1200), appBounds);
+        assertEquals(new Rect(0, 0, 1000, 1200), bounds);
+
+    }
+
+    @Test
+    public void testInsetOverrideNotAppliedInFreeform() {
+        final int notchHeight = 100;
+        final DisplayContent display = new TestDisplayContent.Builder(mAtm, 1000, 2800)
+                .setNotch(notchHeight)
+                .build();
+        setUpApp(display);
+
+        // Simulate inset override for legacy app bound behaviour
+        mActivity.mResolveConfigHint.mUseOverrideInsetsForConfig = true;
+        // Set task as freeform
+        mTask.setWindowingMode(WindowConfiguration.WINDOWING_MODE_FREEFORM);
+        prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
+
+        Rect bounds = new Rect(mActivity.getWindowConfiguration().getBounds());
+        Rect appBounds = new Rect(mActivity.getWindowConfiguration().getAppBounds());
+        // App bounds should not include insets and should match bounds when in freeform.
+        assertEquals(new Rect(0, 0, 1000, 2800), appBounds);
+        assertEquals(new Rect(0, 0, 1000, 2800), bounds);
     }
 
     private void assertVerticalPositionForDifferentDisplayConfigsForLandscapeActivity(
@@ -4334,7 +4465,7 @@ public class SizeCompatTests extends WindowTestsBase {
         setUpDisplaySizeWithApp(1400, 2800);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
 
-        mActivity.mWmService.mLetterboxConfiguration.setLetterboxVerticalPositionMultiplier(
+        mActivity.mWmService.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(
                 letterboxVerticalPositionMultiplier);
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
 
@@ -4351,7 +4482,7 @@ public class SizeCompatTests extends WindowTestsBase {
         resizeDisplay(mTask.mDisplayContent, 1400, 700);
 
         assertTrue(mActivity.inSizeCompatMode());
-        assertScaled();
+        assertDownScaled();
         assertEquals(sizeCompatScaled, mActivity.getBounds());
     }
 
@@ -4374,7 +4505,8 @@ public class SizeCompatTests extends WindowTestsBase {
         verifyLogAppCompatState(mActivity, APP_COMPAT_STATE_CHANGED__STATE__NOT_LETTERBOXED);
 
         prepareUnresizable(mActivity, /* maxAspect= */ 2, SCREEN_ORIENTATION_PORTRAIT);
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
         assertTrue(mActivity.areBoundsLetterboxed());
 
@@ -4390,7 +4522,8 @@ public class SizeCompatTests extends WindowTestsBase {
         // ActivityRecord#resolveSizeCompatModeConfiguration because mCompatDisplayInsets aren't
         // null but activity doesn't enter size compat mode. Checking that areBoundsLetterboxed()
         // still returns true because of the aspect ratio restrictions.
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
         assertTrue(mActivity.areBoundsLetterboxed());
         verifyLogAppCompatState(mActivity,
@@ -4417,7 +4550,8 @@ public class SizeCompatTests extends WindowTestsBase {
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertFalse(mActivity.inSizeCompatMode());
         assertTrue(mActivity.areBoundsLetterboxed());
         verifyLogAppCompatState(mActivity,
@@ -4435,7 +4569,8 @@ public class SizeCompatTests extends WindowTestsBase {
 
         rotateDisplay(mActivity.mDisplayContent, ROTATION_90);
 
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertTrue(mActivity.inSizeCompatMode());
         assertTrue(mActivity.areBoundsLetterboxed());
         verifyLogAppCompatState(mActivity,
@@ -4446,7 +4581,7 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testIsEligibleForLetterboxEducation_educationNotEnabled_returnsFalse() {
         setUpDisplaySizeWithApp(2500, 1000);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setIsEducationEnabled(false);
+        mActivity.mWmService.mAppCompatConfiguration.setIsEducationEnabled(false);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
@@ -4457,7 +4592,7 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testIsEligibleForLetterboxEducation_notEligibleForFixedOrientation_returnsFalse() {
         setUpDisplaySizeWithApp(1000, 2500);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setIsEducationEnabled(true);
+        mActivity.mWmService.mAppCompatConfiguration.setIsEducationEnabled(true);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
@@ -4470,7 +4605,7 @@ public class SizeCompatTests extends WindowTestsBase {
         mAtm.mDevEnableNonResizableMultiWindow = true;
         setUpDisplaySizeWithApp(1000, 1200);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setIsEducationEnabled(true);
+        mActivity.mWmService.mAppCompatConfiguration.setIsEducationEnabled(true);
         final TestSplitOrganizer organizer =
                 new TestSplitOrganizer(mAtm, mActivity.getDisplayContent());
 
@@ -4491,19 +4626,20 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testIsEligibleForLetterboxEducation_fixedOrientationLandscape_returnsFalse() {
         setUpDisplaySizeWithApp(1000, 2500);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setIsEducationEnabled(true);
+        mActivity.mWmService.mAppCompatConfiguration.setIsEducationEnabled(true);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
 
         assertFalse(mActivity.isEligibleForLetterboxEducation());
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
     }
 
     @Test
     public void testIsEligibleForLetterboxEducation_hasStartingWindow_returnsFalseUntilRemoved() {
         setUpDisplaySizeWithApp(2500, 1000);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setIsEducationEnabled(true);
+        mActivity.mWmService.mAppCompatConfiguration.setIsEducationEnabled(true);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
         mActivity.mStartingData = mock(StartingData.class);
@@ -4526,7 +4662,7 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testIsEligibleForLetterboxEducation_hasStartingWindowAndEducationNotEnabled() {
         setUpDisplaySizeWithApp(2500, 1000);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setIsEducationEnabled(false);
+        mActivity.mWmService.mAppCompatConfiguration.setIsEducationEnabled(false);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
         mActivity.mStartingData = mock(StartingData.class);
@@ -4549,26 +4685,28 @@ public class SizeCompatTests extends WindowTestsBase {
     public void testIsEligibleForLetterboxEducation_letterboxedForFixedOrientation_returnsTrue() {
         setUpDisplaySizeWithApp(2500, 1000);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setIsEducationEnabled(true);
+        mActivity.mWmService.mAppCompatConfiguration.setIsEducationEnabled(true);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
         assertTrue(mActivity.isEligibleForLetterboxEducation());
-        assertTrue(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertTrue(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
     }
 
     @Test
     public void testIsEligibleForLetterboxEducation_sizeCompatAndEligibleForFixedOrientation() {
         setUpDisplaySizeWithApp(1000, 2500);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
-        mActivity.mWmService.mLetterboxConfiguration.setIsEducationEnabled(true);
+        mActivity.mWmService.mAppCompatConfiguration.setIsEducationEnabled(true);
 
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
         rotateDisplay(mActivity.mDisplayContent, ROTATION_90);
 
         assertTrue(mActivity.isEligibleForLetterboxEducation());
-        assertFalse(mActivity.isLetterboxedForFixedOrientationAndAspectRatio());
+        assertFalse(mActivity.mAppCompatController.getAppCompatAspectRatioPolicy()
+                .isLetterboxedForFixedOrientationAndAspectRatio());
         assertTrue(mActivity.inSizeCompatMode());
     }
 
@@ -4587,7 +4725,7 @@ public class SizeCompatTests extends WindowTestsBase {
         assertTrue(mActivity.inSizeCompatMode());
         assertEquals(mActivity.getState(), PAUSED);
         assertTrue(mActivity.isVisible());
-        assertTrue(mTask.getTaskInfo().appCompatTaskInfo.topActivityInSizeCompat);
+        assertTrue(mTask.getTaskInfo().appCompatTaskInfo.isTopActivityInSizeCompat());
     }
 
     /**
@@ -4610,7 +4748,7 @@ public class SizeCompatTests extends WindowTestsBase {
         // Target min aspect ratio must be larger than parent aspect ratio to be applied.
         final float targetMinAspectRatio = 3.0f;
 
-        // Create fixed portait activity with min aspect ratio greater than parent aspect ratio.
+        // Create fixed portrait activity with min aspect ratio greater than parent aspect ratio.
         final ActivityRecord fixedOrientationActivity = new ActivityBuilder(mAtm)
                 .setTask(task).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
                 .setMinAspectRatio(targetMinAspectRatio).build();
@@ -4624,7 +4762,7 @@ public class SizeCompatTests extends WindowTestsBase {
         final Rect minAspectRatioAppBounds = new Rect(minAspectRatioActivity.getConfiguration()
                 .windowConfiguration.getAppBounds());
 
-        // Create unresizeable fixed portait activity with min aspect ratio greater than parent
+        // Create unresizeable fixed portrait activity with min aspect ratio greater than parent
         // aspect ratio.
         final ActivityRecord sizeCompatActivity = new ActivityBuilder(mAtm)
                 .setTask(task).setResizeMode(RESIZE_MODE_UNRESIZEABLE)
@@ -4636,13 +4774,204 @@ public class SizeCompatTests extends WindowTestsBase {
                 .windowConfiguration.getAppBounds());
 
         // Check that aspect ratio of app bounds is equal to the min aspect ratio.
-        final float delta = 0.01f;
-        assertEquals(targetMinAspectRatio, ActivityRecord
-                .computeAspectRatio(fixedOrientationAppBounds), delta);
-        assertEquals(targetMinAspectRatio, ActivityRecord
-                .computeAspectRatio(minAspectRatioAppBounds), delta);
-        assertEquals(targetMinAspectRatio, ActivityRecord
-                .computeAspectRatio(sizeCompatAppBounds), delta);
+        assertEquals(targetMinAspectRatio,
+                computeAspectRatio(fixedOrientationAppBounds), DELTA_ASPECT_RATIO_TOLERANCE);
+        assertEquals(targetMinAspectRatio,
+                computeAspectRatio(minAspectRatioAppBounds), DELTA_ASPECT_RATIO_TOLERANCE);
+        assertEquals(targetMinAspectRatio,
+                computeAspectRatio(sizeCompatAppBounds), DELTA_ASPECT_RATIO_TOLERANCE);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ENABLE_CAMERA_COMPAT_FOR_DESKTOP_WINDOWING)
+    public void testCameraCompatAspectRatioAppliedForFixedOrientationCameraActivities() {
+        // Needed to create camera compat policy in DisplayContent.
+        allowDesktopMode();
+        // Create display that has all stable insets and does not rotate.
+        final DisplayContent display = new TestDisplayContent.Builder(mAtm, 1080, 600)
+                .setSystemDecorations(true).setCanRotate(false).build();
+
+        final float cameraCompatAspectRatio = 4.0f;
+        setupCameraCompatAspectRatio(cameraCompatAspectRatio, display);
+
+        // Create task on test display.
+        final Task task = new TaskBuilder(mSupervisor).setDisplay(display).build();
+
+        // Create fixed portrait activity.
+        final ActivityRecord fixedOrientationActivity = new ActivityBuilder(mAtm)
+                .setTask(task).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT).build();
+        final Rect fixedOrientationAppBounds = new Rect(fixedOrientationActivity.getConfiguration()
+                .windowConfiguration.getAppBounds());
+
+        assertEquals(cameraCompatAspectRatio, computeAspectRatio(fixedOrientationAppBounds),
+                DELTA_ASPECT_RATIO_TOLERANCE);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ENABLE_CAMERA_COMPAT_FOR_DESKTOP_WINDOWING)
+    public void testCameraCompatAspectRatioForFixedOrientationCameraActivitiesPortraitWindow() {
+        // Needed to create camera compat policy in DisplayContent.
+        allowDesktopMode();
+        // Create portrait display that has all stable insets and does not rotate.
+        final DisplayContent display = new TestDisplayContent.Builder(mAtm, 1080, 1600)
+                .setSystemDecorations(true).setCanRotate(false).build();
+
+        final float cameraCompatAspectRatio = 4.0f;
+        setupCameraCompatAspectRatio(cameraCompatAspectRatio, display);
+
+        // Create task on test display.
+        final Task task = new TaskBuilder(mSupervisor).setDisplay(display).build();
+
+        // Create fixed portrait activity.
+        final ActivityRecord fixedOrientationActivity = new ActivityBuilder(mAtm)
+                .setTask(task).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT).build();
+        final Rect fixedOrientationAppBounds = new Rect(fixedOrientationActivity.getConfiguration()
+                .windowConfiguration.getAppBounds());
+
+        assertEquals(cameraCompatAspectRatio, computeAspectRatio(fixedOrientationAppBounds),
+                DELTA_ASPECT_RATIO_TOLERANCE);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ENABLE_CAMERA_COMPAT_FOR_DESKTOP_WINDOWING)
+    public void testCameraCompatAspectRatioAppliedInsteadOfDefaultAspectRatio() {
+        // Needed to create camera compat policy in DisplayContent.
+        allowDesktopMode();
+        // Create display that has all stable insets and does not rotate.
+        final DisplayContent display = new TestDisplayContent.Builder(mAtm, 1080, 600)
+                .setSystemDecorations(true).setCanRotate(false).build();
+
+        final float cameraCompatAspectRatio = 5.0f;
+        setupCameraCompatAspectRatio(cameraCompatAspectRatio, display);
+
+        // Create task on test display.
+        final Task task = new TaskBuilder(mSupervisor).setDisplay(display).build();
+
+        // App's target min aspect ratio - this should not be used, as camera controls aspect ratio.
+        final float targetMinAspectRatio = 4.0f;
+
+        // Create fixed portrait activity with min aspect ratio greater than parent aspect ratio.
+        final ActivityRecord minAspectRatioActivity = new ActivityBuilder(mAtm)
+                .setTask(task).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
+                .setMinAspectRatio(targetMinAspectRatio).build();
+        final Rect minAspectRatioAppBounds = new Rect(minAspectRatioActivity.getConfiguration()
+                .windowConfiguration.getAppBounds());
+
+        assertEquals(cameraCompatAspectRatio, computeAspectRatio(minAspectRatioAppBounds),
+                DELTA_ASPECT_RATIO_TOLERANCE);
+    }
+
+    @Test
+    @EnableFlags(Flags.FLAG_ENABLE_CAMERA_COMPAT_FOR_DESKTOP_WINDOWING)
+    public void testCameraCompatAspectRatio_defaultAspectRatioAppliedWhenGreater() {
+        // Needed to create camera compat policy in DisplayContent.
+        allowDesktopMode();
+        // Create display that has all stable insets and does not rotate.
+        final DisplayContent display = new TestDisplayContent.Builder(mAtm, 1080, 600)
+                .setSystemDecorations(true).setCanRotate(false).build();
+
+        final float cameraCompatAspectRatio = 5.0f;
+        setupCameraCompatAspectRatio(cameraCompatAspectRatio, display);
+
+        // Create task on test display.
+        final Task task = new TaskBuilder(mSupervisor).setDisplay(display).build();
+
+        // App's target min aspect ratio bigger than camera compat aspect ratio - use that instead.
+        final float targetMinAspectRatio = 6.0f;
+
+        // Create fixed portrait activity with min aspect ratio greater than parent aspect ratio.
+        final ActivityRecord minAspectRatioActivity = new ActivityBuilder(mAtm)
+                .setTask(task).setScreenOrientation(SCREEN_ORIENTATION_PORTRAIT)
+                .setMinAspectRatio(targetMinAspectRatio).build();
+        final Rect minAspectRatioAppBounds = new Rect(minAspectRatioActivity.getConfiguration()
+                .windowConfiguration.getAppBounds());
+
+        assertEquals(targetMinAspectRatio, computeAspectRatio(minAspectRatioAppBounds),
+                DELTA_ASPECT_RATIO_TOLERANCE);
+    }
+
+    @Test
+    public void testUniversalResizeable() {
+        mWm.mConstants.mIgnoreActivityOrientationRequestSmallScreen = true;
+        mWm.mConstants.mIgnoreActivityOrientationRequestLargeScreen = true;
+        setUpApp(mDisplayContent);
+        final float maxAspect = 1.8f;
+        final float minAspect = 1.5f;
+        prepareLimitedBounds(mActivity, maxAspect, minAspect,
+                ActivityInfo.SCREEN_ORIENTATION_NOSENSOR, true /* isUnresizable */);
+
+        assertTrue(ActivityRecord.canBeUniversalResizeable(mActivity.info.applicationInfo,
+                mWm, true /* isLargeScreen */, false /* forActivity */));
+        assertTrue(mActivity.isUniversalResizeable());
+        assertTrue(mActivity.isResizeable());
+        assertFalse(mActivity.shouldCreateAppCompatDisplayInsets());
+        assertEquals(SCREEN_ORIENTATION_UNSPECIFIED, mActivity.getOverrideOrientation());
+        assertEquals(mActivity.getTask().getBounds(), mActivity.getBounds());
+        final AppCompatAspectRatioPolicy aspectRatioPolicy = mActivity.mAppCompatController
+                .getAppCompatAspectRatioPolicy();
+        assertEquals(0, aspectRatioPolicy.getMaxAspectRatio(), 0 /* delta */);
+        assertEquals(0, aspectRatioPolicy.getMinAspectRatio(), 0 /* delta */);
+
+        // Compat override can still take effect.
+        final AppCompatAspectRatioOverrides aspectRatioOverrides =
+                mActivity.mAppCompatController.getAppCompatAspectRatioOverrides();
+        spyOn(aspectRatioOverrides);
+        doReturn(true).when(aspectRatioOverrides).shouldOverrideMinAspectRatio();
+        assertEquals(minAspect, aspectRatioPolicy.getMinAspectRatio(), 0 /* delta */);
+
+        // User override can still take effect.
+        doReturn(USER_MIN_ASPECT_RATIO_3_2).when(aspectRatioOverrides)
+                .getUserMinAspectRatioOverrideCode();
+        assertFalse(mActivity.isResizeable());
+        assertEquals(maxAspect, aspectRatioPolicy.getMaxAspectRatio(), 0 /* delta */);
+        assertNotEquals(SCREEN_ORIENTATION_UNSPECIFIED, mActivity.getOverrideOrientation());
+
+        // Activity can opt-out the resizability by component level property.
+        final ComponentName name = getUniqueComponentName(mContext.getPackageName());
+        final PackageManager pm = mContext.getPackageManager();
+        spyOn(pm);
+        final PackageManager.Property property = new PackageManager.Property("propertyName",
+                true /* value */, name.getPackageName(), name.getClassName());
+        // Activity level.
+        try {
+            doReturn(property).when(pm).getPropertyAsUser(
+                    WindowManager.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY,
+                    name.getPackageName(), name.getClassName(), 0 /* userId */);
+        } catch (PackageManager.NameNotFoundException e) {
+            throw new RuntimeException(e);
+        }
+        final ActivityRecord optOutActivity = new ActivityBuilder(mAtm)
+                .setComponent(name).setTask(mTask).build();
+        assertFalse(optOutActivity.isUniversalResizeable());
+
+        // Application level.
+        try {
+            doReturn(property).when(pm).getProperty(
+                    WindowManager.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY,
+                    name.getPackageName());
+        } catch (PackageManager.NameNotFoundException e) {
+            throw new RuntimeException(e);
+        }
+        final ActivityRecord optOutAppActivity = new ActivityBuilder(mAtm)
+                .setComponent(getUniqueComponentName(mContext.getPackageName()))
+                .setTask(mTask).build();
+        assertFalse(optOutAppActivity.isUniversalResizeable());
+        assertFalse(ActivityRecord.canBeUniversalResizeable(mActivity.info.applicationInfo,
+                mWm, true /* isLargeScreen */, false /* forActivity */));
+    }
+
+
+    @Test
+    @EnableCompatChanges({ActivityInfo.UNIVERSAL_RESIZABLE_BY_DEFAULT})
+    public void testUniversalResizeableByDefault() {
+        mSetFlagsRule.enableFlags(Flags.FLAG_UNIVERSAL_RESIZABLE_BY_DEFAULT);
+        mDisplayContent.setIgnoreOrientationRequest(false);
+        setUpApp(mDisplayContent);
+        assertFalse(mActivity.isUniversalResizeable());
+
+        mDisplayContent.setIgnoreOrientationRequest(true);
+        makeDisplayLargeScreen(mDisplayContent);
+        assertTrue(mActivity.isUniversalResizeable());
     }
 
     @Test
@@ -4658,60 +4987,43 @@ public class SizeCompatTests extends WindowTestsBase {
         // Activity should enter size compat with old density after display density change.
         display.setForcedDensity(newDensity, UserHandle.USER_CURRENT);
 
-        assertScaled();
+        assertDownScaled();
         assertEquals(origDensity, mActivity.getConfiguration().densityDpi);
 
         // Activity should exit size compat with new density.
-        mActivity.clearSizeCompatMode();
+        mActivity.mAppCompatController.getAppCompatSizeCompatModePolicy().clearSizeCompatMode();
 
         assertFitted();
         assertEquals(newDensity, mActivity.getConfiguration().densityDpi);
     }
 
-    @Test
-    public void testShouldSendFakeFocus_compatFakeFocusEnabled() {
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setCreateTask(true)
-                .setOnTop(true)
-                // Set the component to be that of the test class in order to enable compat changes
-                .setComponent(ComponentName.createRelative(mContext,
-                        com.android.server.wm.SizeCompatTests.class.getName()))
-                .build();
-        final Task task = activity.getTask();
-        spyOn(activity.mLetterboxUiController);
-        doReturn(true).when(activity.mLetterboxUiController).shouldSendFakeFocus();
-
-        task.setWindowingMode(WINDOWING_MODE_MULTI_WINDOW);
-        assertTrue(activity.shouldSendCompatFakeFocus());
-
-        task.setWindowingMode(WINDOWING_MODE_PINNED);
-        assertFalse(activity.shouldSendCompatFakeFocus());
-
-        task.setWindowingMode(WINDOWING_MODE_FREEFORM);
-        assertFalse(activity.shouldSendCompatFakeFocus());
+    /**
+     * {@code canEnterDesktopMode} is called when {@link CameraCompatFreeformPolicy} is created in
+     * {@link AppCompatCameraPolicy}.
+     *
+     * <p>{@link #allowDesktopMode()} needs to be called before {@link DisplayContent} is created.
+     */
+    private void allowDesktopMode() {
+        doReturn(true).when(() -> DesktopModeHelper.canEnterDesktopMode(any()));
     }
 
-    @Test
-    public void testShouldSendFakeFocus_compatFakeFocusDisabled() {
-        final ActivityRecord activity = new ActivityBuilder(mAtm)
-                .setCreateTask(true)
-                .setOnTop(true)
-                // Set the component to be that of the test class in order to enable compat changes
-                .setComponent(ComponentName.createRelative(mContext,
-                        com.android.server.wm.SizeCompatTests.class.getName()))
-                .build();
-        final Task task = activity.getTask();
-        spyOn(activity.mLetterboxUiController);
-        doReturn(false).when(activity.mLetterboxUiController).shouldSendFakeFocus();
+    private void setupCameraCompatAspectRatio(float cameraCompatAspectRatio,
+            @NonNull DisplayContent display) {
+        CameraCompatFreeformPolicy cameraPolicy = display.mAppCompatCameraPolicy
+                .mCameraCompatFreeformPolicy;
+        spyOn(cameraPolicy);
+        doReturn(true).when(cameraPolicy).shouldCameraCompatControlAspectRatio(any());
+        doReturn(cameraCompatAspectRatio).when(cameraPolicy).getCameraCompatAspectRatio(any());
+    }
 
-        task.setWindowingMode(WINDOWING_MODE_MULTI_WINDOW);
-        assertFalse(activity.shouldSendCompatFakeFocus());
-
-        task.setWindowingMode(WINDOWING_MODE_PINNED);
-        assertFalse(activity.shouldSendCompatFakeFocus());
-
-        task.setWindowingMode(WINDOWING_MODE_FREEFORM);
-        assertFalse(activity.shouldSendCompatFakeFocus());
+    private void setUpAllowThinLetterboxed(boolean thinLetterboxAllowed) {
+        final AppCompatReachabilityOverrides reachabilityOverrides =
+                mActivity.mAppCompatController.getAppCompatReachabilityOverrides();
+        spyOn(reachabilityOverrides);
+        doReturn(thinLetterboxAllowed).when(reachabilityOverrides)
+                .allowVerticalReachabilityForThinLetterbox();
+        doReturn(thinLetterboxAllowed).when(reachabilityOverrides)
+                .allowHorizontalReachabilityForThinLetterbox();
     }
 
     private int getExpectedSplitSize(int dimensionToSplit) {
@@ -4730,7 +5042,7 @@ public class SizeCompatTests extends WindowTestsBase {
         setUpDisplaySizeWithApp(2800, 1400);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
 
-        mActivity.mWmService.mLetterboxConfiguration.setLetterboxHorizontalPositionMultiplier(
+        mActivity.mWmService.mAppCompatConfiguration.setLetterboxHorizontalPositionMultiplier(
                 letterboxHorizontalPositionMultiplier);
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_LANDSCAPE);
         assertFitted();
@@ -4747,7 +5059,7 @@ public class SizeCompatTests extends WindowTestsBase {
         setUpDisplaySizeWithApp(1400, 2800);
         mActivity.mDisplayContent.setIgnoreOrientationRequest(true /* ignoreOrientationRequest */);
 
-        mActivity.mWmService.mLetterboxConfiguration.setLetterboxVerticalPositionMultiplier(
+        mActivity.mWmService.mAppCompatConfiguration.setLetterboxVerticalPositionMultiplier(
                 letterboxVerticalPositionMultiplier);
         prepareUnresizable(mActivity, SCREEN_ORIENTATION_PORTRAIT);
 
@@ -4762,8 +5074,12 @@ public class SizeCompatTests extends WindowTestsBase {
     }
 
     private WindowState addWindowToActivity(ActivityRecord activity) {
+        return addWindowToActivity(activity, WindowManager.LayoutParams.TYPE_BASE_APPLICATION);
+    }
+
+    private WindowState addWindowToActivity(ActivityRecord activity, int type) {
         final WindowManager.LayoutParams params = new WindowManager.LayoutParams();
-        params.type = WindowManager.LayoutParams.TYPE_BASE_APPLICATION;
+        params.type = type;
         params.setFitInsetsSides(0);
         params.setFitInsetsTypes(0);
         final TestWindowState w = new TestWindowState(
@@ -4781,6 +5097,7 @@ public class SizeCompatTests extends WindowTestsBase {
                 new WindowManager.LayoutParams(TYPE_STATUS_BAR);
         final Binder owner = new Binder();
         attrs.gravity = android.view.Gravity.TOP;
+        attrs.height = STATUS_BAR_HEIGHT;
         attrs.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
         attrs.setFitInsetsTypes(0 /* types */);
@@ -4808,15 +5125,24 @@ public class SizeCompatTests extends WindowTestsBase {
      */
     private ActivityRecord buildActivityRecord(boolean supportsSizeChanges, int resizeMode,
             @ScreenOrientation int screenOrientation) {
-        return new ActivityBuilder(mAtm)
-                .setTask(mTask)
+        return getActivityBuilderWithoutTask().setTask(mTask)
                 .setResizeMode(resizeMode)
                 .setSupportsSizeChanges(supportsSizeChanges)
                 .setScreenOrientation(screenOrientation)
+                .build();
+    }
+
+    private ActivityBuilder getActivityBuilderWithoutTask() {
+        return new ActivityBuilder(mAtm)
                 .setComponent(ComponentName.createRelative(mContext,
                         SizeCompatTests.class.getName()))
-                .setUid(android.os.Process.myUid())
-                .build();
+                .setUid(android.os.Process.myUid());
+    }
+
+    static void prepareMinAspectRatio(ActivityRecord activity, float minAspect,
+            int screenOrientation) {
+        prepareLimitedBounds(activity, -1 /* maxAspect */, minAspect, screenOrientation,
+                true /* isUnresizable */);
     }
 
     static void prepareUnresizable(ActivityRecord activity, int screenOrientation) {
@@ -4833,11 +5159,17 @@ public class SizeCompatTests extends WindowTestsBase {
         prepareLimitedBounds(activity, -1 /* maxAspect */, screenOrientation, isUnresizable);
     }
 
-    /**
-     * Setups {@link #mActivity} with restriction on its bounds, such as maxAspect, fixed
-     * orientation, and/or whether it is resizable.
-     */
     static void prepareLimitedBounds(ActivityRecord activity, float maxAspect,
+            int screenOrientation, boolean isUnresizable) {
+        prepareLimitedBounds(activity, maxAspect, -1 /* minAspect */, screenOrientation,
+                isUnresizable);
+    }
+
+    /**
+     * Setups {@link #mActivity} with restriction on its bounds, such as maxAspect, minAspect,
+     * fixed orientation, and/or whether it is resizable.
+     */
+    static void prepareLimitedBounds(ActivityRecord activity, float maxAspect, float minAspect,
             int screenOrientation, boolean isUnresizable) {
         activity.info.resizeMode = isUnresizable
                 ? RESIZE_MODE_UNRESIZEABLE
@@ -4852,34 +5184,56 @@ public class SizeCompatTests extends WindowTestsBase {
         if (maxAspect >= 0) {
             activity.info.setMaxAspectRatio(maxAspect);
         }
+        if (minAspect >= 0) {
+            activity.info.setMinAspectRatio(minAspect);
+        }
         if (screenOrientation != SCREEN_ORIENTATION_UNSPECIFIED) {
             activity.info.screenOrientation = screenOrientation;
             activity.setRequestedOrientation(screenOrientation);
         }
         // Make sure to use the provided configuration to construct the size compat fields.
-        activity.clearSizeCompatMode();
-        activity.ensureActivityConfiguration(0 /* globalChanges */, false /* preserveWindow */);
+        activity.mAppCompatController.getAppCompatSizeCompatModePolicy().clearSizeCompatMode();
+        activity.ensureActivityConfiguration();
         // Make sure the display configuration reflects the change of activity.
         if (activity.mDisplayContent.updateOrientation()) {
             activity.mDisplayContent.sendNewConfiguration();
         }
     }
 
-    /** Asserts that the size of activity is larger than its parent so it is scaling. */
-    private void assertScaled() {
-        assertTrue(mActivity.inSizeCompatMode());
-        assertNotEquals(1f, mActivity.getCompatScale(), 0.0001f /* delta */);
+    private void assertUpScaled() {
+        assertScaled(mActivity, /* upScalingExpected */ true);
+    }
+
+    private void assertDownScaled() {
+        assertScaled(mActivity, /* upScalingExpected */ false);
+    }
+
+    /**
+     * Asserts that the size of an activity differs from its parent and so it is scaling (either up
+     * or down).
+     */
+    private void assertScaled(ActivityRecord activity, boolean upScalingExpected) {
+        assertTrue(activity.inSizeCompatMode());
+        if (upScalingExpected) {
+            assertTrue(activity.getCompatScale() > 1f);
+        } else {
+            assertTrue(activity.getCompatScale() < 1f);
+        }
+    }
+
+    private void assertFitted() {
+        assertFitted(mActivity);
     }
 
     /** Asserts that the activity is best fitted in the parent. */
-    private void assertFitted() {
-        final boolean inSizeCompatMode = mActivity.inSizeCompatMode();
+    private void assertFitted(ActivityRecord activity) {
+        final boolean inSizeCompatMode = activity.inSizeCompatMode();
         final String failedConfigInfo = inSizeCompatMode
-                ? ("ParentConfig=" + mActivity.getParent().getConfiguration()
-                        + " ActivityConfig=" + mActivity.getConfiguration())
+                ? ("ParentConfig=" + activity.getParent().getConfiguration()
+                        + " ActivityConfig=" + activity.getConfiguration())
                 : "";
         assertFalse(failedConfigInfo, inSizeCompatMode);
-        assertFalse(mActivity.hasSizeCompatBounds());
+        assertFalse(activity.hasSizeCompatBounds());
     }
 
     /** Asserts the activity max bounds inherit from the TaskDisplayArea. */

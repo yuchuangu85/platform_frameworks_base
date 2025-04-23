@@ -72,6 +72,7 @@ interface IAppWidgetService {
     boolean bindRemoteViewsService(String callingPackage, int appWidgetId, in Intent intent,
             IApplicationThread caller, IBinder token, IServiceConnection connection, long flags);
     void notifyProviderInheritance(in ComponentName[] componentNames);
+    int getMaxBitmapMemory();
 
     @UnsupportedAppUsage
     int[] getAppWidgetIds(in ComponentName providerComponent);
@@ -80,5 +81,10 @@ interface IAppWidgetService {
             in Bundle extras, in IntentSender resultIntent);
     boolean isRequestPinAppWidgetSupported();
     oneway void noteAppWidgetTapped(in String callingPackage, in int appWidgetId);
+    boolean setWidgetPreview(in ComponentName providerComponent, in int widgetCategories,
+            in RemoteViews preview);
+    @nullable RemoteViews getWidgetPreview(in String callingPackage,
+            in ComponentName providerComponent, in int profileId, in int widgetCategory);
+    void removeWidgetPreview(in ComponentName providerComponent, in int widgetCategories);
 }
 

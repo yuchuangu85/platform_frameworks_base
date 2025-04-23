@@ -20,18 +20,20 @@ import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.DialogInterface;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.fragment.app.DialogFragment;
 import com.android.packageinstaller.R;
-import com.android.packageinstaller.v2.model.installstagedata.InstallInstalling;
+import com.android.packageinstaller.v2.model.InstallInstalling;
 
 /**
  * Dialog to show when an install is in progress.
  */
 public class InstallInstallingFragment extends DialogFragment {
 
+    private static final String LOG_TAG = InstallInstallingFragment.class.getSimpleName();
     private final InstallInstalling mDialogData;
     private AlertDialog mDialog;
 
@@ -42,6 +44,7 @@ public class InstallInstallingFragment extends DialogFragment {
     @NonNull
     @Override
     public Dialog onCreateDialog(@Nullable Bundle savedInstanceState) {
+        Log.i(LOG_TAG, "Creating " + LOG_TAG + "\n" + mDialogData);
         View dialogView = getLayoutInflater().inflate(R.layout.install_content_view, null);
         mDialog = new AlertDialog.Builder(requireContext())
             .setTitle(mDialogData.getAppLabel())

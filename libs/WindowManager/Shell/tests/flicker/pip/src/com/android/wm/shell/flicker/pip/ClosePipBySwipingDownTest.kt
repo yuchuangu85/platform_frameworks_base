@@ -17,10 +17,12 @@
 package com.android.wm.shell.flicker.pip
 
 import android.platform.test.annotations.Presubmit
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.FlickerBuilder
-import android.tools.device.flicker.legacy.LegacyFlickerTest
+import android.platform.test.annotations.RequiresFlagsDisabled
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.FlickerBuilder
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.traces.component.ComponentNameMatcher
+import com.android.wm.shell.Flags
 import com.android.wm.shell.flicker.pip.common.ClosePipTransition
 import org.junit.FixMethodOrder
 import org.junit.Test
@@ -31,7 +33,7 @@ import org.junit.runners.Parameterized
 /**
  * Test closing a pip window by swiping it to the bottom-center of the screen
  *
- * To run this test: `atest WMShellFlickerTests:ExitPipWithSwipeDownTest`
+ * To run this test: `atest WMShellFlickerTestsPip:ClosePipBySwipingDownTest`
  *
  * Actions:
  * ```
@@ -44,7 +46,7 @@ import org.junit.runners.Parameterized
  *     1. Some default assertions (e.g., nav bar, status bar and screen covered)
  *        are inherited [PipTransition]
  *     2. Part of the test setup occurs automatically via
- *        [android.tools.device.flicker.legacy.runner.TransitionRunner],
+ *        [android.tools.flicker.legacy.runner.TransitionRunner],
  *        including configuring navigation mode, initial orientation and ensuring no
  *        apps are running before setup
  * ```
@@ -52,6 +54,7 @@ import org.junit.runners.Parameterized
 @RunWith(Parameterized::class)
 @Parameterized.UseParametersRunnerFactory(FlickerParametersRunnerFactory::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
+@RequiresFlagsDisabled(Flags.FLAG_ENABLE_PIP2)
 class ClosePipBySwipingDownTest(flicker: LegacyFlickerTest) : ClosePipTransition(flicker) {
     override val thisTransition: FlickerBuilder.() -> Unit = {
         transitions {
@@ -60,7 +63,7 @@ class ClosePipBySwipingDownTest(flicker: LegacyFlickerTest) : ClosePipTransition
             val pipCenterY = pipRegion.centerY()
             val displayCenterX = device.displayWidth / 2
             val barComponent =
-                if (flicker.scenario.isTablet) {
+                if (flicker.scenario.isTablet || Flags.enableTaskbarOnPhones()) {
                     ComponentNameMatcher.TASK_BAR
                 } else {
                     ComponentNameMatcher.NAV_BAR
@@ -69,7 +72,8 @@ class ClosePipBySwipingDownTest(flicker: LegacyFlickerTest) : ClosePipTransition
                 wmHelper.currentState.layerState
                     .getLayerWithBuffer(barComponent)
                     ?.visibleRegion
-                    ?.height
+                    ?.bounds
+                    ?.height()
                     ?: error("Couldn't find Nav or Task bar layer")
             // The dismiss button doesn't appear at the complete bottom of the screen,
             // it appears above the hot seat but `hotseatBarSize` is not available outside

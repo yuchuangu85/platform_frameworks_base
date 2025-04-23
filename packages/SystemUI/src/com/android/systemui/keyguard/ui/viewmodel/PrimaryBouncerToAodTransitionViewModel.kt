@@ -19,10 +19,12 @@ package com.android.systemui.keyguard.ui.viewmodel
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.deviceentry.domain.interactor.DeviceEntryUdfpsInteractor
 import com.android.systemui.keyguard.domain.interactor.FromPrimaryBouncerTransitionInteractor
-import com.android.systemui.keyguard.domain.interactor.KeyguardTransitionInteractor
-import com.android.systemui.keyguard.shared.model.KeyguardState
+import com.android.systemui.keyguard.shared.model.Edge
+import com.android.systemui.keyguard.shared.model.KeyguardState.AOD
+import com.android.systemui.keyguard.shared.model.KeyguardState.PRIMARY_BOUNCER
 import com.android.systemui.keyguard.ui.KeyguardTransitionAnimationFlow
 import com.android.systemui.keyguard.ui.transitions.DeviceEntryIconTransition
+import com.android.systemui.scene.shared.model.Scenes
 import javax.inject.Inject
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -39,24 +41,27 @@ import kotlinx.coroutines.flow.flatMapLatest
 class PrimaryBouncerToAodTransitionViewModel
 @Inject
 constructor(
-    interactor: KeyguardTransitionInteractor,
     deviceEntryUdfpsInteractor: DeviceEntryUdfpsInteractor,
     animationFlow: KeyguardTransitionAnimationFlow,
 ) : DeviceEntryIconTransition {
     private val transitionAnimation =
-        animationFlow.setup(
-            duration = FromPrimaryBouncerTransitionInteractor.TO_AOD_DURATION,
-            stepFlow = interactor.transition(KeyguardState.PRIMARY_BOUNCER, KeyguardState.AOD),
-        )
+        animationFlow
+            .setup(
+                duration = FromPrimaryBouncerTransitionInteractor.TO_AOD_DURATION,
+                edge = Edge.create(from = Scenes.Bouncer, to = AOD),
+            )
+            .setupWithoutSceneContainer(
+                edge = Edge.create(from = PRIMARY_BOUNCER, to = AOD),
+            )
 
     val deviceEntryBackgroundViewAlpha: Flow<Float> =
-        deviceEntryUdfpsInteractor.isUdfpsSupported.flatMapLatest { isUdfpsEnrolledAndEnabled ->
-            if (isUdfpsEnrolledAndEnabled) {
-                transitionAnimation.immediatelyTransitionTo(0f)
-            } else {
-                emptyFlow()
-            }
-        }
+        transitionAnimation.immediatelyTransitionTo(0f)
+
+    val lockscreenAlpha: Flow<Float> =
+        transitionAnimation.sharedFlow(
+            duration = FromPrimaryBouncerTransitionInteractor.TO_AOD_DURATION,
+            onStep = { it }
+        )
 
     override val deviceEntryParentViewAlpha: Flow<Float> =
         deviceEntryUdfpsInteractor.isUdfpsEnrolledAndEnabled.flatMapLatest {
@@ -65,6 +70,7 @@ constructor(
                 transitionAnimation.sharedFlow(
                     duration = 300.milliseconds,
                     onStep = { it },
+                    onCancel = { 1f },
                     onFinish = { 1f },
                 )
             } else {

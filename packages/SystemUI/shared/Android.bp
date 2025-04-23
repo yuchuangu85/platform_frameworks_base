@@ -38,9 +38,6 @@ java_library {
     libs: [
         "androidx.annotation_annotation",
     ],
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 android_library {
@@ -51,16 +48,17 @@ android_library {
         "src/**/*.kt",
         "src/**/*.aidl",
         ":wm_shell-aidls",
-        ":wm_shell_util-sources",
+        ":wm_shell-shared-aidls",
     ],
     static_libs: [
         "BiometricsSharedLib",
+        "PlatformAnimationLib",
         "PluginCoreLib",
-        "SystemUIAnimationLib",
         "SystemUIPluginLib",
         "SystemUIUnfoldLib",
         "SystemUISharedLib-Keyguard",
-        "tracinglib",
+        "WindowManager-Shell-shared",
+        "//frameworks/libs/systemui:tracinglib-platform",
         "androidx.dynamicanimation_dynamicanimation",
         "androidx.concurrent_concurrent-futures",
         "androidx.lifecycle_lifecycle-runtime-ktx",
@@ -70,6 +68,9 @@ android_library {
         "kotlinx_coroutines",
         "dagger2",
         "jsr330",
+        "//frameworks/libs/systemui:com_android_systemui_shared_flags_lib",
+        "//frameworks/libs/systemui:msdl",
+        "//frameworks/libs/systemui:view_capture",
     ],
     resource_dirs: [
         "res",
@@ -77,9 +78,6 @@ android_library {
     min_sdk_version: "current",
     plugins: ["dagger2-compiler"],
     kotlincflags: ["-Xjvm-default=all"],
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 java_library {
@@ -91,9 +89,6 @@ java_library {
     static_kotlin_stdlib: false,
     java_version: "1.8",
     min_sdk_version: "current",
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 java_library {
@@ -113,7 +108,4 @@ java_library {
     },
     java_version: "1.8",
     min_sdk_version: "current",
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }

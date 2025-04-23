@@ -24,6 +24,8 @@ import android.app.ActivityManager;
 import android.content.ComponentName;
 import android.content.pm.FeatureInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.Signature;
+import android.content.pm.SignedPackage;
 import android.os.Build;
 import android.os.CarrierAssociatedAppEntry;
 import android.os.Environment;
@@ -44,6 +46,8 @@ import android.util.TimingsTraceLog;
 import android.util.Xml;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.pm.RoSystemFeatures;
+import com.android.internal.pm.pkg.parsing.ParsingPackageUtils;
 import com.android.internal.util.XmlUtils;
 import com.android.modules.utils.build.UnboundedSdkLevel;
 import com.android.server.pm.permission.PermissionAllowlist;
@@ -95,6 +99,7 @@ public class SystemConfig {
     private static final int ALLOW_OVERRIDE_APP_RESTRICTIONS = 0x100;
     private static final int ALLOW_IMPLICIT_BROADCASTS = 0x200;
     private static final int ALLOW_VENDOR_APEX = 0x400;
+    private static final int ALLOW_SIGNATURE_PERMISSIONS = 0x800;
     private static final int ALLOW_ALL = ~0;
 
     // property for runtime configuration differentiation
@@ -209,6 +214,30 @@ public class SystemConfig {
         }
     }
 
+    /**
+     * Utility class for testing interaction with compile-time defined system features.
+     * @hide
+    */
+    @VisibleForTesting
+    public static class Injector {
+        /** Whether a system feature is defined as enabled and available at compile-time. */
+        public boolean isReadOnlySystemEnabledFeature(String featureName, int version) {
+            return Boolean.TRUE.equals(RoSystemFeatures.maybeHasFeature(featureName, version));
+        }
+
+        /** Whether a system feature is defined as disabled and unavailable at compile-time. */
+        public boolean isReadOnlySystemDisabledFeature(String featureName, int version) {
+            return Boolean.FALSE.equals(RoSystemFeatures.maybeHasFeature(featureName, version));
+        }
+
+        /** The full set of system features defined as compile-time enabled and available. */
+        public ArrayMap<String, FeatureInfo> getReadOnlySystemEnabledFeatures() {
+            return RoSystemFeatures.getReadOnlySystemEnabledFeatures();
+        }
+    }
+
+    private final Injector mInjector;
+
     // These are the built-in shared libraries that were read from the
     // system configuration files. Keys are the library names; values are
     // the individual entries that contain information such as filename
@@ -217,7 +246,7 @@ public class SystemConfig {
 
     // These are the features this devices supports that were read from the
     // system configuration files.
-    final ArrayMap<String, FeatureInfo> mAvailableFeatures = new ArrayMap<>();
+    final ArrayMap<String, FeatureInfo> mAvailableFeatures;
 
     // These are the features which this device doesn't support; the OEM
     // partition uses these to opt-out of features from the system image.
@@ -262,6 +291,10 @@ public class SystemConfig {
     // These are the packages that are white-listed to be able to retrieve location even when user
     // location settings are off, for emergency purposes, as read from the configuration files.
     final ArrayMap<String, ArraySet<String>> mAllowIgnoreLocationSettings = new ArrayMap<>();
+
+    // These are the packages that are allow-listed to be able to access camera when
+    // the camera privacy state is enabled.
+    final ArraySet<String> mAllowlistCameraPrivacy = new ArraySet<>();
 
     // These are the action strings of broadcasts which are whitelisted to
     // be delivered anonymously even to apps which target O+.
@@ -344,12 +377,29 @@ public class SystemConfig {
     // marked as stopped by the system
     @NonNull private final Set<String> mInitialNonStoppedSystemPackages = new ArraySet<>();
 
+    // Which packages (key) are allowed to join particular SharedUid (value).
+    @NonNull private final ArrayMap<String, String> mPackageToSharedUidAllowList = new ArrayMap<>();
+
     // A map of preloaded package names and the path to its app metadata file path.
     private final ArrayMap<String, String> mAppMetadataFilePaths = new ArrayMap<>();
 
     // A set of pre-installed package names that requires strict signature verification once
     // updated to avoid cached/potentially tampered results.
     private final Set<String> mPreinstallPackagesWithStrictSignatureCheck = new ArraySet<>();
+
+    // A set of packages that should be considered "trusted packages" by ECM (Enhanced
+    // Confirmation Mode). "Trusted packages" are exempt from ECM (i.e., they will never be
+    // considered "restricted").
+    private final ArraySet<SignedPackage> mEnhancedConfirmationTrustedPackages = new ArraySet<>();
+
+    // A set of packages that should be considered "trusted installers" by ECM (Enhanced
+    // Confirmation Mode). "Trusted installers", and all apps installed by a trusted installer, are
+    // exempt from ECM (i.e., they will never be considered "restricted").
+    private final ArraySet<SignedPackage> mEnhancedConfirmationTrustedInstallers = new ArraySet<>();
+
+    // A map of UIDs defined by OEMs, mapping from name to value. The UIDs will be registered at the
+    // start of the system which allows OEMs to create and register their system services.
+    @NonNull private final ArrayMap<String, Integer> mOemDefinedUids = new ArrayMap<>();
 
     /**
      * Map of system pre-defined, uniquely named actors; keys are namespace,
@@ -472,6 +522,10 @@ public class SystemConfig {
         return mAllowedAssociations;
     }
 
+    public ArraySet<String> getCameraPrivacyAllowlist() {
+        return mAllowlistCameraPrivacy;
+    }
+
     public ArraySet<String> getBugreportWhitelistedPackages() {
         return mBugreportWhitelistedPackages;
     }
@@ -549,6 +603,11 @@ public class SystemConfig {
         return mInitialNonStoppedSystemPackages;
     }
 
+    @NonNull
+    public ArrayMap<String, String> getPackageToSharedUidAllowList() {
+        return mPackageToSharedUidAllowList;
+    }
+
     public ArrayMap<String, String> getAppMetadataFilePaths() {
         return mAppMetadataFilePaths;
     }
@@ -557,12 +616,38 @@ public class SystemConfig {
         return mPreinstallPackagesWithStrictSignatureCheck;
     }
 
+    public ArraySet<SignedPackage> getEnhancedConfirmationTrustedPackages() {
+        return mEnhancedConfirmationTrustedPackages;
+    }
+
+    public ArraySet<SignedPackage> getEnhancedConfirmationTrustedInstallers() {
+        return mEnhancedConfirmationTrustedInstallers;
+    }
+
+    @NonNull
+    public ArrayMap<String, Integer> getOemDefinedUids() {
+        return mOemDefinedUids;
+    }
+
     /**
      * Only use for testing. Do NOT use in production code.
      * @param readPermissions false to create an empty SystemConfig; true to read the permissions.
      */
     @VisibleForTesting
     public SystemConfig(boolean readPermissions) {
+        this(readPermissions, new Injector());
+    }
+
+    /**
+     * Only use for testing. Do NOT use in production code.
+     * @param readPermissions false to create an empty SystemConfig; true to read the permissions.
+     * @param injector Additional dependency injection for testing.
+     */
+    @VisibleForTesting
+    public SystemConfig(boolean readPermissions, Injector injector) {
+        mInjector = injector;
+        mAvailableFeatures = mInjector.getReadOnlySystemEnabledFeatures();
+
         if (readPermissions) {
             Slog.w(TAG, "Constructing a test SystemConfig");
             readAllPermissions();
@@ -572,6 +657,9 @@ public class SystemConfig {
     }
 
     SystemConfig() {
+        mInjector = new Injector();
+        mAvailableFeatures = mInjector.getReadOnlySystemEnabledFeatures();
+
         TimingsTraceLog log = new TimingsTraceLog(TAG, Trace.TRACE_TAG_SYSTEM_SERVER);
         log.traceBegin("readAllPermissions");
         try {
@@ -583,6 +671,17 @@ public class SystemConfig {
     }
 
     private void readAllPermissions() {
+        readAllPermissionsFromXml();
+        readAllPermissionsFromEnvironment();
+
+        // Apply global feature removal last, after all features have been read.
+        // This only needs to happen once.
+        for (String featureName : mUnavailableFeatures) {
+            removeFeature(featureName);
+        }
+    }
+
+    private void readAllPermissionsFromXml() {
         final XmlPullParser parser = Xml.newPullParser();
 
         // Read configuration from system
@@ -595,7 +694,7 @@ public class SystemConfig {
 
         // Vendors are only allowed to customize these
         int vendorPermissionFlag = ALLOW_LIBS | ALLOW_FEATURES | ALLOW_PRIVAPP_PERMISSIONS
-                | ALLOW_ASSOCIATIONS | ALLOW_VENDOR_APEX;
+                | ALLOW_SIGNATURE_PERMISSIONS | ALLOW_ASSOCIATIONS | ALLOW_VENDOR_APEX;
         if (Build.VERSION.DEVICE_INITIAL_SDK_INT <= Build.VERSION_CODES.O_MR1) {
             // For backward compatibility
             vendorPermissionFlag |= (ALLOW_PERMISSIONS | ALLOW_APP_CONFIGS);
@@ -647,9 +746,9 @@ public class SystemConfig {
         // TODO(b/157203468): ALLOW_HIDDENAPI_WHITELISTING must be removed because we prohibited
         // the use of hidden APIs from the product partition.
         int productPermissionFlag = ALLOW_FEATURES | ALLOW_LIBS | ALLOW_PERMISSIONS
-                | ALLOW_APP_CONFIGS | ALLOW_PRIVAPP_PERMISSIONS | ALLOW_HIDDENAPI_WHITELISTING
-                | ALLOW_ASSOCIATIONS | ALLOW_OVERRIDE_APP_RESTRICTIONS | ALLOW_IMPLICIT_BROADCASTS
-                | ALLOW_VENDOR_APEX;
+                | ALLOW_APP_CONFIGS | ALLOW_PRIVAPP_PERMISSIONS | ALLOW_SIGNATURE_PERMISSIONS
+                | ALLOW_HIDDENAPI_WHITELISTING | ALLOW_ASSOCIATIONS
+                | ALLOW_OVERRIDE_APP_RESTRICTIONS | ALLOW_IMPLICIT_BROADCASTS | ALLOW_VENDOR_APEX;
         if (Build.VERSION.DEVICE_INITIAL_SDK_INT <= Build.VERSION_CODES.R) {
             // TODO(b/157393157): This must check product interface enforcement instead of
             // DEVICE_INITIAL_SDK_INT for the devices without product interface enforcement.
@@ -682,7 +781,8 @@ public class SystemConfig {
             return;
         }
         // Read configuration of features, libs and priv-app permissions from apex module.
-        int apexPermissionFlag = ALLOW_LIBS | ALLOW_FEATURES | ALLOW_PRIVAPP_PERMISSIONS;
+        int apexPermissionFlag = ALLOW_LIBS | ALLOW_FEATURES | ALLOW_PRIVAPP_PERMISSIONS
+                | ALLOW_SIGNATURE_PERMISSIONS;
         // TODO: Use a solid way to filter apex module folders?
         for (File f: FileUtils.listFilesOrEmpty(Environment.getApexDirectory())) {
             if (f.isFile() || f.getPath().contains("@")) {
@@ -780,6 +880,8 @@ public class SystemConfig {
             final boolean allowPermissions = (permissionFlag & ALLOW_PERMISSIONS) != 0;
             final boolean allowAppConfigs = (permissionFlag & ALLOW_APP_CONFIGS) != 0;
             final boolean allowPrivappPermissions = (permissionFlag & ALLOW_PRIVAPP_PERMISSIONS)
+                    != 0;
+            final boolean allowSignaturePermissions = (permissionFlag & ALLOW_SIGNATURE_PERMISSIONS)
                     != 0;
             final boolean allowOemPermissions = (permissionFlag & ALLOW_OEM_PERMISSIONS) != 0;
             final boolean allowApiWhitelisting = (permissionFlag & ALLOW_HIDDENAPI_WHITELISTING)
@@ -1048,6 +1150,20 @@ public class SystemConfig {
                         }
                         XmlUtils.skipCurrentTag(parser);
                     } break;
+                    case "camera-privacy-allowlisted-app" : {
+                        if (allowOverrideAppRestrictions) {
+                            String pkgname = parser.getAttributeValue(null, "package");
+                            if (pkgname == null) {
+                                Slog.w(TAG, "<" + name + "> without package in "
+                                        + permFile + " at " + parser.getPositionDescription());
+                            } else {
+                                mAllowlistCameraPrivacy.add(pkgname);
+                            }
+                        } else {
+                            logNotAllowedInPartition(name, permFile, parser);
+                        }
+                        XmlUtils.skipCurrentTag(parser);
+                    } break;
                     case "allow-ignore-location-settings": {
                         if (allowOverrideAppRestrictions) {
                             String pkgname = parser.getAttributeValue(null, "package");
@@ -1202,6 +1318,7 @@ public class SystemConfig {
                         }
                         XmlUtils.skipCurrentTag(parser);
                     } break;
+                    case "disabled-in-sku":
                     case "disabled-until-used-preinstalled-carrier-app": {
                         if (allowAppConfigs) {
                             String pkgname = parser.getAttributeValue(null, "package");
@@ -1212,6 +1329,24 @@ public class SystemConfig {
                                                 + parser.getPositionDescription());
                             } else {
                                 mDisabledUntilUsedPreinstalledCarrierApps.add(pkgname);
+                            }
+                        } else {
+                            logNotAllowedInPartition(name, permFile, parser);
+                        }
+                        XmlUtils.skipCurrentTag(parser);
+                    } break;
+                    case "enabled-in-sku-override": {
+                        if (allowAppConfigs) {
+                            String pkgname = parser.getAttributeValue(null, "package");
+                            if (pkgname == null) {
+                                Slog.w(TAG,
+                                        "<" + name + "> without "
+                                                + "package in " + permFile + " at "
+                                                + parser.getPositionDescription());
+                            } else if (!mDisabledUntilUsedPreinstalledCarrierApps.remove(pkgname)) {
+                                Slog.w(TAG,
+                                        "<" + name + "> packagename:" + pkgname + " not included"
+                                                + "in disabled-in-sku");
                             }
                         } else {
                             logNotAllowedInPartition(name, permFile, parser);
@@ -1249,6 +1384,43 @@ public class SystemConfig {
                             } else {
                                 readPrivAppPermissions(parser,
                                         mPermissionAllowlist.getPrivilegedAppAllowlist());
+                            }
+                        } else {
+                            logNotAllowedInPartition(name, permFile, parser);
+                            XmlUtils.skipCurrentTag(parser);
+                        }
+                    } break;
+                    case "signature-permissions": {
+                        if (allowSignaturePermissions) {
+                            // signature permissions from system, apex, vendor, product and
+                            // system_ext partitions are stored separately. This is to
+                            // prevent xml files in the vendor partition from granting
+                            // permissions to signature apps in the system partition and vice versa.
+                            boolean vendor = permFile.toPath().startsWith(
+                                    Environment.getVendorDirectory().toPath() + "/")
+                                    || permFile.toPath().startsWith(
+                                    Environment.getOdmDirectory().toPath() + "/");
+                            boolean product = permFile.toPath().startsWith(
+                                    Environment.getProductDirectory().toPath() + "/");
+                            boolean systemExt = permFile.toPath().startsWith(
+                                    Environment.getSystemExtDirectory().toPath() + "/");
+                            boolean apex = permFile.toPath().startsWith(
+                                    Environment.getApexDirectory().toPath() + "/");
+                            if (vendor) {
+                                readSignatureAppPermissions(parser,
+                                        mPermissionAllowlist.getVendorSignatureAppAllowlist());
+                            } else if (product) {
+                                readSignatureAppPermissions(parser,
+                                        mPermissionAllowlist.getProductSignatureAppAllowlist());
+                            } else if (systemExt) {
+                                readSignatureAppPermissions(parser,
+                                        mPermissionAllowlist.getSystemExtSignatureAppAllowlist());
+                            } else if (apex) {
+                                readSignatureAppPermissions(parser,
+                                        mPermissionAllowlist.getApexSignatureAppAllowlist());
+                            } else {
+                                readSignatureAppPermissions(parser,
+                                        mPermissionAllowlist.getSignatureAppAllowlist());
                             }
                         } else {
                             logNotAllowedInPartition(name, permFile, parser);
@@ -1498,6 +1670,19 @@ public class SystemConfig {
                             mInitialNonStoppedSystemPackages.add(pkgName);
                         }
                     } break;
+                    case "allow-package-shareduid": {
+                        String pkgName = parser.getAttributeValue(null, "package");
+                        String sharedUid = parser.getAttributeValue(null, "shareduid");
+                        if (TextUtils.isEmpty(pkgName)) {
+                            Slog.w(TAG, "<" + name + "> without package in " + permFile
+                                    + " at " + parser.getPositionDescription());
+                        } else if (TextUtils.isEmpty(sharedUid)) {
+                            Slog.w(TAG, "<" + name + "> without shareduid in " + permFile
+                                    + " at " + parser.getPositionDescription());
+                        } else {
+                            mPackageToSharedUidAllowList.put(pkgName, sharedUid);
+                        }
+                    } break;
                     case "asl-file": {
                         String packageName = parser.getAttributeValue(null, "package");
                         String path = parser.getAttributeValue(null, "path");
@@ -1522,6 +1707,46 @@ public class SystemConfig {
                             }
                         }
                     } break;
+                    case "oem-defined-uid": {
+                        final String uidName = parser.getAttributeValue(null, "name");
+                        final String uidValue = parser.getAttributeValue(null, "uid");
+                        if (TextUtils.isEmpty(uidName)) {
+                            Slog.w(TAG, "<" + name + "> without valid uid name in " + permFile
+                                    + " at " + parser.getPositionDescription());
+                        } else if (TextUtils.isEmpty(uidValue)) {
+                            Slog.w(TAG, "<" + name + "> without valid uid value in " + permFile
+                                    + " at " + parser.getPositionDescription());
+                        } else {
+                            try {
+                                final int oemDefinedUid = Integer.parseInt(uidValue);
+                                mOemDefinedUids.put(uidName, oemDefinedUid);
+                            } catch (NumberFormatException e) {
+                                Slog.w(TAG, "<" + name + "> with invalid uid value: "
+                                        + uidValue + " in " + permFile
+                                        + " at " + parser.getPositionDescription());
+                            }
+                        }
+                    } break;
+                    case "enhanced-confirmation-trusted-package": {
+                        if (android.permission.flags.Flags.enhancedConfirmationModeApisEnabled()) {
+                            SignedPackage signedPackage = parseEnhancedConfirmationTrustedPackage(
+                                    parser, permFile, name);
+                            if (signedPackage != null) {
+                                mEnhancedConfirmationTrustedPackages.add(signedPackage);
+                            }
+                            break;
+                        }
+                    } // fall through if flag is not enabled
+                    case "enhanced-confirmation-trusted-installer": {
+                        if (android.permission.flags.Flags.enhancedConfirmationModeApisEnabled()) {
+                            SignedPackage signedPackage = parseEnhancedConfirmationTrustedPackage(
+                                    parser, permFile, name);
+                            if (signedPackage != null) {
+                                mEnhancedConfirmationTrustedInstallers.add(signedPackage);
+                            }
+                            break;
+                        }
+                    } // fall through if flag is not enabled
                     default: {
                         Slog.w(TAG, "Tag " + name + " is unknown in "
                                 + permFile + " at " + parser.getPositionDescription());
@@ -1536,7 +1761,13 @@ public class SystemConfig {
         } finally {
             IoUtils.closeQuietly(permReader);
         }
+    }
 
+    // Add features or permission dependent on global system properties (as
+    // opposed to XML permission files).
+    // This only needs to be called once after all features have been parsed
+    // from various partition/apex sources.
+    private void readAllPermissionsFromEnvironment() {
         // Some devices can be field-converted to FBE, so offer to splice in
         // those features if not already defined by the static config
         if (StorageManager.isFileEncrypted()) {
@@ -1577,10 +1808,33 @@ public class SystemConfig {
                 addFeature(PackageManager.FEATURE_EROFS_LEGACY, 0);
             }
         }
+    }
 
-        for (String featureName : mUnavailableFeatures) {
-            removeFeature(featureName);
+    private @Nullable SignedPackage parseEnhancedConfirmationTrustedPackage(XmlPullParser parser,
+            File permFile, String elementName) {
+        String pkgName = parser.getAttributeValue(null, "package");
+        if (TextUtils.isEmpty(pkgName)) {
+            Slog.w(TAG, "<" + elementName + "> without package " + permFile + " at "
+                    + parser.getPositionDescription());
+            return null;
         }
+
+        String certificateDigestStr = parser.getAttributeValue(null, "sha256-cert-digest");
+        if (TextUtils.isEmpty(certificateDigestStr)) {
+            Slog.w(TAG, "<" + elementName + "> without sha256-cert-digest in " + permFile
+                    + " at " + parser.getPositionDescription());
+            return null;
+        }
+        byte[] certificateDigest = null;
+        try {
+            certificateDigest = new Signature(certificateDigestStr.replace(":", "")).toByteArray();
+        } catch (IllegalArgumentException e) {
+            Slog.w(TAG, "<" + elementName + "> with invalid sha256-cert-digest in "
+                    + permFile + " at " + parser.getPositionDescription());
+            return null;
+        }
+
+        return new SignedPackage(pkgName, certificateDigest);
     }
 
     // This method only enables a new Android feature added in U and will not have impact on app
@@ -1596,6 +1850,10 @@ public class SystemConfig {
     }
 
     private void addFeature(String name, int version) {
+        if (mInjector.isReadOnlySystemDisabledFeature(name, version)) {
+            Slog.w(TAG, "Skipping feature addition for compile-time disabled feature: " + name);
+            return;
+        }
         FeatureInfo fi = mAvailableFeatures.get(name);
         if (fi == null) {
             fi = new FeatureInfo();
@@ -1608,6 +1866,10 @@ public class SystemConfig {
     }
 
     private void removeFeature(String name) {
+        if (mInjector.isReadOnlySystemEnabledFeature(name, /*version=*/0)) {
+            Slog.w(TAG, "Skipping feature removal for compile-time enabled feature: " + name);
+            return;
+        }
         if (mAvailableFeatures.remove(name) != null) {
             Slog.d(TAG, "Removed unavailable feature " + name);
         }
@@ -1638,7 +1900,13 @@ public class SystemConfig {
                 String gidStr = parser.getAttributeValue(null, "gid");
                 if (gidStr != null) {
                     int gid = Process.getGidForName(gidStr);
-                    perm.gids = appendInt(perm.gids, gid);
+                    if (gid != -1) {
+                        perm.gids = appendInt(perm.gids, gid);
+                    } else {
+                        Slog.w(TAG, "<group> with unknown gid \""
+                                + gidStr + " for permission " + name + " in "
+                                + parser.getPositionDescription());
+                    }
                 } else {
                     Slog.w(TAG, "<group> without gid at "
                             + parser.getPositionDescription());
@@ -1652,6 +1920,12 @@ public class SystemConfig {
             @NonNull ArrayMap<String, ArrayMap<String, Boolean>> allowlist)
             throws IOException, XmlPullParserException {
         readPermissionAllowlist(parser, allowlist, "privapp-permissions");
+    }
+
+    private void readSignatureAppPermissions(@NonNull XmlPullParser parser,
+            @NonNull ArrayMap<String, ArrayMap<String, Boolean>> allowlist)
+            throws IOException, XmlPullParserException {
+        readPermissionAllowlist(parser, allowlist, "signature-permissions");
     }
 
     private void readInstallInUserType(XmlPullParser parser,
@@ -1746,6 +2020,13 @@ public class SystemConfig {
 
     private void readSplitPermission(XmlPullParser parser, File permFile)
             throws IOException, XmlPullParserException {
+        // If trunkstable feature flag disabled for this split permission, skip this tag.
+        if (ParsingPackageUtils.getAconfigFlags()
+            .skipCurrentElement(/* pkg= */ null, parser, /* allowNoNamespace= */ true)) {
+            XmlUtils.skipCurrentTag(parser);
+            return;
+        }
+
         String splitPerm = parser.getAttributeValue(null, "name");
         if (splitPerm == null) {
             Slog.w(TAG, "<split-permission> without name in " + permFile + " at "

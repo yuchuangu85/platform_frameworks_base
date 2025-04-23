@@ -20,17 +20,20 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.testng.Assert.assertThrows;
 
-import android.platform.test.annotations.IgnoreUnderRavenwood;
+import android.platform.test.annotations.DisabledOnRavenwood;
 import android.platform.test.ravenwood.RavenwoodRule;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.internal.os.BinderInternal;
+
 import org.junit.Rule;
 import org.junit.Test;
 
-@IgnoreUnderRavenwood(blockedBy = WorkSource.class)
 public class BinderTest {
     private static final int UID = 100;
 
@@ -80,5 +83,30 @@ public class BinderTest {
 
         binder.setExtension(null);
         assertNull(binder.getExtension());
+    }
+
+    @SmallTest
+    @Test(expected = java.lang.SecurityException.class)
+    @DisabledOnRavenwood(blockedBy = ServiceManagerNative.class)
+    public void testServiceManagerNativeSecurityException() throws RemoteException {
+        // Find the service manager
+        IServiceManager sServiceManager = ServiceManagerNative
+                .asInterface(Binder.allowBlocking(BinderInternal.getContextObject()));
+
+        Binder binder = new Binder();
+        sServiceManager.addService("ValidName",  binder,
+                anyBoolean(), anyInt());
+    }
+
+    @SmallTest
+    @Test(expected = java.lang.NullPointerException.class)
+    @DisabledOnRavenwood(blockedBy = ServiceManagerNative.class)
+    public void testServiceManagerNativeNullptrException() throws RemoteException {
+        // Find the service manager
+        IServiceManager sServiceManager = ServiceManagerNative
+                .asInterface(Binder.allowBlocking(BinderInternal.getContextObject()));
+
+        sServiceManager.addService("ValidName",  null,
+                anyBoolean(), anyInt());
     }
 }

@@ -45,12 +45,13 @@ android_test {
         "servicestests-utils-mockito-extended",
         "truth",
         "frameworks-base-testutils",
+        "androidx.test.rules",
     ],
 
     libs: [
-        "android.test.mock",
-        "android.test.base",
-        "android.test.runner",
+        "android.test.mock.stubs.system",
+        "android.test.base.stubs.system",
+        "android.test.runner.stubs.system",
     ],
 
     certificate: "platform",

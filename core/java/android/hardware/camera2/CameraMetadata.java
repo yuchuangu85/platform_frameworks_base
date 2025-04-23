@@ -21,6 +21,7 @@ import android.annotation.NonNull;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.hardware.camera2.impl.CameraMetadataNative;
+import android.hardware.camera2.impl.ExtensionKey;
 import android.hardware.camera2.impl.PublicKey;
 import android.hardware.camera2.impl.SyntheticKey;
 import android.util.Log;
@@ -276,8 +277,11 @@ public abstract class CameraMetadata<TKey> {
             throw new IllegalArgumentException("key type must be that of a metadata key");
         }
 
-        if (field.getAnnotation(PublicKey.class) == null) {
-            // Never expose @hide keys up to the API user
+        if (field.getAnnotation(PublicKey.class) == null
+                && field.getAnnotation(ExtensionKey.class) == null) {
+            // Never expose @hide keys to the API user unless they are
+            // marked as @ExtensionKey, as these keys are publicly accessible via
+            // the extension key classes.
             return false;
         }
 
@@ -907,10 +911,10 @@ public abstract class CameraMetadata<TKey> {
      * </ul>
      * <p>Combinations of logical and physical streams, or physical streams from different
      * physical cameras are not guaranteed. However, if the camera device supports
-     * {@link CameraManager#isSessionConfigurationWithParametersSupported },
+     * {@link CameraDevice#isSessionConfigurationSupported },
      * application must be able to query whether a stream combination involving physical
      * streams is supported by calling
-     * {@link CameraManager#isSessionConfigurationWithParametersSupported }.</p>
+     * {@link CameraDevice#isSessionConfigurationSupported }.</p>
      * <p>Camera application shouldn't assume that there are at most 1 rear camera and 1 front
      * camera in the system. For an application that switches between front and back cameras,
      * the recommendation is to switch between the first rear camera and the first front
@@ -2117,6 +2121,38 @@ public abstract class CameraMetadata<TKey> {
     public static final int AUTOMOTIVE_LOCATION_EXTRA_RIGHT = 10;
 
     //
+    // Enumeration values for CameraCharacteristics#SHARED_SESSION_COLOR_SPACE
+    //
+
+    /**
+     * @see CameraCharacteristics#SHARED_SESSION_COLOR_SPACE
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_CAMERA_MULTI_CLIENT)
+    public static final int SHARED_SESSION_COLOR_SPACE_UNSPECIFIED = -1;
+
+    /**
+     * @see CameraCharacteristics#SHARED_SESSION_COLOR_SPACE
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_CAMERA_MULTI_CLIENT)
+    public static final int SHARED_SESSION_COLOR_SPACE_SRGB = 0;
+
+    /**
+     * @see CameraCharacteristics#SHARED_SESSION_COLOR_SPACE
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_CAMERA_MULTI_CLIENT)
+    public static final int SHARED_SESSION_COLOR_SPACE_DISPLAY_P3 = 7;
+
+    /**
+     * @see CameraCharacteristics#SHARED_SESSION_COLOR_SPACE
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_CAMERA_MULTI_CLIENT)
+    public static final int SHARED_SESSION_COLOR_SPACE_BT2020_HLG = 16;
+
+    //
     // Enumeration values for CaptureRequest#COLOR_CORRECTION_MODE
     //
 
@@ -2164,6 +2200,22 @@ public abstract class CameraMetadata<TKey> {
      * @see CaptureRequest#COLOR_CORRECTION_MODE
      */
     public static final int COLOR_CORRECTION_MODE_HIGH_QUALITY = 2;
+
+    /**
+     * <p>Use
+     * {@link CaptureRequest#COLOR_CORRECTION_COLOR_TEMPERATURE android.colorCorrection.colorTemperature} and
+     * {@link CaptureRequest#COLOR_CORRECTION_COLOR_TINT android.colorCorrection.colorTint} to adjust the white balance based
+     * on correlated color temperature.</p>
+     * <p>If AWB is enabled with <code>{@link CaptureRequest#CONTROL_AWB_MODE android.control.awbMode} != OFF</code>, then
+     * CCT is ignored.</p>
+     *
+     * @see CaptureRequest#COLOR_CORRECTION_COLOR_TEMPERATURE
+     * @see CaptureRequest#COLOR_CORRECTION_COLOR_TINT
+     * @see CaptureRequest#CONTROL_AWB_MODE
+     * @see CaptureRequest#COLOR_CORRECTION_MODE
+     */
+    @FlaggedApi(Flags.FLAG_COLOR_TEMPERATURE)
+    public static final int COLOR_CORRECTION_MODE_CCT = 3;
 
     //
     // Enumeration values for CaptureRequest#COLOR_CORRECTION_ABERRATION_MODE
@@ -2266,7 +2318,17 @@ public abstract class CameraMetadata<TKey> {
      * {@link CaptureRequest#SENSOR_FRAME_DURATION android.sensor.frameDuration} are ignored. The
      * application has control over the various
      * android.flash.* fields.</p>
+     * <p>If the device supports manual flash strength control, i.e.,
+     * if {@link CameraCharacteristics#FLASH_SINGLE_STRENGTH_MAX_LEVEL android.flash.singleStrengthMaxLevel} and
+     * {@link CameraCharacteristics#FLASH_TORCH_STRENGTH_MAX_LEVEL android.flash.torchStrengthMaxLevel} are greater than 1, then
+     * the auto-exposure (AE) precapture metering sequence should be
+     * triggered for the configured flash mode and strength to avoid
+     * the image being incorrectly exposed at different
+     * {@link CaptureRequest#FLASH_STRENGTH_LEVEL android.flash.strengthLevel}.</p>
      *
+     * @see CameraCharacteristics#FLASH_SINGLE_STRENGTH_MAX_LEVEL
+     * @see CaptureRequest#FLASH_STRENGTH_LEVEL
+     * @see CameraCharacteristics#FLASH_TORCH_STRENGTH_MAX_LEVEL
      * @see CaptureRequest#SENSOR_EXPOSURE_TIME
      * @see CaptureRequest#SENSOR_FRAME_DURATION
      * @see CaptureRequest#SENSOR_SENSITIVITY
@@ -2355,9 +2417,9 @@ public abstract class CameraMetadata<TKey> {
      * FPS.</p>
      * <p>If the session configuration is not supported, the AE mode reported in the
      * CaptureResult will be 'ON' instead of 'ON_LOW_LIGHT_BOOST_BRIGHTNESS_PRIORITY'.</p>
-     * <p>The application can observe the CapturerResult field
-     * {@link CaptureResult#CONTROL_LOW_LIGHT_BOOST_STATE android.control.lowLightBoostState} to determine when low light boost is 'ACTIVE' or
-     * 'INACTIVE'.</p>
+     * <p>When this AE mode is enabled, the CaptureResult field
+     * {@link CaptureResult#CONTROL_LOW_LIGHT_BOOST_STATE android.control.lowLightBoostState} will indicate when low light boost is 'ACTIVE'
+     * or 'INACTIVE'. By default {@link CaptureResult#CONTROL_LOW_LIGHT_BOOST_STATE android.control.lowLightBoostState} will be 'INACTIVE'.</p>
      * <p>The low light boost is 'ACTIVE' once the scene lighting condition is less than the
      * upper bound lux value defined by {@link CameraCharacteristics#CONTROL_LOW_LIGHT_BOOST_INFO_LUMINANCE_RANGE android.control.lowLightBoostInfoLuminanceRange}.
      * This mode will be 'INACTIVE' once the scene lighting condition is greater than the
@@ -3341,6 +3403,74 @@ public abstract class CameraMetadata<TKey> {
     public static final int CONTROL_AUTOFRAMING_AUTO = 2;
 
     //
+    // Enumeration values for CaptureRequest#CONTROL_ZOOM_METHOD
+    //
+
+    /**
+     * <p>The camera device automatically detects whether the application does zoom with
+     * {@link CaptureRequest#SCALER_CROP_REGION android.scaler.cropRegion} or {@link CaptureRequest#CONTROL_ZOOM_RATIO android.control.zoomRatio}, and in turn decides which
+     * metadata tag reflects the effective zoom level.</p>
+     *
+     * @see CaptureRequest#CONTROL_ZOOM_RATIO
+     * @see CaptureRequest#SCALER_CROP_REGION
+     * @see CaptureRequest#CONTROL_ZOOM_METHOD
+     */
+    @FlaggedApi(Flags.FLAG_ZOOM_METHOD)
+    public static final int CONTROL_ZOOM_METHOD_AUTO = 0;
+
+    /**
+     * <p>The application intends to control zoom via {@link CaptureRequest#CONTROL_ZOOM_RATIO android.control.zoomRatio}, and
+     * the effective zoom level is reflected by {@link CaptureRequest#CONTROL_ZOOM_RATIO android.control.zoomRatio} in capture results.</p>
+     *
+     * @see CaptureRequest#CONTROL_ZOOM_RATIO
+     * @see CaptureRequest#CONTROL_ZOOM_METHOD
+     */
+    @FlaggedApi(Flags.FLAG_ZOOM_METHOD)
+    public static final int CONTROL_ZOOM_METHOD_ZOOM_RATIO = 1;
+
+    //
+    // Enumeration values for CaptureRequest#CONTROL_AE_PRIORITY_MODE
+    //
+
+    /**
+     * <p>Disable AE priority mode. This is the default value.</p>
+     * @see CaptureRequest#CONTROL_AE_PRIORITY_MODE
+     */
+    @FlaggedApi(Flags.FLAG_AE_PRIORITY)
+    public static final int CONTROL_AE_PRIORITY_MODE_OFF = 0;
+
+    /**
+     * <p>The camera device's auto-exposure routine is active and
+     * prioritizes the application-selected ISO ({@link CaptureRequest#SENSOR_SENSITIVITY android.sensor.sensitivity}).</p>
+     * <p>The application has control over {@link CaptureRequest#SENSOR_SENSITIVITY android.sensor.sensitivity} while
+     * the application's values for {@link CaptureRequest#SENSOR_EXPOSURE_TIME android.sensor.exposureTime} and
+     * {@link CaptureRequest#SENSOR_FRAME_DURATION android.sensor.frameDuration} are ignored.</p>
+     *
+     * @see CaptureRequest#SENSOR_EXPOSURE_TIME
+     * @see CaptureRequest#SENSOR_FRAME_DURATION
+     * @see CaptureRequest#SENSOR_SENSITIVITY
+     * @see CaptureRequest#CONTROL_AE_PRIORITY_MODE
+     */
+    @FlaggedApi(Flags.FLAG_AE_PRIORITY)
+    public static final int CONTROL_AE_PRIORITY_MODE_SENSOR_SENSITIVITY_PRIORITY = 1;
+
+    /**
+     * <p>The camera device's auto-exposure routine is active and
+     * prioritizes the application-selected exposure time
+     * ({@link CaptureRequest#SENSOR_EXPOSURE_TIME android.sensor.exposureTime}).</p>
+     * <p>The application has control over {@link CaptureRequest#SENSOR_EXPOSURE_TIME android.sensor.exposureTime} while
+     * the application's values for {@link CaptureRequest#SENSOR_SENSITIVITY android.sensor.sensitivity} and
+     * {@link CaptureRequest#SENSOR_FRAME_DURATION android.sensor.frameDuration} are ignored.</p>
+     *
+     * @see CaptureRequest#SENSOR_EXPOSURE_TIME
+     * @see CaptureRequest#SENSOR_FRAME_DURATION
+     * @see CaptureRequest#SENSOR_SENSITIVITY
+     * @see CaptureRequest#CONTROL_AE_PRIORITY_MODE
+     */
+    @FlaggedApi(Flags.FLAG_AE_PRIORITY)
+    public static final int CONTROL_AE_PRIORITY_MODE_SENSOR_EXPOSURE_TIME_PRIORITY = 2;
+
+    //
     // Enumeration values for CaptureRequest#EDGE_MODE
     //
 
@@ -4258,6 +4388,39 @@ public abstract class CameraMetadata<TKey> {
      * @hide
      */
     public static final int SYNC_FRAME_NUMBER_UNKNOWN = -2;
+
+    //
+    // Enumeration values for CaptureResult#EXTENSION_NIGHT_MODE_INDICATOR
+    //
+
+    /**
+     * <p>The camera can't accurately assess the scene's lighting to determine if a Night Mode
+     * Camera Extension capture would improve the photo. This can happen when the current
+     * camera configuration doesn't support night mode indicator detection, such as when
+     * the auto exposure mode is ON_AUTO_FLASH, ON_ALWAYS_FLASH, ON_AUTO_FLASH_REDEYE, or
+     * ON_EXTERNAL_FLASH.</p>
+     * @see CaptureResult#EXTENSION_NIGHT_MODE_INDICATOR
+     */
+    @FlaggedApi(Flags.FLAG_NIGHT_MODE_INDICATOR)
+    public static final int EXTENSION_NIGHT_MODE_INDICATOR_UNKNOWN = 0;
+
+    /**
+     * <p>The camera has detected lighting conditions that are sufficiently bright. Night
+     * Mode Camera Extensions is available but may not be able to optimize the camera
+     * settings to take a higher quality photo.</p>
+     * @see CaptureResult#EXTENSION_NIGHT_MODE_INDICATOR
+     */
+    @FlaggedApi(Flags.FLAG_NIGHT_MODE_INDICATOR)
+    public static final int EXTENSION_NIGHT_MODE_INDICATOR_OFF = 1;
+
+    /**
+     * <p>The camera has detected low-light conditions. It is recommended to use Night Mode
+     * Camera Extension to optimize the camera settings to take a high-quality photo in
+     * the dark.</p>
+     * @see CaptureResult#EXTENSION_NIGHT_MODE_INDICATOR
+     */
+    @FlaggedApi(Flags.FLAG_NIGHT_MODE_INDICATOR)
+    public static final int EXTENSION_NIGHT_MODE_INDICATOR_ON = 2;
 
     /*~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~@~
      * End generated code

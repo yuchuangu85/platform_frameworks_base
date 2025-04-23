@@ -18,7 +18,6 @@ package android.view.contentcapture;
 import static android.view.contentcapture.ContentCaptureHelper.sDebug;
 import static android.view.contentcapture.ContentCaptureHelper.sVerbose;
 import static android.view.contentcapture.ContentCaptureHelper.toSet;
-import static android.view.contentcapture.flags.Flags.runOnBackgroundThreadEnabled;
 
 import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
@@ -366,6 +365,14 @@ public final class ContentCaptureManager {
             "enable_content_protection_receiver";
 
     /**
+     * Whether AssistContent snapshot should be sent on activity start.
+     *
+     * @hide
+     */
+    public static final String DEVICE_CONFIG_ENABLE_ACTIVITY_START_ASSIST_CONTENT =
+            "enable_activity_start_assist_content";
+
+    /**
      * Sets the size of the in-memory ring buffer for the content protection flow.
      *
      * @hide
@@ -499,10 +506,14 @@ public final class ContentCaptureManager {
 
     @Nullable
     @GuardedBy("mLock")
-    private Handler mHandler;
+    private Handler mUiHandler;
+
+    @Nullable
+    @GuardedBy("mLock")
+    private Handler mContentCaptureHandler;
 
     @GuardedBy("mLock")
-    private MainContentCaptureSession mMainSession;
+    private ContentCaptureSession mMainSession;
 
     @Nullable // set on-demand by addDumpable()
     private Dumper mDumpable;
@@ -587,11 +598,16 @@ public final class ContentCaptureManager {
      */
     @NonNull
     @UiThread
-    public MainContentCaptureSession getMainContentCaptureSession() {
+    public ContentCaptureSession getMainContentCaptureSession() {
         synchronized (mLock) {
             if (mMainSession == null) {
                 mMainSession = new MainContentCaptureSession(
-                        mContext, this, prepareContentCaptureHandler(), mService);
+                    mContext,
+                    this,
+                    prepareUiHandler(),
+                    prepareContentCaptureHandler(),
+                    mService
+                );
                 if (sVerbose) Log.v(TAG, "getMainContentCaptureSession(): created " + mMainSession);
             }
             return mMainSession;
@@ -601,14 +617,19 @@ public final class ContentCaptureManager {
     @NonNull
     @GuardedBy("mLock")
     private Handler prepareContentCaptureHandler() {
-        if (mHandler == null) {
-            if (runOnBackgroundThreadEnabled()) {
-                mHandler = BackgroundThread.getHandler();
-            } else {
-                mHandler = Handler.createAsync(Looper.getMainLooper());
-            }
+        if (mContentCaptureHandler == null) {
+            mContentCaptureHandler = BackgroundThread.getHandler();
         }
-        return mHandler;
+        return mContentCaptureHandler;
+    }
+
+    @NonNull
+    @GuardedBy("mLock")
+    private Handler prepareUiHandler() {
+        if (mUiHandler == null) {
+            mUiHandler = Handler.createAsync(Looper.getMainLooper());
+        }
+        return mUiHandler;
     }
 
     /** @hide */
@@ -726,7 +747,7 @@ public final class ContentCaptureManager {
     public boolean isContentCaptureEnabled() {
         if (mOptions.lite) return false;
 
-        final MainContentCaptureSession mainSession;
+        final ContentCaptureSession mainSession;
         synchronized (mLock) {
             mainSession = mMainSession;
         }
@@ -777,7 +798,7 @@ public final class ContentCaptureManager {
             Log.d(TAG, "setContentCaptureEnabled(): setting to " + enabled + " for " + mContext);
         }
 
-        MainContentCaptureSession mainSession;
+        ContentCaptureSession mainSession;
         synchronized (mLock) {
             if (enabled) {
                 mFlags &= ~ContentCaptureContext.FLAG_DISABLED_BY_APP;
@@ -803,7 +824,7 @@ public final class ContentCaptureManager {
         final boolean flagSecureEnabled =
                 (params.flags & WindowManager.LayoutParams.FLAG_SECURE) != 0;
 
-        MainContentCaptureSession mainSession;
+        ContentCaptureSession mainSession;
         boolean alreadyDisabledByApp;
         synchronized (mLock) {
             alreadyDisabledByApp = (mFlags & ContentCaptureContext.FLAG_DISABLED_BY_APP) != 0;

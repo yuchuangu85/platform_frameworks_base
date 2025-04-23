@@ -17,22 +17,22 @@
 package com.android.systemui.bluetooth;
 
 import static com.android.systemui.statusbar.phone.SystemUIDialog.DEFAULT_DISMISS_ON_DEVICE_LOCK;
+
 import static com.google.common.truth.Truth.assertThat;
+
 import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import android.testing.AndroidTestingRunner;
 import android.testing.TestableLooper;
-import android.view.LayoutInflater;
-import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.logging.testing.UiEventLoggerFake;
@@ -40,11 +40,9 @@ import com.android.settingslib.bluetooth.LocalBluetoothLeBroadcast;
 import com.android.settingslib.bluetooth.LocalBluetoothManager;
 import com.android.settingslib.bluetooth.LocalBluetoothProfileManager;
 import com.android.systemui.SysuiTestCase;
-import com.android.systemui.animation.DialogLaunchAnimator;
+import com.android.systemui.animation.DialogTransitionAnimator;
 import com.android.systemui.broadcast.BroadcastSender;
-import com.android.systemui.flags.FakeFeatureFlags;
-import com.android.systemui.flags.Flags;
-import com.android.systemui.media.dialog.MediaOutputDialogFactory;
+import com.android.systemui.media.dialog.MediaOutputDialogManager;
 import com.android.systemui.model.SysUiState;
 import com.android.systemui.res.R;
 import com.android.systemui.statusbar.phone.SystemUIDialog;
@@ -60,7 +58,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 @SmallTest
-@RunWith(AndroidTestingRunner.class)
+@RunWith(AndroidJUnit4.class)
 @TestableLooper.RunWithLooper(setAsMainLooper = true)
 public class BroadcastDialogDelegateTest extends SysuiTestCase {
 
@@ -74,12 +72,13 @@ public class BroadcastDialogDelegateTest extends SysuiTestCase {
             LocalBluetoothLeBroadcast.class);
     private final BroadcastSender mBroadcastSender = mock(BroadcastSender.class);
     private BroadcastDialogDelegate mBroadcastDialogDelegate;
-    private FakeFeatureFlags mFeatureFlags = new FakeFeatureFlags();
     @Mock SystemUIDialog.Factory mSystemUIDialogFactory;
     @Mock SystemUIDialogManager mDialogManager;
     @Mock SysUiState mSysUiState;
-    @Mock DialogLaunchAnimator mDialogLaunchAnimator;
-    @Mock MediaOutputDialogFactory mMediaOutputDialogFactory;
+    @Mock
+    DialogTransitionAnimator mDialogTransitionAnimator;
+    @Mock
+    MediaOutputDialogManager mMediaOutputDialogManager;
     private SystemUIDialog mDialog;
     private TextView mTitle;
     private TextView mSubTitle;
@@ -93,13 +92,12 @@ public class BroadcastDialogDelegateTest extends SysuiTestCase {
         when(mLocalBluetoothManager.getProfileManager()).thenReturn(mLocalBluetoothProfileManager);
         when(mLocalBluetoothProfileManager.getLeAudioBroadcastProfile()).thenReturn(null);
 
-        mFeatureFlags.set(Flags.WM_ENABLE_PREDICTIVE_BACK_QS_DIALOG_ANIM, true);
-        when(mSysUiState.setFlag(anyInt(), anyBoolean())).thenReturn(mSysUiState);
-        when(mSystemUIDialogFactory.create(any())).thenReturn(mDialog);
+        when(mSysUiState.setFlag(anyLong(), anyBoolean())).thenReturn(mSysUiState);
+        when(mSystemUIDialogFactory.create(any(), any())).thenReturn(mDialog);
 
         mBroadcastDialogDelegate = new BroadcastDialogDelegate(
                 mContext,
-                mMediaOutputDialogFactory,
+                mMediaOutputDialogManager,
                 mLocalBluetoothManager,
                 new UiEventLoggerFake(),
                 mFakeExecutor,
@@ -112,11 +110,10 @@ public class BroadcastDialogDelegateTest extends SysuiTestCase {
                 mContext,
                 0,
                 DEFAULT_DISMISS_ON_DEVICE_LOCK,
-                mFeatureFlags,
                 mDialogManager,
                 mSysUiState,
                 getFakeBroadcastDispatcher(),
-                mDialogLaunchAnimator,
+                mDialogTransitionAnimator,
                 mBroadcastDialogDelegate
         );
 

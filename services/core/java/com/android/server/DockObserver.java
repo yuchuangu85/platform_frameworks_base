@@ -19,9 +19,11 @@ package com.android.server;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Resources;
 import android.database.ContentObserver;
-import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.media.Ringtone;
+import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Handler;
@@ -34,6 +36,7 @@ import android.provider.Settings;
 import android.util.Pair;
 import android.util.Slog;
 
+import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.DumpUtils;
 import com.android.internal.util.FrameworkStatsLog;
@@ -258,11 +261,19 @@ final class DockObserver extends SystemService {
                     + mReportedDockState);
             final int previousDockState = mPreviousDockState;
             mPreviousDockState = mReportedDockState;
-            // Skip the dock intent if not yet provisioned.
+
             final ContentResolver cr = getContext().getContentResolver();
-            if (!mDeviceProvisionedObserver.isDeviceProvisioned()) {
-                Slog.i(TAG, "Device not provisioned, skipping dock broadcast");
-                return;
+
+            /// If the allow dock rotation before provision is enabled then we allow rotation.
+            final Resources r = getContext().getResources();
+            final boolean allowDockBeforeProvision =
+                    r.getBoolean(R.bool.config_allowDockBeforeProvision);
+            if (!allowDockBeforeProvision) {
+                // Skip the dock intent if not yet provisioned.
+                if (!mDeviceProvisionedObserver.isDeviceProvisioned()) {
+                    Slog.i(TAG, "Device not provisioned, skipping dock broadcast");
+                    return;
+                }
             }
 
             // Pack up the values and broadcast them to everyone
@@ -305,16 +316,11 @@ final class DockObserver extends SystemService {
                     if (soundPath != null) {
                         final Uri soundUri = Uri.parse("file://" + soundPath);
                         if (soundUri != null) {
-                            AudioAttributes audioAttributes = new AudioAttributes.Builder()
-                                    .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
-                                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                                    .build();
-                            final Ringtone sfx = new Ringtone.Builder(getContext(),
-                                    Ringtone.MEDIA_SOUND, audioAttributes)
-                                    .setUri(soundUri)
-                                    .setPreferBuiltinDevice()
-                                    .build();
+                            final Ringtone sfx = RingtoneManager.getRingtone(
+                                    getContext(), soundUri);
                             if (sfx != null) {
+                                sfx.setStreamType(AudioManager.STREAM_SYSTEM);
+                                sfx.preferBuiltinDevice(true);
                                 sfx.play();
                             }
                         }

@@ -25,17 +25,18 @@ namespace android {
 
 namespace text_feature {
 
-inline bool fix_double_underline() {
+inline bool letter_spacing_justification() {
 #ifdef __ANDROID__
-    return com_android_text_flags_fix_double_underline();
+    return com_android_text_flags_letter_spacing_justification();
 #else
     return true;
 #endif  // __ANDROID__
 }
 
-inline bool deprecate_ui_fonts() {
+inline bool typeface_redesign_readonly() {
 #ifdef __ANDROID__
-    return com_android_text_flags_deprecate_ui_fonts();
+    static bool flag = com_android_text_flags_typeface_redesign_readonly();
+    return flag;
 #else
     return true;
 #endif  // __ANDROID__

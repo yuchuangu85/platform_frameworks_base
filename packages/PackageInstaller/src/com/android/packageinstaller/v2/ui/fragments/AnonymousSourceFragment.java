@@ -21,11 +21,12 @@ import android.app.Dialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.os.Bundle;
+import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.fragment.app.DialogFragment;
 import com.android.packageinstaller.R;
-import com.android.packageinstaller.v2.model.installstagedata.InstallStage;
-import com.android.packageinstaller.v2.model.installstagedata.InstallUserActionRequired;
+import com.android.packageinstaller.v2.model.InstallStage;
+import com.android.packageinstaller.v2.model.InstallUserActionRequired;
 import com.android.packageinstaller.v2.ui.InstallActionListener;
 
 /**
@@ -33,8 +34,11 @@ import com.android.packageinstaller.v2.ui.InstallActionListener;
  */
 public class AnonymousSourceFragment extends DialogFragment {
 
-    public static String TAG = AnonymousSourceFragment.class.getSimpleName();
+    public static final String LOG_TAG = AnonymousSourceFragment.class.getSimpleName();
+    @NonNull
     private InstallActionListener mInstallActionListener;
+    @NonNull
+    private AlertDialog mDialog;
 
     @Override
     public void onAttach(@NonNull Context context) {
@@ -45,7 +49,8 @@ public class AnonymousSourceFragment extends DialogFragment {
     @NonNull
     @Override
     public Dialog onCreateDialog(Bundle savedInstanceState) {
-        return new AlertDialog.Builder(getActivity())
+        Log.i(LOG_TAG, "Creating " + LOG_TAG);
+        mDialog = new AlertDialog.Builder(requireContext())
             .setMessage(R.string.anonymous_source_warning)
             .setPositiveButton(R.string.anonymous_source_continue,
                 ((dialog, which) -> mInstallActionListener.onPositiveResponse(
@@ -53,11 +58,32 @@ public class AnonymousSourceFragment extends DialogFragment {
             .setNegativeButton(R.string.cancel,
                 ((dialog, which) -> mInstallActionListener.onNegativeResponse(
                     InstallStage.STAGE_USER_ACTION_REQUIRED))).create();
+        return mDialog;
     }
 
     @Override
     public void onCancel(@NonNull DialogInterface dialog) {
         super.onCancel(dialog);
         mInstallActionListener.onNegativeResponse(InstallStage.STAGE_USER_ACTION_REQUIRED);
+    }
+
+    @Override
+    public void onStart() {
+        super.onStart();
+        mDialog.getButton(DialogInterface.BUTTON_POSITIVE).setFilterTouchesWhenObscured(true);
+    }
+
+    @Override
+    public void onPause() {
+        super.onPause();
+        // This prevents tapjacking since an overlay activity started in front of Pia will
+        // cause Pia to be paused.
+        mDialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(false);
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        mDialog.getButton(DialogInterface.BUTTON_POSITIVE).setEnabled(true);
     }
 }

@@ -51,6 +51,7 @@ import java.util.function.Predicate;
  *
  * <p>This structure is <b>NOT</b> thread-safe.</p>
  */
+@android.ravenwood.annotation.RavenwoodKeepWholeClass
 public final class ArraySet<E> implements Collection<E>, Set<E> {
     private static final boolean DEBUG = false;
     private static final String TAG = "ArraySet";
@@ -525,7 +526,6 @@ public final class ArraySet<E> implements Collection<E>, Set<E> {
             // Cannot optimize since it would break the sorted order - fallback to add()
             if (DEBUG) {
                 RuntimeException e = new RuntimeException("here");
-                e.fillInStackTrace();
                 Log.w(TAG, "New hash " + hash
                         + " is before end of array hash " + mHashes[index - 1]
                         + " at index " + index, e);

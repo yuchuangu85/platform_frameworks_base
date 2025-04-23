@@ -57,11 +57,12 @@ import com.android.systemui.shade.ShadeHeaderController.Companion.QS_HEADER_CONS
 import com.android.systemui.shade.ShadeViewProviderModule.Companion.SHADE_HEADER
 import com.android.systemui.shade.carrier.ShadeCarrierGroup
 import com.android.systemui.shade.carrier.ShadeCarrierGroupController
-import com.android.systemui.statusbar.phone.StatusBarContentInsetsProvider
-import com.android.systemui.statusbar.phone.StatusBarIconController
+import com.android.systemui.statusbar.data.repository.StatusBarContentInsetsProviderStore
 import com.android.systemui.statusbar.phone.StatusBarLocation
 import com.android.systemui.statusbar.phone.StatusIconContainer
 import com.android.systemui.statusbar.phone.StatusOverlayHoverListenerFactory
+import com.android.systemui.statusbar.phone.ui.StatusBarIconController
+import com.android.systemui.statusbar.phone.ui.TintedIconManager
 import com.android.systemui.statusbar.policy.Clock
 import com.android.systemui.statusbar.policy.ConfigurationController
 import com.android.systemui.statusbar.policy.NextAlarmController
@@ -87,10 +88,10 @@ class ShadeHeaderController
 constructor(
     @Named(SHADE_HEADER) private val header: MotionLayout,
     private val statusBarIconController: StatusBarIconController,
-    private val tintedIconManagerFactory: StatusBarIconController.TintedIconManager.Factory,
+    private val tintedIconManagerFactory: TintedIconManager.Factory,
     private val privacyIconsController: HeaderPrivacyIconsController,
-    private val insetsProvider: StatusBarContentInsetsProvider,
-    private val configurationController: ConfigurationController,
+    private val insetsProviderStore: StatusBarContentInsetsProviderStore,
+    @ShadeDisplayAware private val configurationController: ConfigurationController,
     private val variableDateViewControllerFactory: VariableDateViewController.Factory,
     @Named(SHADE_HEADER) private val batteryMeterViewController: BatteryMeterViewController,
     private val dumpManager: DumpManager,
@@ -102,6 +103,8 @@ constructor(
     private val activityStarter: ActivityStarter,
     private val statusOverlayHoverListenerFactory: StatusOverlayHoverListenerFactory,
 ) : ViewController<View>(header), Dumpable {
+
+    private val insetsProvider = insetsProviderStore.defaultDisplay
 
     companion object {
         /** IDs for transitions and constraints for the [MotionLayout]. */
@@ -126,7 +129,7 @@ constructor(
 
     var shadeCollapseAction: Runnable? = null
 
-    private lateinit var iconManager: StatusBarIconController.TintedIconManager
+    private lateinit var iconManager: TintedIconManager
     private lateinit var carrierIconSlots: List<String>
     private lateinit var mShadeCarrierGroupController: ShadeCarrierGroupController
 
@@ -193,6 +196,7 @@ constructor(
             if (qsVisible && field != value) {
                 header.alpha = ShadeInterpolation.getContentAlpha(value)
                 field = value
+                updateIgnoredSlots()
             }
         }
 
@@ -229,10 +233,12 @@ constructor(
     private val demoModeReceiver =
         object : DemoMode {
             override fun demoCommands() = listOf(DemoMode.COMMAND_CLOCK)
+
             override fun dispatchDemoCommand(command: String, args: Bundle) =
                 clock.dispatchDemoCommand(command, args)
 
             override fun onDemoModeStarted() = clock.onDemoModeStarted()
+
             override fun onDemoModeFinished() = clock.onDemoModeFinished()
         }
 
@@ -258,7 +264,7 @@ constructor(
                     left,
                     header.paddingTop,
                     header.paddingRight,
-                    header.paddingBottom
+                    header.paddingBottom,
                 )
                 systemIconsHoverContainer.setPaddingRelative(
                     resources.getDimensionPixelSize(
@@ -272,7 +278,7 @@ constructor(
                     ),
                     resources.getDimensionPixelSize(
                         R.dimen.hover_system_icons_container_padding_bottom
-                    )
+                    ),
                 )
             }
 
@@ -302,10 +308,18 @@ constructor(
         // battery settings same as in QS icons
         batteryMeterViewController.ignoreTunerUpdates()
 
+        val fgColor =
+            Utils.getColorAttrDefaultColor(header.context, android.R.attr.textColorPrimary)
+        val bgColor =
+            Utils.getColorAttrDefaultColor(header.context, android.R.attr.textColorPrimaryInverse)
+
         iconManager = tintedIconManagerFactory.create(iconContainer, StatusBarLocation.QS)
-        iconManager.setTint(
-            Utils.getColorAttrDefaultColor(header.context, android.R.attr.textColorPrimary),
-            Utils.getColorAttrDefaultColor(header.context, android.R.attr.textColorPrimaryInverse),
+        iconManager.setTint(fgColor, bgColor)
+
+        batteryIcon.updateColors(
+            fgColor /* foreground */,
+            bgColor /* background */,
+            fgColor, /* single tone (current default) */
         )
 
         carrierIconSlots =
@@ -414,7 +428,7 @@ constructor(
                 if (view.isLayoutRtl) cutoutRight else cutoutLeft,
                 header.paddingStart,
                 if (view.isLayoutRtl) cutoutLeft else cutoutRight,
-                header.paddingEnd
+                header.paddingEnd,
             )
 
         if (cutout != null) {
@@ -425,13 +439,14 @@ constructor(
                 changes +=
                     combinedShadeHeadersConstraintManager.centerCutoutConstraints(
                         view.isLayoutRtl,
-                        (view.width - view.paddingLeft - view.paddingRight - topCutout.width()) / 2
+                        (view.width - view.paddingLeft - view.paddingRight - topCutout.width()) / 2,
                     )
             }
         } else {
             changes += combinedShadeHeadersConstraintManager.emptyCutoutConstraints()
         }
 
+        view.setPadding(view.paddingLeft, sbInsets.top, view.paddingRight, view.paddingBottom)
         view.updateAllConstraints(changes)
         updateBatteryMode()
     }
@@ -526,7 +541,7 @@ constructor(
 
     private fun updateIgnoredSlots() {
         // switching from QQS to QS state halfway through the transition
-        if (singleCarrier || qsExpandedFraction < 0.5) {
+        if (singleCarrier || (!largeScreenActive && qsExpandedFraction < 0.5)) {
             iconContainer.removeIgnoredSlots(carrierIconSlots)
         } else {
             iconContainer.addIgnoredSlots(carrierIconSlots)
@@ -550,7 +565,7 @@ constructor(
             clockPaddingStart,
             clock.paddingTop,
             clockPaddingEnd,
-            clock.paddingBottom
+            clock.paddingBottom,
         )
     }
 
@@ -589,9 +604,8 @@ constructor(
 
     @VisibleForTesting internal fun simulateViewDetached() = this.onViewDetached()
 
-    inner class CustomizerAnimationListener(
-        private val enteringCustomizing: Boolean,
-    ) : AnimatorListenerAdapter() {
+    inner class CustomizerAnimationListener(private val enteringCustomizing: Boolean) :
+        AnimatorListenerAdapter() {
         override fun onAnimationEnd(animation: Animator) {
             super.onAnimationEnd(animation)
             header.animate().setListener(null)

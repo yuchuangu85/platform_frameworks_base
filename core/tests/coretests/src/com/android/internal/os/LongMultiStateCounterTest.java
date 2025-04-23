@@ -22,11 +22,10 @@ import static org.junit.Assert.assertThrows;
 
 import android.os.BadParcelableException;
 import android.os.Parcel;
-import android.platform.test.annotations.IgnoreUnderRavenwood;
 import android.platform.test.ravenwood.RavenwoodRule;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import org.junit.Rule;
 import org.junit.Test;
@@ -34,7 +33,6 @@ import org.junit.runner.RunWith;
 
 @RunWith(AndroidJUnit4.class)
 @SmallTest
-@IgnoreUnderRavenwood(blockedBy = LongMultiStateCounterTest.class)
 public class LongMultiStateCounterTest {
     @Rule
     public final RavenwoodRule mRavenwood = new RavenwoodRule();

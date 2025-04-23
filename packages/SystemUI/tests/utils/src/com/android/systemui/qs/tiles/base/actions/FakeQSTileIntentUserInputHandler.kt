@@ -18,7 +18,7 @@ package com.android.systemui.qs.tiles.base.actions
 
 import android.app.PendingIntent
 import android.content.Intent
-import android.view.View
+import com.android.systemui.animation.Expandable
 
 /**
  * Fake implementation of [QSTileIntentUserInputHandler] interface. Consider using this alongside
@@ -31,18 +31,31 @@ class FakeQSTileIntentUserInputHandler : QSTileIntentUserInputHandler {
 
     private val mutableInputs = mutableListOf<Input>()
 
-    override fun handle(view: View?, intent: Intent) {
-        mutableInputs.add(Input.Intent(view, intent))
+    override fun handle(
+        expandable: Expandable?,
+        intent: Intent,
+        handleDismissShadeShowOverLockScreenWhenLocked: Boolean
+    ) {
+        mutableInputs.add(Input.Intent(expandable, intent))
     }
 
-    override fun handle(view: View?, pendingIntent: PendingIntent) {
-        mutableInputs.add(Input.PendingIntent(view, pendingIntent))
+    override fun handle(
+        expandable: Expandable?,
+        pendingIntent: PendingIntent,
+        requestLaunchingDefaultActivity: Boolean
+    ) {
+        mutableInputs.add(
+            Input.PendingIntent(expandable, pendingIntent, requestLaunchingDefaultActivity)
+        )
     }
 
     sealed interface Input {
-        data class Intent(val view: View?, val intent: android.content.Intent) : Input
-        data class PendingIntent(val view: View?, val pendingIntent: android.app.PendingIntent) :
-            Input
+        data class Intent(val expandable: Expandable?, val intent: android.content.Intent) : Input
+        data class PendingIntent(
+            val expandable: Expandable?,
+            val pendingIntent: android.app.PendingIntent,
+            val requestLaunchingDefaultActivity: Boolean
+        ) : Input
     }
 }
 

@@ -34,6 +34,7 @@ import androidx.annotation.NonNull;
 
 import com.android.settingslib.R;
 import com.android.settingslib.Utils;
+import com.android.settingslib.flags.Flags;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -109,7 +110,7 @@ public class HearingAidProfile implements LocalBluetoothProfile {
                 device.refresh();
             }
 
-            // Check current list of CachedDevices to see if any are Hearing Aid devices.
+            // Check current list of CachedDevices to see if any are hearing aid devices.
             mDeviceManager.updateHearingAidsDevices();
             mIsProfileReady = true;
             mProfileManager.callServiceConnectedListeners();
@@ -141,7 +142,7 @@ public class HearingAidProfile implements LocalBluetoothProfile {
     }
 
     public boolean accessProfileEnabled() {
-        return false;
+        return Flags.ashaProfileAccessProfileEnabledTrue();
     }
 
     public boolean isAutoConnectable() {

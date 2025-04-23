@@ -20,7 +20,8 @@ import android.app.IWallpaperManager;
 import android.app.backup.BackupAgentHelper;
 import android.app.backup.BackupAnnotations.BackupDestination;
 import android.app.backup.BackupDataInput;
-import android.app.backup.BackupHelper;
+import android.app.backup.BackupHelperWithLogger;
+import android.app.backup.BackupRestoreEventLogger;
 import android.app.backup.FullBackup;
 import android.app.backup.FullBackupDataOutput;
 import android.app.backup.WallpaperBackupHelper;
@@ -33,6 +34,9 @@ import android.os.ServiceManager;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.util.Slog;
+
+import com.android.server.backup.Flags;
+import com.android.server.notification.NotificationBackupHelper;
 
 import com.google.android.collect.Sets;
 
@@ -62,6 +66,7 @@ public class SystemBackupAgent extends BackupAgentHelper {
     private static final String APP_LOCALES_HELPER = "app_locales";
     private static final String APP_GENDER_HELPER = "app_gender";
     private static final String COMPANION_HELPER = "companion";
+    private static final String SYSTEM_GENDER_HELPER = "system_gender";
 
     // These paths must match what the WallpaperManagerService uses.  The leaf *_FILENAME
     // are also used in the full-backup file format, so must not change unless steps are
@@ -97,7 +102,9 @@ public class SystemBackupAgent extends BackupAgentHelper {
                     NOTIFICATION_HELPER,
                     SYNC_SETTINGS_HELPER,
                     APP_LOCALES_HELPER,
-                    COMPANION_HELPER);
+                    COMPANION_HELPER,
+                    APP_GENDER_HELPER,
+                    SYSTEM_GENDER_HELPER);
 
     /** Helpers that are enabled for full, non-system users. */
     private static final Set<String> sEligibleHelpersForNonSystemUser =
@@ -107,10 +114,12 @@ public class SystemBackupAgent extends BackupAgentHelper {
 
     private int mUserId = UserHandle.USER_SYSTEM;
     private boolean mIsProfileUser = false;
+    private BackupRestoreEventLogger mLogger;
 
     @Override
     public void onCreate(UserHandle user, @BackupDestination int backupDestination) {
         super.onCreate(user, backupDestination);
+        mLogger = this.getBackupRestoreEventLogger();
 
         mUserId = user.getIdentifier();
         if (mUserId != UserHandle.USER_SYSTEM) {
@@ -135,6 +144,8 @@ public class SystemBackupAgent extends BackupAgentHelper {
         addHelperIfEligibleForUser(APP_GENDER_HELPER,
                 new AppGrammaticalGenderBackupHelper(mUserId));
         addHelperIfEligibleForUser(COMPANION_HELPER, new CompanionBackupHelper(mUserId));
+        addHelperIfEligibleForUser(SYSTEM_GENDER_HELPER,
+                new SystemGrammaticalGenderBackupHelper(mUserId));
     }
 
     @Override
@@ -209,9 +220,12 @@ public class SystemBackupAgent extends BackupAgentHelper {
         }
     }
 
-    private void addHelperIfEligibleForUser(String keyPrefix, BackupHelper helper) {
+    private void addHelperIfEligibleForUser(String keyPrefix, BackupHelperWithLogger helper) {
         if (isHelperEligibleForUser(keyPrefix)) {
             addHelper(keyPrefix, helper);
+            if (Flags.enableMetricsSystemBackupAgents()) {
+                helper.setLogger(mLogger);
+            }
         }
     }
 

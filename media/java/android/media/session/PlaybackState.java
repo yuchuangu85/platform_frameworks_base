@@ -15,6 +15,7 @@
  */
 package android.media.session;
 
+
 import android.annotation.DrawableRes;
 import android.annotation.IntDef;
 import android.annotation.LongDef;
@@ -184,12 +185,21 @@ public final class PlaybackState implements Parcelable {
      */
     public static final long ACTION_SET_PLAYBACK_SPEED = 1 << 22;
 
-    /**
-     * @hide
-     */
-    @IntDef({STATE_NONE, STATE_STOPPED, STATE_PAUSED, STATE_PLAYING, STATE_FAST_FORWARDING,
-            STATE_REWINDING, STATE_BUFFERING, STATE_ERROR, STATE_CONNECTING,
-            STATE_SKIPPING_TO_PREVIOUS, STATE_SKIPPING_TO_NEXT, STATE_SKIPPING_TO_QUEUE_ITEM})
+    /** @hide */
+    @IntDef({
+        STATE_NONE,
+        STATE_STOPPED,
+        STATE_PAUSED,
+        STATE_PLAYING,
+        STATE_FAST_FORWARDING,
+        STATE_REWINDING,
+        STATE_BUFFERING,
+        STATE_ERROR,
+        STATE_CONNECTING,
+        STATE_SKIPPING_TO_PREVIOUS,
+        STATE_SKIPPING_TO_NEXT,
+        STATE_SKIPPING_TO_QUEUE_ITEM
+    })
     @Retention(RetentionPolicy.SOURCE)
     public @interface State {}
 

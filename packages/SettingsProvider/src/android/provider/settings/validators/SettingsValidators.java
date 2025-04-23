@@ -45,6 +45,9 @@ public class SettingsValidators {
         }
     };
 
+    public static final Validator FONT_SCALE_VALIDATOR = new InclusiveFloatRangeValidator(0.25f,
+            5.0f);
+
     public static final Validator NON_NEGATIVE_INTEGER_VALIDATOR = new Validator() {
         @Override
         public boolean validate(@Nullable String value) {
@@ -233,6 +236,18 @@ public class SettingsValidators {
             } catch (NumberFormatException e) {
                 return false;
             }
+        }
+    };
+
+    static final Validator ANY_LONG_VALIDATOR = value -> {
+        if (value == null) {
+            return true;
+        }
+        try {
+            Long.parseLong(value);
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
         }
     };
 

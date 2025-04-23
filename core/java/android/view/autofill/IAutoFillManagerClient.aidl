@@ -22,6 +22,7 @@ import android.content.ClipData;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.IntentSender;
+import android.credentials.GetCredentialResponse;
 import android.graphics.Rect;
 import android.os.IBinder;
 import android.view.autofill.AutofillId;
@@ -48,6 +49,12 @@ oneway interface IAutoFillManagerClient {
     void autofill(int sessionId, in List<AutofillId> ids, in List<AutofillValue> values,
             boolean hideHighlight);
 
+    void onGetCredentialResponse(int sessionId, in AutofillId id,
+                 in GetCredentialResponse response);
+
+    void onGetCredentialException(int sessionId, in AutofillId id,
+                     in String errorType, in String errorMsg);
+
     /**
      * Autofills the activity with rich content data (e.g. an image) from a dataset.
      */
@@ -65,7 +72,8 @@ oneway interface IAutoFillManagerClient {
       */
     void setTrackedViews(int sessionId, in @nullable AutofillId[] savableIds,
             boolean saveOnAllViewsInvisible, boolean saveOnFinish,
-            in @nullable AutofillId[] fillableIds, in AutofillId saveTriggerId);
+            in @nullable AutofillId[] fillableIds, in AutofillId saveTriggerId,
+            in boolean shouldGrabViewFingerprints);
 
     /**
      * Requests showing the fill UI.

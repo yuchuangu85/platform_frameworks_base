@@ -30,10 +30,12 @@ import static org.mockito.Mockito.when;
 
 import android.app.Notification;
 import android.app.NotificationManager;
+import android.os.UserHandle;
 
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.SmallTest;
 
+import com.android.server.display.ExternalDisplayStatsService;
 import com.android.server.display.feature.DisplayManagerFlags;
 import com.android.server.display.notifications.DisplayNotificationManager.Injector;
 
@@ -60,6 +62,8 @@ public class DisplayNotificationManagerTest {
     @Mock
     private NotificationManager mMockedNotificationManager;
     @Mock
+    private ExternalDisplayStatsService mMockedExternalDisplayStatsService;
+    @Mock
     private DisplayManagerFlags mMockedFlags;
     @Captor
     private ArgumentCaptor<String> mNotifyTagCaptor;
@@ -67,6 +71,8 @@ public class DisplayNotificationManagerTest {
     private ArgumentCaptor<Integer> mNotifyNoteIdCaptor;
     @Captor
     private ArgumentCaptor<Notification> mNotifyAsUserNotificationCaptor;
+    @Captor
+    private ArgumentCaptor<UserHandle> mNotifyAsUserCaptor;
 
     /** Setup tests. */
     @Before
@@ -88,6 +94,7 @@ public class DisplayNotificationManagerTest {
                 /*isErrorHandlingEnabled=*/ true);
         dnm.onHotplugConnectionError();
         assertExpectedNotification();
+        verify(mMockedExternalDisplayStatsService).onHotplugConnectionError();
     }
 
     @Test
@@ -96,6 +103,7 @@ public class DisplayNotificationManagerTest {
                 /*isErrorHandlingEnabled=*/ true);
         dnm.onDisplayPortLinkTrainingFailure();
         assertExpectedNotification();
+        verify(mMockedExternalDisplayStatsService).onDisplayPortLinkTrainingFailure();
     }
 
     @Test
@@ -104,6 +112,7 @@ public class DisplayNotificationManagerTest {
                 /*isErrorHandlingEnabled=*/ true);
         dnm.onCableNotCapableDisplayPort();
         assertExpectedNotification();
+        verify(mMockedExternalDisplayStatsService).onCableNotCapableDisplayPort();
     }
 
     @Test
@@ -121,7 +130,35 @@ public class DisplayNotificationManagerTest {
         dnm.onDisplayPortLinkTrainingFailure();
         dnm.onCableNotCapableDisplayPort();
         dnm.onHighTemperatureExternalDisplayNotAllowed();
-        verify(mMockedNotificationManager, never()).notify(anyString(), anyInt(), any());
+        verify(mMockedNotificationManager, never()).notifyAsUser(anyString(), anyInt(), any(),
+                any());
+    }
+
+    @Test
+    public void testNoErrorLogging() {
+        var dnm = createDisplayNotificationManager(/*isNotificationManagerAvailable=*/ true,
+                /*isErrorHandlingEnabled=*/ false);
+        // None of these methods should trigger logging now.
+        dnm.onHotplugConnectionError();
+        dnm.onDisplayPortLinkTrainingFailure();
+        dnm.onCableNotCapableDisplayPort();
+        verify(mMockedExternalDisplayStatsService, never()).onHotplugConnectionError();
+        verify(mMockedExternalDisplayStatsService, never()).onCableNotCapableDisplayPort();
+        verify(mMockedExternalDisplayStatsService, never()).onDisplayPortLinkTrainingFailure();
+    }
+
+
+    @Test
+    public void testErrorLogging() {
+        var dnm = createDisplayNotificationManager(/*isNotificationManagerAvailable=*/ true,
+                /*isErrorHandlingEnabled=*/ true);
+        // these methods should trigger logging now.
+        dnm.onHotplugConnectionError();
+        verify(mMockedExternalDisplayStatsService).onHotplugConnectionError();
+        dnm.onDisplayPortLinkTrainingFailure();
+        verify(mMockedExternalDisplayStatsService).onDisplayPortLinkTrainingFailure();
+        dnm.onCableNotCapableDisplayPort();
+        verify(mMockedExternalDisplayStatsService).onCableNotCapableDisplayPort();
     }
 
     private DisplayNotificationManager createDisplayNotificationManager(
@@ -129,6 +166,8 @@ public class DisplayNotificationManagerTest {
             final boolean isErrorHandlingEnabled) {
         when(mMockedFlags.isConnectedDisplayErrorHandlingEnabled()).thenReturn(
                 isErrorHandlingEnabled);
+        when(mMockedInjector.getExternalDisplayStatsService()).thenReturn(
+                mMockedExternalDisplayStatsService);
         when(mMockedInjector.getNotificationManager()).thenReturn(
                 (isNotificationManagerAvailable) ? mMockedNotificationManager : null);
         // Usb errors detector is tested in ConnectedDisplayUsbErrorsDetectorTest
@@ -140,10 +179,11 @@ public class DisplayNotificationManagerTest {
     }
 
     private void assertExpectedNotification() {
-        verify(mMockedNotificationManager).notify(
+        verify(mMockedNotificationManager).notifyAsUser(
                 mNotifyTagCaptor.capture(),
                 mNotifyNoteIdCaptor.capture(),
-                mNotifyAsUserNotificationCaptor.capture());
+                mNotifyAsUserNotificationCaptor.capture(),
+                mNotifyAsUserCaptor.capture());
         assertThat(mNotifyTagCaptor.getValue()).isEqualTo("DisplayNotificationManager");
         assertThat((int) mNotifyNoteIdCaptor.getValue()).isEqualTo(1);
         final var notification = mNotifyAsUserNotificationCaptor.getValue();
@@ -153,5 +193,7 @@ public class DisplayNotificationManagerTest {
         assertThat(notification.flags & FLAG_ONGOING_EVENT).isEqualTo(0);
         assertThat(notification.when).isEqualTo(0);
         assertThat(notification.getTimeoutAfter()).isEqualTo(30000L);
+        final var user = mNotifyAsUserCaptor.getValue();
+        assertThat(user).isEqualTo(UserHandle.CURRENT);
     }
 }

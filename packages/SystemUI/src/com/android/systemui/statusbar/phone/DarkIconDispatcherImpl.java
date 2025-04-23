@@ -14,37 +14,41 @@
 
 package com.android.systemui.statusbar.phone;
 
+import static com.android.settingslib.flags.Flags.newStatusBarIcons;
 import static com.android.systemui.plugins.DarkIconDispatcher.getTint;
 
 import android.animation.ArgbEvaluator;
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.graphics.Color;
 import android.graphics.Rect;
 import android.util.ArrayMap;
+import android.view.Display;
 import android.widget.ImageView;
 
-import com.android.systemui.dagger.SysUISingleton;
 import com.android.systemui.dump.DumpManager;
 
-import java.io.PrintWriter;
-import java.util.ArrayList;
-
-import javax.inject.Inject;
+import dagger.assisted.Assisted;
+import dagger.assisted.AssistedFactory;
+import dagger.assisted.AssistedInject;
 
 import kotlinx.coroutines.flow.FlowKt;
 import kotlinx.coroutines.flow.MutableStateFlow;
 import kotlinx.coroutines.flow.StateFlow;
 import kotlinx.coroutines.flow.StateFlowKt;
 
+import java.io.PrintWriter;
+import java.util.ArrayList;
+
 /**
  */
-@SysUISingleton
 public class DarkIconDispatcherImpl implements SysuiDarkIconDispatcher,
         LightBarTransitionsController.DarkIntensityApplier {
 
     private final LightBarTransitionsController mTransitionsController;
     private final ArrayList<Rect> mTintAreas = new ArrayList<>();
     private final ArrayMap<Object, DarkReceiver> mReceivers = new ArrayMap<>();
+    private final DumpManager mDumpManager;
 
     private int mIconTint = DEFAULT_ICON_TINT;
     private int mContrastTint = DEFAULT_INVERSE_ICON_TINT;
@@ -59,21 +63,50 @@ public class DarkIconDispatcherImpl implements SysuiDarkIconDispatcher,
     private final MutableStateFlow<DarkChange> mDarkChangeFlow = StateFlowKt.MutableStateFlow(
             DarkChange.EMPTY);
 
+    private final String mDumpableName;
+
+    /** */
+    @AssistedFactory
+    @FunctionalInterface
+    public interface Factory {
+        /** */
+        DarkIconDispatcherImpl create(int displayId, Context context);
+    }
+
     /**
      */
-    @Inject
+    @AssistedInject
     public DarkIconDispatcherImpl(
-            Context context,
+            @Assisted int displayId,
+            @Assisted Context context,
             LightBarTransitionsController.Factory lightBarTransitionsControllerFactory,
             DumpManager dumpManager) {
-        mDarkModeIconColorSingleTone = context.getColor(
-                com.android.settingslib.R.color.dark_mode_icon_color_single_tone);
-        mLightModeIconColorSingleTone = context.getColor(
-                com.android.settingslib.R.color.light_mode_icon_color_single_tone);
+        mDumpManager = dumpManager;
+        if (newStatusBarIcons()) {
+            mDarkModeIconColorSingleTone = Color.BLACK;
+            mLightModeIconColorSingleTone = Color.WHITE;
+        } else {
+            mDarkModeIconColorSingleTone = context.getColor(
+                    com.android.settingslib.R.color.dark_mode_icon_color_single_tone);
+            mLightModeIconColorSingleTone = context.getColor(
+                    com.android.settingslib.R.color.light_mode_icon_color_single_tone);
+        }
 
         mTransitionsController = lightBarTransitionsControllerFactory.create(this);
 
-        dumpManager.registerDumpable(getClass().getSimpleName(), this);
+        mDumpableName = getDumpableName(displayId);
+        dumpManager.registerNormalDumpable(mDumpableName, this);
+    }
+
+    @Override
+    public void stop() {
+        mDumpManager.unregisterDumpable(mDumpableName);
+    }
+
+    private String getDumpableName(int displayId) {
+        String dumpableNameSuffix =
+                displayId == Display.DEFAULT_DISPLAY ? "" : String.valueOf(displayId);
+        return getClass().getSimpleName() + dumpableNameSuffix;
     }
 
     public LightBarTransitionsController getTransitionsController() {

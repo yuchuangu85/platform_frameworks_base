@@ -19,9 +19,16 @@ package com.android.systemui.scene
 import android.view.View
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.keyguard.KeyguardViewConfigurator
+import com.android.systemui.keyguard.domain.interactor.KeyguardClockInteractor
 import com.android.systemui.keyguard.qualifiers.KeyguardRootView
+import com.android.systemui.keyguard.shared.model.LockscreenSceneBlueprint
+import com.android.systemui.keyguard.ui.composable.LockscreenContent
 import com.android.systemui.keyguard.ui.composable.LockscreenScene
-import com.android.systemui.scene.shared.model.Scene
+import com.android.systemui.keyguard.ui.composable.LockscreenSceneBlueprintModule
+import com.android.systemui.keyguard.ui.composable.blueprint.ComposableLockscreenSceneBlueprint
+import com.android.systemui.keyguard.ui.viewmodel.LockscreenContentViewModel
+import com.android.systemui.scene.ui.composable.Scene
+import com.android.systemui.statusbar.notification.stack.ui.viewmodel.NotificationLockscreenScrimViewModel
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -29,7 +36,7 @@ import dagger.multibindings.IntoSet
 import javax.inject.Provider
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 
-@Module
+@Module(includes = [LockscreenSceneBlueprintModule::class])
 interface LockscreenSceneModule {
 
     @Binds @IntoSet fun lockscreenScene(scene: LockscreenScene): Scene
@@ -40,10 +47,30 @@ interface LockscreenSceneModule {
         @Provides
         @SysUISingleton
         @KeyguardRootView
-        fun viewProvider(
-            configurator: Provider<KeyguardViewConfigurator>,
-        ): () -> View {
+        fun viewProvider(configurator: Provider<KeyguardViewConfigurator>): () -> View {
             return { configurator.get().getKeyguardRootView() }
+        }
+
+        @Provides
+        fun providesLockscreenBlueprints(
+            blueprints: Set<@JvmSuppressWildcards ComposableLockscreenSceneBlueprint>
+        ): Set<LockscreenSceneBlueprint> {
+            return blueprints
+        }
+
+        @Provides
+        fun providesLockscreenContent(
+            viewModelFactory: LockscreenContentViewModel.Factory,
+            notificationScrimViewModelFactory: NotificationLockscreenScrimViewModel.Factory,
+            blueprints: Set<@JvmSuppressWildcards ComposableLockscreenSceneBlueprint>,
+            clockInteractor: KeyguardClockInteractor,
+        ): LockscreenContent {
+            return LockscreenContent(
+                viewModelFactory,
+                notificationScrimViewModelFactory,
+                blueprints,
+                clockInteractor,
+            )
         }
     }
 }

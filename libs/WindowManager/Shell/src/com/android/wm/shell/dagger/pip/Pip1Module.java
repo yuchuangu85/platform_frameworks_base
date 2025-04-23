@@ -19,6 +19,7 @@ package com.android.wm.shell.dagger.pip;
 import android.content.Context;
 import android.os.Handler;
 
+import com.android.wm.shell.RootTaskDisplayAreaOrganizer;
 import com.android.wm.shell.ShellTaskOrganizer;
 import com.android.wm.shell.WindowManagerShellWrapper;
 import com.android.wm.shell.common.DisplayController;
@@ -29,21 +30,20 @@ import com.android.wm.shell.common.SyncTransactionQueue;
 import com.android.wm.shell.common.SystemWindows;
 import com.android.wm.shell.common.TabletopModeController;
 import com.android.wm.shell.common.TaskStackListenerImpl;
-import com.android.wm.shell.common.annotations.ShellMainThread;
 import com.android.wm.shell.common.pip.PhonePipKeepClearAlgorithm;
 import com.android.wm.shell.common.pip.PipAppOpsListener;
 import com.android.wm.shell.common.pip.PipBoundsAlgorithm;
 import com.android.wm.shell.common.pip.PipBoundsState;
 import com.android.wm.shell.common.pip.PipDisplayLayoutState;
 import com.android.wm.shell.common.pip.PipMediaController;
+import com.android.wm.shell.common.pip.PipPerfHintController;
 import com.android.wm.shell.common.pip.PipSnapAlgorithm;
 import com.android.wm.shell.common.pip.PipUiEventLogger;
-import com.android.wm.shell.common.pip.PipUtils;
 import com.android.wm.shell.common.pip.SizeSpecSource;
 import com.android.wm.shell.dagger.WMShellBaseModule;
 import com.android.wm.shell.dagger.WMSingleton;
+import com.android.wm.shell.desktopmode.DesktopUserRepositories;
 import com.android.wm.shell.onehanded.OneHandedController;
-import com.android.wm.shell.pip.Pip;
 import com.android.wm.shell.pip.PipAnimationController;
 import com.android.wm.shell.pip.PipParamsChangedForwarder;
 import com.android.wm.shell.pip.PipSurfaceTransactionHelper;
@@ -55,10 +55,12 @@ import com.android.wm.shell.pip.phone.PhonePipMenuController;
 import com.android.wm.shell.pip.phone.PipController;
 import com.android.wm.shell.pip.phone.PipMotionHelper;
 import com.android.wm.shell.pip.phone.PipTouchHandler;
+import com.android.wm.shell.shared.annotations.ShellMainThread;
 import com.android.wm.shell.splitscreen.SplitScreenController;
 import com.android.wm.shell.sysui.ShellCommandHandler;
 import com.android.wm.shell.sysui.ShellController;
 import com.android.wm.shell.sysui.ShellInit;
+import com.android.wm.shell.transition.HomeTransitionObserver;
 import com.android.wm.shell.transition.Transitions;
 
 import dagger.Module;
@@ -77,7 +79,7 @@ import java.util.Optional;
 public abstract class Pip1Module {
     @WMSingleton
     @Provides
-    static Optional<Pip> providePip1(Context context,
+    static Optional<PipController.PipImpl> providePip1(Context context,
             ShellInit shellInit,
             ShellCommandHandler shellCommandHandler,
             ShellController shellController,
@@ -101,21 +103,18 @@ public abstract class Pip1Module {
             DisplayInsetsController displayInsetsController,
             TabletopModeController pipTabletopController,
             Optional<OneHandedController> oneHandedController,
-            @ShellMainThread ShellExecutor mainExecutor) {
-        if (PipUtils.isPip2ExperimentEnabled()) {
-            return Optional.empty();
-        } else {
-            return Optional.ofNullable(PipController.create(
-                    context, shellInit, shellCommandHandler, shellController,
-                    displayController, pipAnimationController, pipAppOpsListener,
-                    pipBoundsAlgorithm,
-                    pipKeepClearAlgorithm, pipBoundsState, pipDisplayLayoutState,
-                    pipMotionHelper, pipMediaController, phonePipMenuController, pipTaskOrganizer,
-                    pipTransitionState, pipTouchHandler, pipTransitionController,
-                    windowManagerShellWrapper, taskStackListener, pipParamsChangedForwarder,
-                    displayInsetsController, pipTabletopController, oneHandedController,
-                    mainExecutor));
-        }
+            @ShellMainThread ShellExecutor mainExecutor,
+            @ShellMainThread Handler handler) {
+        return Optional.ofNullable(PipController.create(
+                context, shellInit, shellCommandHandler, shellController,
+                displayController, pipAnimationController, pipAppOpsListener,
+                pipBoundsAlgorithm,
+                pipKeepClearAlgorithm, pipBoundsState, pipDisplayLayoutState,
+                pipMotionHelper, pipMediaController, phonePipMenuController, pipTaskOrganizer,
+                pipTransitionState, pipTouchHandler, pipTransitionController,
+                windowManagerShellWrapper, taskStackListener, pipParamsChangedForwarder,
+                displayInsetsController, pipTabletopController, oneHandedController,
+                mainExecutor, handler));
     }
 
     // Handler is used by Icon.loadDrawableAsync
@@ -124,12 +123,11 @@ public abstract class Pip1Module {
     static PhonePipMenuController providesPipPhoneMenuController(Context context,
             PipBoundsState pipBoundsState, PipMediaController pipMediaController,
             SystemWindows systemWindows,
-            Optional<SplitScreenController> splitScreenOptional,
             PipUiEventLogger pipUiEventLogger,
             @ShellMainThread ShellExecutor mainExecutor,
             @ShellMainThread Handler mainHandler) {
         return new PhonePipMenuController(context, pipBoundsState, pipMediaController,
-                systemWindows, splitScreenOptional, pipUiEventLogger, mainExecutor, mainHandler);
+                systemWindows, pipUiEventLogger, mainExecutor, mainHandler);
     }
 
     @WMSingleton
@@ -144,10 +142,12 @@ public abstract class Pip1Module {
             PipMotionHelper pipMotionHelper,
             FloatingContentCoordinator floatingContentCoordinator,
             PipUiEventLogger pipUiEventLogger,
-            @ShellMainThread ShellExecutor mainExecutor) {
+            @ShellMainThread ShellExecutor mainExecutor,
+            Optional<PipPerfHintController> pipPerfHintControllerOptional) {
         return new PipTouchHandler(context, shellInit, menuPhoneController, pipBoundsAlgorithm,
                 pipBoundsState, sizeSpecSource, pipTaskOrganizer, pipMotionHelper,
-                floatingContentCoordinator, pipUiEventLogger, mainExecutor);
+                floatingContentCoordinator, pipUiEventLogger, mainExecutor,
+                pipPerfHintControllerOptional);
     }
 
     @WMSingleton
@@ -170,6 +170,9 @@ public abstract class Pip1Module {
             PipTransitionController pipTransitionController,
             PipParamsChangedForwarder pipParamsChangedForwarder,
             Optional<SplitScreenController> splitScreenControllerOptional,
+            Optional<PipPerfHintController> pipPerfHintControllerOptional,
+            Optional<DesktopUserRepositories> desktopUserRepositoriesOptional,
+            RootTaskDisplayAreaOrganizer rootTaskDisplayAreaOrganizer,
             DisplayController displayController,
             PipUiEventLogger pipUiEventLogger, ShellTaskOrganizer shellTaskOrganizer,
             @ShellMainThread ShellExecutor mainExecutor) {
@@ -177,8 +180,9 @@ public abstract class Pip1Module {
                 syncTransactionQueue, pipTransitionState, pipBoundsState, pipDisplayLayoutState,
                 pipBoundsAlgorithm, menuPhoneController, pipAnimationController,
                 pipSurfaceTransactionHelper, pipTransitionController, pipParamsChangedForwarder,
-                splitScreenControllerOptional, displayController, pipUiEventLogger,
-                shellTaskOrganizer, mainExecutor);
+                splitScreenControllerOptional, pipPerfHintControllerOptional,
+                desktopUserRepositoriesOptional, rootTaskDisplayAreaOrganizer, displayController,
+                pipUiEventLogger, shellTaskOrganizer, mainExecutor);
     }
 
     @WMSingleton
@@ -189,11 +193,12 @@ public abstract class Pip1Module {
             PipBoundsState pipBoundsState, PipDisplayLayoutState pipDisplayLayoutState,
             PipTransitionState pipTransitionState, PhonePipMenuController pipMenuController,
             PipSurfaceTransactionHelper pipSurfaceTransactionHelper,
+            HomeTransitionObserver homeTransitionObserver,
             Optional<SplitScreenController> splitScreenOptional) {
         return new PipTransition(context, shellInit, shellTaskOrganizer, transitions,
                 pipBoundsState, pipDisplayLayoutState, pipTransitionState, pipMenuController,
                 pipBoundsAlgorithm, pipAnimationController, pipSurfaceTransactionHelper,
-                splitScreenOptional);
+                homeTransitionObserver, splitScreenOptional);
     }
 
     @WMSingleton
@@ -207,13 +212,15 @@ public abstract class Pip1Module {
     @WMSingleton
     @Provides
     static PipMotionHelper providePipMotionHelper(Context context,
+            @ShellMainThread ShellExecutor mainExecutor,
             PipBoundsState pipBoundsState, PipTaskOrganizer pipTaskOrganizer,
             PhonePipMenuController menuController, PipSnapAlgorithm pipSnapAlgorithm,
             PipTransitionController pipTransitionController,
-            FloatingContentCoordinator floatingContentCoordinator) {
-        return new PipMotionHelper(context, pipBoundsState, pipTaskOrganizer,
+            FloatingContentCoordinator floatingContentCoordinator,
+            Optional<PipPerfHintController> pipPerfHintControllerOptional) {
+        return new PipMotionHelper(context, mainExecutor, pipBoundsState, pipTaskOrganizer,
                 menuController, pipSnapAlgorithm, pipTransitionController,
-                floatingContentCoordinator);
+                floatingContentCoordinator, pipPerfHintControllerOptional);
     }
 
     @WMSingleton

@@ -34,8 +34,6 @@ import com.android.internal.logging.MetricsLogger;
 import com.android.systemui.classifier.FalsingDataProvider.SessionListener;
 import com.android.systemui.classifier.HistoryTracker.BeliefListener;
 import com.android.systemui.dagger.qualifiers.TestHarness;
-import com.android.systemui.flags.FeatureFlags;
-import com.android.systemui.flags.Flags;
 import com.android.systemui.plugins.FalsingManager;
 import com.android.systemui.statusbar.policy.KeyguardStateController;
 
@@ -76,7 +74,6 @@ public class BrightLineFalsingManager implements FalsingManager {
     private final boolean mTestHarness;
     private final MetricsLogger mMetricsLogger;
     private int mIsFalseTouchCalls;
-    private FeatureFlags mFeatureFlags;
     private static final Queue<String> RECENT_INFO_LOG =
             new ArrayDeque<>(RECENT_INFO_LOG_SIZE + 1);
     private static final Queue<DebugSwipeRecord> RECENT_SWIPES =
@@ -93,11 +90,13 @@ public class BrightLineFalsingManager implements FalsingManager {
         @Override
         public void onSessionEnded() {
             mLastProximityEvent = null;
+            mHistoryTracker.removeBeliefListener(mBeliefListener);
             mClassifiers.forEach(FalsingClassifier::onSessionEnded);
         }
 
         @Override
         public void onSessionStarted() {
+            mHistoryTracker.addBeliefListener(mBeliefListener);
             mClassifiers.forEach(FalsingClassifier::onSessionStarted);
         }
     };
@@ -184,8 +183,7 @@ public class BrightLineFalsingManager implements FalsingManager {
             DoubleTapClassifier doubleTapClassifier, HistoryTracker historyTracker,
             KeyguardStateController keyguardStateController,
             AccessibilityManager accessibilityManager,
-            @TestHarness boolean testHarness,
-            FeatureFlags featureFlags) {
+            @TestHarness boolean testHarness) {
         mDataProvider = falsingDataProvider;
         mMetricsLogger = metricsLogger;
         mClassifiers = classifiers;
@@ -196,11 +194,9 @@ public class BrightLineFalsingManager implements FalsingManager {
         mKeyguardStateController = keyguardStateController;
         mAccessibilityManager = accessibilityManager;
         mTestHarness = testHarness;
-        mFeatureFlags = featureFlags;
 
         mDataProvider.addSessionListener(mSessionListener);
         mDataProvider.addGestureCompleteListener(mGestureFinalizedListener);
-        mHistoryTracker.addBeliefListener(mBeliefListener);
     }
 
     @Override
@@ -397,8 +393,9 @@ public class BrightLineFalsingManager implements FalsingManager {
                 || mAccessibilityManager.isTouchExplorationEnabled()
                 || mDataProvider.isA11yAction()
                 || mDataProvider.isFromTrackpad()
-                || (mFeatureFlags.isEnabled(Flags.FALSING_OFF_FOR_UNFOLDED)
-                    && mDataProvider.isUnfolded());
+                || mDataProvider.isFromKeyboard()
+                || !mDataProvider.isTouchScreenSource()
+                || mDataProvider.isUnfolded();
     }
 
     @Override

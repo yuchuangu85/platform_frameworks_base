@@ -18,31 +18,31 @@ package com.android.systemui.bouncer.domain.interactor
 
 import android.content.Context
 import android.content.res.ColorStateList
-import android.hardware.biometrics.BiometricSourceType
 import android.os.Handler
 import android.os.Trace
 import android.util.Log
 import android.view.View
-import com.android.keyguard.KeyguardConstants
 import com.android.keyguard.KeyguardSecurityModel
 import com.android.keyguard.KeyguardUpdateMonitor
-import com.android.keyguard.KeyguardUpdateMonitorCallback
 import com.android.systemui.DejankUtils
-import com.android.systemui.biometrics.shared.SideFpsControllerRefactor
+import com.android.systemui.Flags
 import com.android.systemui.bouncer.data.repository.KeyguardBouncerRepository
 import com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants
 import com.android.systemui.bouncer.shared.constants.KeyguardBouncerConstants.EXPANSION_HIDDEN
+import com.android.systemui.bouncer.shared.model.BouncerDismissActionModel
 import com.android.systemui.bouncer.shared.model.BouncerShowMessageModel
 import com.android.systemui.bouncer.ui.BouncerView
 import com.android.systemui.classifier.FalsingCollector
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.dagger.qualifiers.Application
 import com.android.systemui.dagger.qualifiers.Main
+import com.android.systemui.deviceentry.domain.interactor.DeviceEntryFaceAuthInteractor
 import com.android.systemui.keyguard.DismissCallbackRegistry
 import com.android.systemui.keyguard.data.repository.TrustRepository
-import com.android.systemui.keyguard.domain.interactor.KeyguardFaceAuthInteractor
 import com.android.systemui.plugins.ActivityStarter
 import com.android.systemui.res.R
+import com.android.systemui.scene.shared.flag.SceneContainerFlag
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.shared.system.SysUiStatsLog
 import com.android.systemui.statusbar.policy.KeyguardStateController
 import com.android.systemui.user.domain.interactor.SelectedUserInteractor
@@ -54,7 +54,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.launch
+import com.android.app.tracing.coroutines.launchTraced as launch
 
 /**
  * Encapsulates business logic for interacting with the lock-screen primary (pin/pattern/password)
@@ -72,12 +72,12 @@ constructor(
     private val primaryBouncerCallbackInteractor: PrimaryBouncerCallbackInteractor,
     private val falsingCollector: FalsingCollector,
     private val dismissCallbackRegistry: DismissCallbackRegistry,
-    private val context: Context,
+    @ShadeDisplayAware private val context: Context,
     private val keyguardUpdateMonitor: KeyguardUpdateMonitor,
     private val trustRepository: TrustRepository,
     @Application private val applicationScope: CoroutineScope,
     private val selectedUserInteractor: SelectedUserInteractor,
-    private val keyguardFaceAuthInteractor: KeyguardFaceAuthInteractor,
+    private val deviceEntryFaceAuthInteractor: DeviceEntryFaceAuthInteractor,
 ) {
     private val passiveAuthBouncerDelay =
         context.resources.getInteger(R.integer.primary_bouncer_passive_auth_delay).toLong()
@@ -91,6 +91,8 @@ constructor(
     val keyguardAuthenticatedPrimaryAuth: Flow<Int> = repository.keyguardAuthenticatedPrimaryAuth
     val keyguardAuthenticatedBiometrics: Flow<Boolean> =
         repository.keyguardAuthenticatedBiometrics.filterNotNull()
+    val keyguardAuthenticatedBiometricsHandled: Flow<Unit> =
+        repository.keyguardAuthenticatedBiometrics.filter { it == null }.map {}
     val userRequestedBouncerWhenAlreadyAuthenticated: Flow<Int> =
         repository.userRequestedBouncerWhenAlreadyAuthenticated.filterNotNull()
     val isShowing: StateFlow<Boolean> = repository.primaryBouncerShow
@@ -102,6 +104,8 @@ constructor(
     val resourceUpdateRequests: Flow<Boolean> = repository.resourceUpdateRequests.filter { it }
     val keyguardPosition: Flow<Float> = repository.keyguardPosition.filterNotNull()
     val panelExpansionAmount: Flow<Float> = repository.panelExpansionAmount
+    val lastShownSecurityMode: Flow<KeyguardSecurityModel.SecurityMode> =
+        repository.lastShownSecurityMode
 
     /** 0f = bouncer fully hidden. 1f = bouncer fully visible. */
     val bouncerExpansion: Flow<Float> =
@@ -117,31 +121,9 @@ constructor(
 
     /** Allow for interaction when just about fully visible */
     val isInteractable: Flow<Boolean> = bouncerExpansion.map { it > 0.9 }
-    // TODO(b/288175061): remove with Flags.FLAG_SIDEFPS_CONTROLLER_REFACTOR
-    val sideFpsShowing: Flow<Boolean> = repository.sideFpsShowing
     private var currentUserActiveUnlockRunning = false
 
-    // TODO(b/288175061): remove with Flags.FLAG_SIDEFPS_CONTROLLER_REFACTOR
-    /** This callback needs to be a class field so it does not get garbage collected. */
-    val keyguardUpdateMonitorCallback =
-        object : KeyguardUpdateMonitorCallback() {
-            override fun onBiometricRunningStateChanged(
-                running: Boolean,
-                biometricSourceType: BiometricSourceType?
-            ) {
-                updateSideFpsVisibility()
-            }
-
-            override fun onStrongAuthStateChanged(userId: Int) {
-                updateSideFpsVisibility()
-            }
-        }
-
     init {
-        // TODO(b/288175061): remove with Flags.FLAG_SIDEFPS_CONTROLLER_REFACTOR
-        if (!SideFpsControllerRefactor.isEnabled) {
-            keyguardUpdateMonitor.registerCallback(keyguardUpdateMonitorCallback)
-        }
         applicationScope.launch {
             trustRepository.isCurrentUserActiveUnlockRunning.collect {
                 currentUserActiveUnlockRunning = it
@@ -153,52 +135,60 @@ constructor(
     // TODO(b/243695312): Encapsulate all of the show logic for the bouncer.
     /** Show the bouncer if necessary and set the relevant states. */
     @JvmOverloads
-    fun show(isScrimmed: Boolean) {
-        if (primaryBouncerView.delegate == null) {
+    fun show(isScrimmed: Boolean): Boolean {
+        // When the scene container framework is enabled, instead of calling this, call
+        // SceneInteractor#changeScene(Scenes.Bouncer, ...).
+        SceneContainerFlag.assertInLegacyMode()
+
+        if (primaryBouncerView.delegate == null && !Flags.composeBouncer()) {
             Log.d(
                 TAG,
                 "PrimaryBouncerInteractor#show is being called before the " +
-                    "primaryBouncerDelegate is set. Let's exit early so we don't set the wrong " +
-                    "primaryBouncer state."
+                    "primaryBouncerDelegate is set. Let's exit early so we don't " +
+                    "set the wrong primaryBouncer state."
             )
-            return
+            return false
         }
 
-        // Reset some states as we show the bouncer.
-        repository.setKeyguardAuthenticatedBiometrics(null)
-        repository.setPrimaryStartingToHide(false)
+        try {
+            Trace.beginSection("KeyguardBouncer#show")
+            // Reset some states as we show the bouncer.
+            repository.setKeyguardAuthenticatedBiometrics(null)
+            repository.setPrimaryStartingToHide(false)
 
-        val resumeBouncer =
-            (isBouncerShowing() || repository.primaryBouncerShowingSoon.value) &&
-                needsFullscreenBouncer()
+            val resumeBouncer =
+                (isBouncerShowing() || repository.primaryBouncerShowingSoon.value) &&
+                    needsFullscreenBouncer()
 
-        Trace.beginSection("KeyguardBouncer#show")
-        repository.setPrimaryScrimmed(isScrimmed)
-        if (isScrimmed) {
-            setPanelExpansion(KeyguardBouncerConstants.EXPANSION_VISIBLE)
+            repository.setPrimaryScrimmed(isScrimmed)
+            if (isScrimmed) {
+                setPanelExpansion(KeyguardBouncerConstants.EXPANSION_VISIBLE)
+            }
+
+            // In this special case, we want to hide the bouncer and show it again. We want to emit
+            // show(true) again so that we can reinflate the new view.
+            if (resumeBouncer) {
+                repository.setPrimaryShow(false)
+            }
+
+            if (primaryBouncerView.delegate?.showNextSecurityScreenOrFinish() == true) {
+                // Keyguard is done.
+                return false
+            }
+
+            repository.setPrimaryShowingSoon(true)
+            if (usePrimaryBouncerPassiveAuthDelay()) {
+                Log.d(TAG, "delay bouncer, passive auth may succeed")
+                mainHandler.postDelayed(showRunnable, passiveAuthBouncerDelay)
+            } else {
+                DejankUtils.postAfterTraversal(showRunnable)
+            }
+            keyguardStateController.notifyPrimaryBouncerShowing(true)
+            primaryBouncerCallbackInteractor.dispatchStartingToShow()
+            return true
+        } finally {
+            Trace.endSection()
         }
-
-        // In this special case, we want to hide the bouncer and show it again. We want to emit
-        // show(true) again so that we can reinflate the new view.
-        if (resumeBouncer) {
-            repository.setPrimaryShow(false)
-        }
-
-        if (primaryBouncerView.delegate?.showNextSecurityScreenOrFinish() == true) {
-            // Keyguard is done.
-            return
-        }
-
-        repository.setPrimaryShowingSoon(true)
-        if (usePrimaryBouncerPassiveAuthDelay()) {
-            Log.d(TAG, "delay bouncer, passive auth may succeed")
-            mainHandler.postDelayed(showRunnable, passiveAuthBouncerDelay)
-        } else {
-            DejankUtils.postAfterTraversal(showRunnable)
-        }
-        keyguardStateController.notifyPrimaryBouncerShowing(true)
-        primaryBouncerCallbackInteractor.dispatchStartingToShow()
-        Trace.endSection()
     }
 
     /** Sets the correct bouncer states to hide the bouncer. */
@@ -272,15 +262,24 @@ constructor(
         repository.setShowMessage(BouncerShowMessageModel(message, colorStateList))
     }
 
+    val bouncerDismissAction: BouncerDismissActionModel?
+        get() = repository.bouncerDismissActionModel
+
     /**
      * Sets actions to the bouncer based on how the bouncer is dismissed. If the bouncer is
-     * unlocked, we will run the onDismissAction. If the bouncer is existed before unlocking, we
-     * call cancelAction.
+     * unlocked, we will run the onDismissAction. If the bouncer is exited before unlocking, we call
+     * cancelAction.
      */
     fun setDismissAction(
         onDismissAction: ActivityStarter.OnDismissAction?,
         cancelAction: Runnable?
     ) {
+        repository.bouncerDismissActionModel =
+            if (onDismissAction != null && cancelAction != null) {
+                BouncerDismissActionModel(onDismissAction, cancelAction)
+            } else {
+                null
+            }
         primaryBouncerView.delegate?.setDismissAction(onDismissAction, cancelAction)
     }
 
@@ -296,7 +295,9 @@ constructor(
 
     /** Tell the bouncer that bouncer is requested when device is already authenticated */
     fun notifyUserRequestedBouncerWhenAlreadyAuthenticated(userId: Int) {
-        applicationScope.launch { repository.setKeyguardAuthenticatedPrimaryAuth(userId) }
+        applicationScope.launch {
+            repository.setUserRequestedBouncerWhenAlreadyAuthenticated(userId)
+        }
     }
 
     /** Tell the bouncer that keyguard is authenticated with biometrics. */
@@ -337,36 +338,6 @@ constructor(
         }
 
         repository.setPrimaryStartDisappearAnimation(runnable)
-    }
-
-    // TODO(b/288175061): remove with Flags.FLAG_SIDEFPS_CONTROLLER_REFACTOR
-    /** Determine whether to show the side fps animation. */
-    fun updateSideFpsVisibility() {
-        SideFpsControllerRefactor.assertInLegacyMode()
-        val sfpsEnabled: Boolean =
-            context.resources.getBoolean(R.bool.config_show_sidefps_hint_on_bouncer)
-        val fpsDetectionRunning: Boolean = keyguardUpdateMonitor.isFingerprintDetectionRunning
-        val isUnlockingWithFpAllowed: Boolean =
-            keyguardUpdateMonitor.isUnlockingWithFingerprintAllowed
-        val toShow =
-            (isBouncerShowing() &&
-                sfpsEnabled &&
-                fpsDetectionRunning &&
-                isUnlockingWithFpAllowed &&
-                !isAnimatingAway())
-
-        if (KeyguardConstants.DEBUG) {
-            Log.d(
-                TAG,
-                ("sideFpsToShow=$toShow\n" +
-                    "isBouncerShowing=${isBouncerShowing()}\n" +
-                    "configEnabled=$sfpsEnabled\n" +
-                    "fpsDetectionRunning=$fpsDetectionRunning\n" +
-                    "isUnlockingWithFpAllowed=$isUnlockingWithFpAllowed\n" +
-                    "isAnimatingAway=${isAnimatingAway()}")
-            )
-        }
-        repository.setSideFpsShowing(toShow)
     }
 
     /** Returns whether bouncer is fully showing. */
@@ -422,6 +393,10 @@ constructor(
         return isShowing.value
     }
 
+    fun setLastShownPrimarySecurityScreen(securityMode: KeyguardSecurityModel.SecurityMode) {
+        repository.setLastShownSecurityMode(securityMode)
+    }
+
     /** Whether we want to wait to show the bouncer in case passive auth succeeds. */
     private fun usePrimaryBouncerPassiveAuthDelay(): Boolean {
         val canRunActiveUnlock =
@@ -429,7 +404,7 @@ constructor(
                 keyguardUpdateMonitor.canTriggerActiveUnlockBasedOnDeviceState()
 
         return !needsFullscreenBouncer() &&
-            (keyguardFaceAuthInteractor.canFaceAuthRun() || canRunActiveUnlock)
+            (deviceEntryFaceAuthInteractor.canFaceAuthRun() || canRunActiveUnlock)
     }
 
     companion object {

@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#undef ANDROID_UTILS_REF_BASE_DISABLE_IMPLICIT_CONSTRUCTION // TODO:remove this and fix code
 #define LOG_TAG "SensorManager"
 
 #include <nativehelper/JNIHelp.h>
@@ -223,6 +224,19 @@ nativeGetSensorAtIndex(JNIEnv *env, jclass clazz, jlong sensorManager, jobject s
     }
 
     return translateNativeSensorToJavaSensor(env, sensor, *sensorList[index]) != NULL;
+}
+
+static jboolean nativeGetDefaultDeviceSensorAtIndex(JNIEnv *env, jclass clazz, jlong sensorManager,
+                                                    jobject sensor, jint index) {
+    SensorManager *mgr = reinterpret_cast<SensorManager *>(sensorManager);
+
+    Vector<Sensor> sensorList;
+    ssize_t count = mgr->getDefaultDeviceSensorList(sensorList);
+    if (ssize_t(index) >= count) {
+        return false;
+    }
+
+    return translateNativeSensorToJavaSensor(env, sensor, sensorList[index]) != NULL;
 }
 
 static void
@@ -538,6 +552,9 @@ static const JNINativeMethod gSystemSensorManagerMethods[] = {
 
         {"nativeGetSensorAtIndex", "(JLandroid/hardware/Sensor;I)Z",
          (void *)nativeGetSensorAtIndex},
+
+        {"nativeGetDefaultDeviceSensorAtIndex", "(JLandroid/hardware/Sensor;I)Z",
+         (void *)nativeGetDefaultDeviceSensorAtIndex},
 
         {"nativeGetDynamicSensors", "(JLjava/util/List;)V", (void *)nativeGetDynamicSensors},
 

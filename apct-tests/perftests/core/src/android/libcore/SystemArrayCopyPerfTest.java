@@ -16,9 +16,11 @@
 
 package android.libcore;
 
-import android.perftests.utils.BenchmarkState;
+import androidx.benchmark.BenchmarkState;
+import androidx.benchmark.junit4.BenchmarkRule;
 import android.perftests.utils.PerfStatusReporter;
-import android.test.suitebuilder.annotation.LargeTest;
+
+import androidx.test.filters.LargeTest;
 
 import junitparams.JUnitParamsRunner;
 import junitparams.Parameters;
@@ -33,7 +35,8 @@ import java.util.Collection;
 @RunWith(JUnitParamsRunner.class)
 @LargeTest
 public class SystemArrayCopyPerfTest {
-    @Rule public PerfStatusReporter mPerfStatusReporter = new PerfStatusReporter();
+    @Rule
+    public BenchmarkRule mBenchmarkRule = new BenchmarkRule();
 
     public static Collection<Object[]> getData() {
         return Arrays.asList(
@@ -50,7 +53,7 @@ public class SystemArrayCopyPerfTest {
         final int len = arrayLength;
         char[] src = new char[len];
         char[] dst = new char[len];
-        BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+        final BenchmarkState state = mBenchmarkRule.getState();
         while (state.keepRunning()) {
             System.arraycopy(src, 0, dst, 0, len);
         }
@@ -62,7 +65,7 @@ public class SystemArrayCopyPerfTest {
         final int len = arrayLength;
         byte[] src = new byte[len];
         byte[] dst = new byte[len];
-        BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+        final BenchmarkState state = mBenchmarkRule.getState();
         while (state.keepRunning()) {
             System.arraycopy(src, 0, dst, 0, len);
         }
@@ -74,7 +77,7 @@ public class SystemArrayCopyPerfTest {
         final int len = arrayLength;
         short[] src = new short[len];
         short[] dst = new short[len];
-        BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+        final BenchmarkState state = mBenchmarkRule.getState();
         while (state.keepRunning()) {
             System.arraycopy(src, 0, dst, 0, len);
         }
@@ -86,7 +89,7 @@ public class SystemArrayCopyPerfTest {
         final int len = arrayLength;
         int[] src = new int[len];
         int[] dst = new int[len];
-        BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+        final BenchmarkState state = mBenchmarkRule.getState();
         while (state.keepRunning()) {
             System.arraycopy(src, 0, dst, 0, len);
         }
@@ -98,7 +101,7 @@ public class SystemArrayCopyPerfTest {
         final int len = arrayLength;
         long[] src = new long[len];
         long[] dst = new long[len];
-        BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+        final BenchmarkState state = mBenchmarkRule.getState();
         while (state.keepRunning()) {
             System.arraycopy(src, 0, dst, 0, len);
         }
@@ -110,7 +113,7 @@ public class SystemArrayCopyPerfTest {
         final int len = arrayLength;
         float[] src = new float[len];
         float[] dst = new float[len];
-        BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+        final BenchmarkState state = mBenchmarkRule.getState();
         while (state.keepRunning()) {
             System.arraycopy(src, 0, dst, 0, len);
         }
@@ -122,7 +125,7 @@ public class SystemArrayCopyPerfTest {
         final int len = arrayLength;
         double[] src = new double[len];
         double[] dst = new double[len];
-        BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+        final BenchmarkState state = mBenchmarkRule.getState();
         while (state.keepRunning()) {
             System.arraycopy(src, 0, dst, 0, len);
         }
@@ -134,7 +137,7 @@ public class SystemArrayCopyPerfTest {
         final int len = arrayLength;
         boolean[] src = new boolean[len];
         boolean[] dst = new boolean[len];
-        BenchmarkState state = mPerfStatusReporter.getBenchmarkState();
+        final BenchmarkState state = mBenchmarkRule.getState();
         while (state.keepRunning()) {
             System.arraycopy(src, 0, dst, 0, len);
         }

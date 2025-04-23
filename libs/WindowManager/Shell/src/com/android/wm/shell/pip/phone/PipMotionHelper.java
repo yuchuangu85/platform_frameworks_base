@@ -34,22 +34,26 @@ import android.graphics.PointF;
 import android.graphics.Rect;
 import android.os.Debug;
 
-import com.android.internal.protolog.common.ProtoLog;
+import com.android.internal.protolog.ProtoLog;
 import com.android.wm.shell.R;
 import com.android.wm.shell.animation.FloatProperties;
-import com.android.wm.shell.animation.PhysicsAnimator;
 import com.android.wm.shell.common.FloatingContentCoordinator;
-import com.android.wm.shell.common.magnetictarget.MagnetizedObject;
+import com.android.wm.shell.common.ShellExecutor;
 import com.android.wm.shell.common.pip.PipAppOpsListener;
 import com.android.wm.shell.common.pip.PipBoundsState;
+import com.android.wm.shell.common.pip.PipPerfHintController;
 import com.android.wm.shell.common.pip.PipSnapAlgorithm;
 import com.android.wm.shell.pip.PipTaskOrganizer;
 import com.android.wm.shell.pip.PipTransitionController;
 import com.android.wm.shell.protolog.ShellProtoLogGroup;
+import com.android.wm.shell.shared.animation.PhysicsAnimator;
+import com.android.wm.shell.shared.annotations.ShellMainThread;
+import com.android.wm.shell.shared.magnetictarget.MagnetizedObject;
 
 import kotlin.Unit;
 import kotlin.jvm.functions.Function0;
 
+import java.util.Optional;
 import java.util.function.Consumer;
 
 /**
@@ -83,6 +87,9 @@ public class PipMotionHelper implements PipAppOpsListener.Callback,
 
     /** Coordinator instance for resolving conflicts with other floating content. */
     private FloatingContentCoordinator mFloatingContentCoordinator;
+
+    @Nullable private final PipPerfHintController mPipPerfHintController;
+    @Nullable private PipPerfHintController.PipHighPerfSession mPipHighPerfSession;
 
     /**
      * PhysicsAnimator instance for animating {@link PipBoundsState#getMotionBoundsState()}
@@ -166,17 +173,21 @@ public class PipMotionHelper implements PipAppOpsListener.Callback,
         public void onPipTransitionCanceled(int direction) {}
     };
 
-    public PipMotionHelper(Context context, @NonNull PipBoundsState pipBoundsState,
+    public PipMotionHelper(Context context,
+            @ShellMainThread ShellExecutor mainExecutor,
+            @NonNull PipBoundsState pipBoundsState,
             PipTaskOrganizer pipTaskOrganizer, PhonePipMenuController menuController,
             PipSnapAlgorithm snapAlgorithm, PipTransitionController pipTransitionController,
-            FloatingContentCoordinator floatingContentCoordinator) {
+            FloatingContentCoordinator floatingContentCoordinator,
+            Optional<PipPerfHintController> pipPerfHintControllerOptional) {
         mContext = context;
         mPipTaskOrganizer = pipTaskOrganizer;
         mPipBoundsState = pipBoundsState;
         mMenuController = menuController;
         mSnapAlgorithm = snapAlgorithm;
         mFloatingContentCoordinator = floatingContentCoordinator;
-        pipTransitionController.registerPipTransitionCallback(mPipTransitionCallback);
+        mPipPerfHintController = pipPerfHintControllerOptional.orElse(null);
+        pipTransitionController.registerPipTransitionCallback(mPipTransitionCallback, mainExecutor);
         mResizePipUpdateListener = (target, values) -> {
             if (mPipBoundsState.getMotionBoundsState().isInMotion()) {
                 mPipTaskOrganizer.scheduleUserResizePip(getBounds(),
@@ -193,8 +204,7 @@ public class PipMotionHelper implements PipAppOpsListener.Callback,
     @NonNull
     @Override
     public Rect getFloatingBoundsOnScreen() {
-        return !mPipBoundsState.getMotionBoundsState().getAnimatingToBounds().isEmpty()
-                ? mPipBoundsState.getMotionBoundsState().getAnimatingToBounds() : getBounds();
+        return getBounds();
     }
 
     @NonNull
@@ -386,6 +396,16 @@ public class PipMotionHelper implements PipAppOpsListener.Callback,
         movetoTarget(velX, velY, postBoundsUpdateCallback, true /* isStash */);
     }
 
+    private void onHighPerfSessionTimeout(PipPerfHintController.PipHighPerfSession session) {}
+
+    private void cleanUpHighPerfSessionMaybe() {
+        if (mPipHighPerfSession != null) {
+            // Close the high perf session once pointer interactions are over;
+            mPipHighPerfSession.close();
+            mPipHighPerfSession = null;
+        }
+    }
+
     private void movetoTarget(
             float velocityX,
             float velocityY,
@@ -394,6 +414,17 @@ public class PipMotionHelper implements PipAppOpsListener.Callback,
         // If we're flinging to a snap target now, we're not springing to catch up to the touch
         // location now.
         mSpringingToTouch = false;
+
+        // Boost the velocityX if it's zero to forcefully push it towards the nearest edge.
+        // We don't simply change the xEndValue below since the PhysicsAnimator would rely on the
+        // same velocityX to find out which edge to snap to.
+        if (velocityX == 0) {
+            final int motionCenterX = mPipBoundsState
+                    .getMotionBoundsState().getBoundsInMotion().centerX();
+            final int displayCenterX = mPipBoundsState
+                    .getDisplayBounds().centerX();
+            velocityX = (motionCenterX < displayCenterX) ? -0.001f : 0.001f;
+        }
 
         mTemporaryBoundsPhysicsAnimator
                 .spring(FloatProperties.RECT_WIDTH, getBounds().width(), mSpringConfig)
@@ -584,13 +615,18 @@ public class PipMotionHelper implements PipAppOpsListener.Callback,
             cancelPhysicsAnimation();
         }
 
-        setAnimatingToBounds(new Rect(
+        mPipBoundsState.getMotionBoundsState().setAnimatingToBounds(new Rect(
                 (int) toX,
                 (int) toY,
                 (int) toX + getBounds().width(),
                 (int) toY + getBounds().height()));
 
         if (!mTemporaryBoundsPhysicsAnimator.isRunning()) {
+            if (mPipPerfHintController != null) {
+                // Start a high perf session with a timeout callback.
+                mPipHighPerfSession = mPipPerfHintController.startSession(
+                        this::onHighPerfSessionTimeout, "startBoundsAnimator");
+            }
             if (postBoundsUpdateCallback != null) {
                 mTemporaryBoundsPhysicsAnimator
                         .addUpdateListener(mResizePipUpdateListener)
@@ -623,6 +659,9 @@ public class PipMotionHelper implements PipAppOpsListener.Callback,
             // All motion operations have actually finished.
             mPipBoundsState.setBounds(
                     mPipBoundsState.getMotionBoundsState().getBoundsInMotion());
+            // Notifies the floating coordinator that we moved, so we return these bounds from
+            // {@link FloatingContentCoordinator.FloatingContent#getFloatingBoundsOnScreen()}.
+            mFloatingContentCoordinator.onContentMoved(this);
             mPipBoundsState.getMotionBoundsState().onAllAnimationsEnded();
             if (!mDismissalPending) {
                 // do not schedule resize if PiP is dismissing, which may cause app re-open to
@@ -633,16 +672,7 @@ public class PipMotionHelper implements PipAppOpsListener.Callback,
         mPipBoundsState.getMotionBoundsState().onPhysicsAnimationEnded();
         mSpringingToTouch = false;
         mDismissalPending = false;
-    }
-
-    /**
-     * Notifies the floating coordinator that we're moving, and sets the animating to bounds so
-     * we return these bounds from
-     * {@link FloatingContentCoordinator.FloatingContent#getFloatingBoundsOnScreen()}.
-     */
-    private void setAnimatingToBounds(Rect bounds) {
-        mPipBoundsState.getMotionBoundsState().setAnimatingToBounds(bounds);
-        mFloatingContentCoordinator.onContentMoved(this);
+        cleanUpHighPerfSessionMaybe();
     }
 
     /**
@@ -674,7 +704,7 @@ public class PipMotionHelper implements PipAppOpsListener.Callback,
         // This is so all the proper callbacks are performed.
         mPipTaskOrganizer.scheduleAnimateResizePip(toBounds, duration,
                 TRANSITION_DIRECTION_EXPAND_OR_UNEXPAND, null /* updateBoundsCallback */);
-        setAnimatingToBounds(toBounds);
+        mPipBoundsState.getMotionBoundsState().setAnimatingToBounds(toBounds);
     }
 
     /**

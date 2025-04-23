@@ -25,6 +25,7 @@
 #include <minikin/FontFamily.h>
 #include <minikin/FontFeature.h>
 #include <minikin/Hyphenator.h>
+#include <minikin/Layout.h>
 
 #include <string>
 
@@ -144,6 +145,9 @@ public:
     bool isDevKern() const { return mDevKern; }
     void setDevKern(bool d) { mDevKern = d; }
 
+    minikin::RunFlag getRunFlag() const { return mRunFlag; }
+    void setRunFlag(minikin::RunFlag runFlag) { mRunFlag = runFlag; }
+
     // Deprecated -- bitmapshaders will be taking this flag explicitly
     bool isFilterBitmap() const { return mFilterBitmap; }
     void setFilterBitmap(bool filter) { mFilterBitmap = filter; }
@@ -153,6 +157,15 @@ public:
     }
     SkSamplingOptions sampling() const {
         return SkSamplingOptions(this->filterMode());
+    }
+    bool isVerticalText() const { return mVerticalText; }
+
+    void setVariationOverride(minikin::VariationSettings&& varSettings) {
+        mFontVariationOverride = std::move(varSettings);
+    }
+
+    const minikin::VariationSettings& getFontVariationOverride() const {
+        return mFontVariationOverride;
     }
 
     // The Java flags (Paint.java) no longer fit into the native apis directly.
@@ -175,6 +188,7 @@ private:
     float mLetterSpacing = 0;
     float mWordSpacing = 0;
     std::vector<minikin::FontFeature> mFontFeatureSettings;
+    minikin::VariationSettings mFontVariationOverride;
     uint32_t mMinikinLocaleListId;
     std::optional<minikin::FamilyVariant> mFamilyVariant;
     uint32_t mHyphenEdit = 0;
@@ -188,6 +202,8 @@ private:
     bool mStrikeThru = false;
     bool mUnderline = false;
     bool mDevKern = false;
+    minikin::RunFlag mRunFlag = minikin::RunFlag::NONE;
+    bool mVerticalText = false;
 };
 
 }  // namespace android

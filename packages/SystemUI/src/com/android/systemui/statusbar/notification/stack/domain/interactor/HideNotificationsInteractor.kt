@@ -18,16 +18,18 @@ package com.android.systemui.statusbar.notification.stack.domain.interactor
 import android.graphics.Rect
 import android.util.Log
 import com.android.app.tracing.FlowTracing.traceEach
-import com.android.systemui.common.domain.interactor.ConfigurationInteractor
+import com.android.systemui.common.ui.domain.interactor.ConfigurationInteractor
 import com.android.systemui.dagger.SysUISingleton
 import com.android.systemui.power.domain.interactor.PowerInteractor
 import com.android.systemui.power.shared.model.ScreenPowerState.SCREEN_ON
+import com.android.systemui.shade.ShadeDisplayAware
 import com.android.systemui.unfold.domain.interactor.UnfoldTransitionInteractor
 import com.android.systemui.util.animation.data.repository.AnimationStatusRepository
 import com.android.systemui.util.kotlin.WithPrev
 import com.android.systemui.util.kotlin.area
 import com.android.systemui.util.kotlin.pairwise
 import com.android.systemui.util.kotlin.race
+import javax.inject.Inject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
@@ -38,7 +40,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withTimeout
-import javax.inject.Inject
 
 @OptIn(ExperimentalCoroutinesApi::class)
 @SysUISingleton
@@ -46,9 +47,9 @@ class HideNotificationsInteractor
 @Inject
 constructor(
     private val unfoldTransitionInteractor: UnfoldTransitionInteractor,
-    private val configurationInteractor: ConfigurationInteractor,
+    @ShadeDisplayAware private val configurationInteractor: ConfigurationInteractor,
     private val animationsStatus: AnimationStatusRepository,
-    private val powerInteractor: PowerInteractor
+    private val powerInteractor: PowerInteractor,
 ) {
 
     val shouldHideNotifications: Flow<Boolean>

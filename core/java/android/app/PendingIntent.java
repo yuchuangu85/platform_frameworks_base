@@ -176,6 +176,14 @@ public final class PendingIntent implements Parcelable {
     @Overridable
     public static final long BLOCK_MUTABLE_IMPLICIT_PENDING_INTENT = 236704164L;
 
+    /**
+     * Validate options passed in as bundle.
+     * @hide
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public static final long PENDING_INTENT_OPTIONS_CHECK = 320664730L;
+
     /** @hide */
     @IntDef(flag = true,
             value = {
@@ -1086,6 +1094,9 @@ public final class PendingIntent implements Parcelable {
             @Nullable String requiredPermission, @Nullable Bundle options)
             throws CanceledException {
         try {
+            if (intent != null) {
+                intent.collectExtraIntentKeys();
+            }
             String resolvedType = intent != null ?
                     intent.resolveTypeIfNeeded(context.getContentResolver())
                     : null;

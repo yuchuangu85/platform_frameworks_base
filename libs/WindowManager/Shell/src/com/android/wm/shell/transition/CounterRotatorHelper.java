@@ -27,8 +27,8 @@ import android.window.WindowContainerToken;
 
 import androidx.annotation.NonNull;
 
-import com.android.wm.shell.util.CounterRotator;
-import com.android.wm.shell.util.TransitionUtil;
+import com.android.wm.shell.shared.CounterRotator;
+import com.android.wm.shell.shared.TransitionUtil;
 
 import java.util.List;
 
@@ -92,6 +92,11 @@ public class CounterRotatorHelper {
         final Rect rotatedBounds = new Rect(change.getEndAbsBounds());
         RotationUtils.rotateBounds(rotatedBounds, mLastDisplayBounds, mLastRotationDelta);
         return rotatedBounds;
+    }
+
+    /** Returns true if the change is put on a surface in previous rotation. */
+    public boolean isRotated(@NonNull TransitionInfo.Change change) {
+        return mLastRotationDelta != 0 && mRotatorMap.containsKey(change.getParent());
     }
 
     /**

@@ -17,13 +17,13 @@
 package com.android.server.wm.flicker.launch
 
 import android.platform.test.annotations.Presubmit
-import android.tools.common.NavBar
-import android.tools.common.Rotation
-import android.tools.common.flicker.annotation.FlickerServiceCompatible
-import android.tools.common.traces.component.ComponentNameMatcher
-import android.tools.device.flicker.junit.FlickerParametersRunnerFactory
-import android.tools.device.flicker.legacy.LegacyFlickerTest
-import android.tools.device.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.NavBar
+import android.tools.Rotation
+import android.tools.flicker.annotation.FlickerServiceCompatible
+import android.tools.flicker.junit.FlickerParametersRunnerFactory
+import android.tools.flicker.legacy.LegacyFlickerTest
+import android.tools.flicker.legacy.LegacyFlickerTestFactory
+import android.tools.traces.component.ComponentNameMatcher
 import androidx.test.filters.FlakyTest
 import androidx.test.filters.RequiresDevice
 import com.android.server.wm.flicker.helpers.NonResizeableAppHelper
@@ -41,7 +41,7 @@ import org.junit.runners.Parameterized
  *
  * This test assumes the device doesn't have AOD enabled
  *
- * To run this test: `atest FlickerTests:OpenAppNonResizeableTest`
+ * To run this test: `atest FlickerTestsAppLaunch:OpenAppFromLockscreenViaIntentTest`
  *
  * Actions:
  * ```
@@ -75,7 +75,7 @@ open class OpenAppFromLockscreenViaIntentTest(flicker: LegacyFlickerTest) :
     @FlakyTest(bugId = 288341660)
     @Test
     fun navBarLayerVisibilityChanges() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         flicker.assertLayers {
             this.isInvisible(ComponentNameMatcher.NAV_BAR)
                 .then()
@@ -97,7 +97,7 @@ open class OpenAppFromLockscreenViaIntentTest(flicker: LegacyFlickerTest) :
     @FlakyTest(bugId = 293581770)
     @Test
     fun navBarWindowsVisibilityChanges() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         flicker.assertWm {
             this.isNonAppWindowInvisible(ComponentNameMatcher.NAV_BAR)
                 .then()
@@ -112,7 +112,7 @@ open class OpenAppFromLockscreenViaIntentTest(flicker: LegacyFlickerTest) :
     @Presubmit
     @Test
     fun taskBarLayerIsVisibleAtEnd() {
-        Assume.assumeTrue(flicker.scenario.isTablet)
+        Assume.assumeTrue(usesTaskbar)
         flicker.assertLayersEnd { this.isVisible(ComponentNameMatcher.TASK_BAR) }
     }
 
@@ -170,7 +170,7 @@ open class OpenAppFromLockscreenViaIntentTest(flicker: LegacyFlickerTest) :
     @Presubmit
     @Test
     fun navBarLayerIsVisibleAtEnd() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         flicker.assertLayersEnd { this.isVisible(ComponentNameMatcher.NAV_BAR) }
     }
 
@@ -184,7 +184,7 @@ open class OpenAppFromLockscreenViaIntentTest(flicker: LegacyFlickerTest) :
     @Presubmit
     @Test
     override fun appLayerBecomesVisible() {
-        Assume.assumeFalse(flicker.scenario.isTablet)
+        Assume.assumeFalse(usesTaskbar)
         super.appLayerBecomesVisible()
     }
 
@@ -192,11 +192,11 @@ open class OpenAppFromLockscreenViaIntentTest(flicker: LegacyFlickerTest) :
     @FlakyTest(bugId = 227143265)
     @Test
     fun appLayerBecomesVisibleTablet() {
-        Assume.assumeTrue(flicker.scenario.isTablet)
+        Assume.assumeTrue(usesTaskbar)
         super.appLayerBecomesVisible()
     }
 
-    @Presubmit
+    @FlakyTest(bugId = 338296297)
     @Test
     override fun visibleWindowsShownMoreThanOneConsecutiveEntry() =
         super.visibleWindowsShownMoreThanOneConsecutiveEntry()

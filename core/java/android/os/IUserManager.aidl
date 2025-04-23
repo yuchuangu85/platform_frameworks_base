@@ -85,6 +85,7 @@ interface IUserManager {
     boolean isUserSwitcherEnabled(boolean showEvenIfNotActionable, int mUserId);
     boolean isRestricted(int userId);
     boolean canHaveRestrictedProfile(int userId);
+    boolean canAddPrivateProfile(int userId);
     int getUserSerialNumber(int userId);
     int getUserHandle(int userSerialNumber);
     int getUserRestrictionSource(String restrictionKey, int userId);
@@ -132,12 +133,13 @@ interface IUserManager {
     int getUserStatusBarIconResId(int userId);
     boolean hasBadge(int userId);
     int getProfileLabelResId(int userId);
+    int getProfileAccessibilityLabelResId(int userId);
     boolean isUserUnlocked(int userId);
     boolean isUserRunning(int userId);
     boolean isUserForeground(int userId);
     boolean isUserVisible(int userId);
     int[] getVisibleUsers();
-    int getMainDisplayIdAssignedToUser();
+    int getMainDisplayIdAssignedToUser(int userId);
     boolean isForegroundUserAdmin();
     boolean isUserNameSet(int userId);
     boolean hasRestrictedProfiles(int userId);
@@ -150,4 +152,5 @@ interface IUserManager {
     void setBootUser(int userId);
     @JavaPassthrough(annotation="@android.annotation.RequiresPermission(anyOf = {android.Manifest.permission.MANAGE_USERS, android.Manifest.permission.CREATE_USERS})")
     int getBootUser();
+    int[] getProfileIdsExcludingHidden(int userId, boolean enabledOnly);
 }

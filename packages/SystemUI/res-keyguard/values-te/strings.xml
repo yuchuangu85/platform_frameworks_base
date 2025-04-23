@@ -33,8 +33,8 @@
     <string name="keyguard_plugged_in" msgid="8169926454348380863">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ఛార్జ్ అవుతోంది"</string>
     <string name="keyguard_plugged_in_charging_fast" msgid="4386594091107340426">"<xliff:g id="PERCENTAGE">%s</xliff:g> • వేగంగా ఛార్జ్ అవుతోంది"</string>
     <string name="keyguard_plugged_in_charging_slowly" msgid="217655355424210">"<xliff:g id="PERCENTAGE">%s</xliff:g> • నెమ్మదిగా ఛార్జ్ అవుతోంది"</string>
-    <string name="keyguard_plugged_in_charging_limited" msgid="1053130519456324630">"<xliff:g id="PERCENTAGE">%s</xliff:g> • బ్యాటరీని రక్షించడానికి ఛార్జింగ్ ఆప్టిమైజ్ చేయబడింది"</string>
-    <string name="keyguard_plugged_in_incompatible_charger" msgid="3687961801947819076">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ఛార్జింగ్ యాక్సెసరీతో సమస్య ఉంది"</string>
+    <string name="keyguard_plugged_in_charging_limited" msgid="5369697538556777542">"<xliff:g id="PERCENTAGE">%s</xliff:g> • బ్యాటరీని రక్షించడానికి ఛార్జింగ్ హోల్డ్‌లో ఉంచబడింది"</string>
+    <string name="keyguard_plugged_in_incompatible_charger" msgid="6384203333154532125">"<xliff:g id="PERCENTAGE">%s</xliff:g> • ఛార్జింగ్ యాక్సెసరీని చెక్ చేయండి"</string>
     <string name="keyguard_network_locked_message" msgid="407096292844868608">"నెట్‌వర్క్ లాక్ చేయబడింది"</string>
     <string name="keyguard_missing_sim_message_short" msgid="685029586173458728">"SIM లేదు"</string>
     <string name="keyguard_permanent_disabled_sim_message_short" msgid="3955052454216046100">"వినియోగించలేని SIM."</string>
@@ -111,6 +111,9 @@
     <string name="kg_prompt_reason_timeout_pattern" msgid="5514969660010197363">"అదనపు సెక్యూరిటీ కోసం, బదులుగా ఆకృతిని ఉపయోగించండి"</string>
     <string name="kg_prompt_reason_timeout_pin" msgid="4227962059353859376">"అదనపు సెక్యూరిటీ కోసం, బదులుగా PINను ఉపయోగించండి"</string>
     <string name="kg_prompt_reason_timeout_password" msgid="8810879144143933690">"అదనపు సెక్యూరిటీ కోసం, బదులుగా పాస్‌వర్డ్‌ను ఉపయోగించండి"</string>
+    <string name="kg_prompt_added_security_pin" msgid="5487992065995475528">"అదనపు సెక్యూరిటీ కోసం PIN ఎంటర్ చేయాలి"</string>
+    <string name="kg_prompt_added_security_pattern" msgid="1017068086102168544">"అదనపు సెక్యూరిటీ కోసం ఆకృతి అవసరం"</string>
+    <string name="kg_prompt_added_security_password" msgid="6053156069765029006">"అదనపు సెక్యూరిటీ కోసం పాస్‌వర్డ్‌ను ఎంటర్ చేయాలి"</string>
     <string name="kg_prompt_reason_device_admin" msgid="6961159596224055685">"పరికరం నిర్వాహకుల ద్వారా లాక్ చేయబడింది"</string>
     <string name="kg_prompt_reason_user_request" msgid="6015774877733717904">"పరికరం మాన్యువల్‌గా లాక్ చేయబడింది"</string>
     <string name="kg_face_not_recognized" msgid="7903950626744419160">"గుర్తించలేదు"</string>

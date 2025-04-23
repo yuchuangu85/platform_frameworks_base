@@ -40,7 +40,7 @@
     <item msgid="8339720953594087771">"Conectando a <xliff:g id="NETWORK_NAME">%1$s</xliff:g>…"</item>
     <item msgid="3028983857109369308">"Autenticando con <xliff:g id="NETWORK_NAME">%1$s</xliff:g>…"</item>
     <item msgid="4287401332778341890">"Obteniendo dirección IP de <xliff:g id="NETWORK_NAME">%1$s</xliff:g>…"</item>
-    <item msgid="1043944043827424501">"Conectado a <xliff:g id="NETWORK_NAME">%1$s</xliff:g>"</item>
+    <item msgid="1043944043827424501">"Se estableció conexión con <xliff:g id="NETWORK_NAME">%1$s</xliff:g>"</item>
     <item msgid="7445993821842009653">"Suspendido"</item>
     <item msgid="1175040558087735707">"Desconectando de <xliff:g id="NETWORK_NAME">%1$s</xliff:g>…"</item>
     <item msgid="699832486578171722">"Desconectado"</item>
@@ -186,10 +186,10 @@
   </string-array>
   <string-array name="select_logd_size_summaries">
     <item msgid="409235464399258501">"Desactivado"</item>
-    <item msgid="4195153527464162486">"64 K/búfer registro"</item>
-    <item msgid="7464037639415220106">"256 K/búfer registro"</item>
-    <item msgid="8539423820514360724">"1 M/búfer registro"</item>
-    <item msgid="1984761927103140651">"4 M/búfer registro"</item>
+    <item msgid="4195153527464162486">"64 K/búfer de registro"</item>
+    <item msgid="7464037639415220106">"256 K/búfer de registro"</item>
+    <item msgid="8539423820514360724">"1 M/búfer de registro"</item>
+    <item msgid="1984761927103140651">"4 M/búfer de registro"</item>
     <item msgid="2983219471251787208">"8 M/búfer de registro"</item>
   </string-array>
   <string-array name="select_logpersist_titles">

@@ -17,41 +17,96 @@
 package com.android.systemui.keyguard.ui.viewmodel
 
 import android.content.Context
-import android.util.Log
+import com.android.systemui.customization.R as customR
 import com.android.systemui.dagger.SysUISingleton
+import com.android.systemui.dagger.qualifiers.Application
+import com.android.systemui.keyguard.domain.interactor.KeyguardSmartspaceInteractor
+import com.android.systemui.res.R
+import com.android.systemui.shade.domain.interactor.ShadeInteractor
 import com.android.systemui.statusbar.lockscreen.LockscreenSmartspaceController
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 
 @SysUISingleton
 class KeyguardSmartspaceViewModel
 @Inject
-constructor(val context: Context, smartspaceController: LockscreenSmartspaceController) {
-    val isSmartspaceEnabled: Boolean = smartspaceController.isEnabled()
-    val isWeatherEnabled: Boolean = smartspaceController.isWeatherEnabled()
-    val isDateWeatherDecoupled: Boolean = smartspaceController.isDateWeatherDecoupled()
-    val smartspaceViewId: Int
-        get() = getId("bc_smartspace_view")
+constructor(
+    @Application applicationScope: CoroutineScope,
+    smartspaceController: LockscreenSmartspaceController,
+    keyguardClockViewModel: KeyguardClockViewModel,
+    smartspaceInteractor: KeyguardSmartspaceInteractor,
+    shadeInteractor: ShadeInteractor,
+) {
+    /** Whether the smartspace section is available in the build. */
+    val isSmartspaceEnabled: Boolean = smartspaceController.isEnabled
+    /** Whether the weather area is available in the build. */
+    private val isWeatherEnabled: StateFlow<Boolean> = smartspaceInteractor.isWeatherEnabled
 
-    val dateId: Int
-        get() = getId("date_smartspace_view")
+    /** Whether the data and weather areas are decoupled in the build. */
+    val isDateWeatherDecoupled: Boolean = smartspaceController.isDateWeatherDecoupled
 
-    val weatherId: Int
-        get() = getId("weather_smartspace_view")
+    /** Whether the date area should be visible. */
+    val isDateVisible: StateFlow<Boolean> =
+        keyguardClockViewModel.hasCustomWeatherDataDisplay
+            .map { !it }
+            .stateIn(
+                scope = applicationScope,
+                started = SharingStarted.WhileSubscribed(),
+                initialValue = !keyguardClockViewModel.hasCustomWeatherDataDisplay.value,
+            )
 
-    private fun getId(name: String): Int {
-        return context.resources.getIdentifier(name, "id", context.packageName).also {
-            if (it == 0) {
-                Log.d(TAG, "Cannot resolve id $name")
+    /** Whether the weather area should be visible. */
+    val isWeatherVisible: StateFlow<Boolean> =
+        combine(isWeatherEnabled, keyguardClockViewModel.hasCustomWeatherDataDisplay) {
+                isWeatherEnabled,
+                clockIncludesCustomWeatherDisplay ->
+                isWeatherVisible(
+                    clockIncludesCustomWeatherDisplay = clockIncludesCustomWeatherDisplay,
+                    isWeatherEnabled = isWeatherEnabled,
+                )
             }
-        }
+            .stateIn(
+                scope = applicationScope,
+                started = SharingStarted.WhileSubscribed(),
+                initialValue =
+                    isWeatherVisible(
+                        clockIncludesCustomWeatherDisplay =
+                            keyguardClockViewModel.hasCustomWeatherDataDisplay.value,
+                        isWeatherEnabled = smartspaceInteractor.isWeatherEnabled.value,
+                    ),
+            )
+
+    private fun isWeatherVisible(
+        clockIncludesCustomWeatherDisplay: Boolean,
+        isWeatherEnabled: Boolean,
+    ): Boolean {
+        return !clockIncludesCustomWeatherDisplay && isWeatherEnabled
     }
-    fun getDimen(name: String): Int {
-        val res = context.packageManager.getResourcesForApplication(context.packageName)
-        val id = res.getIdentifier(name, "dimen", context.packageName)
-        return res.getDimensionPixelSize(id)
-    }
+
+    /* trigger clock and smartspace constraints change when smartspace appears */
+    val bcSmartspaceVisibility: StateFlow<Int> = smartspaceInteractor.bcSmartspaceVisibility
+
+    val isShadeLayoutWide: StateFlow<Boolean> = shadeInteractor.isShadeLayoutWide
 
     companion object {
-        private val TAG = KeyguardSmartspaceViewModel::class.java.simpleName
+        fun getDateWeatherStartMargin(context: Context): Int {
+            return context.resources.getDimensionPixelSize(R.dimen.below_clock_padding_start) +
+                context.resources.getDimensionPixelSize(customR.dimen.status_view_margin_horizontal)
+        }
+
+        fun getDateWeatherEndMargin(context: Context): Int {
+            return context.resources.getDimensionPixelSize(R.dimen.below_clock_padding_end) +
+                context.resources.getDimensionPixelSize(customR.dimen.status_view_margin_horizontal)
+        }
+
+        fun getSmartspaceHorizontalMargin(context: Context): Int {
+            return context.resources.getDimensionPixelSize(R.dimen.smartspace_padding_horizontal) +
+                context.resources.getDimensionPixelSize(customR.dimen.status_view_margin_horizontal)
+        }
     }
 }
